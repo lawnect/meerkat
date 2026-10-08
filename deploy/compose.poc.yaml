@@ -1,0 +1,85 @@
+name: meerkat-poc
+
+x-runtime: &runtime
+  image: meerkat-poc:local
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  user: "${MEERKAT_UID:?set MEERKAT_UID}:${MEERKAT_GID:?set MEERKAT_GID}"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp]
+  init: true
+  restart: "no"
+
+services:
+  outlet:
+    <<: *runtime
+    entrypoint: [/usr/local/bin/outlet]
+    command: [-config, /config/outlet.json, -data-dir, /state]
+    volumes:
+      - "${MEERKAT_POC_DIR:?set MEERKAT_POC_DIR}/configs/outlet.json:/config/outlet.json:ro"
+      - "${MEERKAT_POC_DIR}/configs/api-cert.pem:/config/api-cert.pem:ro"
+      - "${MEERKAT_POC_DIR}/configs/api-key.pem:/config/api-key.pem:ro"
+      - "${MEERKAT_POC_DIR}/outlet-data:/state"
+    ports:
+      - "127.0.0.1:18443:8443"
+      - "127.0.0.1:2333:2333"
+    networks: [control]
+
+  rathole:
+    <<: *runtime
+    entrypoint: [/usr/local/bin/rathole]
+    command: [--server, /config/server.toml]
+    environment:
+      RUST_LOG: "off"
+    volumes:
+      - "${MEERKAT_POC_DIR}/configs/server.toml:/config/server.toml:ro"
+    network_mode: service:outlet
+    depends_on: [outlet]
+
+  app-a:
+    <<: *runtime
+    entrypoint: [/usr/local/bin/demo-service]
+    command: [-name, app-a]
+    networks: [service-a]
+
+  app-b:
+    <<: *runtime
+    entrypoint: [/usr/local/bin/demo-service]
+    command: [-name, app-b]
+    networks: [service-b]
+
+  connector-a:
+    <<: *runtime
+    command: [-config, /config/connector.json]
+    environment:
+      MEERKAT_ENROLLMENT_TOKEN_FILE: /config/enrollment.token
+    volumes:
+      - "${MEERKAT_POC_DIR}/configs/connector-a.json:/config/connector.json:ro"
+      - "${MEERKAT_POC_DIR}/configs/connector-a.token:/config/enrollment.token:ro"
+      - "${MEERKAT_POC_DIR}/configs/root-ca.pem:/config/root-ca.pem:ro"
+      - "${MEERKAT_POC_DIR}/connector-a-data:/state"
+    networks: [control, service-a]
+    depends_on: [outlet, rathole, app-a]
+
+  connector-b:
+    <<: *runtime
+    command: [-config, /config/connector.json]
+    environment:
+      MEERKAT_ENROLLMENT_TOKEN_FILE: /config/enrollment.token
+    volumes:
+      - "${MEERKAT_POC_DIR}/configs/connector-b.json:/config/connector.json:ro"
+      - "${MEERKAT_POC_DIR}/configs/connector-b.token:/config/enrollment.token:ro"
+      - "${MEERKAT_POC_DIR}/configs/root-ca.pem:/config/root-ca.pem:ro"
+      - "${MEERKAT_POC_DIR}/connector-b-data:/state"
+    networks: [control, service-b]
+    depends_on: [outlet, rathole, app-b]
+
+networks:
+  control: {}
+  service-a:
+    internal: true
+  service-b:
+    internal: true

@@ -1,0 +1,10 @@
+{
+  "outlet_url": "https://outlet.example.com",
+  "name": "server3-example",
+  "data_dir": "/var/lib/meerkat",
+  "target": { "host": "app", "port": 3000 },
+  "rathole_binary": "/usr/local/bin/rathole",
+  "root_ca": "",
+  "heartbeat_interval": "5s",
+  "development_http": false
+}

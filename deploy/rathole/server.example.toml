@@ -1,0 +1,15 @@
+# rathole v0.5.0: replace all placeholders before running. Keep mode 0600.
+[server]
+bind_addr = "0.0.0.0:2333"
+
+[server.transport]
+type = "noise"
+
+[server.transport.noise]
+pattern = "Noise_NK_25519_ChaChaPoly_BLAKE2s"
+local_private_key = "<base64-server-X25519-private-key>"
+
+[server.services.service_example]
+type = "tcp"
+token = "<random-service-token>"
+bind_addr = "127.0.0.1:31001"

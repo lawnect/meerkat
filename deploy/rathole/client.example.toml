@@ -1,0 +1,16 @@
+# For comparison only: Connector generates the actual file after enrollment.
+[client]
+remote_addr = "outlet.example.com:2333"
+retry_interval = 1
+
+[client.transport]
+type = "noise"
+
+[client.transport.noise]
+pattern = "Noise_NK_25519_ChaChaPoly_BLAKE2s"
+remote_public_key = "<base64-server-X25519-public-key>"
+
+[client.services.service_example]
+type = "tcp"
+token = "<random-service-token>"
+local_addr = "app:3000"

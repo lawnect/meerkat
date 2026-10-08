@@ -1,0 +1,665 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Meerkat vertical slice API",
+    "version": "0.1.0",
+    "description": "Initial registration, fixed single-service configuration, heartbeat and administrator status API. Routes, revocation, config rollout and streaming control are not implemented in this slice."
+  },
+  "servers": [
+    {
+      "url": "https://localhost:18443",
+      "description": "Local Compose PoC; trust its generated development certificate"
+    }
+  ],
+  "security": [
+    {
+      "connectorCredential": []
+    }
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {
+        "operationId": "health",
+        "summary": "Outlet API readiness",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Acknowledgment"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connector/v1/enrollment": {
+      "post": {
+        "operationId": "enrollConnector",
+        "summary": "Consume a short-lived one-time registration token",
+        "security": [
+          {
+            "enrollmentToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnrollmentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Registered; save the returned credential before starting the tunnel",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollmentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "415": {
+            "$ref": "#/components/responses/InvalidMediaType"
+          },
+          "503": {
+            "$ref": "#/components/responses/PersistenceFailure"
+          }
+        }
+      }
+    },
+    "/connector/v1/config": {
+      "get": {
+        "operationId": "connectorConfiguration",
+        "summary": "Return only the caller's permitted service",
+        "responses": {
+          "200": {
+            "description": "Private configuration; never log this payload",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Configuration"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/connector/v1/heartbeat": {
+      "post": {
+        "operationId": "connectorHeartbeat",
+        "summary": "Report process state and local health; Outlet probes the HTTP tunnel separately",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Heartbeat"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Acknowledgment"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "415": {
+            "$ref": "#/components/responses/InvalidMediaType"
+          },
+          "503": {
+            "$ref": "#/components/responses/PersistenceFailure"
+          }
+        }
+      }
+    },
+    "/api/v1/connectors": {
+      "get": {
+        "operationId": "listConnectors",
+        "summary": "Inspect separate control, process, health and tunnel states",
+        "security": [
+          {
+            "adminToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Status without secret configurations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "connectors"
+                  ],
+                  "properties": {
+                    "connectors": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ConnectorStatus"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v1/connectors/{id}/enrollment-tokens": {
+      "post": {
+        "operationId": "issueEnrollmentToken",
+        "summary": "Replace a pending token or enroll an expired identity",
+        "description": "Active identities return 409. This endpoint does not revoke a rathole service token.",
+        "security": [
+          {
+            "adminToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Label"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "One-time secret; returned only now",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "token",
+                    "expires_at"
+                  ],
+                  "properties": {
+                    "token": {
+                      "$ref": "#/components/schemas/Secret"
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "503": {
+            "$ref": "#/components/responses/PersistenceFailure"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "enrollmentToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Single-use token, default lifetime 10 minutes"
+      },
+      "connectorCredential": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Per-connector API credential, default lifetime 30 days"
+      },
+      "adminToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Bootstrap administrator API token; no login UI in this slice"
+      }
+    },
+    "responses": {
+      "InvalidRequest": {
+        "description": "Invalid, unknown, missing or oversized fields",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Missing, expired, consumed or invalid token",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Token belongs to another connector or service",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "Active identity, revision mismatch or out-of-order heartbeat",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Connector not found",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "InvalidMediaType": {
+        "description": "Content-Type must be application/json",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "PersistenceFailure": {
+        "description": "State could not be durably saved",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Label": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$"
+      },
+      "Secret": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9_-]{32,128}$",
+        "description": "Secret token: never log; returned only on explicitly authorized secret-bearing endpoints"
+      },
+      "PublicKey": {
+        "type": "string",
+        "format": "byte",
+        "description": "Base64 encoding of exactly 32 bytes"
+      },
+      "Target": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "host",
+          "port"
+        ],
+        "properties": {
+          "host": {
+            "type": "string",
+            "description": "Explicit single-label Compose service name or loopback IP; must match the local Connector allowlist"
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          }
+        }
+      },
+      "Tunnel": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "remote_address",
+          "server_public_key",
+          "service_name",
+          "service_token"
+        ],
+        "properties": {
+          "remote_address": {
+            "type": "string",
+            "description": "rathole server host:port"
+          },
+          "server_public_key": {
+            "$ref": "#/components/schemas/PublicKey"
+          },
+          "service_name": {
+            "$ref": "#/components/schemas/Label"
+          },
+          "service_token": {
+            "$ref": "#/components/schemas/Secret"
+          }
+        }
+      },
+      "Configuration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "connector_id",
+          "revision",
+          "service_id",
+          "target",
+          "tunnel"
+        ],
+        "properties": {
+          "connector_id": {
+            "$ref": "#/components/schemas/Label"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "service_id": {
+            "$ref": "#/components/schemas/Label"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Target"
+          },
+          "tunnel": {
+            "$ref": "#/components/schemas/Tunnel"
+          }
+        }
+      },
+      "EnrollmentRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "connector_name",
+          "connector_version",
+          "public_key"
+        ],
+        "properties": {
+          "connector_name": {
+            "$ref": "#/components/schemas/Label"
+          },
+          "connector_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "public_key": {
+            "$ref": "#/components/schemas/PublicKey"
+          }
+        }
+      },
+      "EnrollmentResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "connector_id",
+          "revision",
+          "service_id",
+          "target",
+          "tunnel",
+          "credential",
+          "credential_expires_at"
+        ],
+        "properties": {
+          "connector_id": {
+            "$ref": "#/components/schemas/Label"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "service_id": {
+            "$ref": "#/components/schemas/Label"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Target"
+          },
+          "tunnel": {
+            "$ref": "#/components/schemas/Tunnel"
+          },
+          "credential": {
+            "$ref": "#/components/schemas/Secret"
+          },
+          "credential_expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Heartbeat": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "connector_id",
+          "service_id",
+          "revision",
+          "connector_version",
+          "process_state",
+          "process_restarts",
+          "service_health",
+          "observed_at"
+        ],
+        "properties": {
+          "connector_id": {
+            "$ref": "#/components/schemas/Label"
+          },
+          "service_id": {
+            "$ref": "#/components/schemas/Label"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "connector_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "process_state": {
+            "type": "string",
+            "enum": [
+              "not_started",
+              "starting",
+              "running",
+              "restarting",
+              "stopped",
+              "failed"
+            ]
+          },
+          "process_restarts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "service_health": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "healthy",
+              "unhealthy"
+            ]
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ConnectorStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "service_id",
+          "status",
+          "tunnel_status",
+          "last_seen",
+          "heartbeat",
+          "credential_expires_at"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Label"
+          },
+          "name": {
+            "$ref": "#/components/schemas/Label"
+          },
+          "service_id": {
+            "$ref": "#/components/schemas/Label"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "connected",
+              "stale",
+              "disconnected"
+            ]
+          },
+          "tunnel_status": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "connected",
+              "disconnected"
+            ]
+          },
+          "last_seen": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "heartbeat": {
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Heartbeat"
+              }
+            ],
+            "nullable": true
+          },
+          "credential_expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Acknowledgment": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "accepted"
+            ]
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "request_id"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
