@@ -105,15 +105,18 @@ func run() error {
 	}
 	admin := outlet.Token()
 	cfg := outlet.Config{
-		ListenAddress:         "0.0.0.0:8443",
-		TLSCertificate:        "/config/api-cert.pem",
-		TLSKey:                "/config/api-key.pem",
-		AdminTokenHash:        outlet.Hash(admin),
-		EnrollmentTTLSeconds:  600,
-		CredentialTTLSeconds:  30 * 24 * 60 * 60,
-		TunnelRemoteAddress:   net.JoinHostPort(*domain, "2333"),
-		TunnelServerPublicKey: base64.StdEncoding.EncodeToString(noise.PublicKey().Bytes()),
-		Connectors:            []outlet.Seed{},
+		ListenAddress:          "0.0.0.0:8443",
+		TLSCertificate:         "/config/api-cert.pem",
+		TLSKey:                 "/config/api-key.pem",
+		AdminTokenHash:         outlet.Hash(admin),
+		EnrollmentTTLSeconds:   600,
+		CredentialTTLSeconds:   30 * 24 * 60 * 60,
+		Domain:                 *domain,
+		TunnelListenAddress:    "0.0.0.0:2333",
+		TunnelRemoteAddress:    net.JoinHostPort(*domain, "2333"),
+		TunnelServerPublicKey:  base64.StdEncoding.EncodeToString(noise.PublicKey().Bytes()),
+		TunnelServerPrivateKey: base64.StdEncoding.EncodeToString(noise.Bytes()),
+		Connectors:             []outlet.Seed{},
 	}
 	configJSON, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {

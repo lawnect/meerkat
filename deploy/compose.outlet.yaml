@@ -28,12 +28,10 @@ services:
 
   rathole:
     <<: *runtime
-    entrypoint: [/usr/local/bin/rathole]
-    command: [--server, /config/server.toml]
-    environment:
-      RUST_LOG: "off"
+    entrypoint: [/usr/local/bin/rathole-watch]
+    command: [-config, /state/rathole/server.toml]
     volumes:
-      - "${MEERKAT_DEPLOY_DIR}/configs/server.toml:/config/server.toml:ro"
+      - "${MEERKAT_DEPLOY_DIR}/outlet-data:/state:ro"
     network_mode: service:outlet
     depends_on: [outlet]
 
@@ -47,7 +45,7 @@ services:
     env_file:
       - "${MEERKAT_DEPLOY_DIR}/caddy.env"
     volumes:
-      - "${MEERKAT_DEPLOY_DIR}/configs/Caddyfile:/etc/caddy/Caddyfile:ro"
+      - "${MEERKAT_DEPLOY_DIR}/outlet-data:/runtime:ro"
       - "${MEERKAT_DEPLOY_DIR}/configs/root-ca.pem:/etc/caddy/root-ca.pem:ro"
       - "${MEERKAT_DEPLOY_DIR}/caddy-data:/data"
       - "${MEERKAT_DEPLOY_DIR}/caddy-config:/config"
@@ -55,3 +53,4 @@ services:
       - "${MEERKAT_BIND_ADDRESS:-0.0.0.0}:80:80"
       - "${MEERKAT_BIND_ADDRESS:-0.0.0.0}:443:443"
     depends_on: [outlet]
+    command: [run, --watch, --config, /runtime/caddy/Caddyfile, --adapter, caddyfile]

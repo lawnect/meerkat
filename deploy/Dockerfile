@@ -6,6 +6,7 @@ COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 go build -trimpath -o /out/connector ./cmd/connector && \
     CGO_ENABLED=0 go build -trimpath -o /out/outlet ./cmd/outlet && \
+    CGO_ENABLED=0 go build -trimpath -o /out/rathole-watch ./cmd/rathole-watch && \
     CGO_ENABLED=0 go build -trimpath -o /out/outlet-init ./cmd/outlet-init && \
     CGO_ENABLED=0 go build -trimpath -o /out/demo-service ./cmd/demo-service && \
     CGO_ENABLED=0 go build -trimpath -o /out/poc-probe ./cmd/poc-probe

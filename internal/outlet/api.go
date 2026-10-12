@@ -250,14 +250,15 @@ func (s *Store) heartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	transport.CloseIdleConnections()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	// Re-authenticate after the probe in case a credential was rotated meanwhile.
 	_, record, managed, ok = s.authenticated(r)
 	if !ok {
+		s.mu.Unlock()
 		fail(w, r, 401, "invalid_credential")
 		return
 	}
 	if record.LastHeartbeat != nil && hb.ObservedAt.Before(record.LastHeartbeat.ObservedAt) {
+		s.mu.Unlock()
 		fail(w, r, 409, "out_of_order_heartbeat")
 		return
 	}
@@ -269,8 +270,16 @@ func (s *Store) heartbeat(w http.ResponseWriter, r *http.Request) {
 		saveErr = s.save(id, record)
 	}
 	if saveErr != nil {
+		s.mu.Unlock()
 		fail(w, r, 503, "persistence_failed")
 		return
+	}
+	s.mu.Unlock()
+	if managed {
+		if err := s.reconcileProxy(r.Context()); err != nil {
+			fail(w, r, 503, "proxy_reconcile_failed")
+			return
+		}
 	}
 	reply(w, 200, map[string]string{"status": "accepted"})
 }
@@ -538,9 +547,9 @@ func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	record, exists := s.managed[id]
 	if exists && record.Enrolled && s.now().Before(record.CredentialExpiresAt) {
+		s.mu.Unlock()
 		fail(w, r, 409, "already_enrolled")
 		return
 	}
@@ -554,7 +563,13 @@ func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
 	record.LastHeartbeat, record.LastSeen, record.TunnelStatus = nil, time.Time{}, "unknown"
 	record.EnrollmentHash, record.EnrollmentExpiresAt = Hash(token), s.now().Add(time.Duration(s.config.EnrollmentTTLSeconds)*time.Second)
 	if err := s.saveManaged(id, record); err != nil {
+		s.mu.Unlock()
 		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	s.mu.Unlock()
+	if err := s.reconcileTunnel(); err != nil {
+		fail(w, r, 503, "tunnel_reconcile_failed")
 		return
 	}
 	reply(w, 201, map[string]any{"token": token, "expires_at": record.EnrollmentExpiresAt, "service": service})

@@ -16,6 +16,7 @@ import (
 	"github.com/lawnect/meerkat/internal/contract"
 	"github.com/lawnect/meerkat/internal/control"
 	"github.com/lawnect/meerkat/internal/proxy"
+	"github.com/lawnect/meerkat/internal/rathole"
 	"github.com/lawnect/meerkat/internal/securefs"
 	"github.com/lawnect/meerkat/internal/validation"
 )
@@ -29,16 +30,18 @@ type Seed struct {
 }
 
 type Config struct {
-	ListenAddress         string `json:"listen_address"`
-	TLSCertificate        string `json:"tls_certificate"`
-	TLSKey                string `json:"tls_key"`
-	AdminTokenHash        string `json:"admin_token_hash"`
-	EnrollmentTTLSeconds  int    `json:"enrollment_ttl_seconds"`
-	CredentialTTLSeconds  int    `json:"credential_ttl_seconds"`
-	Domain                string `json:"domain,omitempty"`
-	TunnelRemoteAddress   string `json:"tunnel_remote_address,omitempty"`
-	TunnelServerPublicKey string `json:"tunnel_server_public_key,omitempty"`
-	Connectors            []Seed `json:"connectors"`
+	ListenAddress          string `json:"listen_address"`
+	TLSCertificate         string `json:"tls_certificate"`
+	TLSKey                 string `json:"tls_key"`
+	AdminTokenHash         string `json:"admin_token_hash"`
+	EnrollmentTTLSeconds   int    `json:"enrollment_ttl_seconds"`
+	CredentialTTLSeconds   int    `json:"credential_ttl_seconds"`
+	Domain                 string `json:"domain,omitempty"`
+	TunnelListenAddress    string `json:"tunnel_listen_address,omitempty"`
+	TunnelRemoteAddress    string `json:"tunnel_remote_address,omitempty"`
+	TunnelServerPublicKey  string `json:"tunnel_server_public_key,omitempty"`
+	TunnelServerPrivateKey string `json:"tunnel_server_private_key,omitempty"`
+	Connectors             []Seed `json:"connectors"`
 }
 
 type Record struct {
@@ -57,6 +60,7 @@ type Store struct {
 	path        string
 	managedPath string
 	proxyPath   string
+	tunnelPath  string
 	records     map[string]Record
 	managed     map[string]Record
 	config      Config
@@ -107,7 +111,7 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 	if err := securefs.Directory(dir); err != nil {
 		return nil, err
 	}
-	s := &Store{path: filepath.Join(dir, "state.json"), managedPath: filepath.Join(dir, "managed-state.json"), proxyPath: filepath.Join(dir, "caddy", "Caddyfile"), records: records, managed: map[string]Record{}, config: config, control: controlDB, now: time.Now}
+	s := &Store{path: filepath.Join(dir, "state.json"), managedPath: filepath.Join(dir, "managed-state.json"), proxyPath: filepath.Join(dir, "caddy", "Caddyfile"), tunnelPath: filepath.Join(dir, "rathole", "server.toml"), records: records, managed: map[string]Record{}, config: config, control: controlDB, now: time.Now}
 	if controlDB != nil && config.Domain != "" {
 		outlet, err := controlDB.Outlet(context.Background())
 		if err != nil {
@@ -158,7 +162,27 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 	if err := s.reconcileProxy(context.Background()); err != nil {
 		return nil, err
 	}
+	if err := s.reconcileTunnel(); err != nil {
+		return nil, err
+	}
 	return s, nil
+}
+
+func (s *Store) reconcileTunnel() error {
+	if s.config.TunnelListenAddress == "" || !validation.PublicKey(s.config.TunnelServerPrivateKey) {
+		return nil
+	}
+	s.mu.Lock()
+	services := make([]rathole.ServerService, 0, len(s.managed))
+	for _, record := range s.managed {
+		services = append(services, rathole.ServerService{Name: record.Configuration.Tunnel.ServiceName, Token: record.Configuration.Tunnel.ServiceToken, BindAddress: record.ProbeAddress})
+	}
+	s.mu.Unlock()
+	config, err := rathole.Server(s.config.TunnelListenAddress, s.config.TunnelServerPrivateKey, services)
+	if err != nil {
+		return err
+	}
+	return securefs.Write(s.tunnelPath, config)
 }
 
 // reconcileProxy writes a full candidate Caddyfile atomically. Only a managed
