@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 FROM golang:1.26.3-bookworm AS go-build
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
 COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 go build -trimpath -o /out/connector ./cmd/connector && \
