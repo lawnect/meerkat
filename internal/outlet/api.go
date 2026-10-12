@@ -341,6 +341,15 @@ func (s *Store) list(w http.ResponseWriter, r *http.Request) {
 	if !s.admin(w, r) {
 		return
 	}
+	if s.control != nil {
+		connectors, err := s.control.ListConnectors(r.Context())
+		if err != nil {
+			fail(w, r, 503, "persistence_failed")
+			return
+		}
+		reply(w, 200, map[string]any{"connectors": connectors})
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	statuses := []Status{}
