@@ -8,7 +8,11 @@ import (
 	"github.com/lawnect/meerkat/internal/validation"
 )
 
-var ErrConnectorExists = errors.New("connector already exists")
+var (
+	ErrConnectorExists   = errors.New("connector already exists")
+	ErrInvalidConnector  = errors.New("invalid connector")
+	ErrConnectorNotFound = errors.New("connector not found")
+)
 
 type Connector struct {
 	ID        string    `json:"id"`
@@ -19,7 +23,7 @@ type Connector struct {
 
 func (d *Database) CreateConnector(ctx context.Context, name string) (Connector, error) {
 	if !validation.Label(name) {
-		return Connector{}, ErrInvalidCredentials
+		return Connector{}, ErrInvalidConnector
 	}
 	id, err := randomToken()
 	if err != nil {
@@ -32,6 +36,12 @@ func (d *Database) CreateConnector(ctx context.Context, name string) (Connector,
 		return Connector{}, ErrConnectorExists
 	}
 	return c, nil
+}
+
+func (d *Database) ConnectorExists(ctx context.Context, id string) (bool, error) {
+	var exists int
+	err := d.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM connectors WHERE id = ? AND revoked_at IS NULL)", id).Scan(&exists)
+	return exists == 1, err
 }
 
 func (d *Database) ListConnectors(ctx context.Context) ([]Connector, error) {

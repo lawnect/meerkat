@@ -94,6 +94,8 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/session", s.logout)
 	mux.HandleFunc("GET /api/v1/connectors", s.list)
 	mux.HandleFunc("POST /api/v1/connectors", s.createConnector)
+	mux.HandleFunc("GET /api/v1/connectors/{id}/services", s.listServices)
+	mux.HandleFunc("POST /api/v1/connectors/{id}/services", s.createService)
 	mux.HandleFunc("POST /api/v1/connectors/{id}/enrollment-tokens", s.issueToken)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -417,4 +419,62 @@ func (s *Store) createConnector(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, 201, connector)
+}
+
+type serviceRequest struct {
+	Name     string          `json:"name"`
+	Protocol string          `json:"protocol"`
+	Target   contract.Target `json:"target"`
+}
+
+func (s *Store) listServices(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	services, err := s.control.ListServices(r.Context(), r.PathValue("id"))
+	if errors.Is(err, control.ErrConnectorNotFound) {
+		fail(w, r, 404, "connector_not_found")
+		return
+	}
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	reply(w, 200, map[string]any{"services": services})
+}
+
+func (s *Store) createService(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	var req serviceRequest
+	if !decode(w, r, &req, "name", "protocol", "target") {
+		return
+	}
+	service, err := s.control.CreateService(r.Context(), r.PathValue("id"), req.Name, req.Protocol, req.Target)
+	if errors.Is(err, control.ErrConnectorNotFound) {
+		fail(w, r, 404, "connector_not_found")
+		return
+	}
+	if errors.Is(err, control.ErrServiceExists) {
+		fail(w, r, 409, "service_name_taken")
+		return
+	}
+	if errors.Is(err, control.ErrInvalidService) {
+		fail(w, r, 400, "invalid_service")
+		return
+	}
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	reply(w, 201, service)
 }
