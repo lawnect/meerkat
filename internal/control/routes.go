@@ -30,6 +30,38 @@ type Route struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
+type HTTPRoutePlan struct {
+	Route
+	ConnectorID string
+}
+
+func (d *Database) HTTPRoutePlans(ctx context.Context) ([]HTTPRoutePlan, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT r.id, r.service_id, r.kind, r.hostname, r.enabled, r.desired_revision, r.applied_revision, COALESCE(r.last_error, ''), r.created_at, r.updated_at, s.connector_id
+		FROM routes r JOIN services s ON s.id = r.service_id WHERE r.kind = 'http' ORDER BY r.hostname`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	plans := []HTTPRoutePlan{}
+	for rows.Next() {
+		var plan HTTPRoutePlan
+		var enabled int
+		var created, updated string
+		if err := rows.Scan(&plan.ID, &plan.ServiceID, &plan.Kind, &plan.Hostname, &enabled, &plan.DesiredRevision, &plan.AppliedRevision, &plan.LastError, &created, &updated, &plan.ConnectorID); err != nil {
+			return nil, err
+		}
+		if plan.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
+			return nil, err
+		}
+		if plan.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated); err != nil {
+			return nil, err
+		}
+		plan.Enabled = enabled != 0
+		plans = append(plans, plan)
+	}
+	return plans, rows.Err()
+}
+
 func (d *Database) CreateHTTPRoute(ctx context.Context, serviceID, hostname string) (Route, error) {
 	if !validation.Label(serviceID) || !validation.Hostname(hostname) {
 		return Route{}, ErrInvalidRoute

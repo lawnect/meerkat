@@ -1,11 +1,13 @@
 package outlet
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/lawnect/meerkat/internal/contract"
 	"github.com/lawnect/meerkat/internal/control"
+	"github.com/lawnect/meerkat/internal/proxy"
 	"github.com/lawnect/meerkat/internal/securefs"
 	"github.com/lawnect/meerkat/internal/validation"
 )
@@ -32,6 +35,7 @@ type Config struct {
 	AdminTokenHash        string `json:"admin_token_hash"`
 	EnrollmentTTLSeconds  int    `json:"enrollment_ttl_seconds"`
 	CredentialTTLSeconds  int    `json:"credential_ttl_seconds"`
+	Domain                string `json:"domain,omitempty"`
 	TunnelRemoteAddress   string `json:"tunnel_remote_address,omitempty"`
 	TunnelServerPublicKey string `json:"tunnel_server_public_key,omitempty"`
 	Connectors            []Seed `json:"connectors"`
@@ -52,6 +56,7 @@ type Store struct {
 	mu          sync.Mutex
 	path        string
 	managedPath string
+	proxyPath   string
 	records     map[string]Record
 	managed     map[string]Record
 	config      Config
@@ -102,7 +107,18 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 	if err := securefs.Directory(dir); err != nil {
 		return nil, err
 	}
-	s := &Store{path: filepath.Join(dir, "state.json"), managedPath: filepath.Join(dir, "managed-state.json"), records: records, managed: map[string]Record{}, config: config, control: controlDB, now: time.Now}
+	s := &Store{path: filepath.Join(dir, "state.json"), managedPath: filepath.Join(dir, "managed-state.json"), proxyPath: filepath.Join(dir, "caddy", "Caddyfile"), records: records, managed: map[string]Record{}, config: config, control: controlDB, now: time.Now}
+	if controlDB != nil && config.Domain != "" {
+		outlet, err := controlDB.Outlet(context.Background())
+		if err != nil {
+			return nil, err
+		}
+		if outlet.Domain == "" {
+			if _, err := controlDB.SetDomain(context.Background(), config.Domain); err != nil {
+				return nil, err
+			}
+		}
+	}
 	err := securefs.ReadJSON(s.path, &records)
 	if err == nil {
 		if len(records) != len(s.records) {
@@ -139,7 +155,43 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 		record.LastSeen, record.TunnelStatus = time.Time{}, "unknown"
 		s.managed[id] = record
 	}
+	if err := s.reconcileProxy(context.Background()); err != nil {
+		return nil, err
+	}
 	return s, nil
+}
+
+// reconcileProxy writes a full candidate Caddyfile atomically. Only a managed
+// Connector whose tunnel probe is connected can make a public Route appear.
+func (s *Store) reconcileProxy(ctx context.Context) error {
+	if s.control == nil {
+		return nil
+	}
+	outlet, err := s.control.Outlet(ctx)
+	if err != nil || outlet.Domain == "" {
+		return err
+	}
+	plans, err := s.control.HTTPRoutePlans(ctx)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	routes := make([]proxy.HTTPRoute, 0, len(plans))
+	for _, plan := range plans {
+		record, ok := s.managed[plan.ConnectorID]
+		if ok && record.Enrolled && record.TunnelStatus == "connected" && record.Configuration.ServiceID == plan.ServiceID {
+			_, port, splitErr := net.SplitHostPort(record.ProbeAddress)
+			if splitErr == nil {
+				routes = append(routes, proxy.HTTPRoute{Hostname: plan.Hostname, Upstream: net.JoinHostPort("outlet", port)})
+			}
+		}
+	}
+	s.mu.Unlock()
+	config, err := proxy.Caddyfile(outlet.Domain, routes)
+	if err != nil {
+		return err
+	}
+	return securefs.Write(s.proxyPath, config)
 }
 
 // Persist before publishing changes: a failed write must not consume a token.

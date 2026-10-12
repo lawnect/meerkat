@@ -415,6 +415,10 @@ func (s *Store) updateOutlet(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
+	if err := s.reconcileProxy(r.Context()); err != nil {
+		fail(w, r, 503, "proxy_reconcile_failed")
+		return
+	}
 	reply(w, 200, outlet)
 }
 
@@ -712,6 +716,10 @@ func (s *Store) createHTTPRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	if err := s.reconcileProxy(r.Context()); err != nil {
+		fail(w, r, 503, "proxy_reconcile_failed")
 		return
 	}
 	reply(w, 201, route)
