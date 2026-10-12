@@ -13,6 +13,7 @@ import (
 
 	"github.com/lawnect/meerkat/internal/contract"
 	"github.com/lawnect/meerkat/internal/control"
+	"github.com/lawnect/meerkat/internal/dashboard"
 	"github.com/lawnect/meerkat/internal/validation"
 )
 
@@ -82,6 +83,7 @@ func fail(w http.ResponseWriter, _ *http.Request, status int, code string) {
 
 func (s *Store) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.Handle("GET /", dashboard.Handler())
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { reply(w, 200, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("POST /connector/v1/enrollment", s.enroll)
 	mux.HandleFunc("GET /connector/v1/config", s.configuration)
