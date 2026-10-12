@@ -93,6 +93,7 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/session", s.login)
 	mux.HandleFunc("DELETE /api/v1/session", s.logout)
 	mux.HandleFunc("GET /api/v1/connectors", s.list)
+	mux.HandleFunc("POST /api/v1/connectors", s.createConnector)
 	mux.HandleFunc("POST /api/v1/connectors/{id}/enrollment-tokens", s.issueToken)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -388,4 +389,32 @@ func (s *Store) issueToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, 201, map[string]any{"token": token, "expires_at": record.EnrollmentExpiresAt})
+}
+
+type connectorRequest struct {
+	Name string `json:"name"`
+}
+
+func (s *Store) createConnector(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	var req connectorRequest
+	if !decode(w, r, &req, "name") {
+		return
+	}
+	connector, err := s.control.CreateConnector(r.Context(), req.Name)
+	if errors.Is(err, control.ErrConnectorExists) {
+		fail(w, r, 409, "connector_name_taken")
+		return
+	}
+	if err != nil {
+		fail(w, r, 400, "invalid_connector")
+		return
+	}
+	reply(w, 201, connector)
 }
