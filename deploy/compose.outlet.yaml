@@ -1,0 +1,39 @@
+# Server 1: API and rathole server only. MEERKAT_DEPLOY_DIR must contain this
+# machine's configs/ and outlet-data/. Do not transfer these server secrets to
+# the Connector host. Set MEERKAT_BIND_ADDRESS to the verified reachable IP.
+name: ${MEERKAT_PROJECT:-meerkat-outlet}
+
+x-runtime: &runtime
+  image: ${MEERKAT_IMAGE:-meerkat-poc:local}
+  user: "${MEERKAT_UID:?set MEERKAT_UID}:${MEERKAT_GID:?set MEERKAT_GID}"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp]
+  init: true
+  restart: "no"
+
+services:
+  outlet:
+    <<: *runtime
+    entrypoint: [/usr/local/bin/outlet]
+    command: [-config, /config/outlet.json, -data-dir, /state]
+    volumes:
+      - "${MEERKAT_DEPLOY_DIR:?set MEERKAT_DEPLOY_DIR}/configs/outlet.json:/config/outlet.json:ro"
+      - "${MEERKAT_DEPLOY_DIR}/configs/api-cert.pem:/config/api-cert.pem:ro"
+      - "${MEERKAT_DEPLOY_DIR}/configs/api-key.pem:/config/api-key.pem:ro"
+      - "${MEERKAT_DEPLOY_DIR}/outlet-data:/state"
+    ports:
+      - "${MEERKAT_BIND_ADDRESS:?set the reachable Outlet bind IP}:${MEERKAT_API_PORT:-18443}:8443"
+      - "${MEERKAT_BIND_ADDRESS}:${MEERKAT_TUNNEL_PORT:-2333}:2333"
+
+  rathole:
+    <<: *runtime
+    entrypoint: [/usr/local/bin/rathole]
+    command: [--server, /config/server.toml]
+    environment:
+      RUST_LOG: "off"
+    volumes:
+      - "${MEERKAT_DEPLOY_DIR}/configs/server.toml:/config/server.toml:ro"
+    network_mode: service:outlet
+    depends_on: [outlet]

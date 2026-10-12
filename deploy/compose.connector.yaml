@@ -1,0 +1,40 @@
+# Server 3: Connector and an isolated test HTTP app. Only the Connector's own
+# config, one-time token and API public CA certificate belong on this host.
+# outlet_url, certificate SANs and tunnel.remote_address must be provisioned
+# for the reachable Server 1 address before running this template.
+name: ${MEERKAT_PROJECT:-meerkat-connector}
+
+x-runtime: &runtime
+  image: ${MEERKAT_IMAGE:-meerkat-poc:local}
+  user: "${MEERKAT_UID:?set MEERKAT_UID}:${MEERKAT_GID:?set MEERKAT_GID}"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp]
+  init: true
+  restart: "no"
+
+services:
+  app:
+    <<: *runtime
+    entrypoint: [/usr/local/bin/demo-service]
+    command: [-name, panpo-nuc]
+    networks: [service]
+
+  connector:
+    <<: *runtime
+    command: [-config, /config/connector.json]
+    environment:
+      MEERKAT_ENROLLMENT_TOKEN_FILE: /config/enrollment.token
+    volumes:
+      - "${MEERKAT_DEPLOY_DIR:?set MEERKAT_DEPLOY_DIR}/configs/connector.json:/config/connector.json:ro"
+      - "${MEERKAT_DEPLOY_DIR}/configs/enrollment.token:/config/enrollment.token:ro"
+      - "${MEERKAT_DEPLOY_DIR}/configs/root-ca.pem:/config/root-ca.pem:ro"
+      - "${MEERKAT_DEPLOY_DIR}/connector-data:/state"
+    networks: [control, service]
+    depends_on: [app]
+
+networks:
+  control: {}
+  service:
+    internal: true
