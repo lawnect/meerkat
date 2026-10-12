@@ -11,7 +11,7 @@ x-runtime: &runtime
   security_opt: [no-new-privileges:true]
   tmpfs: [/tmp]
   init: true
-  restart: "no"
+  restart: unless-stopped
 
 services:
   outlet:
@@ -24,7 +24,6 @@ services:
       - "${MEERKAT_DEPLOY_DIR}/configs/api-key.pem:/config/api-key.pem:ro"
       - "${MEERKAT_DEPLOY_DIR}/outlet-data:/state"
     ports:
-      - "${MEERKAT_BIND_ADDRESS:?set the reachable Outlet bind IP}:${MEERKAT_API_PORT:-18443}:8443"
       - "${MEERKAT_BIND_ADDRESS}:${MEERKAT_TUNNEL_PORT:-2333}:2333"
 
   rathole:
@@ -36,4 +35,23 @@ services:
     volumes:
       - "${MEERKAT_DEPLOY_DIR}/configs/server.toml:/config/server.toml:ro"
     network_mode: service:outlet
+    depends_on: [outlet]
+
+  caddy:
+    image: ${MEERKAT_CADDY_IMAGE:-ghcr.io/lawnect/meerkat-caddy:latest}
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    init: true
+    restart: unless-stopped
+    env_file:
+      - "${MEERKAT_DEPLOY_DIR}/caddy.env"
+    volumes:
+      - "${MEERKAT_DEPLOY_DIR}/configs/Caddyfile:/etc/caddy/Caddyfile:ro"
+      - "${MEERKAT_DEPLOY_DIR}/configs/root-ca.pem:/etc/caddy/root-ca.pem:ro"
+      - "${MEERKAT_DEPLOY_DIR}/caddy-data:/data"
+      - "${MEERKAT_DEPLOY_DIR}/caddy-config:/config"
+    ports:
+      - "${MEERKAT_BIND_ADDRESS:-0.0.0.0}:80:80"
+      - "${MEERKAT_BIND_ADDRESS:-0.0.0.0}:443:443"
     depends_on: [outlet]

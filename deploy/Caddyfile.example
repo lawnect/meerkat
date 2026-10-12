@@ -1,0 +1,16 @@
+{
+	email {env.CADDY_EMAIL}
+}
+
+{$MEERKAT_DOMAIN}, *.{$MEERKAT_DOMAIN} {
+	tls {
+		dns cloudflare {env.CF_API_TOKEN}
+	}
+
+	reverse_proxy https://outlet:8443 {
+		transport http {
+			tls_trust_pool file /etc/caddy/root-ca.pem
+			tls_server_name outlet
+		}
+	}
+}

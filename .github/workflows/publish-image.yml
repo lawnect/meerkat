@@ -54,3 +54,25 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Docker metadata for Caddy
+        id: caddy-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}-caddy
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=sha
+
+      - name: Build and push Caddy image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile.caddy
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.caddy-meta.outputs.tags }}
+          labels: ${{ steps.caddy-meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
