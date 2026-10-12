@@ -21,7 +21,11 @@ func TestServiceAPIStoresDesiredService(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := store.Handler()
-	w := request(h, "POST", "/api/v1/connectors", f.admin, map[string]any{"name": "edge-a"})
+	w := request(h, "PUT", "/api/v1/outlet", f.admin, map[string]any{"domain": "example.com"})
+	if w.Code != 200 || !containsJSON(w.Body.Bytes(), "example.com") {
+		t.Fatalf("outlet status = %d: %s", w.Code, w.Body.String())
+	}
+	w = request(h, "POST", "/api/v1/connectors", f.admin, map[string]any{"name": "edge-a"})
 	if w.Code != 201 {
 		t.Fatalf("connector status = %d: %s", w.Code, w.Body.String())
 	}

@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/lawnect/meerkat/internal/validation"
@@ -33,8 +34,18 @@ func (d *Database) CreateHTTPRoute(ctx context.Context, serviceID, hostname stri
 	if !validation.Label(serviceID) || !validation.Hostname(hostname) {
 		return Route{}, ErrInvalidRoute
 	}
+	outlet, err := d.Outlet(ctx)
+	if err != nil {
+		return Route{}, err
+	}
+	if outlet.Domain == "" {
+		return Route{}, ErrInvalidRoute
+	}
+	if hostname != outlet.Domain && !strings.HasSuffix(hostname, "."+outlet.Domain) {
+		return Route{}, ErrInvalidRoute
+	}
 	var protocol string
-	err := d.db.QueryRowContext(ctx, "SELECT protocol FROM services WHERE id = ?", serviceID).Scan(&protocol)
+	err = d.db.QueryRowContext(ctx, "SELECT protocol FROM services WHERE id = ?", serviceID).Scan(&protocol)
 	if err != nil {
 		return Route{}, ErrServiceNotFound
 	}

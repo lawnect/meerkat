@@ -92,6 +92,8 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/setup/admin", s.setupAdmin)
 	mux.HandleFunc("POST /api/v1/session", s.login)
 	mux.HandleFunc("DELETE /api/v1/session", s.logout)
+	mux.HandleFunc("GET /api/v1/outlet", s.getOutlet)
+	mux.HandleFunc("PUT /api/v1/outlet", s.updateOutlet)
 	mux.HandleFunc("GET /api/v1/connectors", s.list)
 	mux.HandleFunc("POST /api/v1/connectors", s.createConnector)
 	mux.HandleFunc("GET /api/v1/connectors/{id}/services", s.listServices)
@@ -326,6 +328,54 @@ func (s *Store) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, &http.Cookie{Name: "meerkat_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Store) getOutlet(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	outlet, err := s.control.Outlet(r.Context())
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	reply(w, 200, outlet)
+}
+
+type outletRequest struct {
+	Domain string `json:"domain"`
+}
+
+func (s *Store) updateOutlet(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	var req outletRequest
+	if !decode(w, r, &req, "domain") {
+		return
+	}
+	outlet, err := s.control.SetDomain(r.Context(), req.Domain)
+	if errors.Is(err, control.ErrInvalidDomain) {
+		fail(w, r, 400, "invalid_domain")
+		return
+	}
+	if errors.Is(err, control.ErrDomainHasRoutes) {
+		fail(w, r, 409, "domain_has_routes")
+		return
+	}
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	reply(w, 200, outlet)
 }
 
 type Status struct {
