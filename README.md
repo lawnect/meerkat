@@ -16,6 +16,23 @@ go run ./cmd/poc-init -dir .local/poc
 docker compose --env-file .local/poc/compose.env -f deploy/compose.poc.yaml up -d --no-build
 ```
 
+## GitHub Actions와 GHCR 배포
+
+`main` 브랜치에 push하면 GitHub Actions가 `linux/amd64`와 `linux/arm64` 이미지를 빌드해
+`ghcr.io/lawnect/meerkat:latest`와 커밋 SHA 태그로 게시합니다. 원격 Outlet/Connector VM에서는
+소스 코드를 빌드하지 않고 GHCR 이미지를 가져와 Compose로 실행합니다.
+
+```sh
+docker login ghcr.io
+MEERKAT_IMAGE=ghcr.io/lawnect/meerkat:latest \
+  docker compose --env-file compose.env -f deploy/compose.outlet.yaml pull
+MEERKAT_IMAGE=ghcr.io/lawnect/meerkat:latest \
+  docker compose --env-file compose.env -f deploy/compose.outlet.yaml up -d
+```
+
+GHCR 패키지가 private이면 VM에서 `read:packages` 권한이 있는 GitHub 토큰으로 로그인해야 합니다.
+운영 배포에서는 `latest` 대신 검증한 커밋 SHA 태그를 `MEERKAT_IMAGE`로 지정하는 것을 권장합니다.
+
 실행되는 컨테이너는 Outlet API, rathole server, Connector 2개, HTTP 테스트 서비스 2개입니다. API에는 로컬 테스트용 HTTPS 인증서를 사용하고, 데이터 터널에는 Noise를 사용합니다. 앱에는 공개 포트를 만들지 않으며, Outlet의 rathole service 포트도 loopback으로만 수신합니다. 두 앱은 서로 다른 Compose 네트워크에 있습니다.
 
 ```sh

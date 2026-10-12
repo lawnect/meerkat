@@ -5,7 +5,7 @@
 name: ${MEERKAT_PROJECT:-meerkat-connector}
 
 x-runtime: &runtime
-  image: ${MEERKAT_IMAGE:-meerkat-poc:local}
+  image: ${MEERKAT_IMAGE:-ghcr.io/lawnect/meerkat:latest}
   user: "${MEERKAT_UID:?set MEERKAT_UID}:${MEERKAT_GID:?set MEERKAT_GID}"
   read_only: true
   cap_drop: [ALL]
