@@ -26,7 +26,7 @@ type fixture struct {
 func setup(t *testing.T) fixture {
 	t.Helper()
 	f := fixture{dir: t.TempDir(), admin: Token(), tokenA: Token(), tokenB: Token()}
-	f.cfg = Config{ListenAddress: "127.0.0.1:8443", AdminTokenHash: Hash(f.admin), EnrollmentTTLSeconds: 600, CredentialTTLSeconds: 3600}
+	f.cfg = Config{ListenAddress: "127.0.0.1:8443", AdminTokenHash: Hash(f.admin), EnrollmentTTLSeconds: 600, CredentialTTLSeconds: 3600, TunnelRemoteAddress: "outlet:2333", TunnelServerPublicKey: base64.StdEncoding.EncodeToString(make([]byte, 32))}
 	for i, name := range []string{"a", "b"} {
 		token := f.tokenA
 		if i == 1 {

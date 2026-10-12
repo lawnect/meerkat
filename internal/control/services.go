@@ -10,8 +10,9 @@ import (
 )
 
 var (
-	ErrServiceExists  = errors.New("service already exists")
-	ErrInvalidService = errors.New("invalid service")
+	ErrServiceExists   = errors.New("service already exists")
+	ErrInvalidService  = errors.New("invalid service")
+	ErrServiceRequired = errors.New("connector needs exactly one service")
 )
 
 // Service is desired state only. It has no public endpoint until a Route is
@@ -26,6 +27,20 @@ type Service struct {
 	ObservedStatus string          `json:"observed_status"`
 	CreatedAt      time.Time       `json:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at"`
+}
+
+// Enrollment currently starts one rathole client per Connector. Multiple
+// services require a future multiplexed connector protocol and are rejected
+// until then rather than silently exposing the wrong target.
+func (d *Database) EnrollmentService(ctx context.Context, connectorID string) (Service, error) {
+	services, err := d.ListServices(ctx, connectorID)
+	if err != nil {
+		return Service{}, err
+	}
+	if len(services) != 1 {
+		return Service{}, ErrServiceRequired
+	}
+	return services[0], nil
 }
 
 func (d *Database) CreateService(ctx context.Context, connectorID, name, protocol string, target contract.Target) (Service, error) {

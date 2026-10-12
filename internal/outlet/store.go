@@ -26,13 +26,15 @@ type Seed struct {
 }
 
 type Config struct {
-	ListenAddress        string `json:"listen_address"`
-	TLSCertificate       string `json:"tls_certificate"`
-	TLSKey               string `json:"tls_key"`
-	AdminTokenHash       string `json:"admin_token_hash"`
-	EnrollmentTTLSeconds int    `json:"enrollment_ttl_seconds"`
-	CredentialTTLSeconds int    `json:"credential_ttl_seconds"`
-	Connectors           []Seed `json:"connectors"`
+	ListenAddress         string `json:"listen_address"`
+	TLSCertificate        string `json:"tls_certificate"`
+	TLSKey                string `json:"tls_key"`
+	AdminTokenHash        string `json:"admin_token_hash"`
+	EnrollmentTTLSeconds  int    `json:"enrollment_ttl_seconds"`
+	CredentialTTLSeconds  int    `json:"credential_ttl_seconds"`
+	TunnelRemoteAddress   string `json:"tunnel_remote_address,omitempty"`
+	TunnelServerPublicKey string `json:"tunnel_server_public_key,omitempty"`
+	Connectors            []Seed `json:"connectors"`
 }
 
 type Record struct {
@@ -47,12 +49,14 @@ type Record struct {
 }
 
 type Store struct {
-	mu      sync.Mutex
-	path    string
-	records map[string]Record
-	config  Config
-	control *control.Database
-	now     func() time.Time
+	mu          sync.Mutex
+	path        string
+	managedPath string
+	records     map[string]Record
+	managed     map[string]Record
+	config      Config
+	control     *control.Database
+	now         func() time.Time
 }
 
 func Hash(s string) string { b := sha256.Sum256([]byte(s)); return hex.EncodeToString(b[:]) }
@@ -98,7 +102,7 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 	if err := securefs.Directory(dir); err != nil {
 		return nil, err
 	}
-	s := &Store{path: filepath.Join(dir, "state.json"), records: records, config: config, control: controlDB, now: time.Now}
+	s := &Store{path: filepath.Join(dir, "state.json"), managedPath: filepath.Join(dir, "managed-state.json"), records: records, managed: map[string]Record{}, config: config, control: controlDB, now: time.Now}
 	err := securefs.ReadJSON(s.path, &records)
 	if err == nil {
 		if len(records) != len(s.records) {
@@ -119,6 +123,22 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 	} else if err := securefs.WriteJSON(s.path, records); err != nil {
 		return nil, err
 	}
+	if err := securefs.ReadJSON(s.managedPath, &s.managed); err != nil {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		if err := securefs.WriteJSON(s.managedPath, s.managed); err != nil {
+			return nil, err
+		}
+	}
+	for id, record := range s.managed {
+		if !validation.Label(id) || validation.Configuration(record.Configuration) != nil || !isLoopbackAddress(record.ProbeAddress) {
+			return nil, errors.New("invalid managed connector state")
+		}
+		// Observed liveness never survives an Outlet restart.
+		record.LastSeen, record.TunnelStatus = time.Time{}, "unknown"
+		s.managed[id] = record
+	}
 	return s, nil
 }
 
@@ -133,5 +153,18 @@ func (s *Store) save(id string, record Record) error {
 		return err
 	}
 	s.records = next
+	return nil
+}
+
+func (s *Store) saveManaged(id string, record Record) error {
+	next := make(map[string]Record, len(s.managed)+1)
+	for key, value := range s.managed {
+		next[key] = value
+	}
+	next[id] = record
+	if err := securefs.WriteJSON(s.managedPath, next); err != nil {
+		return err
+	}
+	s.managed = next
 	return nil
 }

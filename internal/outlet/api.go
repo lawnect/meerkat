@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -148,23 +149,56 @@ func (s *Store) enroll(w http.ResponseWriter, r *http.Request) {
 		reply(w, 201, contract.EnrollmentResponse{Configuration: record.Configuration, Credential: credential, CredentialExpiresAt: record.CredentialExpiresAt})
 		return
 	}
+	for id, record := range s.managed {
+		if !matches(bearer(r), record.EnrollmentHash) {
+			continue
+		}
+		if !s.now().Before(record.EnrollmentExpiresAt) {
+			fail(w, r, 401, "invalid_enrollment_token")
+			return
+		}
+		if record.Name != req.Name {
+			fail(w, r, 403, "connector_mismatch")
+			return
+		}
+		if record.Enrolled {
+			fail(w, r, 409, "already_enrolled")
+			return
+		}
+		credential := Token()
+		record.Enrolled, record.PublicKey = true, req.PublicKey
+		record.CredentialHash = Hash(credential)
+		record.CredentialExpiresAt = s.now().Add(time.Duration(s.config.CredentialTTLSeconds) * time.Second)
+		record.EnrollmentHash = ""
+		if err := s.saveManaged(id, record); err != nil {
+			fail(w, r, 503, "persistence_failed")
+			return
+		}
+		reply(w, 201, contract.EnrollmentResponse{Configuration: record.Configuration, Credential: credential, CredentialExpiresAt: record.CredentialExpiresAt})
+		return
+	}
 	fail(w, r, 401, "invalid_enrollment_token")
 }
 
 // Called only while the store lock is held.
-func (s *Store) authenticated(r *http.Request) (string, Record, bool) {
+func (s *Store) authenticated(r *http.Request) (string, Record, bool, bool) {
 	for id, record := range s.records {
 		if record.Enrolled && s.now().Before(record.CredentialExpiresAt) && matches(bearer(r), record.CredentialHash) {
-			return id, record, true
+			return id, record, false, true
 		}
 	}
-	return "", Record{}, false
+	for id, record := range s.managed {
+		if record.Enrolled && s.now().Before(record.CredentialExpiresAt) && matches(bearer(r), record.CredentialHash) {
+			return id, record, true, true
+		}
+	}
+	return "", Record{}, false, false
 }
 
 func (s *Store) configuration(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, record, ok := s.authenticated(r)
+	_, record, _, ok := s.authenticated(r)
 	if !ok {
 		fail(w, r, 401, "invalid_credential")
 		return
@@ -180,7 +214,7 @@ func (s *Store) heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	id, record, ok := s.authenticated(r)
+	id, record, managed, ok := s.authenticated(r)
 	if !ok {
 		s.mu.Unlock()
 		fail(w, r, 401, "invalid_credential")
@@ -218,7 +252,7 @@ func (s *Store) heartbeat(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Re-authenticate after the probe in case a credential was rotated meanwhile.
-	_, record, ok = s.authenticated(r)
+	_, record, managed, ok = s.authenticated(r)
 	if !ok {
 		fail(w, r, 401, "invalid_credential")
 		return
@@ -228,7 +262,13 @@ func (s *Store) heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	record.LastHeartbeat, record.LastSeen, record.TunnelStatus = &hb, s.now().UTC(), probe
-	if err := s.save(id, record); err != nil {
+	var saveErr error
+	if managed {
+		saveErr = s.saveManaged(id, record)
+	} else {
+		saveErr = s.save(id, record)
+	}
+	if saveErr != nil {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
@@ -428,6 +468,10 @@ func (s *Store) issueToken(w http.ResponseWriter, r *http.Request) {
 	if !s.admin(w, r) {
 		return
 	}
+	if s.control != nil {
+		s.issueManagedToken(w, r)
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id := r.PathValue("id")
@@ -452,6 +496,83 @@ func (s *Store) issueToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, 201, map[string]any{"token": token, "expires_at": record.EnrollmentExpiresAt})
+}
+
+func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
+	if s.config.TunnelRemoteAddress == "" || !validation.PublicKey(s.config.TunnelServerPublicKey) || validation.Endpoint(s.config.TunnelRemoteAddress) != nil {
+		fail(w, r, 503, "tunnel_runtime_unconfigured")
+		return
+	}
+	id := r.PathValue("id")
+	service, err := s.control.EnrollmentService(r.Context(), id)
+	if errors.Is(err, control.ErrConnectorNotFound) {
+		fail(w, r, 404, "connector_not_found")
+		return
+	}
+	if errors.Is(err, control.ErrServiceRequired) {
+		fail(w, r, 409, "connector_service_required")
+		return
+	}
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	connectors, err := s.control.ListConnectors(r.Context())
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	name := ""
+	for _, connector := range connectors {
+		if connector.ID == id {
+			name = connector.Name
+			break
+		}
+	}
+	if name == "" {
+		fail(w, r, 404, "connector_not_found")
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, exists := s.managed[id]
+	if exists && record.Enrolled && s.now().Before(record.CredentialExpiresAt) {
+		fail(w, r, 409, "already_enrolled")
+		return
+	}
+	if !exists {
+		port := s.nextProbePort()
+		record = Record{Seed: Seed{Name: name, Configuration: contract.Configuration{ConnectorID: id, ServiceID: service.ID, Revision: 1, Target: service.Target, Tunnel: contract.Tunnel{RemoteAddress: s.config.TunnelRemoteAddress, ServerPublicKey: s.config.TunnelServerPublicKey, ServiceName: service.ID, ServiceToken: Token()}}, ProbeAddress: net.JoinHostPort("127.0.0.1", strconv.Itoa(port))}, TunnelStatus: "unknown"}
+	}
+	token := Token()
+	record.Enrolled = false
+	record.PublicKey, record.CredentialHash = "", ""
+	record.LastHeartbeat, record.LastSeen, record.TunnelStatus = nil, time.Time{}, "unknown"
+	record.EnrollmentHash, record.EnrollmentExpiresAt = Hash(token), s.now().Add(time.Duration(s.config.EnrollmentTTLSeconds)*time.Second)
+	if err := s.saveManaged(id, record); err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	reply(w, 201, map[string]any{"token": token, "expires_at": record.EnrollmentExpiresAt, "service": service})
+}
+
+func (s *Store) nextProbePort() int {
+	used := map[int]bool{}
+	for _, set := range []map[string]Record{s.records, s.managed} {
+		for _, record := range set {
+			_, port, err := net.SplitHostPort(record.ProbeAddress)
+			if value, err := strconv.Atoi(port); err == nil {
+				used[value] = true
+			}
+			_ = err
+		}
+	}
+	for port := 24000; port < 30000; port++ {
+		if !used[port] {
+			return port
+		}
+	}
+	return 0
 }
 
 type connectorRequest struct {

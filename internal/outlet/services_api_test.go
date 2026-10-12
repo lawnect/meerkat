@@ -49,6 +49,20 @@ func TestServiceAPIStoresDesiredService(t *testing.T) {
 	if w.Code != 200 || !containsJSON(w.Body.Bytes(), "web") {
 		t.Fatalf("list status = %d: %s", w.Code, w.Body.String())
 	}
+	w = request(h, "POST", "/api/v1/connectors/"+connector.ID+"/enrollment-tokens", f.admin, nil)
+	if w.Code != 201 {
+		t.Fatalf("token status = %d: %s", w.Code, w.Body.String())
+	}
+	var enrollmentToken struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &enrollmentToken); err != nil {
+		t.Fatal(err)
+	}
+	w = request(h, "POST", "/connector/v1/enrollment", enrollmentToken.Token, enrollment("edge-a"))
+	if w.Code != 201 || !containsJSON(w.Body.Bytes(), "app") {
+		t.Fatalf("managed enrollment status = %d: %s", w.Code, w.Body.String())
+	}
 	w = request(h, "POST", "/api/v1/services/"+service.ID+"/routes", f.admin, map[string]any{"hostname": "app.example.com"})
 	if w.Code != 201 {
 		t.Fatalf("route status = %d: %s", w.Code, w.Body.String())
