@@ -31,7 +31,7 @@ func TestCreateAndListHTTPRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if route.Enabled || route.Kind != "http" || route.Hostname != "app.example.com" {
+	if !route.Enabled || route.Kind != "http" || route.Hostname != "app.example.com" {
 		t.Fatalf("route = %#v", route)
 	}
 	if _, err := db.CreateHTTPRoute(ctx, service.ID, "app.example.com"); !errors.Is(err, ErrRouteExists) {

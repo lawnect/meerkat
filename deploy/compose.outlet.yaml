@@ -53,4 +53,4 @@ services:
       - "${MEERKAT_BIND_ADDRESS:-0.0.0.0}:80:80"
       - "${MEERKAT_BIND_ADDRESS:-0.0.0.0}:443:443"
     depends_on: [outlet]
-    command: [run, --watch, --config, /runtime/caddy/Caddyfile, --adapter, caddyfile]
+    command: [caddy, run, --watch, --config, /runtime/caddy/Caddyfile, --adapter, caddyfile]

@@ -15,8 +15,8 @@ var (
 	ErrServiceNotFound = errors.New("service not found")
 )
 
-// Route is a desired public endpoint. It remains disabled until a later
-// reconciler validates and applies the corresponding proxy configuration.
+// Route is desired public state. The reconciler publishes it only after its
+// Connector has a verified tunnel probe.
 type Route struct {
 	ID              string    `json:"id"`
 	ServiceID       string    `json:"service_id"`
@@ -89,9 +89,9 @@ func (d *Database) CreateHTTPRoute(ctx context.Context, serviceID, hostname stri
 		return Route{}, err
 	}
 	now := time.Now().UTC()
-	route := Route{ID: id, ServiceID: serviceID, Kind: "http", Hostname: hostname, CreatedAt: now, UpdatedAt: now}
+	route := Route{ID: id, ServiceID: serviceID, Kind: "http", Hostname: hostname, Enabled: true, CreatedAt: now, UpdatedAt: now}
 	_, err = d.db.ExecContext(ctx, `INSERT INTO routes(id, service_id, kind, hostname, enabled, desired_revision, applied_revision, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, route.ID, route.ServiceID, route.Kind, route.Hostname, 0, 0, 0, route.CreatedAt.Format(time.RFC3339Nano), route.UpdatedAt.Format(time.RFC3339Nano))
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, route.ID, route.ServiceID, route.Kind, route.Hostname, 1, 0, 0, route.CreatedAt.Format(time.RFC3339Nano), route.UpdatedAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return Route{}, ErrRouteExists
 	}

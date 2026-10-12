@@ -203,7 +203,7 @@ func (s *Store) reconcileProxy(ctx context.Context) error {
 	routes := make([]proxy.HTTPRoute, 0, len(plans))
 	for _, plan := range plans {
 		record, ok := s.managed[plan.ConnectorID]
-		if ok && record.Enrolled && record.TunnelStatus == "connected" && record.Configuration.ServiceID == plan.ServiceID {
+		if plan.Enabled && ok && record.Enrolled && record.TunnelStatus == "connected" && record.Configuration.ServiceID == plan.ServiceID {
 			_, port, splitErr := net.SplitHostPort(record.ProbeAddress)
 			if splitErr == nil {
 				routes = append(routes, proxy.HTTPRoute{Hostname: plan.Hostname, Upstream: net.JoinHostPort("outlet", port)})

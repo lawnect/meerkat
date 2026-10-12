@@ -140,11 +140,7 @@ func run() error {
 	if err := writeNew(filepath.Join(configDir, "admin.token"), []byte(admin+"\n")); err != nil {
 		return err
 	}
-	caddyfile := fmt.Sprintf(`{
-	email {env.CADDY_EMAIL}
-}
-
-%s, *.%s {
+	caddyfile := fmt.Sprintf(`%s, *.%s {
 	tls {
 		dns cloudflare {env.CF_API_TOKEN}
 	}

@@ -1,7 +1,3 @@
-{
-	email {env.CADDY_EMAIL}
-}
-
 {$MEERKAT_DOMAIN}, *.{$MEERKAT_DOMAIN} {
 	tls {
 		dns cloudflare {env.CF_API_TOKEN}
