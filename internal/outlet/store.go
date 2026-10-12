@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/lawnect/meerkat/internal/contract"
+	"github.com/lawnect/meerkat/internal/control"
 	"github.com/lawnect/meerkat/internal/securefs"
 	"github.com/lawnect/meerkat/internal/validation"
 )
@@ -50,6 +51,7 @@ type Store struct {
 	path    string
 	records map[string]Record
 	config  Config
+	control *control.Database
 	now     func() time.Time
 }
 
@@ -63,6 +65,10 @@ func Token() string {
 }
 
 func Open(config Config, dir string) (*Store, error) {
+	return OpenWithControl(config, dir, nil)
+}
+
+func OpenWithControl(config Config, dir string, controlDB *control.Database) (*Store, error) {
 	if len(config.AdminTokenHash) != 64 || config.EnrollmentTTLSeconds < 60 || config.CredentialTTLSeconds < 60 {
 		return nil, errors.New("invalid authentication configuration")
 	}
@@ -92,7 +98,7 @@ func Open(config Config, dir string) (*Store, error) {
 	if err := securefs.Directory(dir); err != nil {
 		return nil, err
 	}
-	s := &Store{path: filepath.Join(dir, "state.json"), records: records, config: config, now: time.Now}
+	s := &Store{path: filepath.Join(dir, "state.json"), records: records, config: config, control: controlDB, now: time.Now}
 	err := securefs.ReadJSON(s.path, &records)
 	if err == nil {
 		if len(records) != len(s.records) {

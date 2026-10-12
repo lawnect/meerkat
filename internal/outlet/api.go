@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/lawnect/meerkat/internal/contract"
+	"github.com/lawnect/meerkat/internal/control"
 	"github.com/lawnect/meerkat/internal/validation"
 )
 
@@ -84,6 +86,10 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("POST /connector/v1/enrollment", s.enroll)
 	mux.HandleFunc("GET /connector/v1/config", s.configuration)
 	mux.HandleFunc("POST /connector/v1/heartbeat", s.heartbeat)
+	mux.HandleFunc("GET /api/v1/setup/status", s.setupStatus)
+	mux.HandleFunc("POST /api/v1/setup/admin", s.setupAdmin)
+	mux.HandleFunc("POST /api/v1/session", s.login)
+	mux.HandleFunc("DELETE /api/v1/session", s.logout)
 	mux.HandleFunc("GET /api/v1/connectors", s.list)
 	mux.HandleFunc("POST /api/v1/connectors/{id}/enrollment-tokens", s.issueToken)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -221,11 +227,98 @@ func (s *Store) heartbeat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Store) admin(w http.ResponseWriter, r *http.Request) bool {
+	if s.control != nil {
+		complete, err := s.control.SetupComplete(r.Context())
+		if err != nil {
+			fail(w, r, 503, "persistence_failed")
+			return false
+		}
+		if complete {
+			cookie, err := r.Cookie("meerkat_session")
+			if err == nil {
+				if _, err = s.control.Authenticate(r.Context(), cookie.Value); err == nil {
+					return true
+				}
+			}
+			fail(w, r, 401, "invalid_admin_session")
+			return false
+		}
+	}
 	if !matches(bearer(r), s.config.AdminTokenHash) {
 		fail(w, r, 401, "invalid_admin_credential")
 		return false
 	}
 	return true
+}
+
+type adminCredentials struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+func (s *Store) setupStatus(w http.ResponseWriter, r *http.Request) {
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	complete, err := s.control.SetupComplete(r.Context())
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	reply(w, 200, map[string]bool{"setup_complete": complete})
+}
+
+func (s *Store) setupAdmin(w http.ResponseWriter, r *http.Request) {
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	var req adminCredentials
+	if !decode(w, r, &req, "email", "password") {
+		return
+	}
+	_, err := s.control.Setup(r.Context(), s.config.AdminTokenHash, bearer(r), req.Email, req.Password)
+	if errors.Is(err, control.ErrAlreadySetup) {
+		fail(w, r, 409, "setup_complete")
+		return
+	}
+	if err != nil {
+		fail(w, r, 401, "invalid_setup_credential")
+		return
+	}
+	reply(w, 201, map[string]string{"status": "created"})
+}
+
+func (s *Store) login(w http.ResponseWriter, r *http.Request) {
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	var req adminCredentials
+	if !decode(w, r, &req, "email", "password") {
+		return
+	}
+	session, err := s.control.Login(r.Context(), req.Email, req.Password)
+	if err != nil {
+		fail(w, r, 401, "invalid_credentials")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: "meerkat_session", Value: session.Token, Path: "/", Expires: session.ExpiresAt, MaxAge: int(time.Until(session.ExpiresAt).Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	reply(w, 201, map[string]any{"admin": session.Admin, "expires_at": session.ExpiresAt})
+}
+
+func (s *Store) logout(w http.ResponseWriter, r *http.Request) {
+	if s.control != nil {
+		if cookie, err := r.Cookie("meerkat_session"); err == nil {
+			if err := s.control.RevokeSession(r.Context(), cookie.Value); err != nil {
+				fail(w, r, 503, "persistence_failed")
+				return
+			}
+		}
+	}
+	http.SetCookie(w, &http.Cookie{Name: "meerkat_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type Status struct {

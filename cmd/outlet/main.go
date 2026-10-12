@@ -43,7 +43,7 @@ func run() error {
 		return err
 	}
 	defer controlDB.Close()
-	store, err := outlet.Open(cfg, *dir)
+	store, err := outlet.OpenWithControl(cfg, *dir, controlDB)
 	if err != nil {
 		return err
 	}
