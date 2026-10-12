@@ -19,6 +19,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"github.com/lawnect/meerkat/internal/outlet"
@@ -75,9 +76,13 @@ func certificate(dir string) error {
 func run() error {
 	dir := flag.String("dir", "/out", "Outlet deployment directory")
 	domain := flag.String("domain", "", "public DNS zone served by Caddy")
+	upgrade := flag.Bool("upgrade", false, "add generated-runtime fields to an existing Outlet configuration")
 	flag.Parse()
 	if *domain == "" {
 		return errors.New("-domain is required")
+	}
+	if *upgrade {
+		return upgradeConfig(*dir, *domain)
 	}
 	if err := securefs.Directory(*dir); err != nil {
 		return err
@@ -159,6 +164,40 @@ func run() error {
 	fmt.Println("Admin token: /configs/admin.token")
 	fmt.Println("Generated secrets were not printed.")
 	return nil
+}
+
+var noiseKey = regexp.MustCompile(`(?m)^local_private_key\s*=\s*"([A-Za-z0-9+/=]+)"\s*$`)
+
+func upgradeConfig(dir, domain string) error {
+	configPath := filepath.Join(dir, "configs", "outlet.json")
+	serverPath := filepath.Join(dir, "configs", "server.toml")
+	var cfg outlet.Config
+	if err := securefs.ReadJSON(configPath, &cfg); err != nil {
+		return err
+	}
+	if cfg.Domain != "" || cfg.TunnelServerPrivateKey != "" {
+		return errors.New("outlet configuration is already upgraded")
+	}
+	server, err := os.ReadFile(serverPath)
+	if err != nil {
+		return err
+	}
+	match := noiseKey.FindSubmatch(server)
+	if len(match) != 2 {
+		return errors.New("cannot read Noise private key from server.toml")
+	}
+	private, err := base64.StdEncoding.DecodeString(string(match[1]))
+	if err != nil {
+		return errors.New("invalid Noise private key")
+	}
+	key, err := ecdh.X25519().NewPrivateKey(private)
+	if err != nil {
+		return errors.New("invalid Noise private key")
+	}
+	cfg.Domain, cfg.TunnelListenAddress, cfg.TunnelRemoteAddress = domain, "0.0.0.0:2333", net.JoinHostPort(domain, "2333")
+	cfg.TunnelServerPrivateKey = base64.StdEncoding.EncodeToString(private)
+	cfg.TunnelServerPublicKey = base64.StdEncoding.EncodeToString(key.PublicKey().Bytes())
+	return securefs.WriteJSON(configPath, cfg)
 }
 
 func main() {
