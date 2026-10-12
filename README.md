@@ -33,6 +33,47 @@ MEERKAT_IMAGE=ghcr.io/lawnect/meerkat:latest \
 GHCR 패키지가 private이면 VM에서 `read:packages` 권한이 있는 GitHub 토큰으로 로그인해야 합니다.
 운영 배포에서는 `latest` 대신 검증한 커밋 SHA 태그를 `MEERKAT_IMAGE`로 지정하는 것을 권장합니다.
 
+### Oracle Outlet 초기화
+
+운영용 Outlet은 로컬 `poc-init`을 사용하지 않고, 게시된 Meerkat 이미지의
+`outlet-init`으로 새 키와 설정을 생성합니다. Oracle VM에서 다음을 실행합니다.
+
+```sh
+docker pull ghcr.io/lawnect/meerkat:latest
+docker pull ghcr.io/lawnect/meerkat-caddy:latest
+docker run --rm \
+  --user "$(id -u):$(id -g)" \
+  --entrypoint /usr/local/bin/outlet-init \
+  -v /opt/meerkat-outlet:/out \
+  ghcr.io/lawnect/meerkat:latest \
+  -dir /out -domain saeoo.com
+```
+
+`outlet-init`은 `/opt/meerkat-outlet/configs/`에 내부 Outlet 인증서,
+관리자 토큰, Noise 서버 설정, Caddyfile을 생성하며 기존 파일을 덮어쓰지 않습니다.
+그 다음 `/opt/meerkat-outlet/compose.env`를 다음처럼 생성합니다.
+
+```sh
+cat >/opt/meerkat-outlet/compose.env <<'EOF'
+MEERKAT_DEPLOY_DIR=/opt/meerkat-outlet
+MEERKAT_UID=1000
+MEERKAT_GID=1000
+MEERKAT_BIND_ADDRESS=0.0.0.0
+MEERKAT_IMAGE=ghcr.io/lawnect/meerkat:latest
+MEERKAT_CADDY_IMAGE=ghcr.io/lawnect/meerkat-caddy:latest
+EOF
+chmod 600 /opt/meerkat-outlet/compose.env
+```
+
+`MEERKAT_UID`와 `MEERKAT_GID`는 실제 `id -u`, `id -g` 결과로 바꿉니다.
+Cloudflare 토큰과 Let's Encrypt 알림 주소는 별도의 권한 제한 파일인
+`/opt/meerkat-outlet/caddy.env`에 저장합니다. 마지막으로 아래처럼 실행합니다.
+
+```sh
+docker compose --env-file /opt/meerkat-outlet/compose.env \
+  -f deploy/compose.outlet.yaml up -d
+```
+
 실행되는 컨테이너는 Outlet API, rathole server, Connector 2개, HTTP 테스트 서비스 2개입니다. API에는 로컬 테스트용 HTTPS 인증서를 사용하고, 데이터 터널에는 Noise를 사용합니다. 앱에는 공개 포트를 만들지 않으며, Outlet의 rathole service 포트도 loopback으로만 수신합니다. 두 앱은 서로 다른 Compose 네트워크에 있습니다.
 
 ```sh

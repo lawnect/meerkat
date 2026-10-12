@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/lawnect/meerkat/internal/control"
 	"github.com/lawnect/meerkat/internal/outlet"
 	"github.com/lawnect/meerkat/internal/securefs"
 )
@@ -19,6 +21,7 @@ import (
 func run() error {
 	path := flag.String("config", "configs/outlet.json", "bootstrap JSON configuration")
 	dir := flag.String("data-dir", "/var/lib/meerkat/outlet", "persistent outlet state directory")
+	controlDBPath := flag.String("control-db", "", "SQLite control-plane database path (defaults under data-dir)")
 	flag.Parse()
 	var cfg outlet.Config
 	if err := securefs.ReadJSON(*path, &cfg); err != nil {
@@ -32,6 +35,14 @@ func run() error {
 		return err
 	}
 	defer unlock()
+	if *controlDBPath == "" {
+		*controlDBPath = filepath.Join(*dir, "control.db")
+	}
+	controlDB, err := control.Open(context.Background(), *controlDBPath)
+	if err != nil {
+		return err
+	}
+	defer controlDB.Close()
 	store, err := outlet.Open(cfg, *dir)
 	if err != nil {
 		return err
