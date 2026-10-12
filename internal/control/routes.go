@@ -52,7 +52,7 @@ func (d *Database) CreateHTTPRoute(ctx context.Context, serviceID, hostname stri
 	if protocol != "http" {
 		return Route{}, ErrInvalidRoute
 	}
-	id, err := randomToken()
+	id, err := randomID()
 	if err != nil {
 		return Route{}, err
 	}

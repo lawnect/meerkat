@@ -45,6 +45,17 @@ func randomToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
+// randomID is safe wherever the control plane requires a Label, including a
+// URL path segment and rathole service name. Raw URL-safe base64 may begin
+// with '-' or '_', which Label intentionally rejects.
+func randomID() (string, error) {
+	token, err := randomToken()
+	if err != nil {
+		return "", err
+	}
+	return "m_" + token, nil
+}
+
 func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return fmt.Sprintf("%x", sum[:])
@@ -107,7 +118,7 @@ func (d *Database) Setup(ctx context.Context, bootstrapCodeHash, code, email, pa
 	if err != nil {
 		return Admin{}, err
 	}
-	id, err := randomToken()
+	id, err := randomID()
 	if err != nil {
 		return Admin{}, err
 	}

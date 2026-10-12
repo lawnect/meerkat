@@ -25,7 +25,7 @@ func (d *Database) CreateConnector(ctx context.Context, name string) (Connector,
 	if !validation.Label(name) {
 		return Connector{}, ErrInvalidConnector
 	}
-	id, err := randomToken()
+	id, err := randomID()
 	if err != nil {
 		return Connector{}, err
 	}

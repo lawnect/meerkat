@@ -39,7 +39,7 @@ func (d *Database) CreateService(ctx context.Context, connectorID, name, protoco
 	if !exists {
 		return Service{}, ErrConnectorNotFound
 	}
-	id, err := randomToken()
+	id, err := randomID()
 	if err != nil {
 		return Service{}, err
 	}
