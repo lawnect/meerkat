@@ -1,4 +1,4 @@
-# Caddy with the Cloudflare DNS provider for wildcard ACME certificates.
+# Caddy with the Cloudflare DNS provider available for an optional future DNS-01 mode.
 FROM caddy:2-builder AS builder
 RUN xcaddy build --with github.com/caddy-dns/cloudflare
 

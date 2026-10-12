@@ -26,7 +26,6 @@ func Caddyfile(domain string, routes []HTTPRoute) ([]byte, error) {
 	seen := map[string]bool{}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s {\n", domain)
-	b.WriteString("\ttls {\n\t\tdns cloudflare {env.CF_API_TOKEN}\n\t}\n\n")
 	b.WriteString("\treverse_proxy https://outlet:8443 {\n\t\ttransport http {\n\t\t\ttls_trust_pool file /etc/caddy/root-ca.pem\n\t\t\ttls_server_name outlet\n\t\t}\n\t}\n}\n")
 	for _, route := range copyRoutes {
 		if !validation.Hostname(route.Hostname) || (route.Hostname != domain && !strings.HasSuffix(route.Hostname, "."+domain)) || seen[route.Hostname] {
@@ -43,7 +42,7 @@ func Caddyfile(domain string, routes []HTTPRoute) ([]byte, error) {
 			return nil, errors.New("route upstream must use the Outlet network alias")
 		}
 		seen[route.Hostname] = true
-		fmt.Fprintf(&b, "\n%s {\n\ttls {\n\t\tdns cloudflare {env.CF_API_TOKEN}\n\t}\n\treverse_proxy http://%s\n}\n", route.Hostname, route.Upstream)
+		fmt.Fprintf(&b, "\n%s {\n\treverse_proxy http://%s\n}\n", route.Hostname, route.Upstream)
 	}
 	return []byte(b.String()), nil
 }

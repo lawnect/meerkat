@@ -68,10 +68,10 @@ chmod 600 /opt/meerkat-outlet/compose.env
 ```
 
 `MEERKAT_UID`와 `MEERKAT_GID`는 실제 `id -u`, `id -g` 결과로 바꿉니다.
-Cloudflare DNS API token은 별도의 권한 제한 파일
-`/opt/meerkat-outlet/caddy.env`의 `CF_API_TOKEN`으로 저장합니다. 이 token은
-Caddy가 Route별 인증서를 DNS-01으로 발급·갱신하는 bootstrap secret이며,
-대시보드에 저장되지 않습니다. 마지막으로 아래처럼 실행합니다.
+Caddy는 HTTP-01 방식으로 Route별 인증서를 자동 발급·갱신합니다. 따라서
+Cloudflare API token은 필요하지 않습니다. `saeoo.com`과 `*.saeoo.com`의 DNS가
+Outlet IP를 가리키고 TCP 80·443이 외부에서 열려 있어야 합니다. 마지막으로 아래처럼
+실행합니다.
 
 ```sh
 docker compose --env-file /opt/meerkat-outlet/compose.env \

@@ -141,10 +141,6 @@ func run() error {
 		return err
 	}
 	caddyfile := fmt.Sprintf(`%s, *.%s {
-	tls {
-		dns cloudflare {env.CF_API_TOKEN}
-	}
-
 	reverse_proxy https://outlet:8443 {
 		transport http {
 			tls_trust_pool file /etc/caddy/root-ca.pem

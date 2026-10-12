@@ -42,8 +42,6 @@ services:
     tmpfs: [/tmp]
     init: true
     restart: unless-stopped
-    env_file:
-      - "${MEERKAT_DEPLOY_DIR}/caddy.env"
     volumes:
       - "${MEERKAT_DEPLOY_DIR}/outlet-data:/runtime:ro"
       - "${MEERKAT_DEPLOY_DIR}/configs/root-ca.pem:/etc/caddy/root-ca.pem:ro"
