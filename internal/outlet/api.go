@@ -96,6 +96,8 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/connectors", s.createConnector)
 	mux.HandleFunc("GET /api/v1/connectors/{id}/services", s.listServices)
 	mux.HandleFunc("POST /api/v1/connectors/{id}/services", s.createService)
+	mux.HandleFunc("GET /api/v1/services/{id}/routes", s.listRoutes)
+	mux.HandleFunc("POST /api/v1/services/{id}/routes", s.createHTTPRoute)
 	mux.HandleFunc("POST /api/v1/connectors/{id}/enrollment-tokens", s.issueToken)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -486,4 +488,60 @@ func (s *Store) createService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, 201, service)
+}
+
+type routeRequest struct {
+	Hostname string `json:"hostname"`
+}
+
+func (s *Store) listRoutes(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	routes, err := s.control.ListRoutes(r.Context(), r.PathValue("id"))
+	if errors.Is(err, control.ErrServiceNotFound) {
+		fail(w, r, 404, "service_not_found")
+		return
+	}
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	reply(w, 200, map[string]any{"routes": routes})
+}
+
+func (s *Store) createHTTPRoute(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	var req routeRequest
+	if !decode(w, r, &req, "hostname") {
+		return
+	}
+	route, err := s.control.CreateHTTPRoute(r.Context(), r.PathValue("id"), req.Hostname)
+	if errors.Is(err, control.ErrServiceNotFound) {
+		fail(w, r, 404, "service_not_found")
+		return
+	}
+	if errors.Is(err, control.ErrRouteExists) {
+		fail(w, r, 409, "hostname_taken")
+		return
+	}
+	if errors.Is(err, control.ErrInvalidRoute) {
+		fail(w, r, 400, "invalid_route")
+		return
+	}
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	reply(w, 201, route)
 }

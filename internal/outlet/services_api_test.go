@@ -37,9 +37,21 @@ func TestServiceAPIStoresDesiredService(t *testing.T) {
 	if w.Code != 201 {
 		t.Fatalf("service status = %d: %s", w.Code, w.Body.String())
 	}
+	var service control.Service
+	if err := json.Unmarshal(w.Body.Bytes(), &service); err != nil {
+		t.Fatal(err)
+	}
 	w = request(h, "GET", "/api/v1/connectors/"+connector.ID+"/services", f.admin, nil)
 	if w.Code != 200 || !containsJSON(w.Body.Bytes(), "web") {
 		t.Fatalf("list status = %d: %s", w.Code, w.Body.String())
+	}
+	w = request(h, "POST", "/api/v1/services/"+service.ID+"/routes", f.admin, map[string]any{"hostname": "app.example.com"})
+	if w.Code != 201 {
+		t.Fatalf("route status = %d: %s", w.Code, w.Body.String())
+	}
+	w = request(h, "GET", "/api/v1/services/"+service.ID+"/routes", f.admin, nil)
+	if w.Code != 200 || !containsJSON(w.Body.Bytes(), "app.example.com") {
+		t.Fatalf("route list status = %d: %s", w.Code, w.Body.String())
 	}
 	if w = request(h, "POST", "/api/v1/connectors/missing/services", f.admin, map[string]any{"name": "web", "protocol": "http", "target": map[string]any{"host": "app", "port": 3000}}); w.Code != 404 {
 		t.Fatalf("missing connector status = %d", w.Code)

@@ -14,9 +14,24 @@ import (
 
 var label = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`)
 var token = regexp.MustCompile(`^[a-zA-Z0-9_-]{32,128}$`)
+var hostnameLabel = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
 func Label(s string) bool { return label.MatchString(s) }
 func Token(s string) bool { return token.MatchString(s) }
+
+// Hostname permits a public DNS name, not an IP literal, wildcard, or a
+// trailing-dot resolver form. Outlet routes use a single concrete hostname.
+func Hostname(s string) bool {
+	if len(s) > 253 || strings.ToLower(s) != s || !strings.Contains(s, ".") || net.ParseIP(s) != nil {
+		return false
+	}
+	for _, part := range strings.Split(s, ".") {
+		if !hostnameLabel.MatchString(part) {
+			return false
+		}
+	}
+	return true
+}
 
 func Target(t contract.Target) error {
 	if t.Port < 1 || t.Port > 65535 {
