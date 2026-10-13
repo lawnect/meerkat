@@ -2,6 +2,8 @@
 
 서비스 서버가 Outlet으로 아웃바운드 터널을 만드는 self-hosted gateway입니다. 현재 구현 범위는 [첫 vertical slice](docs/IMPLEMENTATION_PLAN.md): Go Connector 등록, rathole v0.5.0 Noise 터널, HTTP 전달, heartbeat, 자식 프로세스 재시작입니다.
 
+제품의 최종 목표와 현재 범위는 [제품 방향 문서](docs/PRODUCT_DIRECTION.md)에서 확인할 수 있습니다.
+
 ## 로컬에서 실행
 
 Go 1.26+, Docker Engine, Docker Compose가 필요합니다. 명령은 저장소 루트에서 실행합니다.
