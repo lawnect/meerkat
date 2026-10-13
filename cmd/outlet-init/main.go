@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/lawnect/meerkat/internal/outlet"
+	"github.com/lawnect/meerkat/internal/proxy"
 	"github.com/lawnect/meerkat/internal/rathole"
 	"github.com/lawnect/meerkat/internal/securefs"
 )
@@ -140,16 +141,11 @@ func run() error {
 	if err := writeNew(filepath.Join(configDir, "admin.token"), []byte(admin+"\n")); err != nil {
 		return err
 	}
-	caddyfile := fmt.Sprintf(`%s, *.%s {
-	reverse_proxy https://outlet:8443 {
-		transport http {
-			tls_trust_pool file /etc/caddy/root-ca.pem
-			tls_server_name outlet
-		}
+	caddyfile, err := proxy.Caddyfile(*domain, nil)
+	if err != nil {
+		return err
 	}
-}
-`, *domain, *domain)
-	if err := writeNew(filepath.Join(configDir, "Caddyfile"), []byte(caddyfile)); err != nil {
+	if err := writeNew(filepath.Join(configDir, "Caddyfile"), caddyfile); err != nil {
 		return err
 	}
 	fmt.Println("Outlet bootstrap files created.")

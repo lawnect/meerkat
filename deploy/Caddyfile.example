@@ -1,8 +1,18 @@
-{$MEERKAT_DOMAIN}, *.{$MEERKAT_DOMAIN} {
+{$MEERKAT_DOMAIN} {
+	tls {
+		dns cloudflare {$CLOUDFLARE_API_TOKEN}
+	}
 	reverse_proxy https://outlet:8443 {
 		transport http {
 			tls_trust_pool file /etc/caddy/root-ca.pem
 			tls_server_name outlet
 		}
 	}
+}
+
+*.{$MEERKAT_DOMAIN} {
+	tls {
+		dns cloudflare {$CLOUDFLARE_API_TOKEN}
+	}
+	respond 404
 }

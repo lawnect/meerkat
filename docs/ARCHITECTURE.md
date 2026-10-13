@@ -151,7 +151,7 @@ Tunnel:     Connector가 실행하는 rathole client의 TLS 또는 Noise 연결
 
 MVP에서는 Caddy가 ACME 인증서를 발급·갱신한다. Outlet 관리 API는 도메인 설정, 인증서 상태와 실패 알림을 담당한다.
 
-MVP는 HTTP-01 방식의 공개 도메인부터 지원한다. DNS가 Outlet을 가리키지 않거나 80/443 접근이 불가능하면 발급이 실패할 수 있다. SQLite에는 인증서·개인키 원문을 저장하지 않는다.
+HTTP Route는 Caddy가 관리하는 `*.도메인` 와일드카드 인증서를 사용한다. 인증서는 Cloudflare DNS-01로 발급·갱신하며, Outlet에는 대상 zone에 한정한 `Zone:DNS:Edit`과 `Zone:Zone:Read` 권한의 API token을 주입한다. DNS 챌린지는 인바운드 80 포트를 요구하지 않지만, 공개 HTTP redirect와 HTTPS 서비스에는 TCP 80·443 접근이 필요하다. SQLite에는 인증서·개인키 원문을 저장하지 않는다.
 
 ### 6.4 Connector 터널
 
