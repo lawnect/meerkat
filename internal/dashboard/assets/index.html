@@ -12,7 +12,7 @@ body{margin:0;background:#10151b;color:#e9eef5;font:15px system-ui,sans-serif}ma
 </main>
 <script>
 const app=document.querySelector('#app'),logout=document.querySelector('#logout');let selected=null,enrollment=null;
-const json=(url,options={})=>fetch(url,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(options.headers||{})},...options}).then(async response=>{const body=await response.json().catch(()=>({}));if(!response.ok)throw Error(body.code||'request_failed');return body});
+const json=(url,options={})=>fetch(url,{credentials:'same-origin',...options,headers:{'Content-Type':'application/json',...(options.headers||{})}}).then(async response=>{const body=await response.json().catch(()=>({}));if(!response.ok)throw Error(body.code||'request_failed');return body});
 const node=(tag,text)=>{const element=document.createElement(tag);if(text!==undefined)element.textContent=text;return element};
 function input(placeholder,type='text'){const field=node('input');field.placeholder=placeholder;field.type=type;field.required=true;return field}
 function setup(){app.replaceChildren(node('h2','초기 관리자 설정'),node('p','서버의 admin.token 파일에 있는 1회성 코드를 사용합니다.'));const form=node('form'),code=input('설정 코드'),email=input('이메일','email'),password=input('비밀번호 (12자 이상)','password'),submit=node('button','관리자 만들기'),message=node('p');message.className='error';form.append(code,email,password,submit,message);form.onsubmit=async event=>{event.preventDefault();try{await json('/api/v1/setup/admin',{method:'POST',headers:{Authorization:'Bearer '+code.value},body:JSON.stringify({email:email.value,password:password.value})});login()}catch(e){message.textContent='설정에 실패했습니다: '+e.message}};app.append(form)}
