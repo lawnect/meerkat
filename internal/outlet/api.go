@@ -99,6 +99,7 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/connectors", s.createConnector)
 	mux.HandleFunc("GET /api/v1/connectors/{id}/services", s.listServices)
 	mux.HandleFunc("POST /api/v1/connectors/{id}/services", s.createService)
+	mux.HandleFunc("DELETE /api/v1/connectors/{id}/services/{service_id}", s.deleteService)
 	mux.HandleFunc("GET /api/v1/services/{id}/routes", s.listRoutes)
 	mux.HandleFunc("POST /api/v1/services/{id}/routes", s.createHTTPRoute)
 	mux.HandleFunc("POST /api/v1/connectors/{id}/enrollment-tokens", s.issueToken)
@@ -669,6 +670,10 @@ func (s *Store) createService(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 409, "service_name_taken")
 		return
 	}
+	if errors.Is(err, control.ErrServiceLimit) {
+		fail(w, r, 409, "connector_service_limit")
+		return
+	}
 	if errors.Is(err, control.ErrInvalidService) {
 		fail(w, r, 400, "invalid_service")
 		return
@@ -678,6 +683,27 @@ func (s *Store) createService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, 201, service)
+}
+
+func (s *Store) deleteService(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	err := s.control.DeleteService(r.Context(), r.PathValue("id"), r.PathValue("service_id"))
+	switch {
+	case errors.Is(err, control.ErrServiceNotFound):
+		fail(w, r, 404, "service_not_found")
+	case errors.Is(err, control.ErrServiceHasRoutes):
+		fail(w, r, 409, "service_has_routes")
+	case err != nil:
+		fail(w, r, 503, "persistence_failed")
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 type routeRequest struct {
