@@ -496,7 +496,7 @@ func (s *Store) issueToken(w http.ResponseWriter, r *http.Request) {
 	}
 	// A fresh token can recover an expired identity. Active credentials cannot be
 	// silently replaced. Tunnel-token revocation belongs to server config rollout.
-	if record.Enrolled && s.now().Before(record.CredentialExpiresAt) {
+	if record.Enrolled && s.now().Before(record.CredentialExpiresAt) && r.URL.Query().Get("reset") != "true" {
 		fail(w, r, 409, "already_enrolled")
 		return
 	}
@@ -549,7 +549,7 @@ func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	record, exists := s.managed[id]
-	if exists && record.Enrolled && s.now().Before(record.CredentialExpiresAt) {
+	if exists && record.Enrolled && s.now().Before(record.CredentialExpiresAt) && r.URL.Query().Get("reset") != "true" {
 		s.mu.Unlock()
 		fail(w, r, 409, "already_enrolled")
 		return
@@ -557,6 +557,14 @@ func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
 	if !exists {
 		port := s.nextProbePort()
 		record = Record{Seed: Seed{Name: name, Configuration: contract.Configuration{ConnectorID: id, ServiceID: service.ID, Revision: 1, Target: service.Target, Tunnel: contract.Tunnel{RemoteAddress: s.config.TunnelRemoteAddress, ServerPublicKey: s.config.TunnelServerPublicKey, ServiceName: service.ID, ServiceToken: Token()}}, ProbeAddress: net.JoinHostPort("127.0.0.1", strconv.Itoa(port))}, TunnelStatus: "unknown"}
+	} else {
+		record.Configuration.Revision++
+		record.Configuration.ServiceID = service.ID
+		record.Configuration.Target = service.Target
+		record.Configuration.Tunnel.RemoteAddress = s.config.TunnelRemoteAddress
+		record.Configuration.Tunnel.ServerPublicKey = s.config.TunnelServerPublicKey
+		record.Configuration.Tunnel.ServiceName = service.ID
+		record.Configuration.Tunnel.ServiceToken = Token()
 	}
 	token := Token()
 	record.Enrolled = false
