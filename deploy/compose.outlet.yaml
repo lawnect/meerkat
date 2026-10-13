@@ -38,7 +38,7 @@ services:
   caddy:
     image: ${MEERKAT_CADDY_IMAGE:-ghcr.io/lawnect/meerkat-caddy:latest}
     environment:
-      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN in compose.env}
+      CLOUDFLARE_API_TOKEN: "replace-with-your-scoped-cloudflare-token"
     read_only: true
     security_opt: [no-new-privileges:true]
     tmpfs: [/tmp]

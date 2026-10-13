@@ -65,15 +65,15 @@ MEERKAT_GID=1000
 MEERKAT_BIND_ADDRESS=0.0.0.0
 MEERKAT_IMAGE=ghcr.io/lawnect/meerkat:latest
 MEERKAT_CADDY_IMAGE=ghcr.io/lawnect/meerkat-caddy:latest
-CLOUDFLARE_API_TOKEN=<scoped-token>
 EOF
 chmod 600 /opt/meerkat-outlet/compose.env
 ```
 
 `MEERKAT_UID`와 `MEERKAT_GID`는 실제 `id -u`, `id -g` 결과로 바꿉니다.
 Caddy는 Cloudflare DNS-01 검증으로 `*.saeoo.com` 와일드카드 인증서를 발급·갱신합니다.
-Cloudflare API token은 대상 zone의 `Zone:DNS:Edit`과 `Zone:Zone:Read` 권한으로 제한하고,
-`compose.env`에만 저장합니다. 이 파일은 Git에 추가하지 말고 권한 `0600`을 유지합니다.
+Cloudflare API token은 대상 zone의 `Zone:DNS:Edit`과 `Zone:Zone:Read` 권한으로 제한합니다.
+서버에 내려받은 `compose.outlet.yaml`의 Caddy `environment` 항목에 직접 입력하세요.
+이 서버 전용 파일은 Git에 올리지 마세요.
 `saeoo.com`과 `*.saeoo.com`의 DNS가 Outlet IP를 가리켜야 하며, 공개 HTTPS와 HTTP redirect를
 위해 TCP 80·443을 외부에서 열어야 합니다. 마지막으로 아래처럼 실행합니다.
 
@@ -83,8 +83,8 @@ docker compose --env-file /opt/meerkat-outlet/compose.env \
 ```
 
 기존 초기화 디렉터리에는 새 키를 만들지 말고, 새 이미지로 아래 업그레이드를 한 번 실행합니다.
-기존 설치도 Compose 명령을 실행하기 전에 `compose.env`에 제한 권한 Cloudflare API token을
-추가해야 합니다.
+기존 설치는 Compose 명령을 실행하기 전에 서버의 Compose 파일에 Cloudflare API token을
+입력해야 합니다.
 
 ```sh
 docker run --rm --user "$(id -u):$(id -g)" \
