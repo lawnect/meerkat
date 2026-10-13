@@ -1,6 +1,0 @@
-# Caddy with the Cloudflare DNS provider used for wildcard DNS-01 certificates.
-FROM caddy:2-builder AS builder
-RUN xcaddy build --with github.com/caddy-dns/cloudflare
-
-FROM caddy:2
-COPY --from=builder /usr/bin/caddy /usr/bin/caddy

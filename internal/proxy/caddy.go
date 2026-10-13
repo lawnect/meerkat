@@ -26,11 +26,7 @@ func Caddyfile(domain string, routes []HTTPRoute) ([]byte, error) {
 	seen := map[string]bool{}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s {\n", domain)
-	writeCloudflareTLS(&b)
 	b.WriteString("\treverse_proxy https://outlet:8443 {\n\t\ttransport http {\n\t\t\ttls_trust_pool file /etc/caddy/root-ca.pem\n\t\t\ttls_server_name outlet\n\t\t}\n\t}\n}\n")
-	fmt.Fprintf(&b, "\n*.%s {\n", domain)
-	writeCloudflareTLS(&b)
-	b.WriteString("\trespond 404\n}\n")
 	for _, route := range copyRoutes {
 		if !validation.Hostname(route.Hostname) || (route.Hostname != domain && !strings.HasSuffix(route.Hostname, "."+domain)) || seen[route.Hostname] {
 			return nil, errors.New("invalid or duplicate route hostname")
@@ -49,8 +45,4 @@ func Caddyfile(domain string, routes []HTTPRoute) ([]byte, error) {
 		fmt.Fprintf(&b, "\n%s {\n\treverse_proxy http://%s\n}\n", route.Hostname, route.Upstream)
 	}
 	return []byte(b.String()), nil
-}
-
-func writeCloudflareTLS(b *strings.Builder) {
-	b.WriteString("\ttls {\n\t\tdns cloudflare {$CLOUDFLARE_API_TOKEN}\n\t}\n")
 }

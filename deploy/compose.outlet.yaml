@@ -36,9 +36,7 @@ services:
     depends_on: [outlet]
 
   caddy:
-    image: ${MEERKAT_CADDY_IMAGE:-ghcr.io/lawnect/meerkat-caddy:latest}
-    environment:
-      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN in compose.env}
+    image: caddy:2
     read_only: true
     security_opt: [no-new-privileges:true]
     tmpfs: [/tmp]
