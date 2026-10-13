@@ -71,7 +71,7 @@ Meerkat의 핵심 가치는 “내가 소유한 도메인과 서버를 사용하
 
 ### HTTPS는 기본값이다
 
-공개 HTTP 서비스는 Caddy가 관리하는 HTTPS 주소로 제공되어야 합니다. `*.도메인` DNS 레코드는 새 Route마다 DNS 레코드를 추가하지 않도록 Outlet으로 연결하고, Caddy는 등록된 Route 호스트명별로 HTTP-01 인증서를 발급·갱신합니다. Cloudflare API token은 필요하지 않습니다.
+공개 HTTP 서비스는 Caddy가 관리하는 HTTPS 주소로 제공되어야 합니다. Caddy는 Cloudflare DNS-01로 Outlet 도메인의 와일드카드 인증서를 발급·갱신합니다. Outlet에는 대상 DNS zone에 한정한 최소 권한 API token을 안전하게 제공해야 합니다.
 
 ### 원하는 상태와 실제 적용 상태를 구분한다
 
@@ -83,7 +83,7 @@ Meerkat의 핵심 가치는 “내가 소유한 도메인과 서버를 사용하
 
 ### 비밀값은 최소 권한·일회성으로 다룬다
 
-Connector 등록 토큰은 한 번만 표시하고 만료시킵니다. Outlet의 내부 키와 관리자 인증 정보는 서버 파일 권한으로 보호하고, Cloudflare API token 같은 외부 자격 증명을 대시보드에 저장하지 않습니다.
+Connector 등록 토큰은 한 번만 표시하고 만료시킵니다. Outlet의 내부 키와 관리자 인증 정보는 서버 파일 권한으로 보호합니다. Cloudflare API token은 대시보드 DB에 저장하지 않고 Outlet 실행 환경의 보호된 배포 설정으로 전달합니다.
 
 ## 7. 현재 v1 범위
 
@@ -97,7 +97,7 @@ Connector 등록 토큰은 한 번만 표시하고 만료시킵니다. Outlet의
 - 내부 Service 등록과 공개 Route 등록
 - 연결 상태에 따른 rathole/Caddy 설정 자동 생성
 - 설정 변경 감지와 안전한 reload/restart
-- Caddy HTTP-01 Route별 인증서 발급·갱신
+- Caddy Cloudflare DNS-01 와일드카드 인증서 발급·갱신
 - Docker Compose와 GHCR 이미지 기반 배포
 - Oracle 같은 ARM64 VM에서의 운영
 
@@ -157,7 +157,7 @@ TCP Route, 여러 Outlet, 팀과 역할, 감사 로그, 백업·복구, 더 세�
 | rathole을 터널 계층으로 사용 | 내부 Connector가 아웃바운드로 연결하는 구조와 서비스별 포워딩에 적합합니다. |
 | Docker Compose를 첫 배포 단위로 사용 | Oracle VM과 로컬 검증 환경의 실행 방식을 맞추고 설치 단계를 줄이기 위해서입니다. |
 | SQLite와 파일 기반 런타임 산출물로 시작 | 단일 Outlet 운영의 설치 부담을 낮추고 desired state와 runtime state를 분리하기 위해서입니다. |
-| Cloudflare API token을 기본 요구사항에서 제외 | HTTP-01 인증서 발급에는 필요하지 않으며, 운영자의 외부 자격 증명을 제품에 저장하지 않기 위해서입니다. |
+| Cloudflare API token을 Outlet 실행 환경에만 제공 | 와일드카드 DNS-01 인증서 발급에 필요하며, 대시보드 DB에 외부 자격 증명을 저장하지 않습니다. |
 
 ## 12. 관련 문서
 

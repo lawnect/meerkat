@@ -65,7 +65,7 @@ Connector는 app:3000만 대상으로 연결한다. 서비스 컨테이너에 po
 3. Caddy 설정을 생성·검증·적용하고 ACME 인증서 발급을 시작한다.
 4. Caddy가 외부 HTTPS를 종료하고 rathole 터널을 통해 app:3000으로 요청을 전달한다.
 
-`*.도메인` DNS 레코드는 Route 하위 도메인을 Outlet으로 보내는 데 사용한다. Caddy는 등록된 정확한 Route 호스트명별로 HTTP-01 인증서를 발급·갱신하므로 Cloudflare API token은 필요하지 않다. 인증서 발급과 HTTP redirect를 위해 TCP 80, HTTPS 서비스에 TCP 443을 Outlet까지 연다.
+공개 Route는 Outlet 도메인의 와일드카드 인증서를 사용한다. Caddy가 Cloudflare DNS-01로 인증서를 발급·갱신하므로 대상 zone에 한정한 Cloudflare API token이 필요하다. DNS 챌린지에는 인바운드 80 포트가 필요하지 않지만, 공개 HTTP redirect와 HTTPS 서비스에는 TCP 80·443을 연다.
 
 ### 2.5 TCP 공개
 
