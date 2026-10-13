@@ -175,7 +175,16 @@ func (s *Store) reconcileTunnel() error {
 	s.mu.Lock()
 	services := make([]rathole.ServerService, 0, len(s.managed))
 	for _, record := range s.managed {
-		services = append(services, rathole.ServerService{Name: record.Configuration.Tunnel.ServiceName, Token: record.Configuration.Tunnel.ServiceToken, BindAddress: record.ProbeAddress})
+		_, port, err := net.SplitHostPort(record.ProbeAddress)
+		if err != nil {
+			s.mu.Unlock()
+			return err
+		}
+		// The Outlet probes through loopback, while Caddy reaches the same
+		// Outlet container over the Compose network. Bind internally on all
+		// interfaces; this port is deliberately not published on the host.
+		bindAddress := net.JoinHostPort("0.0.0.0", port)
+		services = append(services, rathole.ServerService{Name: record.Configuration.Tunnel.ServiceName, Token: record.Configuration.Tunnel.ServiceToken, BindAddress: bindAddress})
 	}
 	s.mu.Unlock()
 	config, err := rathole.Server(s.config.TunnelListenAddress, s.config.TunnelServerPrivateKey, services)

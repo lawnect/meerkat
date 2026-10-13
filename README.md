@@ -94,7 +94,7 @@ docker run --rm --user "$(id -u):$(id -g)" \
   -upgrade -dir /out -domain saeoo.com
 ```
 
-실행되는 컨테이너는 Outlet API, rathole server, Connector 2개, HTTP 테스트 서비스 2개입니다. API에는 로컬 테스트용 HTTPS 인증서를 사용하고, 데이터 터널에는 Noise를 사용합니다. 앱에는 공개 포트를 만들지 않으며, Outlet의 rathole service 포트도 loopback으로만 수신합니다. 두 앱은 서로 다른 Compose 네트워크에 있습니다.
+실행되는 컨테이너는 Outlet API, rathole server, Connector 2개, HTTP 테스트 서비스 2개입니다. API에는 로컬 테스트용 HTTPS 인증서를 사용하고, 데이터 터널에는 Noise를 사용합니다. 앱과 rathole service 포트에는 호스트 공개 포트를 만들지 않습니다. rathole service 포트는 Outlet 컨테이너 네트워크에서만 접근할 수 있습니다. 두 앱은 서로 다른 Compose 네트워크에 있습니다.
 
 ```sh
 curl --cacert .local/poc/configs/root-ca.pem https://localhost:18443/healthz
