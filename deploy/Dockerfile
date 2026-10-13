@@ -29,6 +29,7 @@ RUN curl --fail --location --retry 3 -o /out/RATHOLE-LICENSE \
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /var/lib/meerkat && chown 65532:65532 /var/lib/meerkat
 COPY --from=go-build /out/ /usr/local/bin/
 COPY --from=rathole-download /out/rathole /usr/local/bin/rathole
 COPY --from=rathole-download /out/RATHOLE-LICENSE /usr/share/doc/rathole/LICENSE

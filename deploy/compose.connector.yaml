@@ -1,36 +1,36 @@
-# Server 3: Connector and an isolated test HTTP app. Only the Connector's own
-# config, one-time token and API public CA certificate belong on this host.
-# outlet_url, certificate SANs and tunnel.remote_address must be provisioned
-# for the reachable Server 1 address before running this template.
-name: ${MEERKAT_PROJECT:-meerkat-connector}
+# Coolify test stack: a whoami HTTP app and its Meerkat Connector.
+# Replace the enrollment-token placeholder before deploying. The Connector's
+# generated identity and credentials live in a named volume across redeploys.
+name: meerkat-coolify-test
 
 x-runtime: &runtime
-  image: ${MEERKAT_IMAGE:-ghcr.io/lawnect/meerkat:latest}
-  user: "${MEERKAT_UID:?set MEERKAT_UID}:${MEERKAT_GID:?set MEERKAT_GID}"
+  image: ghcr.io/lawnect/meerkat:latest
   read_only: true
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
   tmpfs: [/tmp]
   init: true
-  restart: "no"
+  restart: unless-stopped
 
 services:
   app:
-    <<: *runtime
-    entrypoint: [/usr/local/bin/demo-service]
-    command: [-name, panpo-nuc]
+    image: traefik/whoami:v1.12.0
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
     networks: [service]
 
   connector:
     <<: *runtime
-    command: [-config, /config/connector.json]
     environment:
-      MEERKAT_ENROLLMENT_TOKEN_FILE: /config/enrollment.token
+      MEERKAT_OUTLET: https://saeoo.com
+      MEERKAT_NAME: coolify-test
+      MEERKAT_DATA_DIR: /var/lib/meerkat
+      MEERKAT_TARGET: app:80
+      MEERKAT_ENROLLMENT_TOKEN: REPLACE_WITH_OUTLET_ENROLLMENT_TOKEN
     volumes:
-      - "${MEERKAT_DEPLOY_DIR:?set MEERKAT_DEPLOY_DIR}/configs/connector.json:/config/connector.json:ro"
-      - "${MEERKAT_DEPLOY_DIR}/configs/enrollment.token:/config/enrollment.token:ro"
-      - "${MEERKAT_DEPLOY_DIR}/configs/root-ca.pem:/config/root-ca.pem:ro"
-      - "${MEERKAT_DEPLOY_DIR}/connector-data:/state"
+      - connector-data:/var/lib/meerkat
     networks: [control, service]
     depends_on: [app]
 
@@ -38,3 +38,6 @@ networks:
   control: {}
   service:
     internal: true
+
+volumes:
+  connector-data:
