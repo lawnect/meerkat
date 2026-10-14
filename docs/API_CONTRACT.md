@@ -20,12 +20,15 @@ Connector는 항상 연결을 먼저 시작한다. 공인 Outlet은 외부 HTTP/
 
 ~~~
 GET    /api/v1/outlet
+GET    /api/v1/diagnostics/trace
 GET    /api/v1/connectors
 POST   /api/v1/connectors
 GET    /api/v1/connectors/:id
 POST   /api/v1/connectors/:id/enrollment-tokens
 POST   /api/v1/connectors/:id/revoke
 ~~~
+
+`GET /api/v1/diagnostics/trace`는 관리자 세션 인증이 필요하다. Outlet 호스트명과 설정된 `region`, 요청 peer 주소, 전달 헤더, `CF-Ray` 및 colo 접미사를 반환한다. `region`은 자동 위치 판정이 아니라 `outlet.json`에 설정한 설명용 값이다. 전달 헤더와 `CF-Ray`는 직접 연결에서 위조될 수 있으므로 접근 제어나 인증 판단에 사용하지 않는다.
 
 Connector 폐기는 관련 Service·Route의 새 연결을 먼저 차단한 뒤 identity를 폐기한다.
 

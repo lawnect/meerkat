@@ -37,6 +37,7 @@ type Config struct {
 	EnrollmentTTLSeconds   int    `json:"enrollment_ttl_seconds"`
 	CredentialTTLSeconds   int    `json:"credential_ttl_seconds"`
 	Domain                 string `json:"domain,omitempty"`
+	Region                 string `json:"region,omitempty"`
 	TunnelListenAddress    string `json:"tunnel_listen_address,omitempty"`
 	TunnelRemoteAddress    string `json:"tunnel_remote_address,omitempty"`
 	TunnelServerPublicKey  string `json:"tunnel_server_public_key,omitempty"`

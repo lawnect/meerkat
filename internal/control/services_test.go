@@ -28,7 +28,7 @@ func TestCreateAndListServices(t *testing.T) {
 	if service.Target != target || !service.Enabled || service.ObservedStatus != "unknown" {
 		t.Fatalf("service = %#v", service)
 	}
-	if _, err := db.CreateService(ctx, connector.ID, "web", "http", target); !errors.Is(err, ErrServiceExists) {
+	if _, err := db.CreateService(ctx, connector.ID, "web", "http", target); !errors.Is(err, ErrServiceLimit) {
 		t.Fatalf("duplicate error = %v", err)
 	}
 	services, err := db.ListServices(ctx, connector.ID)

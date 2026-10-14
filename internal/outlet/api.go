@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -95,6 +96,7 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/session", s.logout)
 	mux.HandleFunc("GET /api/v1/outlet", s.getOutlet)
 	mux.HandleFunc("PUT /api/v1/outlet", s.updateOutlet)
+	mux.HandleFunc("GET /api/v1/diagnostics/trace", s.trace)
 	mux.HandleFunc("GET /api/v1/connectors", s.list)
 	mux.HandleFunc("POST /api/v1/connectors", s.createConnector)
 	mux.HandleFunc("GET /api/v1/connectors/{id}/services", s.listServices)
@@ -109,6 +111,60 @@ func (s *Store) Handler() http.Handler {
 		w.Header().Set("X-Request-ID", Token())
 		mux.ServeHTTP(w, r)
 	})
+}
+
+type traceSnapshot struct {
+	ObservedAt time.Time    `json:"observed_at"`
+	Outlet     traceOutlet  `json:"outlet"`
+	Request    traceRequest `json:"request"`
+}
+
+type traceOutlet struct {
+	Hostname string `json:"hostname"`
+	Region   string `json:"region,omitempty"`
+}
+
+type traceRequest struct {
+	RemoteAddress     string `json:"remote_address"`
+	Host              string `json:"host"`
+	Protocol          string `json:"protocol"`
+	Method            string `json:"method"`
+	ForwardedFor      string `json:"forwarded_for,omitempty"`
+	ForwardedHost     string `json:"forwarded_host,omitempty"`
+	ForwardedProto    string `json:"forwarded_proto,omitempty"`
+	CloudflareRay     string `json:"cloudflare_ray,omitempty"`
+	CloudflareColo    string `json:"cloudflare_colo,omitempty"`
+	CloudflareCountry string `json:"cloudflare_country,omitempty"`
+}
+
+func (s *Store) trace(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	hostname, _ := os.Hostname()
+	cloudflareRay := r.Header.Get("CF-Ray")
+	cloudflareColo := ""
+	if dash := strings.LastIndexByte(cloudflareRay, '-'); dash >= 0 && dash+1 < len(cloudflareRay) {
+		cloudflareColo = cloudflareRay[dash+1:]
+	}
+	protocol := "HTTP/" + strings.TrimPrefix(r.Proto, "HTTP/")
+	snapshot := traceSnapshot{
+		ObservedAt: time.Now().UTC(),
+		Outlet:     traceOutlet{Hostname: hostname, Region: s.config.Region},
+		Request: traceRequest{
+			RemoteAddress:     r.RemoteAddr,
+			Host:              r.Host,
+			Protocol:          protocol,
+			Method:            r.Method,
+			ForwardedFor:      r.Header.Get("X-Forwarded-For"),
+			ForwardedHost:     r.Header.Get("X-Forwarded-Host"),
+			ForwardedProto:    r.Header.Get("X-Forwarded-Proto"),
+			CloudflareRay:     cloudflareRay,
+			CloudflareColo:    cloudflareColo,
+			CloudflareCountry: r.Header.Get("CF-IPCountry"),
+		},
+	}
+	reply(w, http.StatusOK, snapshot)
 }
 
 func (s *Store) enroll(w http.ResponseWriter, r *http.Request) {

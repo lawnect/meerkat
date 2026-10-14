@@ -2,4 +2,7 @@
 /bin/
 *.test
 coverage.out
+node_modules/
+/web/dist/
+/internal/dashboard/assets/site/assets/
 .DS_Store

@@ -4,6 +4,26 @@
 
 제품의 최종 목표와 현재 범위는 [제품 방향 문서](docs/PRODUCT_DIRECTION.md)에서 확인할 수 있습니다.
 
+## 관리 UI 개발
+
+관리 UI는 Svelte와 Vite로 빌드하고 Outlet Go 바이너리에 포함합니다. Node.js 22+가 필요합니다.
+
+```sh
+npm ci
+npm run dev
+```
+
+Vite는 기본적으로 로컬 PoC API `https://localhost:18443`에 `/api` 요청을 전달합니다.
+다른 Outlet에 연결하려면 `MEERKAT_DEV_API=https://outlet.example.com npm run dev`를 사용합니다.
+
+프로덕션 번들을 미리 확인하려면 다음 명령으로 정적 파일을 생성합니다.
+
+```sh
+npm run build
+```
+
+Vite가 `web/dist/`에 자산을 생성합니다. Docker 빌드는 이를 Go 바이너리에 포함하며, Node.js는 최종 이미지에 들어가지 않습니다.
+
 ## 로컬에서 실행
 
 Go 1.26+, Docker Engine, Docker Compose가 필요합니다. 명령은 저장소 루트에서 실행합니다.
@@ -48,13 +68,17 @@ docker run --rm \
   --entrypoint /usr/local/bin/outlet-init \
   -v /opt/meerkat-outlet:/out \
   ghcr.io/lawnect/meerkat:latest \
-  -dir /out -domain saeoo.com
+  -dir /out -domain saeoo.com -region 'Chuncheon, KR'
 ```
 
 `outlet-init`은 `/opt/meerkat-outlet/configs/`에 내부 Outlet 인증서,
 관리자 토큰과 Noise 서버 키를 생성합니다. 실행 중인 Outlet은 이 키로
 `outlet-data/rathole/server.toml`과 `outlet-data/caddy/Caddyfile`을 자동 생성합니다.
 두 파일은 직접 수정하지 않습니다.
+
+요청 진단 화면의 Outlet 지역은 위 `-region` 값으로 표시됩니다. 기존 설치에서는
+`/opt/meerkat-outlet/configs/outlet.json`에 `"region": "Chuncheon, KR"`를 추가한 뒤
+Outlet 컨테이너를 재시작하면 됩니다.
 그 다음 `/opt/meerkat-outlet/compose.env`를 다음처럼 생성합니다.
 
 ```sh

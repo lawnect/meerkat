@@ -2,26 +2,36 @@ package dashboard
 
 import (
 	"embed"
+	"io/fs"
 	"net/http"
+	"strings"
 )
 
-//go:embed assets/index.html
+//go:embed assets/site
 var assets embed.FS
 
 func Handler() http.Handler {
+	site, err := fs.Sub(assets, "assets/site")
+	if err != nil {
+		panic("dashboard assets are unavailable: " + err.Error())
+	}
+	files := http.FileServer(http.FS(site))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
+		if r.URL.Path == "/" {
+			w.Header().Set("Cache-Control", "no-store")
+			http.ServeFileFS(w, r, site, "index.html")
+			return
+		}
+		if !strings.HasPrefix(r.URL.Path, "/assets/") {
 			http.NotFound(w, r)
 			return
 		}
-		body, err := assets.ReadFile("assets/index.html")
-		if err != nil {
-			http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
-			return
+		if strings.Contains(r.URL.Path, "-") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
-		_, _ = w.Write(body)
+		files.ServeHTTP(w, r)
 	})
 }

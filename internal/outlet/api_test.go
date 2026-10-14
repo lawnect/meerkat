@@ -118,6 +118,42 @@ func TestEnrollmentAuthenticationAndPersistence(t *testing.T) {
 	}
 }
 
+func TestTraceRequiresAdminAndReportsForwardedCloudflareData(t *testing.T) {
+	f := setup(t)
+	f.store.config.Region = "Chuncheon, KR"
+	handler := f.store.Handler()
+
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/v1/diagnostics/trace", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized trace status = %d, want 401", unauthorized.Code)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/diagnostics/trace", nil)
+	r.RemoteAddr = "10.0.3.3:443"
+	r.Header.Set("Authorization", "Bearer "+f.admin)
+	r.Header.Set("CF-Ray", "a1b2c3-NRT")
+	r.Header.Set("CF-IPCountry", "KR")
+	r.Header.Set("X-Forwarded-For", "203.0.113.10")
+	r.Header.Set("X-Forwarded-Host", "saeoo.com")
+	r.Header.Set("X-Forwarded-Proto", "https")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, r)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("authorized trace status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var snapshot traceSnapshot
+	if err := json.Unmarshal(recorder.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Outlet.Region != "Chuncheon, KR" {
+		t.Fatalf("outlet region = %q", snapshot.Outlet.Region)
+	}
+	if snapshot.Request.RemoteAddress != "10.0.3.3:443" || snapshot.Request.CloudflareColo != "NRT" || snapshot.Request.ForwardedFor != "203.0.113.10" {
+		t.Fatalf("trace request metadata = %+v", snapshot.Request)
+	}
+}
+
 func TestConcurrentEnrollmentConsumesOnce(t *testing.T) {
 	f := setup(t)
 	h := f.store.Handler()

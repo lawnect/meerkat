@@ -77,6 +77,7 @@ func certificate(dir string) error {
 func run() error {
 	dir := flag.String("dir", "/out", "Outlet deployment directory")
 	domain := flag.String("domain", "", "public DNS zone served by Caddy")
+	region := flag.String("region", "", "human-readable Outlet region shown in diagnostics")
 	upgrade := flag.Bool("upgrade", false, "add generated-runtime fields to an existing Outlet configuration")
 	flag.Parse()
 	if *domain == "" {
@@ -118,6 +119,7 @@ func run() error {
 		EnrollmentTTLSeconds:   600,
 		CredentialTTLSeconds:   30 * 24 * 60 * 60,
 		Domain:                 *domain,
+		Region:                 *region,
 		TunnelListenAddress:    "0.0.0.0:2333",
 		TunnelRemoteAddress:    net.JoinHostPort(*domain, "2333"),
 		TunnelServerPublicKey:  base64.StdEncoding.EncodeToString(noise.PublicKey().Bytes()),

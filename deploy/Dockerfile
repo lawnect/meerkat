@@ -1,9 +1,17 @@
 # syntax=docker/dockerfile:1
+FROM node:22-bookworm-slim AS ui-build
+WORKDIR /src
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY web ./web
+RUN npm run check && npm run build
+
 FROM golang:1.26.3-bookworm AS go-build
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY cmd ./cmd
 COPY internal ./internal
+COPY --from=ui-build /src/web/dist ./internal/dashboard/assets/site
 RUN CGO_ENABLED=0 go build -trimpath -o /out/connector ./cmd/connector && \
     CGO_ENABLED=0 go build -trimpath -o /out/outlet ./cmd/outlet && \
     CGO_ENABLED=0 go build -trimpath -o /out/rathole-watch ./cmd/rathole-watch && \
