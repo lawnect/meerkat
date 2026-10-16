@@ -3,10 +3,12 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
+const envDir = fileURLToPath(new URL('..', import.meta.url));
 const output = fileURLToPath(new URL('./dist/', import.meta.url));
 
 export default defineConfig({
   root,
+  envDir,
   plugins: [svelte()],
   server: {
     proxy: {

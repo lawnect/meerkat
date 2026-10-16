@@ -1,4 +1,10 @@
+import { mockApi } from './mockApi.js';
+
+export const mockApiEnabled = import.meta.env.VITE_MOCK_API === 'true';
+
 export async function api(url, options = {}) {
+  if (mockApiEnabled) return mockApi(url, options);
+
   const headers = new Headers(options.headers ?? {});
   if (options.body && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');

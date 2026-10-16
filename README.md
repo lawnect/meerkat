@@ -15,6 +15,7 @@ npm run dev
 
 Vite는 기본적으로 로컬 PoC API `https://localhost:18443`에 `/api` 요청을 전달합니다.
 다른 Outlet에 연결하려면 `MEERKAT_DEV_API=https://outlet.example.com npm run dev`를 사용합니다.
+화면 작업만 할 때는 `VITE_MOCK_API=true npm run dev`로 브라우저 내 가짜 API를 사용할 수 있습니다. 예제 Connector와 서비스를 제공하며, 변경 사항은 페이지를 새로고침하면 초기화됩니다. 상단의 `MOCK API` 표시가 켜져 있는지 확인하세요.
 
 프로덕션 번들을 미리 확인하려면 다음 명령으로 정적 파일을 생성합니다.
 

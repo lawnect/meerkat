@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { api } from './api.js';
+  import { api, mockApiEnabled } from './api.js';
   import AuthPage from './components/AuthPage.svelte';
   import Status from './components/Status.svelte';
   import OverviewPage from './pages/OverviewPage.svelte';
@@ -84,7 +84,7 @@
 {:else}
   <header class="topbar">
     <div class="brand">MEERKAT <small>OUTLET</small></div>
-    <div class="topbar-meta"><span>{data.outlet.domain || '도메인 미설정'}</span><Status label="Outlet 정상" value="connected" /><button onclick={logout}>로그아웃</button></div>
+    <div class="topbar-meta">{#if mockApiEnabled}<span class="mock-badge" title="변경 내용은 현재 브라우저 세션에만 유지됩니다">MOCK API</span>{/if}<span>{data.outlet.domain || '도메인 미설정'}</span><Status label="Outlet 정상" value="connected" /><button onclick={logout}>로그아웃</button></div>
   </header>
   <div class="layout">
     <aside class="rail">
