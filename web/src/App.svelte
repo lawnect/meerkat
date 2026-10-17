@@ -84,7 +84,7 @@
 {:else if authMode === 'loading'}
   <main class="auth-wrap"><p>Outlet에 연결하는 중입니다…</p></main>
 {:else if authMode === 'unavailable'}
-  <main class="auth-wrap"><section class="auth"><div class="auth-brand">MEERKAT / OUTLET</div><h1>연결할 수 없습니다</h1><p class="auth-intro">Outlet API에 연결할 수 없습니다. 서버 상태와 인증서를 확인하고 다시 시도하세요.</p><button class="button" onclick={() => location.reload()}>다시 시도</button></section></main>
+  <main class="auth-wrap"><section class="auth"><div class="auth-brand">MEERKAT / OUTLET</div><h1>연결할 수 없습니다</h1><p class="auth-intro">Outlet API에 연결할 수 없습니다. 서버 상태와 인증서를 확인하고 다시 시도하세요.</p><button class="btn btn-primary" onclick={() => location.reload()}>다시 시도</button></section></main>
 {:else}
   <header class="topbar">
     <div class="brand">MEERKAT <small>OUTLET</small></div>

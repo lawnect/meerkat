@@ -32,9 +32,9 @@
   <form onsubmit={submit}>
     <div class="field">
       <label for="domain">기본 도메인</label>
-      <input id="domain" bind:value={domain} placeholder="예: saeoo.com" required />
+      <input class="input input-bordered" id="domain" bind:value={domain} placeholder="예: saeoo.com" required />
     </div>
-    <div class="form-actions"><button class="button" type="submit" disabled={busy}>{busy ? '저장 중…' : outlet.domain ? '저장' : '도메인 설정'}</button></div>
+    <div class="form-actions"><button class="btn btn-primary" type="submit" disabled={busy}>{busy ? '저장 중…' : outlet.domain ? '저장' : '도메인 설정'}</button></div>
     {#if error}<p class="error" role="alert">{error}</p>{/if}
   </form>
 </Panel>

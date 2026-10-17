@@ -4,7 +4,7 @@
   let { title, description = '', children }: { title: string; description?: string; children: Snippet } = $props();
 </script>
 
-<section class="panel">
+<section class="panel card bg-base-100 border-base-300">
   <div class="panel-head">
     <div><h2>{title}</h2>{#if description}<p>{description}</p>{/if}</div>
   </div>

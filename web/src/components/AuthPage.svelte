@@ -51,19 +51,19 @@
       {#if mode === 'setup'}
         <div class="field">
           <label for="setup-code">설정 코드</label>
-          <input id="setup-code" bind:value={code} placeholder="서버의 admin.token 값" autocomplete="off" required />
+          <input class="input input-bordered" id="setup-code" bind:value={code} placeholder="서버의 admin.token 값" autocomplete="off" required />
         </div>
       {/if}
       <div class="field">
         <label for="email">이메일</label>
-        <input id="email" bind:value={email} type="email" placeholder="you@example.com" autocomplete="username" required />
+        <input class="input input-bordered" id="email" bind:value={email} type="email" placeholder="you@example.com" autocomplete="username" required />
       </div>
       <div class="field">
         <label for="password">비밀번호</label>
-        <input id="password" bind:value={password} type="password" placeholder={mode === 'setup' ? '12자 이상' : '비밀번호'} autocomplete={mode === 'setup' ? 'new-password' : 'current-password'} minlength={mode === 'setup' ? 12 : undefined} required />
+        <input class="input input-bordered" id="password" bind:value={password} type="password" placeholder={mode === 'setup' ? '12자 이상' : '비밀번호'} autocomplete={mode === 'setup' ? 'new-password' : 'current-password'} minlength={mode === 'setup' ? 12 : undefined} required />
       </div>
       <div class="form-actions">
-        <button class="button" type="submit" disabled={busy}>{busy ? '처리 중…' : mode === 'setup' ? '관리자 만들기' : '로그인'}</button>
+        <button class="btn btn-primary" type="submit" disabled={busy}>{busy ? '처리 중…' : mode === 'setup' ? '관리자 만들기' : '로그인'}</button>
       </div>
       {#if error}<p class="error" role="alert">{error}</p>{/if}
     </form>

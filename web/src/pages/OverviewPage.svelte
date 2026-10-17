@@ -20,15 +20,15 @@
 
 <PageHead kicker="MEERKAT OUTLET" title="오늘의 운영 상태" description={next}>
   {#snippet action()}
-    <button class="button" onclick={() => navigate(data.connectors.length ? 'routes' : 'connectors')}>{data.connectors.length ? '공개 서비스 보기' : 'Connector 시작'}</button>
+    <button class="btn btn-primary" onclick={() => navigate(data.connectors.length ? 'routes' : 'connectors')}>{data.connectors.length ? '공개 서비스 보기' : 'Connector 시작'}</button>
   {/snippet}
 </PageHead>
 
 <div class="grid summary-grid">
-  <div class="stat"><div class="stat-label">Connector</div><div class="stat-value">{data.connectors.length}</div><div class="stat-note">등록된 서버</div></div>
-  <div class="stat"><div class="stat-label">연결됨</div><div class="stat-value">{connected}</div><div class="stat-note">heartbeat 기준</div></div>
-  <div class="stat"><div class="stat-label">내부 서비스</div><div class="stat-value">{data.services.length}</div><div class="stat-note">등록된 앱</div></div>
-  <div class="stat"><div class="stat-label">공개 주소</div><div class="stat-value">{data.routes.length}</div><div class="stat-note">생성된 Route</div></div>
+  <div class="stat card bg-base-100 border-base-300"><div class="stat-label">Connector</div><div class="stat-value">{data.connectors.length}</div><div class="stat-note">등록된 서버</div></div>
+  <div class="stat card bg-base-100 border-base-300"><div class="stat-label">연결됨</div><div class="stat-value">{connected}</div><div class="stat-note">heartbeat 기준</div></div>
+  <div class="stat card bg-base-100 border-base-300"><div class="stat-label">내부 서비스</div><div class="stat-value">{data.services.length}</div><div class="stat-note">등록된 앱</div></div>
+  <div class="stat card bg-base-100 border-base-300"><div class="stat-label">공개 주소</div><div class="stat-value">{data.routes.length}</div><div class="stat-note">생성된 Route</div></div>
 </div>
 
 <style>
@@ -66,6 +66,6 @@
   </Panel>
   <div>
     <div class="callout"><strong>현재 할 일</strong><span>{next}</span></div>
-    <div class="panel help-panel"><h2>용어 안내</h2><p>Connector는 서비스를 실행하는 서버입니다. 공개 서비스는 서버 안의 앱 하나와 인터넷 주소 하나를 연결합니다.</p></div>
+    <div class="panel card bg-base-100 border-base-300 help-panel"><h2>용어 안내</h2><p>Connector는 서비스를 실행하는 서버입니다. 공개 서비스는 서버 안의 앱 하나와 인터넷 주소 하나를 연결합니다.</p></div>
   </div>
 </div>

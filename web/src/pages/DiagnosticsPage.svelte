@@ -26,7 +26,7 @@
 
 <PageHead kicker="운영 / 진단" title="요청 진단" description="현재 관리자 요청이 Outlet에 도착한 경로 정보를 확인합니다.">
   {#snippet action()}
-    <button class="button secondary" onclick={refresh} disabled={loading}>{loading ? '새로 고치는 중…' : '새로 고침'}</button>
+    <button class="btn btn-outline" onclick={refresh} disabled={loading}>{loading ? '새로 고치는 중…' : '새로 고침'}</button>
   {/snippet}
 </PageHead>
 

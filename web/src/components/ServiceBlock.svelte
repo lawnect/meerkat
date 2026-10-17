@@ -51,14 +51,14 @@
   </div>
   {#if record.routes.length === 0}
     <p class="muted service-empty">아직 공개 주소가 없습니다.</p>
-    <button class="button secondary" onclick={deleteService}>서비스 삭제</button>
+    <button class="btn btn-outline" onclick={deleteService}>서비스 삭제</button>
   {/if}
   {#each record.routes as route}
     <div class="route-line"><code>https://{route.hostname}</code><span>연결 후 자동 공개</span></div>
   {/each}
   <form class="form-actions route-form" onsubmit={addRoute}>
-    <div class="field"><label for="route-{record.service.id}">공개 주소</label><input id="route-{record.service.id}" bind:value={hostname} placeholder={`예: app.${outlet.domain || 'saeoo.com'}`} required /></div>
-    <button class="button" type="submit" disabled={busy}>{busy ? '추가 중…' : '공개 주소 추가'}</button>
+    <div class="field"><label for="route-{record.service.id}">공개 주소</label><input class="input input-bordered" id="route-{record.service.id}" bind:value={hostname} placeholder={`예: app.${outlet.domain || 'saeoo.com'}`} required /></div>
+    <button class="btn btn-primary" type="submit" disabled={busy}>{busy ? '추가 중…' : '공개 주소 추가'}</button>
   </form>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
 </article>
