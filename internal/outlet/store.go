@@ -254,3 +254,22 @@ func (s *Store) saveManaged(id string, record Record) error {
 	s.managed = next
 	return nil
 }
+
+func (s *Store) removeManaged(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.managed[id]; !ok {
+		return nil
+	}
+	next := make(map[string]Record, len(s.managed)-1)
+	for key, value := range s.managed {
+		if key != id {
+			next[key] = value
+		}
+	}
+	if err := securefs.WriteJSON(s.managedPath, next); err != nil {
+		return err
+	}
+	s.managed = next
+	return nil
+}

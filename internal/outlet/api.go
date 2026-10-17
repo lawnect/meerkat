@@ -99,6 +99,7 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/diagnostics/trace", s.trace)
 	mux.HandleFunc("GET /api/v1/connectors", s.list)
 	mux.HandleFunc("POST /api/v1/connectors", s.createConnector)
+	mux.HandleFunc("DELETE /api/v1/connectors/{id}", s.deleteConnector)
 	mux.HandleFunc("GET /api/v1/connectors/{id}/services", s.listServices)
 	mux.HandleFunc("POST /api/v1/connectors/{id}/services", s.createService)
 	mux.HandleFunc("DELETE /api/v1/connectors/{id}/services/{service_id}", s.deleteService)
@@ -685,6 +686,51 @@ func (s *Store) createConnector(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, 201, connector)
+}
+
+func (s *Store) deleteConnector(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	exists, err := s.control.ConnectorExists(r.Context(), id)
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	if !exists {
+		fail(w, r, 404, "connector_not_found")
+		return
+	}
+	if err := s.removeManaged(id); err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	if err := s.reconcileTunnel(); err != nil {
+		fail(w, r, 503, "tunnel_reconcile_failed")
+		return
+	}
+	if err := s.reconcileProxy(r.Context()); err != nil {
+		fail(w, r, 503, "proxy_reconcile_failed")
+		return
+	}
+	if err := s.control.DeleteConnector(r.Context(), id); err != nil {
+		if errors.Is(err, control.ErrConnectorNotFound) {
+			fail(w, r, 404, "connector_not_found")
+		} else {
+			fail(w, r, 503, "persistence_failed")
+		}
+		return
+	}
+	if err := s.reconcileProxy(r.Context()); err != nil {
+		fail(w, r, 503, "proxy_reconcile_failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type serviceRequest struct {

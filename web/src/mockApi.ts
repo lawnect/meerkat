@@ -64,6 +64,15 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     state.connectors.unshift(connector);
     return { ...connector };
   }
+  if (parts.length === 4 && parts[2] === 'connectors' && method === 'DELETE') {
+    const connectorIndex = state.connectors.findIndex((connector) => connector.id === parts[3]);
+    if (connectorIndex < 0) fail('connector_not_found');
+    state.connectors.splice(connectorIndex, 1);
+    const serviceIds = new Set(state.services.filter((service) => service.connector_id === parts[3]).map((service) => service.id));
+    state.services = state.services.filter((service) => service.connector_id !== parts[3]);
+    state.routes = state.routes.filter((route) => !serviceIds.has(route.service_id));
+    return {};
+  }
   if (path === '/api/v1/diagnostics/trace' && method === 'GET') {
     return {
       observed_at: now(),

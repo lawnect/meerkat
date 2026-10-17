@@ -44,6 +44,37 @@ func (d *Database) ConnectorExists(ctx context.Context, id string) (bool, error)
 	return exists == 1, err
 }
 
+// DeleteConnector removes a Connector and all of its services and routes in
+// one transaction so its name and public hostnames can be reused.
+func (d *Database) DeleteConnector(ctx context.Context, id string) error {
+	if !validation.Label(id) {
+		return ErrConnectorNotFound
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM routes WHERE service_id IN (SELECT id FROM services WHERE connector_id = ?)`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM services WHERE connector_id = ?`, id); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM connectors WHERE id = ? AND revoked_at IS NULL`, id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrConnectorNotFound
+	}
+	return tx.Commit()
+}
+
 func (d *Database) ListConnectors(ctx context.Context) ([]Connector, error) {
 	rows, err := d.db.QueryContext(ctx, "SELECT id, name, status, created_at FROM connectors WHERE revoked_at IS NULL ORDER BY created_at DESC")
 	if err != nil {

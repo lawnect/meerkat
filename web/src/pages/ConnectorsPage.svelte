@@ -18,6 +18,8 @@
   let tokenBusy = $state(false);
   let createBusy = $state(false);
   let serviceBusy = $state(false);
+  let deleteBusy = $state(false);
+  let deleteError = $state('');
 
   const selected = $derived(data.connectors.find((connector) => connector.id === connectorState.selectedId));
   const records = $derived(data.records.filter((record) => record.connector.id === connectorState.selectedId));
@@ -66,6 +68,25 @@
       serviceError = `서비스를 등록하지 못했습니다: ${errorMessage(cause)}`;
     } finally {
       serviceBusy = false;
+    }
+  }
+
+  async function deleteConnector(): Promise<void> {
+    if (!selected || deleteBusy) return;
+    const connector = selected;
+    if (!confirm(`${connector.name} 연결 서버를 삭제할까요? 등록된 서비스와 공개 주소도 삭제되고, 실행 중인 Connector의 연결이 끊깁니다.`)) return;
+    deleteError = '';
+    deleteBusy = true;
+    try {
+      await api(`/api/v1/connectors/${encodeURIComponent(connector.id)}`, { method: 'DELETE' });
+      connectorState.selectedId = '';
+      connectorState.enrollment = null;
+      connectorState.enrollmentWasReset = false;
+      await onChanged();
+    } catch (cause) {
+      deleteError = `연결 서버를 삭제하지 못했습니다: ${errorMessage(cause)}`;
+    } finally {
+      deleteBusy = false;
     }
   }
 
@@ -127,7 +148,8 @@
   {#if selected}
     <div class="connector-detail">
       <Panel title="서비스와 공개 주소" description="먼저 내부 앱을 등록하고, 그 다음 외부에서 사용할 주소를 추가합니다.">
-        <div class="detail-title connector-title"><strong>{selected.name}</strong><Status label={statusLabel(selected.status)} value={selected.status} /></div>
+        <div class="detail-title connector-title"><strong>{selected.name}</strong><Status label={statusLabel(selected.status)} value={selected.status} /><button class="btn btn-outline btn-error" type="button" onclick={deleteConnector} disabled={deleteBusy}>{deleteBusy ? '삭제 중…' : '연결 서버 삭제'}</button></div>
+        {#if deleteError}<p class="error" role="alert">{deleteError}</p>{/if}
         <h3 class="section-title">새 내부 서비스</h3>
         <form class="dashboard-grid form-grid" onsubmit={createService}>
           <div class="field"><label for="service-name">서비스 이름</label><input class="input input-bordered" id="service-name" bind:value={serviceName} placeholder="예: memo" required /></div>
@@ -188,6 +210,8 @@
   .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
   .connector-title { margin-bottom: 12px; }
   .connector-title strong { font-size: 18px; }
+  .connector-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .connector-title .btn { margin-left: auto; }
   .compact-empty { margin-top: 12px; padding: 16px; }
   .token-panel { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 20px; }
   .token-panel h3 { margin: 0 0 5px; }
