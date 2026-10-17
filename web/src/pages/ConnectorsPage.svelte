@@ -1,12 +1,13 @@
-<script>
-  import { api, statusLabel } from '../api.js';
-  import { connectorState } from '../connectorState.svelte.js';
+<script lang="ts">
+  import { api, errorMessage, statusLabel } from '../api';
+  import { connectorState } from '../connectorState.svelte';
   import PageHead from '../components/PageHead.svelte';
   import Panel from '../components/Panel.svelte';
   import ServiceBlock from '../components/ServiceBlock.svelte';
   import Status from '../components/Status.svelte';
+  import type { Connector, DashboardData, EnrollmentToken } from '../types';
 
-  let { data, onChanged } = $props();
+  let { data, onChanged }: { data: DashboardData; onChanged: () => Promise<void> } = $props();
   let name = $state('');
   let serviceName = $state('');
   let host = $state('');
@@ -29,25 +30,25 @@
     }
   });
 
-  async function createConnector(event) {
+  async function createConnector(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     createError = '';
     createBusy = true;
     try {
-      const connector = await api('/api/v1/connectors', { method: 'POST', body: JSON.stringify({ name }) });
+      const connector = await api<Connector>('/api/v1/connectors', { method: 'POST', body: JSON.stringify({ name }) });
       connectorState.selectedId = connector.id;
       connectorState.enrollment = null;
       connectorState.enrollmentWasReset = false;
       name = '';
       await onChanged();
     } catch (cause) {
-      createError = `Connector를 만들지 못했습니다: ${cause.message}`;
+      createError = `Connector를 만들지 못했습니다: ${errorMessage(cause)}`;
     } finally {
       createBusy = false;
     }
   }
 
-  async function createService(event) {
+  async function createService(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     if (!selected) return;
     serviceError = '';
@@ -62,7 +63,7 @@
       port = '';
       await onChanged();
     } catch (cause) {
-      serviceError = `서비스를 등록하지 못했습니다: ${cause.message}`;
+      serviceError = `서비스를 등록하지 못했습니다: ${errorMessage(cause)}`;
     } finally {
       serviceBusy = false;
     }
@@ -73,16 +74,16 @@
     tokenError = '';
     tokenBusy = true;
     try {
-      connectorState.enrollment = await api(`/api/v1/connectors/${encodeURIComponent(selected.id)}/enrollment-tokens${reset ? '?reset=true' : ''}`, { method: 'POST' });
+      connectorState.enrollment = await api<EnrollmentToken>(`/api/v1/connectors/${encodeURIComponent(selected.id)}/enrollment-tokens${reset ? '?reset=true' : ''}`, { method: 'POST' });
       connectorState.enrollmentWasReset = reset;
     } catch (cause) {
-      tokenError = `토큰을 발급하지 못했습니다: ${cause.message}`;
+      tokenError = `토큰을 발급하지 못했습니다: ${errorMessage(cause)}`;
     } finally {
       tokenBusy = false;
     }
   }
 
-  async function copy(value, label) {
+  async function copy(value: string, label: string): Promise<void> {
     try {
       await navigator.clipboard.writeText(value);
       tokenError = `${label}을(를) 복사했습니다.`;
@@ -92,7 +93,8 @@
     }
   }
 
-  function installCommand() {
+  function installCommand(): string {
+    if (!selected || !services[0]) return '';
     const token = connectorState.enrollment?.token || '';
     const volume = connectorState.enrollmentWasReset ? 'meerkat-data-reset' : 'meerkat-data';
     return `docker run --rm --name meerkat-${selected.name} \\\n+  -e MEERKAT_OUTLET=https://${data.outlet.domain} \\\n+  -e MEERKAT_NAME=${selected.name} \\\n+  -e MEERKAT_TARGET=${services[0].target.host}:${services[0].target.port} \\\n+  -e MEERKAT_ENROLLMENT_TOKEN='${token}' \\\n+  -v "$PWD/${volume}:/var/lib/meerkat" \\\n+  ghcr.io/lawnect/meerkat:latest`;
@@ -153,11 +155,12 @@
               <button class="button secondary" onclick={() => { if (confirm('기존 Connector 자격 증명을 무효화하고 새 토큰을 발급합니다. 실행 중인 연결은 끊깁니다. 계속할까요?')) issueToken(true); }}>기존 연결 초기화 후 새 토큰 발급</button>
             {/if}
             {#if connectorState.enrollment}
+              {@const enrollment = connectorState.enrollment}
               <div class="token-box">
                 <strong>지금 복사하세요</strong><p>이 화면을 닫으면 토큰을 다시 확인할 수 없습니다.</p>
-                <input aria-label="등록 토큰" value={connectorState.enrollment.token} readonly />
-                <button class="button" onclick={() => copy(connectorState.enrollment.token, '토큰')}>토큰 복사</button>
-                <p>만료: {new Date(connectorState.enrollment.expires_at).toLocaleString()}</p>
+                <input aria-label="등록 토큰" value={enrollment.token} readonly />
+                <button class="button" onclick={() => copy(enrollment.token, '토큰')}>토큰 복사</button>
+                <p>만료: {new Date(enrollment.expires_at).toLocaleString()}</p>
                 <p>Connector 서버에서 실행할 명령</p><pre>{installCommand()}</pre>
                 <button class="button" onclick={() => copy(installCommand(), '설치 명령')}>설치 명령 복사</button>
               </div>
@@ -180,7 +183,6 @@
   .connector-item:first-child { border-top: 1px solid var(--line); }
   .connector-item:hover, .connector-item.selected { background: #f5eee8; }
   .connector-item strong { display: block; font-size: 13px; }
-  .connector-item small { color: var(--muted); }
   .connector-detail > :global(.panel) { min-width: 0; }
   .section-title { margin: 24px 0 12px; }
   .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }

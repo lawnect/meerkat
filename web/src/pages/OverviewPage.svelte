@@ -1,8 +1,9 @@
-<script>
+<script lang="ts">
   import PageHead from '../components/PageHead.svelte';
   import Panel from '../components/Panel.svelte';
+  import type { DashboardData, PageKey } from '../types';
 
-  let { data, navigate } = $props();
+  let { data, navigate }: { data: DashboardData; navigate: (view: PageKey) => Promise<void> } = $props();
   const connected = $derived(data.connectors.filter((connector) => connector.status === 'connected').length);
   const next = $derived(data.connectors.length === 0
     ? 'Connector를 하나 만들어 내부 서비스를 연결하세요.'
@@ -14,7 +15,7 @@
     ['Connector 만들기', data.connectors.length > 0, '서버 등록', 'connectors'],
     ['Connector 연결', connected > 0, '등록 토큰 발급', 'connectors'],
     ['공개 서비스 만들기', data.routes.length > 0, '서비스 추가', 'routes'],
-  ]);
+  ] as [string, boolean, string, PageKey][]);
 </script>
 
 <PageHead kicker="MEERKAT OUTLET" title="오늘의 운영 상태" description={next}>

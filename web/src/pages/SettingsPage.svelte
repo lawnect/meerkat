@@ -1,24 +1,25 @@
-<script>
-  import { api } from '../api.js';
+<script lang="ts">
+  import { api, errorMessage } from '../api';
   import PageHead from '../components/PageHead.svelte';
   import Panel from '../components/Panel.svelte';
+  import type { Outlet } from '../types';
 
-  let { outlet, onSaved } = $props();
+  let { outlet, onSaved }: { outlet: Outlet; onSaved: () => Promise<void> } = $props();
   let domain = $state('');
   let error = $state('');
   let busy = $state(false);
 
   $effect(() => { domain = outlet.domain || ''; });
 
-  async function submit(event) {
+  async function submit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     error = '';
     busy = true;
     try {
-      await api('/api/v1/outlet', { method: 'PUT', body: JSON.stringify({ domain }) });
+      await api<Outlet>('/api/v1/outlet', { method: 'PUT', body: JSON.stringify({ domain }) });
       await onSaved();
     } catch (cause) {
-      error = `도메인을 저장하지 못했습니다: ${cause.message}`;
+      error = `도메인을 저장하지 못했습니다: ${errorMessage(cause)}`;
     } finally {
       busy = false;
     }

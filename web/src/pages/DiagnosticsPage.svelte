@@ -1,10 +1,11 @@
-<script>
+<script lang="ts">
   import { onMount } from 'svelte';
-  import { api } from '../api.js';
+  import { api, errorMessage } from '../api';
   import PageHead from '../components/PageHead.svelte';
   import Panel from '../components/Panel.svelte';
+  import type { TraceSnapshot } from '../types';
 
-  let snapshot = $state(null);
+  let snapshot = $state<TraceSnapshot | null>(null);
   let error = $state('');
   let loading = $state(false);
 
@@ -12,9 +13,9 @@
     loading = true;
     error = '';
     try {
-      snapshot = await api('/api/v1/diagnostics/trace');
+      snapshot = await api<TraceSnapshot>('/api/v1/diagnostics/trace');
     } catch (cause) {
-      error = `요청 정보를 불러오지 못했습니다: ${cause.message}`;
+      error = `요청 정보를 불러오지 못했습니다: ${errorMessage(cause)}`;
     } finally {
       loading = false;
     }

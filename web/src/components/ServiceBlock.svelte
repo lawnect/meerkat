@@ -1,14 +1,15 @@
-<script>
-  import { api, statusLabel } from '../api.js';
-  import { connectorState } from '../connectorState.svelte.js';
+<script lang="ts">
+  import { api, errorMessage, statusLabel } from '../api';
+  import { connectorState } from '../connectorState.svelte';
+  import type { Outlet, ServiceRecord } from '../types';
   import Status from './Status.svelte';
 
-  let { record, outlet, onChanged } = $props();
+  let { record, outlet, onChanged }: { record: ServiceRecord; outlet: Outlet; onChanged: () => Promise<void> } = $props();
   let hostname = $state('');
   let error = $state('');
   let busy = $state(false);
 
-  async function addRoute(event) {
+  async function addRoute(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     error = '';
     busy = true;
@@ -20,13 +21,13 @@
       hostname = '';
       await onChanged();
     } catch (cause) {
-      error = `공개 주소를 만들지 못했습니다: ${cause.message}`;
+      error = `공개 주소를 만들지 못했습니다: ${errorMessage(cause)}`;
     } finally {
       busy = false;
     }
   }
 
-  async function deleteService() {
+  async function deleteService(): Promise<void> {
     if (!confirm(`서비스 ${record.service.name} 을(를) 삭제할까요?`)) return;
     error = '';
     try {
@@ -35,7 +36,7 @@
       connectorState.enrollmentWasReset = false;
       await onChanged();
     } catch (cause) {
-      error = `서비스를 삭제하지 못했습니다: ${cause.message}`;
+      error = `서비스를 삭제하지 못했습니다: ${errorMessage(cause)}`;
     }
   }
 </script>

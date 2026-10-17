@@ -6,7 +6,7 @@
 
 ## 관리 UI 개발
 
-관리 UI는 Svelte와 Vite로 빌드하고 Outlet Go 바이너리에 포함합니다. Node.js 22+가 필요합니다.
+관리 UI는 Svelte와 TypeScript, Vite로 빌드하고 Outlet Go 바이너리에 포함합니다. Node.js 22.18+가 필요합니다.
 
 ```sh
 npm ci

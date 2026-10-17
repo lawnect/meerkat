@@ -1,9 +1,10 @@
-<script>
+<script lang="ts">
   import PageHead from '../components/PageHead.svelte';
   import ServiceBlock from '../components/ServiceBlock.svelte';
-  import { statusLabel } from '../api.js';
+  import { statusLabel } from '../api';
+  import type { DashboardData, PageKey } from '../types';
 
-  let { data, onChanged, navigate } = $props();
+  let { data, onChanged, navigate }: { data: DashboardData; onChanged: () => Promise<void>; navigate: (view: PageKey) => Promise<void> } = $props();
 </script>
 
 <PageHead kicker="운영 / 공개 서비스" title="공개 서비스" description="내부 앱과 인터넷 주소가 연결된 현황입니다.">

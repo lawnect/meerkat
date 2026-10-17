@@ -1,37 +1,38 @@
-<script>
-  import { api } from '../api.js';
+<script lang="ts">
+  import { api, errorMessage } from '../api';
 
-  let { mode, onLogin, onSetup } = $props();
+  let { mode, onLogin, onSetup }: { mode: 'setup' | 'login'; onLogin: () => Promise<void>; onSetup: () => void } = $props();
   let code = $state('');
   let email = $state('');
   let password = $state('');
   let error = $state('');
   let busy = $state(false);
 
-  async function submit(event) {
+  async function submit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     error = '';
     busy = true;
     try {
       if (mode === 'setup') {
-        await api('/api/v1/setup/admin', {
+        await api<{ status: string }>('/api/v1/setup/admin', {
           method: 'POST',
           headers: { Authorization: `Bearer ${code.trim()}` },
           body: JSON.stringify({ email, password }),
         });
         onSetup();
       } else {
-        await api('/api/v1/session', {
+        await api<{ admin: { email: string }; expires_at: string }>('/api/v1/session', {
           method: 'POST',
           body: JSON.stringify({ email, password }),
         });
         await onLogin();
       }
     } catch (cause) {
-      if (mode === 'setup' && cause.message === 'invalid_setup_credential') {
+      const code = errorMessage(cause);
+      if (mode === 'setup' && code === 'invalid_setup_credential') {
         error = '설정 코드, 이메일 또는 비밀번호를 확인하세요. 비밀번호는 12자 이상이어야 합니다.';
       } else if (mode === 'setup') {
-        error = `설정에 실패했습니다: ${cause.message}`;
+        error = `설정에 실패했습니다: ${code}`;
       } else {
         error = '이메일 또는 비밀번호가 올바르지 않습니다.';
       }

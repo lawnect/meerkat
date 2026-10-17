@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --config web/vite.config.js",
-    "build": "vite build --config web/vite.config.js",
-    "check": "svelte-check --config web/svelte.config.js"
+    "dev": "vite --config web/vite.config.ts",
+    "build": "vite build --config web/vite.config.ts",
+    "check": "svelte-check --config web/svelte.config.ts"
   },
   "dependencies": {
     "svelte": "^5.57.2"

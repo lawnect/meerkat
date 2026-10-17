@@ -1,6 +1,6 @@
-<script>
-  import { statusKind } from '../api.js';
-  let { label, value } = $props();
+<script lang="ts">
+  import { statusKind } from '../api';
+  let { label, value }: { label: string; value?: string } = $props();
 </script>
 
 <span class="status"><i class="status-dot {statusKind(value)}"></i><span>{label}</span></span>

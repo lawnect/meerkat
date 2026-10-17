@@ -1,6 +1,7 @@
-<script>
+<script lang="ts">
   import { onMount } from 'svelte';
-  import { api, mockApiEnabled } from './api.js';
+  import { api, errorMessage, mockApiEnabled } from './api';
+  import type { AuthMode, Connector, DashboardData, Outlet, PageKey, Route, Service } from './types';
   import AuthPage from './components/AuthPage.svelte';
   import Status from './components/Status.svelte';
   import OverviewPage from './pages/OverviewPage.svelte';
@@ -9,24 +10,24 @@
   import RoutesPage from './pages/RoutesPage.svelte';
   import DiagnosticsPage from './pages/DiagnosticsPage.svelte';
 
-  let authMode = $state('loading');
-  let view = $state('overview');
+  let authMode = $state<AuthMode>('loading');
+  let view = $state<PageKey>('overview');
   let loading = $state(false);
   let loadError = $state('');
-  let data = $state({ connectors: [], services: [], routes: [], outlet: {} });
+  let data = $state<DashboardData>({ connectors: [], services: [], routes: [], records: [], outlet: {} });
 
   async function refresh() {
     loading = true;
     loadError = '';
     try {
       const [connectorResponse, outlet] = await Promise.all([
-        api('/api/v1/connectors'),
-        api('/api/v1/outlet'),
+        api<{ connectors: Connector[] }>('/api/v1/connectors'),
+        api<Outlet>('/api/v1/outlet'),
       ]);
       const groups = await Promise.all(connectorResponse.connectors.map(async (connector) => {
-        const response = await api(`/api/v1/connectors/${encodeURIComponent(connector.id)}/services`);
+        const response = await api<{ services: Service[] }>(`/api/v1/connectors/${encodeURIComponent(connector.id)}/services`);
         return Promise.all(response.services.map(async (service) => {
-          const routeResponse = await api(`/api/v1/services/${encodeURIComponent(service.id)}/routes`);
+          const routeResponse = await api<{ routes: Route[] }>(`/api/v1/services/${encodeURIComponent(service.id)}/routes`);
           return { connector, service, routes: routeResponse.routes };
         }));
       }));
@@ -40,17 +41,18 @@
       };
       authMode = 'dashboard';
     } catch (cause) {
-      if (cause.message === 'invalid_admin_session' || cause.message === 'invalid_admin_credential') {
+      const code = errorMessage(cause);
+      if (code === 'invalid_admin_session' || code === 'invalid_admin_credential') {
         authMode = 'login';
       } else {
-        loadError = `대시보드를 불러오지 못했습니다: ${cause.message}`;
+        loadError = `대시보드를 불러오지 못했습니다: ${code}`;
       }
     } finally {
       loading = false;
     }
   }
 
-  async function navigate(nextView) {
+  async function navigate(nextView: PageKey): Promise<void> {
     view = nextView;
     if (nextView === 'connectors') await refresh();
   }
@@ -62,7 +64,7 @@
 
   onMount(async () => {
     try {
-      const status = await api('/api/v1/setup/status');
+      const status = await api<{ setup_complete: boolean }>('/api/v1/setup/status');
       if (!status.setup_complete) {
         authMode = 'setup';
         return;
@@ -75,8 +77,10 @@
   });
 </script>
 
-{#if authMode === 'setup' || authMode === 'login'}
-  <AuthPage mode={authMode} onLogin={refresh} onSetup={() => { authMode = 'login'; }} />
+{#if authMode === 'setup'}
+  <AuthPage mode="setup" onLogin={refresh} onSetup={() => { authMode = 'login'; }} />
+{:else if authMode === 'login'}
+  <AuthPage mode="login" onLogin={refresh} onSetup={() => { authMode = 'login'; }} />
 {:else if authMode === 'loading'}
   <main class="auth-wrap"><p>Outlet에 연결하는 중입니다…</p></main>
 {:else if authMode === 'unavailable'}

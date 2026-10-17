@@ -1,7 +1,23 @@
-const now = () => new Date().toISOString();
-const id = (kind) => `mock-${kind}-${Math.random().toString(36).slice(2, 9)}`;
+import type { Connector, Route, Service, Target } from './types';
 
-const state = {
+const now = (): string => new Date().toISOString();
+const id = (kind: string): string => `mock-${kind}-${Math.random().toString(36).slice(2, 9)}`;
+
+interface MockInput {
+  domain?: string;
+  email?: string;
+  hostname?: string;
+  name?: string;
+  protocol?: string;
+  target?: Partial<Target>;
+}
+
+const state: {
+  outlet: { domain: string };
+  connectors: Connector[];
+  services: Service[];
+  routes: Route[];
+} = {
   outlet: { domain: 'example.test' },
   connectors: [{ id: 'mock-connector-home', name: 'home-server', status: 'connected', created_at: now() }],
   services: [{
@@ -14,20 +30,20 @@ const state = {
   }],
 };
 
-function fail(code) {
+function fail(code: string): never {
   throw new Error(code);
 }
 
-function bodyOf(options) {
-  if (!options.body) return {};
-  try { return JSON.parse(options.body); } catch { return {}; }
+function bodyOf(body: BodyInit | null | undefined): MockInput {
+  if (typeof body !== 'string') return {};
+  try { return JSON.parse(body) as MockInput; } catch { return {}; }
 }
 
-export async function mockApi(url, options = {}) {
+export async function mockApi(url: string, options: RequestInit = {}): Promise<unknown> {
   const method = options.method || 'GET';
   const path = new URL(url, 'http://localhost').pathname;
   const parts = path.split('/').filter(Boolean).map(decodeURIComponent);
-  const input = bodyOf(options);
+  const input = bodyOf(options.body);
 
   if (path === '/api/v1/setup/status' && method === 'GET') return { setup_complete: true };
   if (path === '/api/v1/setup/admin' && method === 'POST') return { status: 'created' };
@@ -35,14 +51,16 @@ export async function mockApi(url, options = {}) {
   if (path === '/api/v1/session' && method === 'DELETE') return {};
   if (path === '/api/v1/outlet' && method === 'GET') return { ...state.outlet };
   if (path === '/api/v1/outlet' && method === 'PUT') {
+    if (!input.domain) fail('invalid_domain');
     state.outlet.domain = input.domain;
     return { ...state.outlet };
   }
   if (path === '/api/v1/connectors' && method === 'GET') return { connectors: state.connectors.map((connector) => ({ ...connector })) };
   if (path === '/api/v1/connectors' && method === 'POST') {
-    if (!input.name?.trim()) fail('invalid_connector');
-    if (state.connectors.some((connector) => connector.name === input.name.trim())) fail('connector_name_taken');
-    const connector = { id: id('connector'), name: input.name.trim(), status: 'draft', created_at: now() };
+    const name = input.name?.trim();
+    if (!name) fail('invalid_connector');
+    if (state.connectors.some((connector) => connector.name === name)) fail('connector_name_taken');
+    const connector: Connector = { id: id('connector'), name, status: 'draft', created_at: now() };
     state.connectors.unshift(connector);
     return { ...connector };
   }
@@ -58,16 +76,19 @@ export async function mockApi(url, options = {}) {
   }
   if (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'connectors' && parts[4] === 'services') {
     const connectorId = parts[3];
-    const connector = state.connectors.find((item) => item.id === connectorId);
-    if (!connector) fail('connector_not_found');
-    if (parts.length === 5 && method === 'GET') return { services: state.services.filter((service) => service.connector_id === connectorId).map((service) => ({ ...service, target: { ...service.target } })) };
+    if (!state.connectors.some((connector) => connector.id === connectorId)) fail('connector_not_found');
+    if (parts.length === 5 && method === 'GET') {
+      return { services: state.services.filter((service) => service.connector_id === connectorId).map((service) => ({ ...service, target: { ...service.target } })) };
+    }
     if (parts.length === 5 && method === 'POST') {
       if (state.services.some((service) => service.connector_id === connectorId)) fail('connector_service_limit');
-      if (!input.name?.trim() || !input.target?.host || !input.target?.port) fail('invalid_service');
-      const service = {
-        id: id('service'), connector_id: connectorId, name: input.name.trim(), protocol: input.protocol || 'http',
-        target: { host: input.target.host, port: Number(input.target.port) }, enabled: true,
-        observed_status: 'unknown', created_at: now(), updated_at: now(),
+      const name = input.name?.trim();
+      const host = input.target?.host;
+      const port = input.target?.port;
+      if (!name || !host || !port) fail('invalid_service');
+      const service: Service = {
+        id: id('service'), connector_id: connectorId, name, protocol: input.protocol || 'http',
+        target: { host, port: Number(port) }, enabled: true, observed_status: 'unknown', created_at: now(), updated_at: now(),
       };
       state.services.push(service);
       return { ...service, target: { ...service.target } };
@@ -90,12 +111,14 @@ export async function mockApi(url, options = {}) {
   if (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'services' && parts[4] === 'routes') {
     const serviceId = parts[3];
     if (!state.services.some((service) => service.id === serviceId)) fail('service_not_found');
-    if (parts.length === 5 && method === 'GET') return { routes: state.routes.filter((route) => route.service_id === serviceId).map((route) => ({ ...route })) };
+    if (parts.length === 5 && method === 'GET') {
+      return { routes: state.routes.filter((route) => route.service_id === serviceId).map((route) => ({ ...route })) };
+    }
     if (parts.length === 5 && method === 'POST') {
       const hostname = input.hostname?.trim().toLowerCase();
       if (!hostname || !(hostname === state.outlet.domain || hostname.endsWith(`.${state.outlet.domain}`))) fail('invalid_route');
       if (state.routes.some((route) => route.hostname === hostname)) fail('hostname_taken');
-      const route = { id: id('route'), service_id: serviceId, kind: 'http', hostname, enabled: true, desired_revision: 1, applied_revision: 0, created_at: now(), updated_at: now() };
+      const route: Route = { id: id('route'), service_id: serviceId, kind: 'http', hostname, enabled: true, desired_revision: 1, applied_revision: 0, created_at: now(), updated_at: now() };
       state.routes.push(route);
       return { ...route };
     }

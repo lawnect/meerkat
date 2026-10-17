@@ -1,5 +1,7 @@
-<script>
-  let { kicker, title, description, action = null } = $props();
+<script lang="ts">
+  import type { Snippet } from 'svelte';
+
+  let { kicker, title, description, action = null }: { kicker: string; title: string; description: string; action?: Snippet | null } = $props();
 </script>
 
 <div class="page-head">

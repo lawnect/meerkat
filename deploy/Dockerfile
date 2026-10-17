@@ -2,6 +2,7 @@
 FROM node:22-bookworm-slim AS ui-build
 WORKDIR /src
 COPY package.json package-lock.json ./
+COPY tsconfig.json ./
 RUN npm ci
 COPY web ./web
 RUN npm run check && npm run build
