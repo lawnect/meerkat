@@ -3,6 +3,7 @@
   import PageHead from '../components/PageHead.svelte';
   import Panel from '../components/Panel.svelte';
   import Status from '../components/Status.svelte';
+  import ConnectionMap from '../components/ConnectionMap.svelte';
   import type { DashboardData, PageKey } from '../types';
 
   let { data, navigate }: { data: DashboardData; navigate: (view: PageKey) => Promise<void> } = $props();
@@ -47,12 +48,14 @@
   <div class="summary-card card bg-base-100 border-base-300"><div class="stat-label">설정된 공개 주소</div><div class="stat-value">{data.routes.length}</div><div class="stat-note">접속 상태와 별개로 등록된 도메인</div></div>
 </div>
 
+<ConnectionMap {data} {navigate} />
+
 <style>
-  .summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 30px; }
-  .summary-card { border: 1px solid var(--line); padding: 17px 18px; background: var(--panel); }
-  .stat-label { color: var(--muted); font-size: 12px; }
-  .stat-value { margin-top: 3px; font-size: 25px; font-weight: 750; letter-spacing: -.04em; }
-  .stat-note { margin-top: 2px; color: var(--muted); font-size: 11px; }
+  .summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 30px; }
+  .summary-card { border: 1px solid var(--line); border-radius: 8px; padding: 18px 20px; background: var(--panel); }
+  .stat-label { color: #6f6a65; font-size: 12px; }
+  .stat-value { margin-top: 5px; font-size: 27px; font-weight: 650; letter-spacing: -.05em; line-height: 1.2; }
+  .stat-note { margin-top: 7px; color: var(--muted); font-size: 11px; }
   .two-col { grid-template-columns: minmax(0, 1.35fr) minmax(280px, .65fr); }
   .onboarding-list { display: grid; gap: 0; margin: 4px 0 0; }
   .onboarding-item { display: grid; width: 100%; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 12px; border: 0; border-bottom: 1px solid var(--line); padding: 13px 0; background: transparent; color: inherit; text-align: left; }
@@ -62,19 +65,19 @@
   .onboarding-item strong { display: block; font-size: 13px; }
   .onboarding-item small { color: var(--muted); }
   .onboarding-action { color: var(--accent-dark); font-size: 12px; font-weight: 700; }
-  .callout { border-left: 3px solid var(--accent); padding: 13px 15px; background: #fbf3ed; color: #5f4b42; font-size: 13px; }
+  .callout { border-left: 2px solid var(--accent); border-radius: 0 6px 6px 0; padding: 13px 15px; background: #fbf3ed; color: #5f4b42; font-size: 13px; }
   .callout strong { display: block; margin-bottom: 2px; color: var(--ink); }
   .help-panel { margin-top: 16px; }
   .monitor-list { display: grid; gap: 8px; }
-  .monitor-item { border: 1px solid var(--line); padding: 12px 14px; background: var(--panel); }
+  .monitor-item { border: 1px solid var(--line); border-radius: 7px; padding: 13px 15px; background: var(--panel); }
   .monitor-item.attention { border-left: 3px solid #bb4d3d; }
   .monitor-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .monitor-type { display: block; margin-bottom: 2px; color: var(--muted); font-size: 11px; font-weight: 700; }
   .monitor-head .monitor-type { display: inline; margin-right: 8px; }
   .monitor-head h3 { display: inline; margin: 0; font-size: 16px; }
   .monitor-head p, .monitor-empty { color: var(--muted); font-size: 12px; }
-  .monitor-app-card { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(0, 1.4fr) auto; align-items: center; gap: 12px; margin-top: 10px; border: 1px solid var(--line); border-left: 3px solid var(--accent); padding: 10px 12px; background: var(--color-base-200); }
-  .monitor-app-card.attention { border-left-color: #bb4d3d; }
+  .monitor-app-card { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(0, 1.4fr) auto; align-items: center; gap: 12px; margin-top: 10px; border: 1px solid var(--line); border-radius: 5px; padding: 10px 12px; background: #faf7f3; }
+  .monitor-app-card.attention { border-left: 2px solid #bb4d3d; }
   .monitor-app-card.empty-app { display: block; }
   .monitor-app-head h4 { display: inline; margin: 0 8px 0 0; font-size: 14px; }
   .monitor-app-head code { color: var(--muted); font-size: 12px; }

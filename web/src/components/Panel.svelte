@@ -12,7 +12,7 @@
 </section>
 
 <style>
-  :global(.panel) { border: 1px solid var(--line); padding: 22px; background: var(--panel); }
+  :global(.panel) { border: 1px solid var(--line); border-radius: 8px; padding: 22px; background: var(--panel); }
   :global(.panel-head) { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; border-bottom: 1px solid var(--line); padding-bottom: 14px; }
   :global(.panel h2) { margin: 0; font-size: 17px; letter-spacing: -.025em; }
   :global(.panel h3) { margin: 0 0 5px; font-size: 14px; }

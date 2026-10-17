@@ -4,13 +4,20 @@
 }
 
 :root {
+  --color-base-100: #fffdfa;
+  --color-base-200: #faf8f5;
+  --color-base-300: #e9e4dd;
+  --color-base-content: #292824;
+  --color-primary: #ef6a2d;
+  --color-primary-content: #ffffff;
+  --color-success: #288b69;
   --paper: var(--color-base-200);
   --panel: var(--color-base-100);
   --ink: var(--color-base-content);
   --muted: color-mix(in srgb, var(--color-base-content) 62%, transparent);
   --line: var(--color-base-300);
   --accent: var(--color-primary);
-  --accent-dark: var(--color-primary);
+  --accent-dark: #b8491b;
   --green: var(--color-success);
   --amber: var(--color-warning);
 }
@@ -26,7 +33,10 @@ body {
 
 button, input { font: inherit; }
 button { cursor: pointer; }
-button:focus-visible, input:focus-visible { outline: 3px solid #e7a58d; outline-offset: 2px; }
+button:focus-visible, input:focus-visible { outline: 2px solid #ef9b6f; outline-offset: 2px; }
+.btn-primary { border-color: var(--accent); background: var(--accent); color: #fff; box-shadow: none; }
+.btn-primary:hover { border-color: #d85b22; background: #d85b22; }
+.btn-outline { border-color: #d8d1c9; background: transparent; }
 
 .dashboard-grid { display: grid; gap: 16px; }
 .field { display: grid; gap: 5px; }
