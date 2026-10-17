@@ -19,7 +19,7 @@ const state: {
   routes: Route[];
 } = {
   outlet: { domain: 'example.test' },
-  connectors: [{ id: 'mock-connector-home', name: 'home-server', status: 'connected', created_at: now() }],
+  connectors: [{ id: 'mock-connector-home', name: 'home-server', status: 'connected', created_at: now(), last_seen: now() }],
   services: [{
     id: 'mock-service-whoami', connector_id: 'mock-connector-home', name: 'whoami', protocol: 'http',
     target: { host: 'app', port: 80 }, enabled: true, observed_status: 'connected', created_at: now(), updated_at: now(),

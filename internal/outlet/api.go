@@ -514,6 +514,11 @@ func (s *Store) list(w http.ResponseWriter, r *http.Request) {
 		for i := range connectors {
 			if record, ok := s.managed[connectors[i].ID]; ok {
 				connectors[i].Status = managedConnectorStatus(record, s.now())
+				if !record.LastSeen.IsZero() {
+					connectors[i].LastSeen = record.LastSeen.UTC().Format(time.RFC3339)
+				} else if record.LastHeartbeat != nil {
+					connectors[i].LastSeen = record.LastHeartbeat.ObservedAt.UTC().Format(time.RFC3339)
+				}
 			}
 		}
 		s.mu.Unlock()

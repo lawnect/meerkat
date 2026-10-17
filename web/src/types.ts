@@ -10,6 +10,7 @@ export interface Connector {
   name: string;
   status: string;
   created_at: string;
+  last_seen?: string;
 }
 
 export interface Target {

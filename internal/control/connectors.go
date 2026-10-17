@@ -19,6 +19,7 @@ type Connector struct {
 	Name      string    `json:"name"`
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
+	LastSeen  string    `json:"last_seen,omitempty"`
 }
 
 func (d *Database) CreateConnector(ctx context.Context, name string) (Connector, error) {
