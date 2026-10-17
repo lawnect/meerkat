@@ -65,20 +65,26 @@
   .callout { border-left: 3px solid var(--accent); padding: 13px 15px; background: #fbf3ed; color: #5f4b42; font-size: 13px; }
   .callout strong { display: block; margin-bottom: 2px; color: var(--ink); }
   .help-panel { margin-top: 16px; }
-  .monitor-list { display: grid; gap: 12px; }
-  .monitor-item { border: 1px solid var(--line); padding: 16px; background: var(--panel); }
+  .monitor-list { display: grid; gap: 8px; }
+  .monitor-item { border: 1px solid var(--line); padding: 12px 14px; background: var(--panel); }
   .monitor-item.attention { border-left: 3px solid #bb4d3d; }
-  .monitor-head, .monitor-app { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  .monitor-head strong { display: block; margin-bottom: 4px; font-size: 15px; }
+  .monitor-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .monitor-type { display: block; margin-bottom: 2px; color: var(--muted); font-size: 11px; font-weight: 700; }
+  .monitor-head .monitor-type { display: inline; margin-right: 8px; }
+  .monitor-head h3 { display: inline; margin: 0; font-size: 16px; }
   .monitor-head p, .monitor-empty { color: var(--muted); font-size: 12px; }
-  .monitor-app { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 14px; }
-  .monitor-app strong { margin-right: 8px; }
-  .monitor-app code { color: var(--muted); font-size: 12px; }
-  .monitor-routes { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 10px; }
+  .monitor-app-card { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(0, 1.4fr) auto; align-items: center; gap: 12px; margin-top: 10px; border: 1px solid var(--line); border-left: 3px solid var(--accent); padding: 10px 12px; background: var(--color-base-200); }
+  .monitor-app-card.attention { border-left-color: #bb4d3d; }
+  .monitor-app-card.empty-app { display: block; }
+  .monitor-app-head h4 { display: inline; margin: 0 8px 0 0; font-size: 14px; }
+  .monitor-app-head code { color: var(--muted); font-size: 12px; }
+  .monitor-route-group { min-width: 0; }
+  .monitor-routes { display: flex; flex-wrap: wrap; gap: 4px 12px; }
   .monitor-routes a { overflow-wrap: anywhere; color: var(--accent-dark); font-size: 13px; }
   .monitor-routes span { color: var(--muted); font-size: 12px; }
   @media (max-width: 900px) { .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .two-col { grid-template-columns: 1fr; } }
-  @media (max-width: 600px) { .monitor-head, .monitor-app { align-items: flex-start; flex-direction: column; } }
+  @media (max-width: 700px) { .monitor-app-card { grid-template-columns: 1fr; gap: 8px; } }
+  @media (max-width: 600px) { .monitor-head { align-items: flex-start; flex-direction: column; } }
 </style>
 
 {#if showOnboarding}
@@ -106,23 +112,28 @@
         {@const records = data.records.filter((record) => record.connector.id === connector.id)}
         <article class:attention={connector.status !== 'connected' || records.some((record) => record.service.observed_status !== 'connected')} class="monitor-item">
           <div class="monitor-head">
-            <div><strong>{connector.name}</strong><p>마지막 응답: {lastResponse(connector.last_seen)}</p></div>
+            <div><span class="monitor-type">CONNECTOR</span><h3>{connector.name}</h3><p>마지막 응답: {lastResponse(connector.last_seen)}</p></div>
             <Status label={statusLabel(connector.status)} value={connector.status} />
           </div>
           {#each records as record}
-            <div class="monitor-app">
-              <div><strong>{record.service.name}</strong><code>{record.service.target.host}:{record.service.target.port}</code></div>
+            <div class:attention={record.service.observed_status !== 'connected'} class="monitor-app-card">
+              <div class="monitor-app-head">
+                <span class="monitor-type">내부 앱</span><h4>{record.service.name}</h4><code>내부 주소 {record.service.target.host}:{record.service.target.port}</code>
+              </div>
+              <div class="monitor-route-group">
+                <span class="monitor-type">공개 주소</span>
+                <div class="monitor-routes">
+                  {#each record.routes as route}
+                    <a href="https://{route.hostname}" target="_blank" rel="noopener noreferrer">https://{route.hostname}</a>
+                  {:else}
+                    <span>공개 주소 없음</span>
+                  {/each}
+                </div>
+              </div>
               <Status label={statusLabel(record.service.observed_status)} value={record.service.observed_status} />
             </div>
-            <div class="monitor-routes">
-              {#each record.routes as route}
-                <a href="https://{route.hostname}" target="_blank" rel="noopener noreferrer">https://{route.hostname}</a>
-              {:else}
-                <span>공개 주소 없음</span>
-              {/each}
-            </div>
           {:else}
-            <p class="monitor-empty">등록된 내부 앱이 없습니다.</p>
+            <div class="monitor-app-card attention empty-app"><span class="monitor-type">내부 앱</span><p class="monitor-empty">등록된 내부 앱이 없습니다.</p></div>
           {/each}
         </article>
       {/each}
