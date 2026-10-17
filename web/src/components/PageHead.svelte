@@ -10,3 +10,11 @@
   </div>
   {#if action}<div class="actions">{@render action()}</div>{/if}
 </div>
+
+<style>
+  .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 28px; }
+  .page-head .eyebrow { margin: 0 0 7px; color: var(--accent-dark); font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+  .page-head h1 { margin: 0 0 6px; font-size: 29px; line-height: 1.15; letter-spacing: -.04em; }
+  .page-head p { margin: 0; color: var(--muted); }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+</style>

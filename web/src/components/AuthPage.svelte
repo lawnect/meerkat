@@ -68,3 +68,12 @@
     </form>
   </section>
 </main>
+
+<style>
+  :global(.auth-wrap) { display: grid; min-height: 100vh; place-items: center; padding: 24px; background: var(--paper); }
+  :global(.auth) { width: min(520px, 100%); border: 1px solid var(--line); padding: 34px; background: var(--panel); }
+  :global(.auth-brand) { margin-bottom: 42px; font-size: 13px; font-weight: 800; letter-spacing: .1em; }
+  :global(.auth h1) { margin: 0 0 8px; font-size: 27px; letter-spacing: -.04em; }
+  :global(.auth-intro) { margin: 0 0 25px; color: var(--muted); }
+  :global(.auth .field) { margin-top: 14px; }
+</style>

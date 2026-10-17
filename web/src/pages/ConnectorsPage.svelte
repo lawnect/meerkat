@@ -172,3 +172,29 @@
     <div class="panel"><div class="empty"><h2>연결 서버를 선택하세요</h2><p>왼쪽에서 서버를 선택하면 서비스 등록과 설치 안내가 표시됩니다.</p></div></div>
   {/if}
 </div>
+
+<style>
+  .connector-layout { display: grid; grid-template-columns: 270px minmax(0, 1fr); gap: 16px; }
+  .connector-list { padding: 0; }
+  .connector-item { display: block; width: 100%; border: 0; border-bottom: 1px solid var(--line); padding: 14px 16px; background: transparent; color: var(--ink); text-align: left; }
+  .connector-item:first-child { border-top: 1px solid var(--line); }
+  .connector-item:hover, .connector-item.selected { background: #f5eee8; }
+  .connector-item strong { display: block; font-size: 13px; }
+  .connector-item small { color: var(--muted); }
+  .connector-detail > :global(.panel) { min-width: 0; }
+  .section-title { margin: 24px 0 12px; }
+  .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .connector-title { margin-bottom: 12px; }
+  .connector-title strong { font-size: 18px; }
+  .compact-empty { margin-top: 12px; padding: 16px; }
+  .token-panel { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 20px; }
+  .token-panel h3 { margin: 0 0 5px; }
+  .token-panel > p { margin: 0 0 12px; }
+  .token-panel > .button.secondary { margin-top: 10px; }
+  .token-box { margin-top: 16px; padding: 16px; background: #242a2f; color: #f5f3ec; }
+  .token-box p { color: #c2c8c5; font-size: 12px; }
+  .token-box input { width: 100%; margin: 10px 0; border: 1px solid #59636a; border-radius: 2px; padding: 10px; background: #171c20; color: #fff; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
+  .token-box pre { overflow-wrap: anywhere; border: 1px solid #59636a; padding: 12px; background: #171c20; color: #d9e0da; font: 12px/1.5 ui-monospace, SFMono-Regular, monospace; white-space: pre-wrap; }
+  .token-box .button { border-color: #e7a27f; background: #e7a27f; color: #2b201b; }
+  @media (max-width: 900px) { .connector-layout, .form-grid { grid-template-columns: 1fr; } }
+</style>

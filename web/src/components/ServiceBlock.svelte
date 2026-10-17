@@ -61,3 +61,15 @@
   </form>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
 </article>
+
+<style>
+  .detail-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+  .service { border-top: 1px solid var(--line); padding: 17px 0; }
+  .service:first-of-type { border-top: 0; padding-top: 0; }
+  .service-meta { color: var(--muted); font-size: 12px; }
+  .service-empty { margin: 12px 0 !important; }
+  .route-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; border: 1px solid var(--line); padding: 10px 12px; background: #fbfaf5; }
+  .route-line code { color: #345a70; font-size: 12px; }
+  .route-form { align-items: end; }
+  .route-form .field { flex: 1; min-width: 180px; }
+</style>

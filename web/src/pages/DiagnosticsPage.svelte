@@ -55,3 +55,15 @@
 {:else if !loading && !error}
   <div class="empty"><p>진단 정보를 기다리는 중입니다.</p></div>
 {/if}
+
+<style>
+  .diagnostics-grid { align-items: start; grid-template-columns: minmax(0, 1.35fr) minmax(280px, .65fr); }
+  .diagnostic-list { margin: 0; }
+  .diagnostic-list > div { display: grid; grid-template-columns: minmax(135px, .7fr) minmax(0, 1.3fr); gap: 12px; border-bottom: 1px solid var(--line); padding: 10px 0; }
+  .diagnostic-list > div:last-child { border-bottom: 0; }
+  .diagnostic-list dt { color: var(--muted); font-size: 12px; }
+  .diagnostic-list dd { overflow-wrap: anywhere; margin: 0; }
+  .diagnostic-list code { color: #345a70; font-size: 12px; }
+  .diagnostic-note { margin-top: 16px !important; font-size: 12px; }
+  @media (max-width: 900px) { .diagnostics-grid { grid-template-columns: 1fr; } }
+</style>

@@ -29,3 +29,7 @@
 {:else}
   <div class="empty"><h2>아직 공개 서비스가 없습니다</h2><p>연결 서버를 선택하고 내부 서비스를 등록한 뒤, 원하는 서브도메인을 추가하세요.</p><button class="button" onclick={() => navigate('connectors')}>연결 서버 관리</button></div>
 {/if}
+
+<style>
+  .route-groups { grid-template-columns: 1fr; }
+</style>

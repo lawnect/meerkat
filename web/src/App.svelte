@@ -115,3 +115,41 @@
     </main>
   </div>
 {/if}
+
+<style>
+  .topbar {
+    height: 64px;
+    display: flex;
+    align-items: center;
+    gap: 26px;
+    padding: 0 32px;
+    border-bottom: 1px solid #15191c;
+    background: #242a2f;
+    color: #f8f6ef;
+  }
+  .brand { font-size: 16px; font-weight: 760; letter-spacing: .08em; }
+  .brand small { margin-left: 7px; color: #b8c0c2; font-size: 10px; letter-spacing: .14em; }
+  .topbar-meta { display: flex; align-items: center; gap: 18px; margin-left: auto; color: #c3c9c9; font-size: 12px; }
+  .topbar button { border: 0; padding: 6px 0; background: transparent; color: #e8ece8; }
+  .mock-badge { border: 1px solid #e5aa47; border-radius: 2px; padding: 3px 6px; color: #ffd27c; font-size: 10px; font-weight: 800; letter-spacing: .08em; }
+  .layout { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: calc(100vh - 64px); }
+  .rail { display: flex; flex-direction: column; border-right: 1px solid var(--line); padding: 24px 16px; background: #ebe9e2; }
+  .rail-label { margin: 0 10px 9px; color: #85857f; font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+  .nav { display: grid; gap: 3px; }
+  .nav button { border: 0; border-left: 3px solid transparent; border-radius: 2px; padding: 10px 11px; background: transparent; color: #4f5659; text-align: left; }
+  .nav button:hover { background: #e2dfd7; }
+  .nav button.active { border-left-color: var(--accent); background: var(--panel); color: var(--ink); font-weight: 700; }
+  .rail-note { margin-top: auto; border-top: 1px solid var(--line); padding: 18px 10px 0; color: var(--muted); font-size: 12px; }
+  .rail-note strong { display: block; margin-bottom: 4px; color: var(--ink); font-size: 13px; }
+  .content { width: 100%; max-width: 1180px; padding: 38px 48px 72px; }
+  .loading-note { margin: 0 0 16px; color: var(--muted); }
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    .rail { display: block; border-right: 0; border-bottom: 1px solid var(--line); padding: 10px 16px; }
+    .rail-label, .rail-note { display: none; }
+    .nav { display: flex; overflow: auto; }
+    .nav button { border-bottom: 3px solid transparent; border-left: 0; white-space: nowrap; }
+    .nav button.active { border-bottom-color: var(--accent); }
+    .content { padding: 28px 22px 56px; }
+  }
+</style>
