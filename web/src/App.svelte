@@ -16,8 +16,8 @@
   let loadError = $state('');
   let data = $state<DashboardData>({ connectors: [], services: [], routes: [], records: [], outlet: {} });
 
-  async function refresh() {
-    loading = true;
+  async function refresh(background = false) {
+    if (!background) loading = true;
     loadError = '';
     try {
       const [connectorResponse, outlet] = await Promise.all([
@@ -48,7 +48,7 @@
         loadError = `대시보드를 불러오지 못했습니다: ${code}`;
       }
     } finally {
-      loading = false;
+      if (!background) loading = false;
     }
   }
 
@@ -62,18 +62,24 @@
     authMode = 'login';
   }
 
-  onMount(async () => {
-    try {
-      const status = await api<{ setup_complete: boolean }>('/api/v1/setup/status');
-      if (!status.setup_complete) {
-        authMode = 'setup';
-        return;
+  onMount(() => {
+    void (async () => {
+      try {
+        const status = await api<{ setup_complete: boolean }>('/api/v1/setup/status');
+        if (!status.setup_complete) {
+          authMode = 'setup';
+          return;
+        }
+        await refresh();
+        if (loadError) authMode = 'login';
+      } catch {
+        authMode = 'unavailable';
       }
-      await refresh();
-      if (loadError) authMode = 'login';
-    } catch {
-      authMode = 'unavailable';
-    }
+    })();
+    const timer = window.setInterval(() => {
+      if (authMode === 'dashboard' && !loading) void refresh(true);
+    }, 10000);
+    return () => window.clearInterval(timer);
   });
 </script>
 

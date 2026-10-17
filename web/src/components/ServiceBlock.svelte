@@ -54,7 +54,7 @@
     <button class="btn btn-outline" onclick={deleteService}>서비스 삭제</button>
   {/if}
   {#each record.routes as route}
-    <div class="route-line"><code>https://{route.hostname}</code><span>연결 후 자동 공개</span></div>
+    <div class="route-line"><code>https://{route.hostname}</code><span>{record.connector.status === 'connected' && record.service.observed_status === 'connected' ? '공개 중' : '연결 후 자동 공개'}</span></div>
   {/each}
   <form class="form-actions route-form" onsubmit={addRoute}>
     <div class="field"><label for="route-{record.service.id}">공개 주소</label><input class="input input-bordered" id="route-{record.service.id}" bind:value={hostname} placeholder={`예: app.${outlet.domain || 'saeoo.com'}`} required /></div>

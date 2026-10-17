@@ -510,6 +510,13 @@ func (s *Store) list(w http.ResponseWriter, r *http.Request) {
 			fail(w, r, 503, "persistence_failed")
 			return
 		}
+		s.mu.Lock()
+		for i := range connectors {
+			if record, ok := s.managed[connectors[i].ID]; ok {
+				connectors[i].Status = managedConnectorStatus(record, s.now())
+			}
+		}
+		s.mu.Unlock()
 		reply(w, 200, map[string]any{"connectors": connectors})
 		return
 	}
@@ -533,6 +540,39 @@ func (s *Store) list(w http.ResponseWriter, r *http.Request) {
 		statuses = append(statuses, Status{id, record.Name, record.Configuration.ServiceID, state, tunnel, record.LastSeen, record.LastHeartbeat, record.CredentialExpiresAt})
 	}
 	reply(w, 200, map[string]any{"connectors": statuses})
+}
+
+func managedConnectorStatus(record Record, now time.Time) string {
+	if !record.Enrolled {
+		return "draft"
+	}
+	if record.LastSeen.IsZero() || now.Sub(record.LastSeen) >= 60*time.Second {
+		return "disconnected"
+	}
+	if now.Sub(record.LastSeen) >= 15*time.Second {
+		return "stale"
+	}
+	if record.TunnelStatus == "connected" {
+		return "connected"
+	}
+	return "connecting"
+}
+
+func managedServiceStatus(record Record, serviceID string, now time.Time) string {
+	if !record.Enrolled || record.Configuration.ServiceID != serviceID || record.LastHeartbeat == nil {
+		return "unknown"
+	}
+	status := managedConnectorStatus(record, now)
+	if status == "disconnected" || status == "stale" {
+		return status
+	}
+	if record.LastHeartbeat.ServiceHealth == "unhealthy" {
+		return "error"
+	}
+	if record.LastHeartbeat.ServiceHealth == "healthy" && status == "connected" {
+		return "connected"
+	}
+	return "connecting"
 }
 
 func (s *Store) issueToken(w http.ResponseWriter, r *http.Request) {
@@ -756,6 +796,13 @@ func (s *Store) listServices(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
+	s.mu.Lock()
+	if record, ok := s.managed[r.PathValue("id")]; ok {
+		for i := range services {
+			services[i].ObservedStatus = managedServiceStatus(record, services[i].ID, s.now())
+		}
+	}
+	s.mu.Unlock()
 	reply(w, 200, map[string]any{"services": services})
 }
 
