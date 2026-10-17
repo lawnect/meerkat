@@ -53,7 +53,6 @@ button:focus-visible, input:focus-visible { outline: 2px solid #ef9b6f; outline-
 .ui-card--soft { border: 1px solid rgba(219,207,196,.76); background: rgba(255,253,250,.68); box-shadow: 0 8px 24px rgba(77,58,43,.055), inset 0 1px rgba(255,255,255,.72); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
 .ui-card--solid { border: 1px solid var(--line); background: var(--panel); }
 .ui-card--glass { border: 1px solid rgba(255,255,255,.88); background: rgba(255,255,255,.52); box-shadow: 0 9px 24px rgba(86,62,45,.09); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
-.ui-card--none { padding: 0; }
 .ui-card--sm { padding: 14px 16px; }
 .ui-card--md { padding: 22px; }
 

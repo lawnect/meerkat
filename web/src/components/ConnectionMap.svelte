@@ -101,11 +101,11 @@
   .glass-metrics :global(.glass-card) { min-height: 104px; }
   .glass-label, .glass-metrics small { display: block; color: #756c65; font-size: 11px; }
   .glass-metrics strong { display: block; color: #282522; font-size: 25px; line-height: 1.25; font-weight: 650; letter-spacing: -.045em; }
-  .column-headings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10%; margin-bottom: 10px; color: #706761; font-size: 10px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
+  .column-headings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10%; margin-bottom: 10px; padding: 0 12px; color: #706761; font-size: 10px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
   .column-headings span:nth-child(2) { text-align: center; }
   .column-headings span:nth-child(3) { text-align: right; }
   .flow-list { display: grid; gap: 9px; }
-  :global(.flow-row) { display: grid; grid-template-columns: minmax(0,1fr) 10% minmax(0,1fr) 10% minmax(0,1fr); align-items: center; border: 0; border-radius: 0; background: transparent; }
+  :global(.flow-row) { display: grid; grid-template-columns: minmax(0,1fr) 10% minmax(0,1fr) 10% minmax(0,1fr); align-items: center; border: 0; border-radius: 0; padding: 8px 12px; background: transparent; }
   :global(.flow-node) { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 41px; border-color: #e9ddd4; border-radius: 6px; padding: 7px 10px; background: rgba(255,255,255,.76); color: #36312d; font-size: 12px; }
   :global(.flow-node) .node-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: #8b918e; }
   :global(.flow-node.missing) { color: #8b8179; }

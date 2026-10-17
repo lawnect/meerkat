@@ -13,3 +13,5 @@
 `Button`은 기본적으로 `type="button"`입니다. 폼 제출에는 `type="submit"`을 지정하세요. `LinkButton`은 실제 `<a>` 요소이므로 외부 링크에 새 창을 사용할 때는 `target="_blank" rel="noopener noreferrer"`를 함께 지정하세요.
 
 기본 `soft` 카드는 은은하게 반투명하며, 배경 위에 떠 있는 카드에는 더 투명한 `glass`를 사용합니다. 두 변형 모두 `backdrop-filter`로 카드 뒤의 내용을 흐리게 보여줍니다. 완전히 불투명한 표면이 필요한 경우에만 `solid`를 지정합니다. 각 변형의 투명도와 흐림 값은 `web/src/app.css`에서 일관되게 관리합니다.
+
+`padding="none"`은 카드 자체의 기본 여백을 지정하지 않습니다. 연결 지도처럼 사용처에서 여백을 정해야 할 때 사용하며, 해당 영역의 CSS에서 `padding`을 지정하세요.
