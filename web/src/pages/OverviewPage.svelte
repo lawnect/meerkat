@@ -25,10 +25,10 @@
 </PageHead>
 
 <div class="dashboard-grid summary-grid">
-  <div class="summary-card card bg-base-100 border-base-300"><div class="stat-label">Connector</div><div class="stat-value">{data.connectors.length}</div><div class="stat-note">등록된 연결</div></div>
-  <div class="summary-card card bg-base-100 border-base-300"><div class="stat-label">연결됨</div><div class="stat-value">{connected}</div><div class="stat-note">heartbeat 기준</div></div>
-  <div class="summary-card card bg-base-100 border-base-300"><div class="stat-label">내부 앱</div><div class="stat-value">{data.services.length}</div><div class="stat-note">등록된 앱</div></div>
-  <div class="summary-card card bg-base-100 border-base-300"><div class="stat-label">공개 주소</div><div class="stat-value">{data.routes.length}</div><div class="stat-note">등록된 주소</div></div>
+  <div class="summary-card card bg-base-100 border-base-300"><div class="stat-label">등록된 Connector</div><div class="stat-value">{data.connectors.length}</div><div class="stat-note">앱 연결을 위해 만든 Connector</div></div>
+  <div class="summary-card card bg-base-100 border-base-300"><div class="stat-label">현재 연결된 Connector</div><div class="stat-value">{connected}</div><div class="stat-note">전체 {data.connectors.length}개 중 최근 응답과 터널 연결 확인</div></div>
+  <div class="summary-card card bg-base-100 border-base-300"><div class="stat-label">등록된 내부 앱</div><div class="stat-value">{data.services.length}</div><div class="stat-note">내부 주소와 포트를 등록한 앱</div></div>
+  <div class="summary-card card bg-base-100 border-base-300"><div class="stat-label">설정된 공개 주소</div><div class="stat-value">{data.routes.length}</div><div class="stat-note">접속 상태와 별개로 등록된 도메인</div></div>
 </div>
 
 <style>
