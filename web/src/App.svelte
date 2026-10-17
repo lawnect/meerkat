@@ -101,12 +101,12 @@
       <p class="rail-label">운영</p>
       <nav class="nav" aria-label="운영 메뉴">
         <button class:active={view === 'overview'} onclick={() => navigate('overview')}>개요</button>
-        <button class:active={view === 'connectors'} onclick={() => navigate('connectors')}>연결 서버</button>
+        <button class:active={view === 'connectors'} onclick={() => navigate('connectors')}>앱 연결</button>
         <button class:active={view === 'routes'} onclick={() => navigate('routes')}>공개 서비스</button>
         <button class:active={view === 'diagnostics'} onclick={() => navigate('diagnostics')}>요청 진단</button>
         <button class:active={view === 'settings'} onclick={() => navigate('settings')}>설정</button>
       </nav>
-      <div class="rail-note"><strong>도움이 필요하신가요?</strong>공개 서비스는 연결 서버가 연결된 뒤 외부에서 접근할 수 있습니다.</div>
+      <div class="rail-note"><strong>도움이 필요하신가요?</strong>앱과 Connector를 연결하면 등록한 공개 주소로 접속할 수 있습니다.</div>
     </aside>
     <main class="content">
       {#if loadError}<p class="error" role="alert">{loadError}</p>{/if}

@@ -28,7 +28,7 @@
   }
 
   async function deleteService(): Promise<void> {
-    if (!confirm(`서비스 ${record.service.name} 을(를) 삭제할까요?`)) return;
+    if (!confirm(`내부 앱 ${record.service.name}을(를) 삭제할까요?`)) return;
     error = '';
     try {
       await api(`/api/v1/connectors/${encodeURIComponent(record.connector.id)}/services/${encodeURIComponent(record.service.id)}`, { method: 'DELETE' });
@@ -36,7 +36,7 @@
       connectorState.enrollmentWasReset = false;
       await onChanged();
     } catch (cause) {
-      error = `서비스를 삭제하지 못했습니다: ${errorMessage(cause)}`;
+      error = `내부 앱을 삭제하지 못했습니다: ${errorMessage(cause)}`;
     }
   }
 </script>
@@ -51,7 +51,7 @@
   </div>
   {#if record.routes.length === 0}
     <p class="muted service-empty">아직 공개 주소가 없습니다.</p>
-    <button class="btn btn-outline" onclick={deleteService}>서비스 삭제</button>
+    <button class="btn btn-outline" onclick={deleteService}>내부 앱 삭제</button>
   {/if}
   {#each record.routes as route}
     <div class="route-line"><code>https://{route.hostname}</code><span>{record.connector.status === 'connected' && record.service.observed_status === 'connected' ? '공개 중' : '연결 후 자동 공개'}</span></div>

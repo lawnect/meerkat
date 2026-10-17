@@ -6,15 +6,15 @@
   let { data, navigate }: { data: DashboardData; navigate: (view: PageKey) => Promise<void> } = $props();
   const connected = $derived(data.connectors.filter((connector) => connector.status === 'connected').length);
   const next = $derived(data.connectors.length === 0
-    ? 'Connector를 하나 만들어 내부 서비스를 연결하세요.'
+    ? 'Connector를 하나 만들어 내부 앱을 연결하세요.'
     : connected === 0
       ? 'Connector를 실행하고 등록 토큰으로 연결하세요.'
       : '공개 서비스의 상태를 확인하세요.');
   const items = $derived([
     ['도메인 확인', Boolean(data.outlet.domain), '설정에서 변경', 'settings'],
-    ['Connector 만들기', data.connectors.length > 0, '서버 등록', 'connectors'],
+    ['Connector 만들기', data.connectors.length > 0, 'Connector 등록', 'connectors'],
     ['Connector 연결', connected > 0, '등록 토큰 발급', 'connectors'],
-    ['공개 서비스 만들기', data.routes.length > 0, '서비스 추가', 'routes'],
+    ['공개 서비스 만들기', data.routes.length > 0, '공개 주소 추가', 'connectors'],
   ] as [string, boolean, string, PageKey][]);
 </script>
 
@@ -25,10 +25,10 @@
 </PageHead>
 
 <div class="dashboard-grid summary-grid">
-  <div class="summary-card card bg-base-100 border-base-300"><div class="stat-label">Connector</div><div class="stat-value">{data.connectors.length}</div><div class="stat-note">등록된 서버</div></div>
+  <div class="summary-card card bg-base-100 border-base-300"><div class="stat-label">Connector</div><div class="stat-value">{data.connectors.length}</div><div class="stat-note">등록된 연결</div></div>
   <div class="summary-card card bg-base-100 border-base-300"><div class="stat-label">연결됨</div><div class="stat-value">{connected}</div><div class="stat-note">heartbeat 기준</div></div>
-  <div class="summary-card card bg-base-100 border-base-300"><div class="stat-label">내부 서비스</div><div class="stat-value">{data.services.length}</div><div class="stat-note">등록된 앱</div></div>
-  <div class="summary-card card bg-base-100 border-base-300"><div class="stat-label">공개 주소</div><div class="stat-value">{data.routes.length}</div><div class="stat-note">생성된 Route</div></div>
+  <div class="summary-card card bg-base-100 border-base-300"><div class="stat-label">내부 앱</div><div class="stat-value">{data.services.length}</div><div class="stat-note">등록된 앱</div></div>
+  <div class="summary-card card bg-base-100 border-base-300"><div class="stat-label">공개 주소</div><div class="stat-value">{data.routes.length}</div><div class="stat-note">등록된 주소</div></div>
 </div>
 
 <style>
@@ -66,6 +66,6 @@
   </Panel>
   <div>
     <div class="callout"><strong>현재 할 일</strong><span>{next}</span></div>
-    <div class="panel card bg-base-100 border-base-300 help-panel"><h2>용어 안내</h2><p>Connector는 서비스를 실행하는 서버입니다. 공개 서비스는 서버 안의 앱 하나와 인터넷 주소 하나를 연결합니다.</p></div>
+    <div class="panel card bg-base-100 border-base-300 help-panel"><h2>용어 안내</h2><p>Connector는 앱이 실행되는 서버에서 Outlet으로 연결하는 프로그램입니다. 현재 Connector 하나에 내부 앱 하나를 등록하고, 앱에는 공개 주소를 추가할 수 있습니다.</p></div>
   </div>
 </div>

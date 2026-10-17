@@ -65,7 +65,7 @@
       port = '';
       await onChanged();
     } catch (cause) {
-      serviceError = `서비스를 등록하지 못했습니다: ${errorMessage(cause)}`;
+      serviceError = `내부 앱을 등록하지 못했습니다: ${errorMessage(cause)}`;
     } finally {
       serviceBusy = false;
     }
@@ -74,7 +74,7 @@
   async function deleteConnector(): Promise<void> {
     if (!selected || deleteBusy) return;
     const connector = selected;
-    if (!confirm(`${connector.name} 연결 서버를 삭제할까요? 등록된 서비스와 공개 주소도 삭제되고, 실행 중인 Connector의 연결이 끊깁니다.`)) return;
+    if (!confirm(`Connector ${connector.name}을(를) 삭제할까요? 등록된 앱과 공개 주소도 삭제되고, 실행 중인 Connector의 연결이 끊깁니다.`)) return;
     deleteError = '';
     deleteBusy = true;
     try {
@@ -84,7 +84,7 @@
       connectorState.enrollmentWasReset = false;
       await onChanged();
     } catch (cause) {
-      deleteError = `연결 서버를 삭제하지 못했습니다: ${errorMessage(cause)}`;
+      deleteError = `Connector를 삭제하지 못했습니다: ${errorMessage(cause)}`;
     } finally {
       deleteBusy = false;
     }
@@ -123,15 +123,15 @@
 
 </script>
 
-<PageHead kicker="운영 / 연결 서버" title="서버 연결" description="서비스를 실행하는 서버를 등록하고 연결 상태를 관리합니다." />
+<PageHead kicker="운영 / 앱 연결" title="앱 연결" description="내부 앱을 Meerkat에 연결하고 공개 주소를 설정합니다." />
 <div class="connector-layout">
-  <Panel title="연결 서버" description="새 서버를 등록하거나 기존 연결을 선택합니다.">
+  <Panel title="Connector" description="공개할 앱마다 Connector를 만들고 연결합니다.">
     <form onsubmit={createConnector}>
-      <div class="field"><label for="connector-name">새 연결 서버 이름</label><input class="input input-bordered" id="connector-name" bind:value={name} placeholder="예: home-server" required /></div>
+      <div class="field"><label for="connector-name">Connector 이름</label><input class="input input-bordered" id="connector-name" bind:value={name} placeholder="예: coolify-hello" required /></div>
       <div class="form-actions"><button class="btn btn-primary" type="submit" disabled={createBusy}>{createBusy ? '만드는 중…' : 'Connector 만들기'}</button></div>
       {#if createError}<p class="error" role="alert">{createError}</p>{/if}
     </form>
-    <h3 class="section-title">등록된 연결 서버</h3>
+    <h3 class="section-title">등록된 Connector</h3>
     {#if data.connectors.length}
       <div class="connector-list">
         {#each data.connectors as connector}
@@ -141,36 +141,36 @@
         {/each}
       </div>
     {:else}
-      <div class="empty compact-empty"><p>등록된 연결 서버가 없습니다.</p></div>
+      <div class="empty compact-empty"><p>등록된 Connector가 없습니다.</p></div>
     {/if}
   </Panel>
 
   {#if selected}
     <div class="connector-detail">
-      <Panel title="서비스와 공개 주소" description="먼저 내부 앱을 등록하고, 그 다음 외부에서 사용할 주소를 추가합니다.">
-        <div class="detail-title connector-title"><strong>{selected.name}</strong><Status label={statusLabel(selected.status)} value={selected.status} /><button class="btn btn-outline btn-error" type="button" onclick={deleteConnector} disabled={deleteBusy}>{deleteBusy ? '삭제 중…' : '연결 서버 삭제'}</button></div>
+      <Panel title="연결할 앱과 공개 주소" description="먼저 내부 앱을 등록하고, 그 다음 외부에서 사용할 주소를 추가합니다.">
+        <div class="detail-title connector-title"><strong>{selected.name}</strong><Status label={statusLabel(selected.status)} value={selected.status} /><button class="btn btn-outline btn-error" type="button" onclick={deleteConnector} disabled={deleteBusy}>{deleteBusy ? '삭제 중…' : 'Connector 삭제'}</button></div>
         {#if deleteError}<p class="error" role="alert">{deleteError}</p>{/if}
-        <h3 class="section-title">새 내부 서비스</h3>
+        <h3 class="section-title">내부 앱 등록</h3>
         <form class="dashboard-grid form-grid" onsubmit={createService}>
-          <div class="field"><label for="service-name">서비스 이름</label><input class="input input-bordered" id="service-name" bind:value={serviceName} placeholder="예: memo" required /></div>
+          <div class="field"><label for="service-name">앱 이름</label><input class="input input-bordered" id="service-name" bind:value={serviceName} placeholder="예: memo" required /></div>
           <div class="field"><label for="service-host">내부 호스트</label><input class="input input-bordered" id="service-host" bind:value={host} placeholder="예: memo-app" required /></div>
           <div class="field"><label for="service-port">내부 포트</label><input class="input input-bordered" id="service-port" bind:value={port} type="number" min="1" max="65535" placeholder="예: 3000" required /></div>
-          <div class="form-actions"><button class="btn btn-primary" type="submit" disabled={serviceBusy || services.length > 0}>{serviceBusy ? '등록 중…' : '내부 서비스 등록'}</button></div>
-          {#if services.length}<p class="error">현재 Connector는 서비스 하나만 지원합니다. 기존 서비스를 삭제한 뒤 새 서비스를 등록하세요.</p>{/if}
+          <div class="form-actions"><button class="btn btn-primary" type="submit" disabled={serviceBusy || services.length > 0}>{serviceBusy ? '등록 중…' : '내부 앱 등록'}</button></div>
+          {#if services.length}<p class="error">현재 Connector는 앱 하나만 지원합니다. 다른 앱을 공개하려면 새 Connector를 만드세요.</p>{/if}
           {#if serviceError}<p class="error" role="alert">{serviceError}</p>{/if}
         </form>
-        <h3 class="section-title">등록된 서비스</h3>
+        <h3 class="section-title">등록된 앱</h3>
         {#if records.length}
           {#each records as record}
             <ServiceBlock {record} outlet={data.outlet} onChanged={onChanged} />
           {/each}
         {:else}
-          <div class="empty"><h2>아직 서비스가 없습니다</h2><p>이 Connector가 연결할 내부 앱의 주소와 포트를 등록하세요.</p></div>
+          <div class="empty"><h2>아직 등록된 앱이 없습니다</h2><p>이 Connector가 연결할 내부 앱의 주소와 포트를 등록하세요.</p></div>
         {/if}
         {#if services.length === 1}
           <section class="token-panel">
             <h3>Connector 연결</h3>
-            <p>등록 토큰을 발급하고 Connector 서버에 설치합니다. 토큰은 한 번만 표시됩니다.</p>
+            <p>등록 토큰을 발급하고 앱이 실행되는 서버에서 Connector를 실행합니다. 토큰은 한 번만 표시됩니다.</p>
             <button class="btn btn-primary" onclick={() => issueToken()} disabled={tokenBusy}>{tokenBusy ? '발급 중…' : '등록 토큰 발급'}</button>
             {#if tokenError}<p class:error={!tokenError.includes('복사했습니다')} class:success={tokenError.includes('복사했습니다')} role="status">{tokenError}</p>{/if}
             {#if tokenError.includes('already_enrolled')}
@@ -183,18 +183,18 @@
                 <input class="input input-bordered" aria-label="등록 토큰" value={enrollment.token} readonly />
                 <button class="btn btn-primary" onclick={() => copy(enrollment.token, '토큰')}>토큰 복사</button>
                 <p>만료: {new Date(enrollment.expires_at).toLocaleString()}</p>
-                <p>Connector 서버에서 실행할 명령</p><pre>{installCommand()}</pre>
+                <p>앱이 실행되는 서버에서 실행할 명령</p><pre>{installCommand()}</pre>
                 <button class="btn btn-primary" onclick={() => copy(installCommand(), '설치 명령')}>설치 명령 복사</button>
               </div>
             {/if}
           </section>
         {:else if services.length === 0}
-          <section class="token-panel"><h3>Connector 연결</h3><p>토큰 발급에는 Connector당 서비스 하나가 필요합니다. 먼저 서비스를 등록하세요.</p><button class="btn btn-primary" disabled>등록 토큰 발급</button></section>
+          <section class="token-panel"><h3>Connector 연결</h3><p>토큰을 발급하려면 먼저 이 Connector에 내부 앱 하나를 등록하세요.</p><button class="btn btn-primary" disabled>등록 토큰 발급</button></section>
         {/if}
       </Panel>
     </div>
   {:else}
-    <div class="panel card bg-base-100 border-base-300"><div class="empty"><h2>연결 서버를 선택하세요</h2><p>왼쪽에서 서버를 선택하면 서비스 등록과 설치 안내가 표시됩니다.</p></div></div>
+    <div class="panel card bg-base-100 border-base-300"><div class="empty"><h2>Connector를 선택하세요</h2><p>왼쪽에서 Connector를 선택하면 앱 등록과 설치 안내가 표시됩니다.</p></div></div>
   {/if}
 </div>
 
