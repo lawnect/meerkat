@@ -14,7 +14,7 @@
 </PageHead>
 
 {#if data.records.length}
-  <div class="grid route-groups">
+  <div class="dashboard-grid route-groups">
     {#each data.connectors as connector}
       {@const records = data.records.filter((record) => record.connector.id === connector.id)}
       {#if records.length}

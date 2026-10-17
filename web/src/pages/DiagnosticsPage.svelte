@@ -32,7 +32,7 @@
 
 {#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if snapshot}
-  <div class="grid two-col diagnostics-grid">
+  <div class="dashboard-grid two-col diagnostics-grid">
     <Panel title="Outlet 위치" description="지역은 outlet.json에 직접 설정한 값입니다.">
       <dl class="diagnostic-list">
         <div><dt>설정된 지역</dt><dd>{snapshot.outlet.region || '설정되지 않음'}</dd></div>

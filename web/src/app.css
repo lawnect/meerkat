@@ -28,7 +28,7 @@ button, input { font: inherit; }
 button { cursor: pointer; }
 button:focus-visible, input:focus-visible { outline: 3px solid #e7a58d; outline-offset: 2px; }
 
-.grid { display: grid; gap: 16px; }
+.dashboard-grid { display: grid; gap: 16px; }
 .field { display: grid; gap: 5px; }
 .field.full { grid-column: 1 / -1; }
 .field label { color: #4f5759; font-size: 12px; font-weight: 700; }

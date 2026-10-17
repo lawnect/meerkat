@@ -134,6 +134,7 @@
   .brand { font-size: 16px; font-weight: 760; letter-spacing: .08em; }
   .brand small { margin-left: 7px; color: #b8c0c2; font-size: 10px; letter-spacing: .14em; }
   .topbar-meta { display: flex; align-items: center; gap: 18px; margin-left: auto; color: #c3c9c9; font-size: 12px; }
+  .topbar-meta :global(.connection-status) { color: inherit; }
   .topbar button { border: 0; padding: 6px 0; background: transparent; color: #e8ece8; }
   .mock-badge { border: 1px solid #e5aa47; border-radius: 2px; padding: 3px 6px; color: #ffd27c; font-size: 10px; font-weight: 800; letter-spacing: .08em; }
   .layout { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: calc(100vh - 64px); }
@@ -148,12 +149,16 @@
   .content { width: 100%; max-width: 1180px; padding: 38px 48px 72px; }
   .loading-note { margin: 0 0 16px; color: var(--muted); }
   @media (max-width: 900px) {
-    .layout { grid-template-columns: 1fr; }
-    .rail { display: block; border-right: 0; border-bottom: 1px solid var(--line); padding: 10px 16px; }
+    .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: max-content minmax(0, 1fr); }
+    .rail { display: block; min-width: 0; border-right: 0; border-bottom: 1px solid var(--line); padding: 10px 16px; }
     .rail-label, .rail-note { display: none; }
     .nav { display: flex; overflow: auto; }
     .nav button { border-bottom: 3px solid transparent; border-left: 0; white-space: nowrap; }
     .nav button.active { border-bottom-color: var(--accent); }
-    .content { padding: 28px 22px 56px; }
+    .content { min-width: 0; padding: 28px 22px 56px; }
+  }
+  @media (max-width: 600px) {
+    .topbar { height: auto; min-height: 64px; display: grid; gap: 8px; padding: 12px 16px; }
+    .topbar-meta { margin-left: 0; flex-wrap: wrap; gap: 8px 14px; }
   }
 </style>

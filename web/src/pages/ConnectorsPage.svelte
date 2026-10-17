@@ -36,11 +36,11 @@
     createBusy = true;
     try {
       const connector = await api<Connector>('/api/v1/connectors', { method: 'POST', body: JSON.stringify({ name }) });
-      connectorState.selectedId = connector.id;
       connectorState.enrollment = null;
       connectorState.enrollmentWasReset = false;
       name = '';
       await onChanged();
+      connectorState.selectedId = connector.id;
     } catch (cause) {
       createError = `Connector를 만들지 못했습니다: ${errorMessage(cause)}`;
     } finally {
@@ -129,7 +129,7 @@
       <Panel title="서비스와 공개 주소" description="먼저 내부 앱을 등록하고, 그 다음 외부에서 사용할 주소를 추가합니다.">
         <div class="detail-title connector-title"><strong>{selected.name}</strong><Status label={statusLabel(selected.status)} value={selected.status} /></div>
         <h3 class="section-title">새 내부 서비스</h3>
-        <form class="grid form-grid" onsubmit={createService}>
+        <form class="dashboard-grid form-grid" onsubmit={createService}>
           <div class="field"><label for="service-name">서비스 이름</label><input class="input input-bordered" id="service-name" bind:value={serviceName} placeholder="예: memo" required /></div>
           <div class="field"><label for="service-host">내부 호스트</label><input class="input input-bordered" id="service-host" bind:value={host} placeholder="예: memo-app" required /></div>
           <div class="field"><label for="service-port">내부 포트</label><input class="input input-bordered" id="service-port" bind:value={port} type="number" min="1" max="65535" placeholder="예: 3000" required /></div>
@@ -146,7 +146,7 @@
           <div class="empty"><h2>아직 서비스가 없습니다</h2><p>이 Connector가 연결할 내부 앱의 주소와 포트를 등록하세요.</p></div>
         {/if}
         {#if services.length === 1}
-  <section class="token-panel card bg-base-100 border-base-300">
+          <section class="token-panel">
             <h3>Connector 연결</h3>
             <p>등록 토큰을 발급하고 Connector 서버에 설치합니다. 토큰은 한 번만 표시됩니다.</p>
             <button class="btn btn-primary" onclick={() => issueToken()} disabled={tokenBusy}>{tokenBusy ? '발급 중…' : '등록 토큰 발급'}</button>
@@ -167,7 +167,7 @@
             {/if}
           </section>
         {:else if services.length === 0}
-          <section class="token-panel card bg-base-100 border-base-300"><h3>Connector 연결</h3><p>토큰 발급에는 Connector당 서비스 하나가 필요합니다. 먼저 서비스를 등록하세요.</p><button class="btn btn-primary" disabled>등록 토큰 발급</button></section>
+          <section class="token-panel"><h3>Connector 연결</h3><p>토큰 발급에는 Connector당 서비스 하나가 필요합니다. 먼저 서비스를 등록하세요.</p><button class="btn btn-primary" disabled>등록 토큰 발급</button></section>
         {/if}
       </Panel>
     </div>

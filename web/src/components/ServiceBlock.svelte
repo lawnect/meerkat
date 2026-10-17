@@ -70,7 +70,12 @@
   .service-meta { color: var(--muted); font-size: 12px; }
   .service-empty { margin: 12px 0 !important; }
   .route-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; border: 1px solid var(--line); padding: 10px 12px; background: #fbfaf5; }
-  .route-line code { color: #345a70; font-size: 12px; }
+  .route-line code { overflow-wrap: anywhere; color: #345a70; font-size: 12px; }
   .route-form { align-items: end; }
   .route-form .field { flex: 1; min-width: 180px; }
+  @media (max-width: 600px) {
+    .route-line { align-items: flex-start; flex-direction: column; }
+    .route-form { align-items: stretch; flex-direction: column; }
+    .route-form .field { flex: auto; min-width: 0; width: 100%; }
+  }
 </style>
