@@ -3,6 +3,8 @@
   import { api, errorMessage } from '../api';
   import PageHead from '../components/PageHead.svelte';
   import Panel from '../components/Panel.svelte';
+  import Button from '../components/ui/Button.svelte';
+  import Card from '../components/ui/Card.svelte';
   import type { TraceSnapshot } from '../types';
 
   let snapshot = $state<TraceSnapshot | null>(null);
@@ -26,7 +28,7 @@
 
 <PageHead kicker="운영 / 진단" title="요청 진단" description="현재 관리자 요청이 Outlet에 도착한 경로 정보를 확인합니다.">
   {#snippet action()}
-    <button class="btn btn-outline" onclick={refresh} disabled={loading}>{loading ? '새로 고치는 중…' : '새로 고침'}</button>
+    <Button variant="secondary" onclick={refresh} disabled={loading}>{loading ? '새로 고치는 중…' : '새로 고침'}</Button>
   {/snippet}
 </PageHead>
 
@@ -54,7 +56,7 @@
     </Panel>
   </div>
 {:else if !loading && !error}
-  <div class="empty"><p>진단 정보를 기다리는 중입니다.</p></div>
+  <Card class="empty"><p>진단 정보를 기다리는 중입니다.</p></Card>
 {/if}
 
 <style>

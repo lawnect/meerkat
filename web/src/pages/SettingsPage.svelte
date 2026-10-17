@@ -2,6 +2,7 @@
   import { api, errorMessage } from '../api';
   import PageHead from '../components/PageHead.svelte';
   import Panel from '../components/Panel.svelte';
+  import Button from '../components/ui/Button.svelte';
   import type { Outlet } from '../types';
 
   let { outlet, onSaved }: { outlet: Outlet; onSaved: () => Promise<void> } = $props();
@@ -34,7 +35,7 @@
       <label for="domain">기본 도메인</label>
       <input class="input input-bordered" id="domain" bind:value={domain} placeholder="예: saeoo.com" required />
     </div>
-    <div class="form-actions"><button class="btn btn-primary" type="submit" disabled={busy}>{busy ? '저장 중…' : outlet.domain ? '저장' : '도메인 설정'}</button></div>
+    <div class="form-actions"><Button type="submit" disabled={busy}>{busy ? '저장 중…' : outlet.domain ? '저장' : '도메인 설정'}</Button></div>
     {#if error}<p class="error" role="alert">{error}</p>{/if}
   </form>
 </Panel>

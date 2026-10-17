@@ -9,6 +9,8 @@
   import ConnectorsPage from './pages/ConnectorsPage.svelte';
   import RoutesPage from './pages/RoutesPage.svelte';
   import DiagnosticsPage from './pages/DiagnosticsPage.svelte';
+  import Button from './components/ui/Button.svelte';
+  import Card from './components/ui/Card.svelte';
 
   let authMode = $state<AuthMode>('loading');
   let view = $state<PageKey>('overview');
@@ -90,21 +92,21 @@
 {:else if authMode === 'loading'}
   <main class="auth-wrap"><p>Outlet에 연결하는 중입니다…</p></main>
 {:else if authMode === 'unavailable'}
-  <main class="auth-wrap"><section class="auth"><div class="auth-brand">MEERKAT / OUTLET</div><h1>연결할 수 없습니다</h1><p class="auth-intro">Outlet API에 연결할 수 없습니다. 서버 상태와 인증서를 확인하고 다시 시도하세요.</p><button class="btn btn-primary" onclick={() => location.reload()}>다시 시도</button></section></main>
+  <main class="auth-wrap"><Card as="section" class="auth"><div class="auth-brand">MEERKAT / OUTLET</div><h1>연결할 수 없습니다</h1><p class="auth-intro">Outlet API에 연결할 수 없습니다. 서버 상태와 인증서를 확인하고 다시 시도하세요.</p><Button onclick={() => location.reload()}>다시 시도</Button></Card></main>
 {:else}
   <header class="topbar">
     <div class="brand">MEERKAT <small>OUTLET</small></div>
-    <div class="topbar-meta">{#if mockApiEnabled}<span class="mock-badge" title="변경 내용은 현재 브라우저 세션에만 유지됩니다">MOCK API</span>{/if}<span>{data.outlet.domain || '도메인 미설정'}</span><Status label="Outlet 정상" value="connected" /><button onclick={logout}>로그아웃</button></div>
+    <div class="topbar-meta">{#if mockApiEnabled}<span class="mock-badge" title="변경 내용은 현재 브라우저 세션에만 유지됩니다">MOCK API</span>{/if}<span>{data.outlet.domain || '도메인 미설정'}</span><Status label="Outlet 정상" value="connected" /><Button variant="plain" class="logout-button" onclick={logout}>로그아웃</Button></div>
   </header>
   <div class="layout">
     <aside class="rail">
       <p class="rail-label">운영</p>
       <nav class="nav" aria-label="운영 메뉴">
-        <button class:active={view === 'overview'} onclick={() => navigate('overview')}>개요</button>
-        <button class:active={view === 'connectors'} onclick={() => navigate('connectors')}>앱 연결</button>
-        <button class:active={view === 'routes'} onclick={() => navigate('routes')}>공개 서비스</button>
-        <button class:active={view === 'diagnostics'} onclick={() => navigate('diagnostics')}>요청 진단</button>
-        <button class:active={view === 'settings'} onclick={() => navigate('settings')}>설정</button>
+        <Button variant="plain" class={view === 'overview' ? 'nav-item active' : 'nav-item'} onclick={() => navigate('overview')}>개요</Button>
+        <Button variant="plain" class={view === 'connectors' ? 'nav-item active' : 'nav-item'} onclick={() => navigate('connectors')}>앱 연결</Button>
+        <Button variant="plain" class={view === 'routes' ? 'nav-item active' : 'nav-item'} onclick={() => navigate('routes')}>공개 서비스</Button>
+        <Button variant="plain" class={view === 'diagnostics' ? 'nav-item active' : 'nav-item'} onclick={() => navigate('diagnostics')}>요청 진단</Button>
+        <Button variant="plain" class={view === 'settings' ? 'nav-item active' : 'nav-item'} onclick={() => navigate('settings')}>설정</Button>
       </nav>
       <div class="rail-note"><strong>도움이 필요하신가요?</strong>앱과 Connector를 연결하면 등록한 공개 주소로 접속할 수 있습니다.</div>
     </aside>
@@ -141,15 +143,15 @@
   .brand small { margin-left: 6px; color: #8d8780; font-size: 9px; font-weight: 600; letter-spacing: .1em; }
   .topbar-meta { display: flex; align-items: center; gap: 18px; margin-left: auto; color: #69655f; font-size: 12px; }
   .topbar-meta :global(.connection-status) { color: inherit; }
-  .topbar button { border: 0; padding: 6px 0; background: transparent; color: #57534e; }
+  .topbar :global(.logout-button) { padding: 6px 0; color: #57534e; }
   .mock-badge { border: 1px solid #f2c8ae; border-radius: 3px; padding: 3px 6px; color: var(--accent-dark); font-size: 10px; font-weight: 700; letter-spacing: .08em; }
   .layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: calc(100vh - 68px); }
   .rail { display: flex; flex-direction: column; border-right: 1px solid var(--line); padding: 32px 18px; background: #f8f6f2; }
   .rail-label { margin: 0 12px 11px; color: #938d85; font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
   .nav { display: grid; gap: 3px; }
-  .nav button { border: 0; border-left: 2px solid transparent; border-radius: 0 5px 5px 0; padding: 11px 12px; background: transparent; color: #635f59; text-align: left; }
-  .nav button:hover { background: #f1ebe4; }
-  .nav button.active { border-left-color: var(--accent); background: #f6eee8; color: var(--accent-dark); font-weight: 700; }
+  .nav :global(.nav-item) { display: block; width: 100%; border-left: 2px solid transparent; border-radius: 0 5px 5px 0; padding: 11px 12px; color: #635f59; text-align: left; }
+  .nav :global(.nav-item:hover) { background: #f1ebe4; }
+  .nav :global(.nav-item.active) { border-left-color: var(--accent); background: #f6eee8; color: var(--accent-dark); font-weight: 700; }
   .rail-note { margin-top: auto; border-top: 1px solid var(--line); padding: 18px 10px 0; color: var(--muted); font-size: 12px; }
   .rail-note strong { display: block; margin-bottom: 4px; color: var(--ink); font-size: 13px; }
   .content { width: 100%; max-width: 1440px; padding: 38px 44px 72px; }
@@ -159,8 +161,8 @@
     .rail { display: block; min-width: 0; border-right: 0; border-bottom: 1px solid var(--line); padding: 10px 16px; }
     .rail-label, .rail-note { display: none; }
     .nav { display: flex; overflow: auto; }
-    .nav button { border-bottom: 3px solid transparent; border-left: 0; white-space: nowrap; }
-    .nav button.active { border-bottom-color: var(--accent); }
+    .nav :global(.nav-item) { width: auto; border-bottom: 3px solid transparent; border-left: 0; white-space: nowrap; }
+    .nav :global(.nav-item.active) { border-bottom-color: var(--accent); }
     .content { min-width: 0; padding: 28px 22px 56px; }
   }
   @media (max-width: 600px) {

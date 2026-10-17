@@ -5,6 +5,8 @@
   import Panel from '../components/Panel.svelte';
   import ServiceBlock from '../components/ServiceBlock.svelte';
   import Status from '../components/Status.svelte';
+  import Button from '../components/ui/Button.svelte';
+  import Card from '../components/ui/Card.svelte';
   import type { Connector, DashboardData, EnrollmentToken } from '../types';
 
   let { data, onChanged }: { data: DashboardData; onChanged: () => Promise<void> } = $props();
@@ -128,34 +130,34 @@
   <Panel title="Connector" description="공개할 앱마다 Connector를 만들고 연결합니다.">
     <form onsubmit={createConnector}>
       <div class="field"><label for="connector-name">Connector 이름</label><input class="input input-bordered" id="connector-name" bind:value={name} placeholder="예: coolify-hello" required /></div>
-      <div class="form-actions"><button class="btn btn-primary" type="submit" disabled={createBusy}>{createBusy ? '만드는 중…' : 'Connector 만들기'}</button></div>
+      <div class="form-actions"><Button type="submit" disabled={createBusy}>{createBusy ? '만드는 중…' : 'Connector 만들기'}</Button></div>
       {#if createError}<p class="error" role="alert">{createError}</p>{/if}
     </form>
     <h3 class="section-title">등록된 Connector</h3>
     {#if data.connectors.length}
       <div class="connector-list">
         {#each data.connectors as connector}
-          <button class="connector-item" class:selected={connectorState.selectedId === connector.id} onclick={() => { connectorState.selectedId = connector.id; connectorState.enrollment = null; connectorState.enrollmentWasReset = false; tokenError = ''; }}>
+          <Button variant="plain" class={connectorState.selectedId === connector.id ? 'connector-item selected' : 'connector-item'} onclick={() => { connectorState.selectedId = connector.id; connectorState.enrollment = null; connectorState.enrollmentWasReset = false; tokenError = ''; }}>
             <strong>{connector.name}</strong><Status label={statusLabel(connector.status)} value={connector.status} />
-          </button>
+          </Button>
         {/each}
       </div>
     {:else}
-      <div class="empty compact-empty"><p>등록된 Connector가 없습니다.</p></div>
+      <Card padding="none" class="empty compact-empty"><p>등록된 Connector가 없습니다.</p></Card>
     {/if}
   </Panel>
 
   {#if selected}
     <div class="connector-detail">
       <Panel title="연결할 앱과 공개 주소" description="먼저 내부 앱을 등록하고, 그 다음 외부에서 사용할 주소를 추가합니다.">
-        <div class="detail-title connector-title"><strong>{selected.name}</strong><Status label={statusLabel(selected.status)} value={selected.status} /><button class="btn btn-outline btn-error" type="button" onclick={deleteConnector} disabled={deleteBusy}>{deleteBusy ? '삭제 중…' : 'Connector 삭제'}</button></div>
+        <div class="detail-title connector-title"><strong>{selected.name}</strong><Status label={statusLabel(selected.status)} value={selected.status} /><Button variant="danger" onclick={deleteConnector} disabled={deleteBusy}>{deleteBusy ? '삭제 중…' : 'Connector 삭제'}</Button></div>
         {#if deleteError}<p class="error" role="alert">{deleteError}</p>{/if}
         <h3 class="section-title">내부 앱 등록</h3>
         <form class="dashboard-grid form-grid" onsubmit={createService}>
           <div class="field"><label for="service-name">앱 이름</label><input class="input input-bordered" id="service-name" bind:value={serviceName} placeholder="예: memo" required /></div>
           <div class="field"><label for="service-host">내부 호스트</label><input class="input input-bordered" id="service-host" bind:value={host} placeholder="예: memo-app" required /></div>
           <div class="field"><label for="service-port">내부 포트</label><input class="input input-bordered" id="service-port" bind:value={port} type="number" min="1" max="65535" placeholder="예: 3000" required /></div>
-          <div class="form-actions"><button class="btn btn-primary" type="submit" disabled={serviceBusy || services.length > 0}>{serviceBusy ? '등록 중…' : '내부 앱 등록'}</button></div>
+          <div class="form-actions"><Button type="submit" disabled={serviceBusy || services.length > 0}>{serviceBusy ? '등록 중…' : '내부 앱 등록'}</Button></div>
           {#if services.length}<p class="error">현재 Connector는 앱 하나만 지원합니다. 다른 앱을 공개하려면 새 Connector를 만드세요.</p>{/if}
           {#if serviceError}<p class="error" role="alert">{serviceError}</p>{/if}
         </form>
@@ -165,62 +167,62 @@
             <ServiceBlock {record} outlet={data.outlet} onChanged={onChanged} />
           {/each}
         {:else}
-          <div class="empty"><h2>아직 등록된 앱이 없습니다</h2><p>이 Connector가 연결할 내부 앱의 주소와 포트를 등록하세요.</p></div>
+          <Card padding="none" class="empty"><h2>아직 등록된 앱이 없습니다</h2><p>이 Connector가 연결할 내부 앱의 주소와 포트를 등록하세요.</p></Card>
         {/if}
         {#if services.length === 1}
           <section class="token-panel">
             <h3>Connector 연결</h3>
             <p>등록 토큰을 발급하고 앱이 실행되는 서버에서 Connector를 실행합니다. 토큰은 한 번만 표시됩니다.</p>
-            <button class="btn btn-primary" onclick={() => issueToken()} disabled={tokenBusy}>{tokenBusy ? '발급 중…' : '등록 토큰 발급'}</button>
+            <Button onclick={() => issueToken()} disabled={tokenBusy}>{tokenBusy ? '발급 중…' : '등록 토큰 발급'}</Button>
             {#if tokenError}<p class:error={!tokenError.includes('복사했습니다')} class:success={tokenError.includes('복사했습니다')} role="status">{tokenError}</p>{/if}
             {#if tokenError.includes('already_enrolled')}
-              <button class="btn btn-outline" onclick={() => { if (confirm('기존 Connector 자격 증명을 무효화하고 새 토큰을 발급합니다. 실행 중인 연결은 끊깁니다. 계속할까요?')) issueToken(true); }}>기존 연결 초기화 후 새 토큰 발급</button>
+              <Button variant="secondary" class="reset-token-button" onclick={() => { if (confirm('기존 Connector 자격 증명을 무효화하고 새 토큰을 발급합니다. 실행 중인 연결은 끊깁니다. 계속할까요?')) issueToken(true); }}>기존 연결 초기화 후 새 토큰 발급</Button>
             {/if}
             {#if connectorState.enrollment}
               {@const enrollment = connectorState.enrollment}
-              <div class="token-box">
+              <Card padding="none" class="token-box">
                 <strong>지금 복사하세요</strong><p>이 화면을 닫으면 토큰을 다시 확인할 수 없습니다.</p>
                 <input class="input input-bordered" aria-label="등록 토큰" value={enrollment.token} readonly />
-                <button class="btn btn-primary" onclick={() => copy(enrollment.token, '토큰')}>토큰 복사</button>
+                <Button class="token-copy" onclick={() => copy(enrollment.token, '토큰')}>토큰 복사</Button>
                 <p>만료: {new Date(enrollment.expires_at).toLocaleString()}</p>
                 <p>앱이 실행되는 서버에서 실행할 명령</p><pre>{installCommand()}</pre>
-                <button class="btn btn-primary" onclick={() => copy(installCommand(), '설치 명령')}>설치 명령 복사</button>
-              </div>
+                <Button class="token-copy" onclick={() => copy(installCommand(), '설치 명령')}>설치 명령 복사</Button>
+              </Card>
             {/if}
           </section>
         {:else if services.length === 0}
-          <section class="token-panel"><h3>Connector 연결</h3><p>토큰을 발급하려면 먼저 이 Connector에 내부 앱 하나를 등록하세요.</p><button class="btn btn-primary" disabled>등록 토큰 발급</button></section>
+          <section class="token-panel"><h3>Connector 연결</h3><p>토큰을 발급하려면 먼저 이 Connector에 내부 앱 하나를 등록하세요.</p><Button disabled>등록 토큰 발급</Button></section>
         {/if}
       </Panel>
     </div>
   {:else}
-    <div class="panel card bg-base-100 border-base-300"><div class="empty"><h2>Connector를 선택하세요</h2><p>왼쪽에서 Connector를 선택하면 앱 등록과 설치 안내가 표시됩니다.</p></div></div>
+    <Card class="empty"><h2>Connector를 선택하세요</h2><p>왼쪽에서 Connector를 선택하면 앱 등록과 설치 안내가 표시됩니다.</p></Card>
   {/if}
 </div>
 
 <style>
   .connector-layout { display: grid; grid-template-columns: 270px minmax(0, 1fr); gap: 16px; }
   .connector-list { padding: 0; }
-  .connector-item { display: block; width: 100%; border: 0; border-bottom: 1px solid var(--line); padding: 14px 16px; background: transparent; color: var(--ink); text-align: left; }
-  .connector-item:first-child { border-top: 1px solid var(--line); }
-  .connector-item:hover, .connector-item.selected { background: #f5eee8; }
-  .connector-item strong { display: block; font-size: 13px; }
+  .connector-list :global(.connector-item) { display: block; width: 100%; border-bottom: 1px solid var(--line); padding: 14px 16px; color: var(--ink); text-align: left; }
+  .connector-list :global(.connector-item:first-child) { border-top: 1px solid var(--line); }
+  .connector-list :global(.connector-item:hover), .connector-list :global(.connector-item.selected) { background: #f5eee8; }
+  .connector-list strong { display: block; font-size: 13px; }
   .connector-detail > :global(.panel) { min-width: 0; }
   .section-title { margin: 24px 0 12px; }
   .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
   .connector-title { margin-bottom: 12px; }
   .connector-title strong { font-size: 18px; }
   .connector-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  .connector-title .btn { margin-left: auto; }
-  .compact-empty { margin-top: 12px; padding: 16px; }
+  .connector-title :global(.ui-button) { margin-left: auto; }
+  :global(.compact-empty) { margin-top: 12px; padding: 16px; }
   .token-panel { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 20px; }
   .token-panel h3 { margin: 0 0 5px; }
   .token-panel > p { margin: 0 0 12px; }
-  .token-panel > .btn-outline { margin-top: 10px; }
-  .token-box { margin-top: 16px; padding: 16px; background: #242a2f; color: #f5f3ec; }
-  .token-box p { color: #c2c8c5; font-size: 12px; }
-  .token-box input { width: 100%; margin: 10px 0; border: 1px solid #59636a; border-radius: 2px; padding: 10px; background: #171c20; color: #fff; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
-  .token-box pre { overflow-wrap: anywhere; border: 1px solid #59636a; padding: 12px; background: #171c20; color: #d9e0da; font: 12px/1.5 ui-monospace, SFMono-Regular, monospace; white-space: pre-wrap; }
-  .token-box .btn-primary { border-color: #e7a27f; background: #e7a27f; color: #2b201b; }
+  .token-panel :global(.reset-token-button) { margin-top: 10px; }
+  :global(.token-box) { margin-top: 16px; border-color: #242a2f; padding: 16px; background: #242a2f; color: #f5f3ec; }
+  :global(.token-box p) { color: #c2c8c5; font-size: 12px; }
+  :global(.token-box input) { width: 100%; margin: 10px 0; border: 1px solid #59636a; border-radius: 2px; padding: 10px; background: #171c20; color: #fff; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
+  :global(.token-box pre) { overflow-wrap: anywhere; border: 1px solid #59636a; padding: 12px; background: #171c20; color: #d9e0da; font: 12px/1.5 ui-monospace, SFMono-Regular, monospace; white-space: pre-wrap; }
+  :global(.token-box .token-copy) { border-color: #e7a27f; background: #e7a27f; color: #2b201b; }
   @media (max-width: 900px) { .connector-layout, .form-grid { grid-template-columns: 1fr; } }
 </style>

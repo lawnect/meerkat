@@ -1,5 +1,7 @@
 <script lang="ts">
   import { api, errorMessage } from '../api';
+  import Button from './ui/Button.svelte';
+  import Card from './ui/Card.svelte';
 
   let { mode, onLogin, onSetup }: { mode: 'setup' | 'login'; onLogin: () => Promise<void>; onSetup: () => void } = $props();
   let code = $state('');
@@ -43,7 +45,7 @@
 </script>
 
 <main class="auth-wrap">
-  <section class="auth">
+  <Card as="section" class="auth">
     <div class="auth-brand">MEERKAT / OUTLET</div>
     <h1>{mode === 'setup' ? '처음 한 번만 설정하세요' : '로그인'}</h1>
     <p class="auth-intro">{mode === 'setup' ? '이 서버의 관리자가 사용할 계정을 만듭니다. 설정 코드는 서버에서만 확인할 수 있습니다.' : 'Meerkat Outlet 운영 콘솔에 접속합니다.'}</p>
@@ -63,16 +65,16 @@
         <input class="input input-bordered" id="password" bind:value={password} type="password" placeholder={mode === 'setup' ? '12자 이상' : '비밀번호'} autocomplete={mode === 'setup' ? 'new-password' : 'current-password'} minlength={mode === 'setup' ? 12 : undefined} required />
       </div>
       <div class="form-actions">
-        <button class="btn btn-primary" type="submit" disabled={busy}>{busy ? '처리 중…' : mode === 'setup' ? '관리자 만들기' : '로그인'}</button>
+        <Button type="submit" disabled={busy}>{busy ? '처리 중…' : mode === 'setup' ? '관리자 만들기' : '로그인'}</Button>
       </div>
       {#if error}<p class="error" role="alert">{error}</p>{/if}
     </form>
-  </section>
+  </Card>
 </main>
 
 <style>
   :global(.auth-wrap) { display: grid; min-height: 100vh; place-items: center; padding: 24px; background: var(--paper); }
-  :global(.auth) { width: min(520px, 100%); border: 1px solid var(--line); border-radius: 8px; padding: 34px; background: var(--panel); }
+  :global(.auth) { width: min(520px, 100%); padding: 34px; }
   :global(.auth-brand) { margin-bottom: 42px; font-size: 13px; font-weight: 800; letter-spacing: .1em; }
   :global(.auth h1) { margin: 0 0 8px; font-size: 27px; letter-spacing: -.04em; }
   :global(.auth-intro) { margin: 0 0 25px; color: var(--muted); }
