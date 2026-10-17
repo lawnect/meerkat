@@ -81,7 +81,7 @@
   .monitor-head .monitor-type { display: inline; margin-right: 8px; }
   .monitor-head h3 { display: inline; margin: 0; font-size: 16px; }
   .monitor-head p, .monitor-empty { color: var(--muted); font-size: 12px; }
-  :global(.monitor-app-card) { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(0, 1.4fr) auto; align-items: center; gap: 12px; margin-top: 10px; border-radius: 5px; padding: 10px 12px; background: #faf7f3; }
+  :global(.monitor-app-card) { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(0, 1.4fr) auto; align-items: center; gap: 12px; margin-top: 10px; border-radius: 5px; padding: 10px 12px; }
   :global(.monitor-app-card.attention) { border-left: 2px solid #bb4d3d; }
   :global(.monitor-app-card.empty-app) { display: block; }
   .monitor-app-head h4 { display: inline; margin: 0 8px 0 0; font-size: 14px; }
@@ -109,7 +109,7 @@
       </div>
     </Panel>
     <div>
-      <Card padding="none" class="callout"><strong>현재 할 일</strong><span>{next}</span></Card>
+      <Card variant="solid" padding="none" class="callout"><strong>현재 할 일</strong><span>{next}</span></Card>
       <Card class="help-panel"><h2>용어 안내</h2><p>Connector는 앱이 실행되는 서버에서 Outlet으로 연결하는 프로그램입니다. 현재 Connector 하나에 내부 앱 하나를 등록하고, 앱에는 공개 주소를 추가할 수 있습니다.</p></Card>
     </div>
   </div>
@@ -124,7 +124,7 @@
             <Status label={statusLabel(connector.status)} value={connector.status} />
           </div>
           {#each records as record}
-            <Card padding="none" class={record.service.observed_status !== 'connected' ? 'monitor-app-card attention' : 'monitor-app-card'}>
+            <Card variant="solid" padding="none" class={record.service.observed_status !== 'connected' ? 'monitor-app-card attention' : 'monitor-app-card'}>
               <div class="monitor-app-head">
                 <span class="monitor-type">내부 앱</span><h4>{record.service.name}</h4><code>내부 주소 {record.service.target.host}:{record.service.target.port}</code>
               </div>
@@ -141,7 +141,7 @@
               <Status label={statusLabel(record.service.observed_status)} value={record.service.observed_status} />
             </Card>
           {:else}
-            <Card padding="none" class="monitor-app-card attention empty-app"><span class="monitor-type">내부 앱</span><p class="monitor-empty">등록된 내부 앱이 없습니다.</p></Card>
+            <Card variant="solid" padding="none" class="monitor-app-card attention empty-app"><span class="monitor-type">내부 앱</span><p class="monitor-empty">등록된 내부 앱이 없습니다.</p></Card>
           {/each}
         </Card>
       {/each}

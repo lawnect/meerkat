@@ -56,7 +56,7 @@
     <Button variant="danger" onclick={deleteService}>내부 앱 삭제</Button>
   {/if}
   {#each record.routes as route}
-    <Card padding="none" class="route-line"><code>https://{route.hostname}</code><span>{record.connector.status === 'connected' && record.service.observed_status === 'connected' ? '공개 중' : '연결 후 자동 공개'}</span></Card>
+    <Card variant="solid" padding="none" class="route-line"><code>https://{route.hostname}</code><span>{record.connector.status === 'connected' && record.service.observed_status === 'connected' ? '공개 중' : '연결 후 자동 공개'}</span></Card>
   {/each}
   <form class="form-actions route-form" onsubmit={addRoute}>
     <div class="field"><label for="route-{record.service.id}">공개 주소</label><input class="input input-bordered" id="route-{record.service.id}" bind:value={hostname} placeholder={`예: app.${outlet.domain || 'saeoo.com'}`} required /></div>
@@ -71,7 +71,7 @@
   .service:first-of-type { border-top: 0; padding-top: 0; }
   .service-meta { color: var(--muted); font-size: 12px; }
   .service-empty { margin: 12px 0 !important; }
-  :global(.route-line) { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; border-radius: 5px; padding: 10px 12px; background: #faf7f3; }
+  :global(.route-line) { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; border-radius: 5px; padding: 10px 12px; }
   :global(.route-line code) { overflow-wrap: anywhere; color: #345a70; font-size: 12px; }
   .route-form { align-items: end; }
   .route-form .field { flex: 1; min-width: 180px; }

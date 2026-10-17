@@ -25,7 +25,7 @@
     <Button variant="text" size="sm" class="map-link" onclick={() => navigate('routes')}>공개 서비스 보기 <span aria-hidden="true">↗</span></Button>
   </div>
 
-  <Card padding="none" class="map-canvas">
+  <Card variant="solid" padding="none" class="map-canvas">
     <div class="signal-track" aria-hidden="true"></div>
     <div class="glass-metrics">
       <Card variant="glass" padding="sm" class="glass-card">
@@ -52,21 +52,21 @@
     {#if visible.length}
       <div class="flow-list">
         {#each visible as record (record.service.id)}
-          <Card padding="none" class="flow-row">
-            <Card padding="none" class={record.routes.length ? 'flow-node' : 'flow-node missing'}>
+          <Card variant="solid" padding="none" class="flow-row">
+            <Card variant="solid" padding="none" class={record.routes.length ? 'flow-node' : 'flow-node missing'}>
               <span class="mobile-label">외부 주소</span>
               <span class="node-dot" aria-hidden="true"></span>
               <span class="node-text">{routeLabel(record.routes[0]?.hostname)}</span>
               {#if record.routes.length > 1}<small>+{record.routes.length - 1}</small>{/if}
             </Card>
             <span class="flow-line" aria-hidden="true"></span>
-            <Card padding="none" class={record.connector.status === 'connected' ? 'flow-node connector-node connected' : 'flow-node connector-node'}>
+            <Card variant="solid" padding="none" class={record.connector.status === 'connected' ? 'flow-node connector-node connected' : 'flow-node connector-node'}>
               <span class="mobile-label">Connector</span>
               <span class="node-dot" aria-hidden="true"></span>
               <span class="node-text">{record.connector.name}</span>
             </Card>
             <span class="flow-line" aria-hidden="true"></span>
-            <Card padding="none" class="flow-node">
+            <Card variant="solid" padding="none" class="flow-node">
               <span class="mobile-label">내부 앱</span>
               <span class="node-dot" aria-hidden="true"></span>
               <span class="node-text">{record.service.name}</span>
@@ -77,7 +77,7 @@
       </div>
       {#if data.records.length > visible.length}<p class="more-records">이 외 {data.records.length - visible.length}개의 연결이 더 있습니다.</p>{/if}
     {:else}
-      <Card padding="none" class="map-empty">
+      <Card variant="solid" padding="none" class="map-empty">
         <p>아직 표시할 연결이 없습니다.</p>
         <Button variant="text" size="sm" onclick={() => navigate('connectors')}>첫 Connector 만들기 <span aria-hidden="true">↗</span></Button>
       </Card>

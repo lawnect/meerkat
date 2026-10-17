@@ -180,7 +180,7 @@
             {/if}
             {#if connectorState.enrollment}
               {@const enrollment = connectorState.enrollment}
-              <Card padding="none" class="token-box">
+              <Card variant="solid" padding="none" class="token-box">
                 <strong>지금 복사하세요</strong><p>이 화면을 닫으면 토큰을 다시 확인할 수 없습니다.</p>
                 <input class="input input-bordered" aria-label="등록 토큰" value={enrollment.token} readonly />
                 <Button class="token-copy" onclick={() => copy(enrollment.token, '토큰')}>토큰 복사</Button>
