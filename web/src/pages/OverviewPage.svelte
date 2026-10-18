@@ -45,8 +45,13 @@
 </PageHead>
 
 <div class="dashboard-grid summary-grid">
-  <Card class="summary-card"><div class="stat-label">등록된 Connector</div><div class="stat-value">{data.connectors.length}</div><div class="stat-note">앱 연결을 위해 만든 Connector</div></Card>
-  <Card class="summary-card"><div class="stat-label">현재 연결된 Connector</div><div class="stat-value">{connected}</div><div class="stat-note">전체 {data.connectors.length}개 중 최근 응답과 터널 연결 확인</div></Card>
+  <Card class="summary-card">
+    <div class="stat-label">Connector</div>
+    <div class="connector-stats">
+      <div><div class="stat-value">{data.connectors.length}</div><div class="stat-note">등록됨</div></div>
+      <div><div class="stat-value">{connected}</div><div class="stat-note">현재 연결됨</div></div>
+    </div>
+  </Card>
   <Card class="summary-card"><div class="stat-label">등록된 내부 앱</div><div class="stat-value">{data.services.length}</div><div class="stat-note">내부 주소와 포트를 등록한 앱</div></Card>
   <Card class="summary-card"><div class="stat-label">설정된 공개 주소</div><div class="stat-value">{data.routes.length}</div><div class="stat-note">접속 상태와 별개로 등록된 도메인</div></Card>
 </div>
@@ -54,11 +59,14 @@
 <ConnectionMap {data} {navigate} />
 
 <style>
-  .summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 30px; }
+  .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 30px; }
   .summary-grid :global(.summary-card) { padding: 18px 20px; }
   .stat-label { color: #6f6a65; font-size: 12px; }
   .stat-value { margin-top: 5px; font-size: 27px; font-weight: 650; letter-spacing: -.05em; line-height: 1.2; }
   .stat-note { margin-top: 7px; color: var(--muted); font-size: 11px; }
+  .connector-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 5px; }
+  .connector-stats > div + div { border-left: 1px solid var(--line); padding-left: 20px; }
+  .connector-stats .stat-value { margin-top: 0; }
   .two-col { grid-template-columns: minmax(0, 1.35fr) minmax(280px, .65fr); }
   .onboarding-list { display: grid; gap: 0; margin: 4px 0 0; }
   .onboarding-list :global(.onboarding-item) { display: grid; width: 100%; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); padding: 13px 0; color: inherit; text-align: left; }
@@ -92,7 +100,7 @@
   .monitor-routes span { color: var(--muted); font-size: 12px; }
   @media (max-width: 900px) { .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .two-col { grid-template-columns: 1fr; } }
   @media (max-width: 700px) { :global(.monitor-app-card) { grid-template-columns: 1fr; gap: 8px; } }
-  @media (max-width: 600px) { .monitor-head { align-items: flex-start; flex-direction: column; } }
+  @media (max-width: 600px) { .summary-grid { grid-template-columns: 1fr; } .monitor-head { align-items: flex-start; flex-direction: column; } }
 </style>
 
 {#if showOnboarding}
