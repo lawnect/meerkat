@@ -58,7 +58,7 @@
 
 <PageHead kicker="MEERKAT OUTLET" title="오늘의 운영 상태" description={next ?? 'Connector와 공개 주소의 현황을 확인할 수 있습니다.'}>
   {#snippet action()}
-    <Button onclick={() => navigate(data.connectors.length ? 'routes' : 'connectors')}>{data.connectors.length ? '공개 서비스 보기' : 'Connector 시작'}</Button>
+    <Button onclick={() => navigate('connectors')}>{data.connectors.length ? 'Connector 관리' : 'Connector 시작'}</Button>
   {/snippet}
 </PageHead>
 

@@ -28,7 +28,7 @@
       <h2 id="connection-heading">서비스 연결 경로</h2>
       <p>외부 주소에서 Connector를 거쳐 내부 앱으로 이어지는 경로입니다.</p>
     </div>
-    <Button variant="text" size="sm" class="map-link" onclick={() => navigate('routes')}>공개 서비스 보기 <span aria-hidden="true">↗</span></Button>
+    <Button variant="text" size="sm" class="map-link" onclick={() => navigate('connectors')}>Connector 관리 <span aria-hidden="true">↗</span></Button>
   </div>
 
   {#if visible.length}

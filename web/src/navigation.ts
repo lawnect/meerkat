@@ -3,7 +3,6 @@ import type { PageKey } from './types';
 export const pagePath: Record<PageKey, string> = {
   overview: '/',
   connectors: '/connectors',
-  routes: '/routes',
   diagnostics: '/diagnostics',
   settings: '/settings',
 };

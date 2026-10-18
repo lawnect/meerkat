@@ -8,17 +8,23 @@
   import OverviewPage from './pages/OverviewPage.svelte';
   import SettingsPage from './pages/SettingsPage.svelte';
   import ConnectorsPage from './pages/ConnectorsPage.svelte';
-  import RoutesPage from './pages/RoutesPage.svelte';
   import DiagnosticsPage from './pages/DiagnosticsPage.svelte';
   import Button from './components/ui/Button.svelte';
   import Card from './components/ui/Card.svelte';
   import LinkButton from './components/ui/LinkButton.svelte';
 
   let authMode = $state<AuthMode>('loading');
-  let view = $state<PageKey>(pageFromPath(window.location.pathname));
+  let view = $state<PageKey>(currentPage());
   let loading = $state(false);
   let loadError = $state('');
   let data = $state<DashboardData>({ connectors: [], services: [], routes: [], records: [], outlet: {} });
+
+  function currentPage(): PageKey {
+    if (window.location.pathname.replace(/\/+$/, '') === '/routes') {
+      window.history.replaceState(null, '', `${pagePath.connectors}${window.location.search}${window.location.hash}`);
+    }
+    return pageFromPath(window.location.pathname);
+  }
 
   async function refresh(background = false) {
     if (!background) loading = true;
@@ -71,7 +77,7 @@
   }
 
   function handlePopState(): void {
-    view = pageFromPath(window.location.pathname);
+    view = currentPage();
     if (view === 'connectors' && authMode === 'dashboard') void refresh();
   }
 
@@ -124,7 +130,6 @@
       <nav class="nav" aria-label="운영 메뉴">
         <LinkButton href={pagePath.overview} variant="text" class={view === 'overview' ? 'nav-item active' : 'nav-item'} aria-current={view === 'overview' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'overview')}>개요</LinkButton>
         <LinkButton href={pagePath.connectors} variant="text" class={view === 'connectors' ? 'nav-item active' : 'nav-item'} aria-current={view === 'connectors' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'connectors')}>Connector 관리</LinkButton>
-        <LinkButton href={pagePath.routes} variant="text" class={view === 'routes' ? 'nav-item active' : 'nav-item'} aria-current={view === 'routes' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'routes')}>공개 서비스</LinkButton>
         <LinkButton href={pagePath.diagnostics} variant="text" class={view === 'diagnostics' ? 'nav-item active' : 'nav-item'} aria-current={view === 'diagnostics' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'diagnostics')}>요청 진단</LinkButton>
         <LinkButton href={pagePath.settings} variant="text" class={view === 'settings' ? 'nav-item active' : 'nav-item'} aria-current={view === 'settings' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'settings')}>설정</LinkButton>
       </nav>
@@ -139,8 +144,6 @@
         <SettingsPage outlet={data.outlet} onSaved={refresh} />
       {:else if view === 'connectors'}
         <ConnectorsPage {data} onChanged={refresh} />
-      {:else if view === 'routes'}
-        <RoutesPage {data} onChanged={refresh} {navigate} />
       {:else if view === 'diagnostics'}
         <DiagnosticsPage />
       {/if}

@@ -29,7 +29,7 @@
 
 <PageHead kicker="설정" title="Outlet 설정" description="공개 주소의 기준과 서버 상태를 확인합니다." />
 <Panel title="기본 도메인" description="Caddy가 인증서와 공개 주소를 관리할 기준입니다.">
-  <p>모든 공개 서비스는 이 도메인의 하위 주소로 만들어집니다. 예: app.saeoo.com.</p>
+  <p>모든 공개 주소는 이 도메인의 하위 주소로 만들어집니다. 예: app.saeoo.com.</p>
   <form onsubmit={submit}>
     <div class="field">
       <label for="domain">기본 도메인</label>

@@ -1,4 +1,4 @@
-export type PageKey = 'overview' | 'connectors' | 'routes' | 'diagnostics' | 'settings';
+export type PageKey = 'overview' | 'connectors' | 'diagnostics' | 'settings';
 export type AuthMode = 'loading' | 'setup' | 'login' | 'unavailable' | 'dashboard';
 
 export interface Outlet {
