@@ -77,31 +77,31 @@
 <ConnectionMap {data} {navigate} />
 
 <style>
-  .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 30px; }
-  .summary-grid :global(.summary-card) { padding: 18px 20px; }
+  .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 20px; }
+  .summary-grid :global(.summary-card) { padding: 13px 16px; }
   .stat-label { color: #6f6a65; font-size: 12px; }
-  .stat-value { margin-top: 5px; font-size: 27px; font-weight: 650; letter-spacing: -.05em; line-height: 1.2; }
-  .stat-note { margin-top: 7px; color: var(--muted); font-size: 11px; }
-  .connector-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 5px; }
-  .connector-stats > div + div { border-left: 1px solid var(--line); padding-left: 20px; }
+  .stat-value { margin-top: 3px; font-size: 24px; font-weight: 650; letter-spacing: -.05em; line-height: 1.2; }
+  .stat-note { margin-top: 4px; color: var(--muted); font-size: 11px; }
+  .connector-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 3px; }
+  .connector-stats > div + div { border-left: 1px solid var(--line); padding-left: 14px; }
   .connector-stats .stat-value { margin-top: 0; }
   .two-col { grid-template-columns: minmax(0, 1.35fr) minmax(280px, .65fr); }
   .onboarding-list { display: grid; gap: 0; margin: 4px 0 0; }
-  .onboarding-list :global(.onboarding-item) { display: grid; width: 100%; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); padding: 13px 0; color: inherit; text-align: left; }
+  .onboarding-list :global(.onboarding-item) { display: grid; width: 100%; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 10px; border-bottom: 1px solid var(--line); padding: 9px 0; color: inherit; text-align: left; }
   .onboarding-list :global(.onboarding-item:last-child) { border-bottom: 0; }
-  .onboarding-number { display: grid; width: 25px; height: 25px; place-items: center; border: 1px solid #aaa99f; border-radius: 50%; color: var(--muted); font-size: 12px; }
+  .onboarding-number { display: grid; width: 22px; height: 22px; place-items: center; border: 1px solid #aaa99f; border-radius: 50%; color: var(--muted); font-size: 12px; }
   :global(.onboarding-item.done) .onboarding-number { border-color: var(--green); background: var(--green); color: white; }
   .onboarding-list strong { display: block; font-size: 13px; }
   .onboarding-list small { color: var(--muted); }
   .onboarding-action { color: var(--accent-dark); font-size: 12px; font-weight: 700; }
-  :global(.callout) { border: 0; border-left: 2px solid var(--accent); border-radius: 0 6px 6px 0; padding: 13px 15px; background: #fbf3ed; color: #5f4b42; font-size: 13px; }
+  :global(.callout) { border: 0; border-left: 2px solid var(--accent); border-radius: 0 6px 6px 0; padding: 10px 13px; background: #fbf3ed; color: #5f4b42; font-size: 13px; }
   :global(.callout strong) { display: block; margin-bottom: 2px; color: var(--ink); }
-  :global(.help-panel) { margin-top: 16px; }
+  :global(.help-panel) { margin-top: 10px; }
   :global(.help-panel h2) { margin: 0 0 5px; font-size: 17px; }
   :global(.help-panel p) { margin: 0; color: var(--muted); }
-  .issue-heading { margin: 0 0 12px; font-size: 18px; font-weight: 700; letter-spacing: -.035em; }
-  .issue-list { display: grid; gap: 8px; }
-  .issue-list :global(.issue-card) { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .issue-heading { margin: 0 0 9px; font-size: 17px; font-weight: 700; letter-spacing: -.035em; }
+  .issue-list { display: grid; gap: 6px; }
+  .issue-list :global(.issue-card) { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .issue-copy { display: flex; align-items: start; gap: 10px; min-width: 0; }
   .issue-dot { flex: none; width: 7px; height: 7px; margin-top: 7px; border-radius: 50%; background: var(--accent); }
   .issue-copy h3 { margin: 0 0 2px; font-size: 13px; font-weight: 700; }

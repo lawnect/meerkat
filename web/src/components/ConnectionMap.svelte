@@ -69,30 +69,30 @@
 </section>
 
 <style>
-  .connection-section { margin: 0 0 28px; }
-  .connection-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 15px; }
+  .connection-section { margin: 0 0 20px; }
+  .connection-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
   .section-kicker { margin: 0 0 5px; color: var(--accent-dark); font-size: 10px; font-weight: 750; letter-spacing: .14em; }
   .connection-heading h2 { margin: 0 0 3px; font-size: 18px; font-weight: 700; letter-spacing: -.035em; }
   .connection-heading p:not(.section-kicker) { margin: 0; color: var(--muted); font-size: 12px; }
   .connection-heading :global(.map-link) { flex: none; }
-  .flow-list { display: grid; gap: 10px; }
-  .flow-list :global(.path-card) { display: grid; grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1fr) 34px minmax(0, 1fr); align-items: center; gap: 12px; padding: 18px 20px; }
+  .flow-list { display: grid; gap: 8px; }
+  .flow-list :global(.path-card) { display: grid; grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1fr) 24px minmax(0, 1fr); align-items: center; gap: 10px; padding: 12px 16px; }
   .path-step { min-width: 0; }
-  .step-label { display: block; margin-bottom: 5px; color: #81766f; font-size: 11px; font-weight: 650; }
+  .step-label { display: block; margin-bottom: 3px; color: #81766f; font-size: 11px; font-weight: 650; }
   .step-name { display: flex; align-items: baseline; gap: 7px; min-width: 0; color: var(--ink); font-size: 15px; line-height: 1.35; }
   .step-name strong { min-width: 0; overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
   .extra-routes { flex: none; color: var(--muted); font-size: 11px; }
-  .step-status { display: flex; align-items: center; gap: 5px; min-width: 0; margin-top: 7px; color: #8a817a; font-size: 11px; }
+  .step-status { display: flex; align-items: center; gap: 5px; min-width: 0; margin-top: 4px; color: #8a817a; font-size: 11px; }
   .step-status.active { color: #4d8069; }
   .status-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
   .target-address { min-width: 0; overflow: hidden; color: #8a817a; text-overflow: ellipsis; white-space: nowrap; }
   .path-arrow { color: #b49e8d; font-size: 19px; text-align: center; }
-  .more-records { margin: 12px 0 0; color: #82766d; font-size: 11px; text-align: center; }
-  :global(.map-empty) { display: grid; min-height: 115px; align-content: center; justify-items: center; gap: 4px; border: 1px dashed #d4c2b4; padding: 20px; background: transparent; color: #766d65; }
+  .more-records { margin: 9px 0 0; color: #82766d; font-size: 11px; text-align: center; }
+  :global(.map-empty) { display: grid; min-height: 84px; align-content: center; justify-items: center; gap: 4px; border: 1px dashed #d4c2b4; padding: 14px; background: transparent; color: #766d65; }
   :global(.map-empty) p { margin: 0; }
   @media (max-width: 700px) {
     .connection-heading { align-items: start; }
-    .flow-list :global(.path-card) { grid-template-columns: 1fr; gap: 5px; padding: 16px 18px; }
+    .flow-list :global(.path-card) { grid-template-columns: 1fr; gap: 4px; padding: 12px 14px; }
     .path-arrow { padding-left: 2px; font-size: 17px; line-height: 1; text-align: left; transform: rotate(90deg); transform-origin: 9px center; }
     .path-step { padding: 3px 0; }
   }

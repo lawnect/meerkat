@@ -150,43 +150,43 @@
 
 <style>
   .topbar {
-    height: 68px;
+    height: 56px;
     display: flex;
     align-items: center;
-    gap: 26px;
-    padding: 0 34px;
+    gap: 20px;
+    padding: 0 24px;
     border-bottom: 1px solid var(--line);
     background: #fffdfa;
     color: var(--ink);
   }
   .brand { font-size: 16px; font-weight: 670; letter-spacing: .24em; }
   .brand small { margin-left: 6px; color: #8d8780; font-size: 9px; font-weight: 600; letter-spacing: .1em; }
-  .topbar-meta { display: flex; align-items: center; gap: 18px; margin-left: auto; color: #69655f; font-size: 12px; }
+  .topbar-meta { display: flex; align-items: center; gap: 14px; margin-left: auto; color: #69655f; font-size: 12px; }
   .topbar-meta :global(.connection-status) { color: inherit; }
   .topbar :global(.logout-button) { padding: 6px 0; color: #57534e; }
   .mock-badge { border: 1px solid #f2c8ae; border-radius: 3px; padding: 3px 6px; color: var(--accent-dark); font-size: 10px; font-weight: 700; letter-spacing: .08em; }
-  .layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: calc(100vh - 68px); }
-  .rail { display: flex; flex-direction: column; border-right: 1px solid var(--line); padding: 32px 18px; background: #f8f6f2; }
-  .rail-label { margin: 0 12px 11px; color: #938d85; font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
-  .nav { display: grid; gap: 3px; }
-  .nav :global(.nav-item) { display: block; width: 100%; border-left: 2px solid transparent; border-radius: 0 5px 5px 0; padding: 11px 12px; color: #635f59; text-align: left; }
+  .layout { display: grid; grid-template-columns: 190px minmax(0, 1fr); min-height: calc(100vh - 56px); }
+  .rail { display: flex; flex-direction: column; border-right: 1px solid var(--line); padding: 20px 12px; background: #f8f6f2; }
+  .rail-label { margin: 0 10px 7px; color: #938d85; font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+  .nav { display: grid; gap: 2px; }
+  .nav :global(.nav-item) { display: block; width: 100%; border-left: 2px solid transparent; border-radius: 0 5px 5px 0; padding: 8px 10px; color: #635f59; text-align: left; }
   .nav :global(.nav-item:hover) { background: #f1ebe4; text-decoration: none; }
   .nav :global(.nav-item.active) { border-left-color: var(--accent); background: #f6eee8; color: var(--accent-dark); font-weight: 700; }
-  .rail-note { margin-top: auto; border-top: 1px solid var(--line); padding: 18px 10px 0; color: var(--muted); font-size: 12px; }
+  .rail-note { margin-top: auto; border-top: 1px solid var(--line); padding: 12px 10px 0; color: var(--muted); font-size: 12px; }
   .rail-note strong { display: block; margin-bottom: 4px; color: var(--ink); font-size: 13px; }
-  .content { width: 100%; max-width: 1440px; padding: 38px 44px 72px; }
-  .loading-note { margin: 0 0 16px; color: var(--muted); }
+  .content { width: 100%; max-width: 1600px; padding: 22px 28px 40px; }
+  .loading-note { margin: 0 0 12px; color: var(--muted); }
   @media (max-width: 900px) {
     .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: max-content minmax(0, 1fr); }
-    .rail { display: block; min-width: 0; border-right: 0; border-bottom: 1px solid var(--line); padding: 10px 16px; }
+    .rail { display: block; min-width: 0; border-right: 0; border-bottom: 1px solid var(--line); padding: 7px 12px; }
     .rail-label, .rail-note { display: none; }
     .nav { display: flex; overflow: auto; }
     .nav :global(.nav-item) { width: auto; border-bottom: 3px solid transparent; border-left: 0; white-space: nowrap; }
     .nav :global(.nav-item.active) { border-bottom-color: var(--accent); }
-    .content { min-width: 0; padding: 28px 22px 56px; }
+    .content { min-width: 0; padding: 18px 16px 32px; }
   }
   @media (max-width: 600px) {
-    .topbar { height: auto; min-height: 64px; display: grid; gap: 8px; padding: 12px 16px; }
+    .topbar { height: auto; min-height: 56px; display: grid; gap: 5px; padding: 10px 14px; }
     .topbar-meta { margin-left: 0; flex-wrap: wrap; gap: 8px 14px; }
   }
 </style>

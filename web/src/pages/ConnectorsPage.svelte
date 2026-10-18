@@ -20,7 +20,10 @@
   let serviceBusy = $state(false);
   let deleteBusy = $state(false);
   let deleteError = $state('');
+  let deleteName = $state('');
+  let deleteTarget = $state<Connector | null>(null);
   let createDialog: HTMLDialogElement;
+  let deleteDialog: HTMLDialogElement;
 
   const selected = $derived(data.connectors.find((connector) => connector.id === connectorState.selectedId));
   const records = $derived(data.records.filter((record) => record.connector.id === connectorState.selectedId));
@@ -40,6 +43,18 @@
 
   function closeCreateDialog(): void {
     if (!createBusy) createDialog.close();
+  }
+
+  function openDeleteDialog(): void {
+    if (!selected) return;
+    deleteTarget = selected;
+    deleteName = '';
+    deleteError = '';
+    deleteDialog.showModal();
+  }
+
+  function closeDeleteDialog(): void {
+    if (!deleteBusy) deleteDialog.close();
   }
 
   async function createConnector(event: SubmitEvent): Promise<void> {
@@ -82,10 +97,10 @@
     }
   }
 
-  async function deleteConnector(): Promise<void> {
-    if (!selected || deleteBusy) return;
-    const connector = selected;
-    if (!confirm(`Connector ${connector.name}을(를) 삭제할까요? 등록된 앱과 공개 주소도 삭제되고, 실행 중인 Connector의 연결이 끊깁니다.`)) return;
+  async function deleteConnector(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    if (!deleteTarget || deleteName !== deleteTarget.name || deleteBusy) return;
+    const connector = deleteTarget;
     deleteError = '';
     deleteBusy = true;
     try {
@@ -94,6 +109,7 @@
       connectorState.enrollment = null;
       connectorState.enrollmentWasReset = false;
       await onChanged();
+      deleteDialog.close();
     } catch (cause) {
       deleteError = `Connector를 삭제하지 못했습니다: ${errorMessage(cause)}`;
     } finally {
@@ -162,13 +178,12 @@
 
   {#if selected}
     <div class="connector-detail">
-      <Panel title={selected.name} description="연결 상태와 공개 설정을 확인하세요.">
-        <div class="state-row"><span>Connector 상태</span><Status label={statusLabel(selected.status)} value={selected.status} /></div>
-        {#if deleteError}<p class="error" role="alert">{deleteError}</p>{/if}
+      <Panel title={selected.name}>
+        {#snippet action()}<Status label={`터널 ${statusLabel(selected.status)}`} value={selected.status} />{/snippet}
         {#if service}
           {#key service.id}<ServiceBlock record={records[0]} outlet={data.outlet} onChanged={onChanged} />{/key}
         {:else}
-          <section class="detail-section">
+          <section class="detail-section setup-section">
             <div class="section-heading"><div><h3>내부 앱 등록</h3><p>이 Connector가 연결할 앱의 내부 주소와 포트를 입력하세요.</p></div></div>
             <form class="form-grid" onsubmit={createService}>
               <div class="field"><label for="service-name">앱 이름</label><input class="input input-bordered" id="service-name" bind:value={serviceName} placeholder="예: memo" required /></div>
@@ -201,13 +216,13 @@
             {/if}
           </section>
         {/if}
-        <div class="detail-footer"><Button variant="text" onclick={deleteConnector} disabled={deleteBusy}>{deleteBusy ? '삭제 중…' : 'Connector 삭제'}</Button></div>
+        <div class="detail-footer"><Button variant="danger" size="sm" onclick={openDeleteDialog}>Connector 삭제</Button></div>
       </Panel>
     </div>
   {/if}
 </div>
 
-<dialog bind:this={createDialog} class="create-dialog" aria-labelledby="create-dialog-title" aria-describedby="create-dialog-description" oncancel={(event) => { if (createBusy) event.preventDefault(); }} onclose={() => { name = ''; createError = ''; }}>
+<dialog bind:this={createDialog} class="connector-dialog" aria-labelledby="create-dialog-title" aria-describedby="create-dialog-description" oncancel={(event) => { if (createBusy) event.preventDefault(); }} onclose={() => { name = ''; createError = ''; }}>
   <form onsubmit={createConnector}>
     <h2 id="create-dialog-title">새 Connector 만들기</h2>
     <p id="create-dialog-description">공개할 앱마다 Connector를 하나씩 만듭니다.</p>
@@ -217,35 +232,44 @@
   </form>
 </dialog>
 
+<dialog bind:this={deleteDialog} class="connector-dialog" aria-labelledby="delete-dialog-title" aria-describedby="delete-dialog-description" oncancel={(event) => { if (deleteBusy) event.preventDefault(); }} onclose={() => { deleteName = ''; deleteError = ''; deleteTarget = null; }}>
+  <form onsubmit={deleteConnector}>
+    <h2 id="delete-dialog-title">Connector 삭제</h2>
+    <p id="delete-dialog-description">등록된 앱과 공개 주소도 삭제되고 실행 중인 연결이 끊깁니다. 이 작업은 되돌릴 수 없습니다.</p>
+    <div class="field"><label for="delete-connector-name">삭제 확인: <strong>{deleteTarget?.name}</strong> 입력</label><input class="input input-bordered" id="delete-connector-name" bind:value={deleteName} autocomplete="off" spellcheck="false" required /></div>
+    {#if deleteError}<p class="error" role="alert">{deleteError}</p>{/if}
+    <div class="dialog-actions"><Button variant="secondary" onclick={closeDeleteDialog} disabled={deleteBusy}>취소</Button><Button variant="danger" type="submit" disabled={deleteBusy || deleteName !== deleteTarget?.name}>{deleteBusy ? '삭제 중…' : 'Connector 삭제'}</Button></div>
+  </form>
+</dialog>
+
 <style>
-  .connector-layout { display: grid; grid-template-columns: 270px minmax(0, 1fr); align-items: start; gap: 16px; }
+  .connector-layout { display: grid; grid-template-columns: 238px minmax(0, 1fr); align-items: start; gap: 12px; }
   .connector-list { padding: 0; }
-  .connector-list :global(.connector-item) { display: block; width: 100%; border-bottom: 1px solid var(--line); padding: 14px 16px; color: var(--ink); text-align: left; }
+  .connector-list :global(.connector-item) { display: block; width: 100%; border-bottom: 1px solid var(--line); padding: 9px 11px; color: var(--ink); text-align: left; }
   .connector-list :global(.connector-item:first-child) { border-top: 1px solid var(--line); }
   .connector-list :global(.connector-item:hover), .connector-list :global(.connector-item.selected) { background: #f5eee8; }
   .connector-list :global(.connector-item.selected) { box-shadow: inset 3px 0 var(--accent); }
   .connector-list strong { display: block; font-size: 13px; }
   .connector-detail > :global(.panel) { min-width: 0; }
   .list-empty { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
-  .create-dialog { width: min(440px, calc(100vw - 32px)); max-width: none; margin: auto; border: 1px solid var(--line); border-radius: 10px; padding: 26px; background: var(--panel); color: var(--ink); box-shadow: 0 22px 70px rgba(48, 36, 28, .18); }
-  .create-dialog::backdrop { background: rgba(35, 30, 26, .38); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
-  .create-dialog h2 { margin: 0 0 4px; font-size: 20px; letter-spacing: -.025em; }
-  .create-dialog p:not(.error) { margin: 0 0 22px; color: var(--muted); font-size: 12px; }
-  .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
-  .state-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; }
-  .detail-section { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 22px; }
-  .section-heading { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 16px; }
+  .connector-dialog { width: min(440px, calc(100vw - 32px)); max-width: none; margin: auto; border: 1px solid var(--line); border-radius: 10px; padding: 22px; background: var(--panel); color: var(--ink); box-shadow: 0 22px 70px rgba(48, 36, 28, .18); }
+  .connector-dialog::backdrop { background: rgba(35, 30, 26, .38); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
+  .connector-dialog h2 { margin: 0 0 4px; font-size: 20px; letter-spacing: -.025em; }
+  .connector-dialog p:not(.error) { margin: 0 0 16px; color: var(--muted); font-size: 12px; }
+  .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  .detail-section { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 15px; }
+  .setup-section { margin-top: 0; border-top: 0; padding-top: 0; }
+  .section-heading { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 11px; }
   .section-heading h3 { margin: 0 0 4px; font-size: 15px; }
   .section-heading p { font-size: 12px; line-height: 1.5; }
-  .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .form-grid .form-actions, .form-grid .error { grid-column: 1 / -1; margin-top: 0; }
   .token-panel :global(.reset-token-button) { margin-top: 10px; }
-  .token-box { margin-top: 16px; border-radius: 6px; padding: 16px; background: #242a2f; color: #f5f3ec; }
+  .token-box { margin-top: 12px; border-radius: 6px; padding: 13px; background: #242a2f; color: #f5f3ec; }
   .token-box p { margin: 6px 0 !important; color: #c2c8c5 !important; font-size: 12px; }
   .token-box input { width: 100%; margin: 10px 0; border: 1px solid #59636a; border-radius: 2px; padding: 10px; background: #171c20; color: #fff; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
   .token-box pre { overflow-wrap: anywhere; border: 1px solid #59636a; padding: 12px; background: #171c20; color: #d9e0da; font: 12px/1.5 ui-monospace, SFMono-Regular, monospace; white-space: pre-wrap; }
   .token-box :global(.token-copy) { border-color: #e7a27f; background: #e7a27f; color: #2b201b; }
-  .detail-footer { margin-top: 26px; border-top: 1px solid var(--line); padding-top: 14px; }
-  .detail-footer :global(.ui-button) { color: #a64132; }
+  .detail-footer { display: flex; justify-content: flex-end; margin-top: 18px; border-top: 1px solid var(--line); padding-top: 10px; }
   @media (max-width: 900px) { .connector-layout, .form-grid { grid-template-columns: 1fr; } }
 </style>

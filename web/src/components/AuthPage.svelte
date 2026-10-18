@@ -73,10 +73,10 @@
 </main>
 
 <style>
-  :global(.auth-wrap) { display: grid; min-height: 100vh; place-items: center; padding: 24px; background: var(--paper); }
-  :global(.auth) { width: min(520px, 100%); padding: 34px; }
-  :global(.auth-brand) { margin-bottom: 42px; font-size: 13px; font-weight: 800; letter-spacing: .1em; }
-  :global(.auth h1) { margin: 0 0 8px; font-size: 27px; letter-spacing: -.04em; }
-  :global(.auth-intro) { margin: 0 0 25px; color: var(--muted); }
-  :global(.auth .field) { margin-top: 14px; }
+  :global(.auth-wrap) { display: grid; min-height: 100vh; place-items: center; padding: 16px; background: var(--paper); }
+  :global(.auth) { width: min(480px, 100%); padding: 26px; }
+  :global(.auth-brand) { margin-bottom: 24px; font-size: 13px; font-weight: 800; letter-spacing: .1em; }
+  :global(.auth h1) { margin: 0 0 5px; font-size: 25px; letter-spacing: -.04em; }
+  :global(.auth-intro) { margin: 0 0 18px; color: var(--muted); }
+  :global(.auth .field) { margin-top: 11px; }
 </style>

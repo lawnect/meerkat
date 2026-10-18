@@ -2,6 +2,7 @@
   import PageHead from '../components/PageHead.svelte';
   import ServiceBlock from '../components/ServiceBlock.svelte';
   import Panel from '../components/Panel.svelte';
+  import Status from '../components/Status.svelte';
   import Button from '../components/ui/Button.svelte';
   import Card from '../components/ui/Card.svelte';
   import { statusLabel } from '../api';
@@ -21,7 +22,8 @@
     {#each data.connectors as connector}
       {@const records = data.records.filter((record) => record.connector.id === connector.id)}
       {#if records.length}
-        <Panel title={connector.name} description={statusLabel(connector.status)}>
+        <Panel title={connector.name}>
+          {#snippet action()}<Status label={`터널 ${statusLabel(connector.status)}`} value={connector.status} />{/snippet}
           {#each records as record}
             <ServiceBlock {record} outlet={data.outlet} onChanged={onChanged} />
           {/each}
