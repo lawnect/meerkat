@@ -5,6 +5,7 @@
   import Status from '../components/Status.svelte';
   import Button from '../components/ui/Button.svelte';
   import Card from '../components/ui/Card.svelte';
+  import InfoTooltip from '../components/ui/InfoTooltip.svelte';
   import type { Connector, DashboardData, EnrollmentToken } from '../types';
 
   let { data, onChanged }: { data: DashboardData; onChanged: () => Promise<void> } = $props();
@@ -175,15 +176,21 @@
     }
   }
 
+  function isLoopbackHost(value: string): boolean {
+    return value === 'localhost' || value === '::1' || value.startsWith('127.');
+  }
+
   function installCommand(): string {
     if (!selected || !service) return '';
     const token = connectorState.enrollment?.token || '';
     const volume = connectorState.enrollmentWasReset ? 'meerkat-data-reset' : 'meerkat-data';
+    const targetHost = service.target.host === '::1' ? '[::1]' : service.target.host;
     return [
       `docker run --rm --name meerkat-${selected.name}`,
+      ...(isLoopbackHost(service.target.host) ? ['--network host'] : []),
       `-e MEERKAT_OUTLET=https://${data.outlet.domain}`,
       `-e MEERKAT_NAME=${selected.name}`,
-      `-e MEERKAT_TARGET=${service.target.host}:${service.target.port}`,
+      `-e MEERKAT_TARGET=${targetHost}:${service.target.port}`,
       `-e MEERKAT_ENROLLMENT_TOKEN='${token}'`,
       `-v "$PWD/${volume}:/var/lib/meerkat"`,
       'ghcr.io/lawnect/meerkat:latest',
@@ -214,12 +221,11 @@
                 {#if service}
                   {#key service.id}<ServiceBlock record={records[0]} outlet={data.outlet} onChanged={onChanged} />{/key}
                 {:else}
-                  <section class="detail-section setup-section">
-                    <div class="section-heading"><div><h3>연결 서비스 등록</h3><p>이 Connector가 연결할 서비스의 내부 주소와 포트를 입력하세요.</p></div></div>
+                  <section class="detail-section setup-section" aria-label="연결 서비스 등록">
                     <form class="form-grid" onsubmit={createService}>
-                      <div class="field"><label for="service-name">서비스 이름</label><input class="input input-bordered" id="service-name" bind:value={serviceName} placeholder="예: memo" required /></div>
-                      <div class="field"><label for="service-host">내부 호스트</label><input class="input input-bordered" id="service-host" bind:value={host} placeholder="예: memo-app" required /></div>
-                      <div class="field"><label for="service-port">내부 포트</label><input class="input input-bordered" id="service-port" bind:value={port} type="number" min="1" max="65535" placeholder="예: 3000" required /></div>
+                      <div class="field"><div class="field-label"><label for="service-name">서비스 이름</label><InfoTooltip id="service-name-help" label="서비스 이름" description="관리 화면에서 서비스를 구별할 이름입니다. 공개 주소와는 별개예요. 예: app" /></div><input class="input input-bordered" id="service-name" aria-describedby="service-name-help" bind:value={serviceName} placeholder="예: app" required /></div>
+                      <div class="field"><div class="field-label"><label for="service-host">앱 호스트</label><InfoTooltip id="service-host-help" label="앱 호스트" description="같은 Docker Compose 네트워크의 앱은 서비스 이름(예: app)을 입력하세요. 같은 Linux 서버에서 직접 실행 중인 앱은 127.0.0.1을 입력하세요. 이 경우 설치 명령에 호스트 네트워크가 적용됩니다." /></div><input class="input input-bordered" id="service-host" aria-describedby="service-host-help" bind:value={host} placeholder="예: app 또는 127.0.0.1" required /></div>
+                      <div class="field"><div class="field-label"><label for="service-port">내부 포트</label><InfoTooltip id="service-port-help" label="내부 포트" description="앱이 내부에서 실제로 듣는 포트입니다. 서버에 공개한 포트와 다를 수 있어요. 예: 3000" /></div><input class="input input-bordered" id="service-port" aria-describedby="service-port-help" bind:value={port} type="number" min="1" max="65535" placeholder="예: 3000" required /></div>
                       <div class="form-actions"><Button type="submit" disabled={serviceBusy}>{serviceBusy ? '등록 중…' : '연결 서비스 등록'}</Button></div>
                       {#if serviceError}<p class="error" role="alert">{serviceError}</p>{/if}
                     </form>
@@ -241,7 +247,9 @@
                         <input class="input input-bordered" aria-label="등록 토큰" value={enrollment.token} readonly />
                         <Button class="token-copy" onclick={() => copy(enrollment.token, '토큰')}>토큰 복사</Button>
                         <p>만료: {new Date(enrollment.expires_at).toLocaleString()}</p>
-                        <p>서비스가 실행되는 서버에서 실행할 명령</p><pre>{installCommand()}</pre>
+                        <p>서비스가 실행되는 서버에서 실행할 명령</p>
+                        {#if isLoopbackHost(service.target.host)}<p>앱이 같은 Linux 서버에서 직접 실행된 경우입니다. Connector는 호스트 네트워크로 앱의 {service.target.host}에 접속합니다.</p>{/if}
+                        <pre>{installCommand()}</pre>
                         <Button class="token-copy" onclick={() => copy(installCommand(), '설치 명령')}>설치 명령 복사</Button>
                       </div>
                     {/if}
@@ -313,6 +321,7 @@
   .section-heading h3 { margin: 0 0 4px; font-size: 15px; }
   .section-heading p { font-size: 12px; line-height: 1.5; }
   .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .field-label { display: flex; align-items: center; gap: 5px; }
   .form-grid .form-actions, .form-grid .error { grid-column: 1 / -1; margin-top: 0; }
   .token-panel :global(.reset-token-button) { margin-top: 10px; }
   .token-box { margin-top: 12px; border-radius: 6px; padding: 13px; background: #242a2f; color: #f5f3ec; }

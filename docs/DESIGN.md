@@ -17,7 +17,7 @@
 외부 TCP 사용자 ─TCP───> Outlet/HAProxy ─service tunnel─> Connector ─TCP─> postgres:5432
 ~~~
 
-Connector는 먼저 Outlet에 연결하므로 서버의 인바운드 포트와 포트포워딩이 필요 없다. Connector의 기본 대상은 같은 Compose 네트워크의 명시된 서비스 이름이며, 임의의 외부 주소 연결은 MVP에서 허용하지 않는다.
+Connector는 먼저 Outlet에 연결하므로 서버의 인바운드 포트와 포트포워딩이 필요 없다. Connector의 기본 대상은 같은 Compose 네트워크의 명시된 서비스 이름이다. 앱이 같은 Linux 서버에서 직접 실행 중이면 Connector를 호스트 네트워크로 실행하고 루프백 주소를 대상으로 지정할 수 있다. 임의의 외부 주소 연결은 MVP에서 허용하지 않는다.
 
 ## 2. 첫 사용자 흐름
 
@@ -60,6 +60,8 @@ services:
 ~~~
 
 Connector는 app:3000만 대상으로 연결한다. 서비스 컨테이너에 ports를 선언하지 않아도 된다.
+
+앱이 같은 Linux 서버에서 컨테이너 밖에 실행 중이고 `127.0.0.1:3000`에서 수신한다면, 관리 UI의 앱 호스트를 `127.0.0.1`, 내부 포트를 `3000`으로 등록한다. UI가 생성하는 `docker run` 명령에는 `--network host`가 들어간다. Compose로 Connector를 실행하는 경우에는 `network_mode: host`를 사용하고 `MEERKAT_TARGET`을 `127.0.0.1:3000`으로 지정한다. 이 서비스에 Compose의 `networks`를 함께 선언하지 않는다.
 
 ### 2.4 HTTPS 공개
 

@@ -9,6 +9,7 @@
 | `Button` | 클릭, 제출 등 화면 안의 동작 | `variant`: `primary`, `secondary`, `danger`, `text`, `plain`; `size`: `sm`, `md` |
 | `LinkButton` | URL로 이동하는 링크 | `href` 필수; `variant`: `primary`, `secondary`, `text`; `size`: `sm`, `md` |
 | `Card` | 정보를 담는 표면 | `as`: `div`, `section`, `article`; `variant`: `soft`(기본), `glass`, `solid`; `padding`: `none`, `sm`, `md` |
+| `InfoTooltip` | 입력 항목 옆에서 짧은 도움말 표시 | `id`: 설명 요소의 고유 ID, `label`: 항목 이름, `description`: 도움말 내용 |
 
 `Button`은 기본적으로 `type="button"`입니다. 폼 제출에는 `type="submit"`을 지정하세요. `LinkButton`은 실제 `<a>` 요소이므로 외부 링크에 새 창을 사용할 때는 `target="_blank" rel="noopener noreferrer"`를 함께 지정하세요.
 
@@ -17,3 +18,5 @@
 `padding="none"`은 카드 자체의 기본 여백을 지정하지 않습니다. 연결 지도처럼 사용처에서 여백을 정해야 할 때 사용하며, 해당 영역의 CSS에서 `padding`을 지정하세요.
 
 기본 버튼 높이와 카드 여백은 운영 화면의 밀도에 맞춰 컴팩트하게 설정되어 있습니다. 화면별로 큰 여백을 다시 지정하기보다 공통 크기를 우선 사용하세요.
+
+`InfoTooltip`은 마우스 호버나 키보드 포커스에서 설명을 표시합니다. 입력칸에도 같은 `id`를 `aria-describedby`로 지정하면 보조 기술이 설명을 읽을 수 있습니다.

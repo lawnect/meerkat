@@ -215,6 +215,17 @@ docker compose --env-file .local/poc/compose.env -f deploy/compose.poc.yaml up -
 
 Connector JSON 예제는 [configs/connector.example.json](configs/connector.example.json)에 있습니다. `MEERKAT_OUTLET`, `MEERKAT_NAME`, `MEERKAT_DATA_DIR`, `MEERKAT_TARGET`, `MEERKAT_RATHOLE_BINARY`, `MEERKAT_ROOT_CA`, `MEERKAT_HEARTBEAT_INTERVAL` 환경변수로 덮어쓸 수 있습니다.
 
+### 연결 서비스 주소 입력
+
+Connector 관리 화면의 **서비스 이름**은 대시보드에서 구별할 이름이고, **앱 호스트**와 **내부 포트**는 Connector가 실제 앱에 접속할 주소입니다. 공개 서브도메인은 이후 **공개 주소**에서 별도로 입력합니다.
+
+| 앱 실행 방식 | 앱 호스트 | 내부 포트 | Connector 실행 방식 |
+| --- | --- | --- | --- |
+| 같은 Docker Compose 네트워크의 앱 | `app` (Compose 서비스 이름) | 앱이 컨테이너 안에서 듣는 포트, 예: `3000` | 앱과 같은 네트워크에 연결 |
+| 같은 Linux 서버에서 직접 실행 중인 앱 | `127.0.0.1` | 앱이 서버에서 듣는 포트, 예: `3000` | 호스트 네트워크 사용 |
+
+두 번째 경우 앱이 `127.0.0.1:3000`에서 수신한다면 연결 서비스에도 `127.0.0.1`과 `3000`을 입력합니다. 대시보드의 Connector 설치 명령에는 `--network host`가 자동으로 포함됩니다. Docker Compose로 Connector를 직접 구성한다면 Connector 서비스에 `network_mode: host`를 지정하고 기존 `networks` 설정은 제거합니다. 앱 포트를 인터넷에 공개할 필요는 없습니다. 호스트 네트워크 방식은 Linux 서버에서 사용합니다.
+
 등록 토큰은 `MEERKAT_ENROLLMENT_TOKEN` 또는 `MEERKAT_ENROLLMENT_TOKEN_FILE` 중 하나로 전달합니다. 성공 후에는 저장된 API 자격 증명을 사용하고 등록 토큰을 재사용하지 않습니다. Connector가 시작할 때 토큰 환경변수를 제거하며 자식 rathole 프로세스에도 전달하지 않습니다. Compose의 원래 환경·token 파일은 운영자가 별도로 제거할 수 있습니다.
 
 초기 기본 수명은 등록 토큰 10분, Connector API 자격 증명 30일입니다. `poc-init -enrollment-ttl 10m -credential-ttl 720h`로 바꿀 수 있습니다. 만료된 등록 토큰은 관리자 API `POST /api/v1/connectors/{id}/enrollment-tokens`에서 교체할 수 있습니다. API 자격 증명 만료 시 Connector는 터널을 종료하고, 새 토큰과 새 Connector data directory로 재등록합니다. 자동 갱신·mTLS·강제 폐기는 후속 단계입니다.
