@@ -125,7 +125,7 @@
       port = '';
       await onChanged();
     } catch (cause) {
-      serviceError = `내부 앱을 등록하지 못했습니다: ${errorMessage(cause)}`;
+      serviceError = `연결 서비스를 등록하지 못했습니다: ${errorMessage(cause)}`;
     } finally {
       serviceBusy = false;
     }
@@ -197,7 +197,7 @@
 
   {#if data.connectors.length}
     <div class="connector-filters" role="search" aria-label="Connector 검색 및 필터">
-      <div class="field search-field"><label for="connector-search">검색</label><input class="input input-bordered" id="connector-search" type="search" bind:value={searchQuery} placeholder="Connector, 내부 앱, 도메인 검색" autocomplete="off" /></div>
+      <div class="field search-field"><label for="connector-search">검색</label><input class="input input-bordered" id="connector-search" type="search" bind:value={searchQuery} placeholder="Connector, 연결 서비스, 도메인 검색" autocomplete="off" /></div>
       <div class="field"><label for="connection-filter">연결 상태</label><select id="connection-filter" bind:value={connectionFilter}><option value="all">전체 상태</option><option value="connected">연결됨</option><option value="pending">연결 대기</option><option value="problem">연결 문제</option></select></div>
     </div>
     {#if filtersActive}<div class="filter-summary"><span aria-live="polite">{data.connectors.length}개 중 {visibleConnectors.length}개 표시</span><Button variant="text" size="sm" onclick={clearFilters}>초기화</Button></div>{/if}
@@ -215,19 +215,19 @@
                   {#key service.id}<ServiceBlock record={records[0]} outlet={data.outlet} onChanged={onChanged} />{/key}
                 {:else}
                   <section class="detail-section setup-section">
-                    <div class="section-heading"><div><h3>내부 앱 등록</h3><p>이 Connector가 연결할 앱의 내부 주소와 포트를 입력하세요.</p></div></div>
+                    <div class="section-heading"><div><h3>연결 서비스 등록</h3><p>이 Connector가 연결할 서비스의 내부 주소와 포트를 입력하세요.</p></div></div>
                     <form class="form-grid" onsubmit={createService}>
-                      <div class="field"><label for="service-name">앱 이름</label><input class="input input-bordered" id="service-name" bind:value={serviceName} placeholder="예: memo" required /></div>
+                      <div class="field"><label for="service-name">서비스 이름</label><input class="input input-bordered" id="service-name" bind:value={serviceName} placeholder="예: memo" required /></div>
                       <div class="field"><label for="service-host">내부 호스트</label><input class="input input-bordered" id="service-host" bind:value={host} placeholder="예: memo-app" required /></div>
                       <div class="field"><label for="service-port">내부 포트</label><input class="input input-bordered" id="service-port" bind:value={port} type="number" min="1" max="65535" placeholder="예: 3000" required /></div>
-                      <div class="form-actions"><Button type="submit" disabled={serviceBusy}>{serviceBusy ? '등록 중…' : '내부 앱 등록'}</Button></div>
+                      <div class="form-actions"><Button type="submit" disabled={serviceBusy}>{serviceBusy ? '등록 중…' : '연결 서비스 등록'}</Button></div>
                       {#if serviceError}<p class="error" role="alert">{serviceError}</p>{/if}
                     </form>
                   </section>
                 {/if}
                 {#if service && (selected.status !== 'connected' || connectorState.enrollment)}
                   <section class="detail-section token-panel">
-                    <div class="section-heading"><div><h3>Connector 연결</h3><p>{selected.status === 'draft' ? '토큰을 발급해 앱이 실행되는 서버에서 Connector를 실행하세요.' : selected.status === 'connecting' ? 'Connector가 연결 중입니다. 잠시 후 상태를 확인하세요.' : selected.status === 'connected' ? 'Connector가 연결되었습니다. 발급한 토큰은 이 화면을 벗어나면 다시 볼 수 없습니다.' : 'Connector의 응답이 없습니다. 실행 중인 Connector와 네트워크를 확인하세요.'}</p></div></div>
+                    <div class="section-heading"><div><h3>Connector 연결</h3><p>{selected.status === 'draft' ? '토큰을 발급해 서비스가 실행되는 서버에서 Connector를 실행하세요.' : selected.status === 'connecting' ? 'Connector가 연결 중입니다. 잠시 후 상태를 확인하세요.' : selected.status === 'connected' ? 'Connector가 연결되었습니다. 발급한 토큰은 이 화면을 벗어나면 다시 볼 수 없습니다.' : 'Connector의 응답이 없습니다. 실행 중인 Connector와 네트워크를 확인하세요.'}</p></div></div>
                     {#if !connectorState.enrollment && selected.status === 'draft'}<Button onclick={() => issueToken()} disabled={tokenBusy}>{tokenBusy ? '발급 중…' : '등록 토큰 발급'}</Button>{/if}
                     {#if !connectorState.enrollment && selected.status !== 'draft' && selected.status !== 'connected'}<Button variant="secondary" onclick={() => { if (confirm('기존 Connector 자격 증명을 무효화하고 새 토큰을 발급합니다. 실행 중인 연결은 끊깁니다. 계속할까요?')) issueToken(true); }} disabled={tokenBusy}>{tokenBusy ? '발급 중…' : '연결 초기화 후 새 토큰 발급'}</Button>{/if}
                     {#if tokenError}<p class:error={!tokenError.includes('복사했습니다')} class:success={tokenError.includes('복사했습니다')} role="status">{tokenError}</p>{/if}
@@ -241,7 +241,7 @@
                         <input class="input input-bordered" aria-label="등록 토큰" value={enrollment.token} readonly />
                         <Button class="token-copy" onclick={() => copy(enrollment.token, '토큰')}>토큰 복사</Button>
                         <p>만료: {new Date(enrollment.expires_at).toLocaleString()}</p>
-                        <p>앱이 실행되는 서버에서 실행할 명령</p><pre>{installCommand()}</pre>
+                        <p>서비스가 실행되는 서버에서 실행할 명령</p><pre>{installCommand()}</pre>
                         <Button class="token-copy" onclick={() => copy(installCommand(), '설치 명령')}>설치 명령 복사</Button>
                       </div>
                     {/if}
@@ -264,7 +264,7 @@
 <dialog bind:this={createDialog} class="connector-dialog" aria-labelledby="create-dialog-title" aria-describedby="create-dialog-description" oncancel={(event) => { if (createBusy) event.preventDefault(); }} onclose={() => { name = ''; createError = ''; }}>
   <form onsubmit={createConnector}>
     <h2 id="create-dialog-title">새 Connector 만들기</h2>
-    <p id="create-dialog-description">공개할 앱마다 Connector를 하나씩 만듭니다.</p>
+    <p id="create-dialog-description">공개할 서비스마다 Connector를 하나씩 만듭니다.</p>
     <div class="field"><label for="connector-name">Connector 이름</label><input class="input input-bordered" id="connector-name" bind:value={name} placeholder="예: coolify-hello" required /></div>
     {#if createError}<p class="error" role="alert">{createError}</p>{/if}
     <div class="dialog-actions"><Button variant="secondary" onclick={closeCreateDialog} disabled={createBusy}>취소</Button><Button type="submit" disabled={createBusy}>{createBusy ? '만드는 중…' : 'Connector 만들기'}</Button></div>
@@ -274,7 +274,7 @@
 <dialog bind:this={deleteDialog} class="connector-dialog" aria-labelledby="delete-dialog-title" aria-describedby="delete-dialog-description" oncancel={(event) => { if (deleteBusy) event.preventDefault(); }} onclose={() => { deleteName = ''; deleteError = ''; deleteTarget = null; }}>
   <form onsubmit={deleteConnector}>
     <h2 id="delete-dialog-title">Connector 삭제</h2>
-    <p id="delete-dialog-description">등록된 앱과 공개 주소도 삭제되고 실행 중인 연결이 끊깁니다. 이 작업은 되돌릴 수 없습니다.</p>
+    <p id="delete-dialog-description">연결 서비스의 등록 정보와 공개 주소가 삭제되고 실행 중인 연결이 끊깁니다. 실제 서비스는 삭제되지 않습니다.</p>
     <div class="field"><label for="delete-connector-name">삭제 확인: <strong>{deleteTarget?.name}</strong> 입력</label><input class="input input-bordered" id="delete-connector-name" bind:value={deleteName} autocomplete="off" spellcheck="false" required /></div>
     {#if deleteError}<p class="error" role="alert">{deleteError}</p>{/if}
     <div class="dialog-actions"><Button variant="secondary" onclick={closeDeleteDialog} disabled={deleteBusy}>취소</Button><Button variant="danger" type="submit" disabled={deleteBusy || deleteName !== deleteTarget?.name}>{deleteBusy ? '삭제 중…' : 'Connector 삭제'}</Button></div>

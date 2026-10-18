@@ -26,7 +26,7 @@
     <div>
       <p class="section-kicker">CONNECTION MAP</p>
       <h2 id="connection-heading">서비스 연결 경로</h2>
-      <p>외부 주소에서 Connector를 거쳐 내부 앱으로 이어지는 경로입니다.</p>
+      <p>외부 주소에서 Connector를 거쳐 연결 서비스로 이어지는 경로입니다.</p>
     </div>
     <Button variant="text" size="sm" class="map-link" onclick={() => navigate('connectors')}>Connector 관리 <span aria-hidden="true">↗</span></Button>
   </div>
@@ -52,7 +52,7 @@
           </div>
           <span class="path-arrow" aria-hidden="true">→</span>
           <div class="path-step">
-            <span class="step-label">내부 앱</span>
+            <span class="step-label">연결 서비스</span>
             <div class="step-name"><strong title={record.service.name}>{record.service.name}</strong></div>
             <span class:active={record.service.enabled && record.service.observed_status === 'connected'} class="step-status"><span class="status-dot" aria-hidden="true"></span>{record.service.enabled ? statusLabel(record.service.observed_status) : '사용 안 함'} <span class="target-address">· {record.service.target.host}:{record.service.target.port}</span></span>
           </div>

@@ -16,16 +16,16 @@
     : data.connectors.length === 0
       ? 'Connector를 하나 만드세요.'
       : data.services.length === 0
-        ? 'Connector에 연결할 내부 앱을 등록하세요.'
+        ? 'Connector에 연결할 서비스를 등록하세요.'
         : data.routes.length === 0
-          ? '내부 앱에 공개 주소를 추가하세요.'
+          ? '연결 서비스에 공개 주소를 추가하세요.'
           : connected === 0
             ? 'Connector를 실행하고 등록 토큰으로 연결하세요.'
             : null);
   const items = $derived([
     ['도메인 확인', Boolean(data.outlet.domain), '설정에서 변경', 'settings'],
     ['Connector 만들기', data.connectors.length > 0, 'Connector 등록', 'connectors'],
-    ['내부 앱 등록', data.services.length > 0, '앱 이름과 내부 주소 입력', 'connectors'],
+    ['연결 서비스 등록', data.services.length > 0, '서비스 이름과 내부 주소 입력', 'connectors'],
     ['공개 주소 추가', data.routes.length > 0, '도메인 등록', 'connectors'],
     ['Connector 연결', connected > 0, '등록 토큰 발급', 'connectors'],
   ] as [string, boolean, string, PageKey][]);
@@ -38,10 +38,10 @@
 
       if (connector.status !== 'connected') details.push(`터널 ${statusLabel(connector.status)}`);
       if (!record) {
-        details.push('내부 앱 미등록');
+        details.push('연결 서비스 미등록');
       } else {
-        if (!record.service.enabled) details.push('내부 앱 사용 안 함');
-        else if (record.service.observed_status !== 'connected') details.push(`앱 포트 ${statusLabel(record.service.observed_status)}`);
+        if (!record.service.enabled) details.push('연결 서비스 사용 안 함');
+        else if (record.service.observed_status !== 'connected') details.push(`서비스 포트 ${statusLabel(record.service.observed_status)}`);
 
         if (!record.routes.length) details.push('공개 주소 없음');
         else {
@@ -70,7 +70,7 @@
       <div><div class="stat-value">{connected}</div><div class="stat-note">현재 연결됨</div></div>
     </div>
   </Card>
-  <Card class="summary-card"><div class="stat-label">등록된 내부 앱</div><div class="stat-value">{data.services.length}</div><div class="stat-note">내부 주소와 포트를 등록한 앱</div></Card>
+  <Card class="summary-card"><div class="stat-label">등록된 연결 서비스</div><div class="stat-value">{data.services.length}</div><div class="stat-note">내부 주소와 포트를 등록한 서비스</div></Card>
   <Card class="summary-card"><div class="stat-label">설정된 공개 주소</div><div class="stat-value">{data.routes.length}</div><div class="stat-note">접속 상태와 별개로 등록된 도메인</div></Card>
 </div>
 
@@ -126,7 +126,7 @@
     </Panel>
     <div>
       <Card variant="solid" padding="none" class="callout"><strong>현재 할 일</strong><span>{next}</span></Card>
-      <Card class="help-panel"><h2>용어 안내</h2><p>Connector는 앱이 실행되는 서버에서 Outlet으로 연결하는 프로그램입니다. 현재 Connector 하나에 내부 앱 하나를 등록하고, 앱에는 공개 주소를 추가할 수 있습니다.</p></Card>
+      <Card class="help-panel"><h2>용어 안내</h2><p>Connector는 서비스가 실행되는 서버에서 Outlet으로 연결하는 프로그램입니다. 현재 Connector 하나에 연결 서비스 하나를 등록하고, 서비스에는 공개 주소를 추가할 수 있습니다.</p></Card>
     </div>
   </div>
 {:else if connectionIssues.length}
