@@ -3,6 +3,7 @@ export type AuthMode = 'loading' | 'setup' | 'login' | 'unavailable' | 'dashboar
 
 export interface Outlet {
   domain?: string;
+  domains?: string[];
 }
 
 export interface Connector {

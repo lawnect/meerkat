@@ -96,6 +96,8 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/session", s.logout)
 	mux.HandleFunc("GET /api/v1/outlet", s.getOutlet)
 	mux.HandleFunc("PUT /api/v1/outlet", s.updateOutlet)
+	mux.HandleFunc("POST /api/v1/outlet/domains", s.addOutletDomain)
+	mux.HandleFunc("DELETE /api/v1/outlet/domains/{domain}", s.deleteOutletDomain)
 	mux.HandleFunc("GET /api/v1/diagnostics/trace", s.trace)
 	mux.HandleFunc("GET /api/v1/connectors", s.list)
 	mux.HandleFunc("POST /api/v1/connectors", s.createConnector)
@@ -105,6 +107,7 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/connectors/{id}/services/{service_id}", s.deleteService)
 	mux.HandleFunc("GET /api/v1/services/{id}/routes", s.listRoutes)
 	mux.HandleFunc("POST /api/v1/services/{id}/routes", s.createHTTPRoute)
+	mux.HandleFunc("DELETE /api/v1/services/{id}/routes/{route_id}", s.deleteHTTPRoute)
 	mux.HandleFunc("POST /api/v1/connectors/{id}/enrollment-tokens", s.issueToken)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -476,6 +479,74 @@ func (s *Store) updateOutlet(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, control.ErrDomainHasRoutes) {
 		fail(w, r, 409, "domain_has_routes")
+		return
+	}
+	if errors.Is(err, control.ErrDomainExists) {
+		fail(w, r, 409, "domain_exists")
+		return
+	}
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	if err := s.reconcileProxy(r.Context()); err != nil {
+		fail(w, r, 503, "proxy_reconcile_failed")
+		return
+	}
+	reply(w, 200, outlet)
+}
+
+func (s *Store) addOutletDomain(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	var req outletRequest
+	if !decode(w, r, &req, "domain") {
+		return
+	}
+	outlet, err := s.control.AddDomain(r.Context(), req.Domain)
+	if errors.Is(err, control.ErrInvalidDomain) {
+		fail(w, r, 400, "invalid_domain")
+		return
+	}
+	if errors.Is(err, control.ErrDomainExists) {
+		fail(w, r, 409, "domain_exists")
+		return
+	}
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	if err := s.reconcileProxy(r.Context()); err != nil {
+		fail(w, r, 503, "proxy_reconcile_failed")
+		return
+	}
+	reply(w, 201, outlet)
+}
+
+func (s *Store) deleteOutletDomain(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	outlet, err := s.control.RemoveDomain(r.Context(), r.PathValue("domain"))
+	if errors.Is(err, control.ErrPrimaryDomain) {
+		fail(w, r, 409, "primary_domain")
+		return
+	}
+	if errors.Is(err, control.ErrDomainHasRoutes) {
+		fail(w, r, 409, "domain_has_routes")
+		return
+	}
+	if errors.Is(err, control.ErrDomainNotFound) {
+		fail(w, r, 404, "domain_not_found")
 		return
 	}
 	if err != nil {
@@ -926,4 +997,28 @@ func (s *Store) createHTTPRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, 201, route)
+}
+
+func (s *Store) deleteHTTPRoute(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	err := s.control.DeleteHTTPRoute(r.Context(), r.PathValue("id"), r.PathValue("route_id"))
+	if errors.Is(err, control.ErrRouteNotFound) {
+		fail(w, r, 404, "route_not_found")
+		return
+	}
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	if err := s.reconcileProxy(r.Context()); err != nil {
+		fail(w, r, 503, "proxy_reconcile_failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

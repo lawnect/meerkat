@@ -221,7 +221,7 @@ func (s *Store) reconcileProxy(ctx context.Context) error {
 		}
 	}
 	s.mu.Unlock()
-	config, err := proxy.Caddyfile(outlet.Domain, routes)
+	config, err := proxy.CaddyfileDomains(outlet.Domain, outlet.Domains, routes)
 	if err != nil {
 		return err
 	}

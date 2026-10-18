@@ -97,6 +97,11 @@ chmod 600 /opt/meerkat-outlet/compose.env
 `MEERKAT_UID`와 `MEERKAT_GID`는 실제 `id -u`, `id -g` 결과로 바꿉니다.
 Caddy는 Cloudflare DNS-01 검증으로 `*.saeoo.com` 와일드카드 인증서를 발급·갱신합니다.
 Cloudflare API token은 대상 zone의 `Zone:DNS:Edit`과 `Zone:Zone:Read` 권한으로 제한합니다.
+추가 도메인은 Outlet의 설정 화면에서 등록합니다. 각 도메인의 Cloudflare DNS에
+`*` A 레코드를 Outlet 서버의 공인 IPv4 주소로 지정하고, 대표 도메인에는 루트 주소(`@`)의
+A 레코드도 지정합니다. IPv6를 사용한다면 해당 AAAA 레코드도 같은 방식으로 설정합니다.
+추가한 모든 도메인의 zone을 Cloudflare API token 권한 범위에 포함해야 Caddy가
+각 도메인의 인증서를 발급·갱신할 수 있습니다. DNS 레코드는 Outlet이 자동 생성하지 않습니다.
 서버에 내려받은 `compose.outlet.yaml`의 Caddy `environment` 항목에 직접 입력하세요.
 이 서버 전용 파일은 Git에 올리지 마세요.
 `saeoo.com`과 `*.saeoo.com`의 DNS가 Outlet IP를 가리켜야 하며, 공개 HTTPS와 HTTP redirect를

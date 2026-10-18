@@ -11,6 +11,7 @@ import (
 
 var (
 	ErrRouteExists     = errors.New("route already exists")
+	ErrRouteNotFound   = errors.New("route not found")
 	ErrInvalidRoute    = errors.New("invalid route")
 	ErrServiceNotFound = errors.New("service not found")
 )
@@ -70,10 +71,14 @@ func (d *Database) CreateHTTPRoute(ctx context.Context, serviceID, hostname stri
 	if err != nil {
 		return Route{}, err
 	}
-	if outlet.Domain == "" {
-		return Route{}, ErrInvalidRoute
+	allowed := false
+	for _, domain := range outlet.Domains {
+		if strings.HasSuffix(hostname, "."+domain) {
+			allowed = true
+			break
+		}
 	}
-	if hostname != outlet.Domain && !strings.HasSuffix(hostname, "."+outlet.Domain) {
+	if !allowed {
 		return Route{}, ErrInvalidRoute
 	}
 	var protocol string
@@ -133,4 +138,22 @@ func (d *Database) ListRoutes(ctx context.Context, serviceID string) ([]Route, e
 		routes = append(routes, route)
 	}
 	return routes, rows.Err()
+}
+
+func (d *Database) DeleteHTTPRoute(ctx context.Context, serviceID, routeID string) error {
+	if !validation.Label(serviceID) || !validation.Label(routeID) {
+		return ErrRouteNotFound
+	}
+	result, err := d.db.ExecContext(ctx, "DELETE FROM routes WHERE id = ? AND service_id = ? AND kind = 'http'", routeID, serviceID)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return ErrRouteNotFound
+	}
+	return nil
 }

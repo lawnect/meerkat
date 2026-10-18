@@ -140,6 +140,11 @@ CREATE TABLE audit_events (
   resource_id TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+`}, {version: 2, sql: `
+CREATE TABLE outlet_domains (
+  domain TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL
+);
 `}}
 
 func migrate(ctx context.Context, db *sql.DB) error {

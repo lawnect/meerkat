@@ -18,25 +18,50 @@ type HTTPRoute struct {
 }
 
 func Caddyfile(domain string, routes []HTTPRoute) ([]byte, error) {
-	if !validation.Hostname(domain) {
+	return CaddyfileDomains(domain, []string{domain}, routes)
+}
+
+func CaddyfileDomains(primary string, domains []string, routes []HTTPRoute) ([]byte, error) {
+	if !validation.Hostname(primary) || len(domains) == 0 || domains[0] != primary {
 		return nil, errors.New("invalid outlet domain")
+	}
+	for i, domain := range domains {
+		if !validation.Hostname(domain) {
+			return nil, errors.New("invalid outlet domain")
+		}
+		for _, earlier := range domains[:i] {
+			if domain == earlier || strings.HasSuffix(domain, "."+earlier) || strings.HasSuffix(earlier, "."+domain) {
+				return nil, errors.New("overlapping outlet domains")
+			}
+		}
 	}
 	copyRoutes := append([]HTTPRoute(nil), routes...)
 	sort.Slice(copyRoutes, func(i, j int) bool { return copyRoutes[i].Hostname < copyRoutes[j].Hostname })
 	seen := map[string]bool{}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s {\n", domain)
+	fmt.Fprintf(&b, "%s {\n", primary)
 	writeCloudflareTLS(&b)
 	b.WriteString("\treverse_proxy https://outlet:8443 {\n\t\ttransport http {\n\t\t\ttls_trust_pool file /etc/caddy/root-ca.pem\n\t\t\ttls_server_name outlet\n\t\t}\n\t}\n}\n")
-	fmt.Fprintf(&b, "\n*.%s {\n", domain)
-	writeCloudflareTLS(&b)
-	b.WriteString("\trespond 404\n}\n")
-	for _, route := range copyRoutes {
-		if !validation.Hostname(route.Hostname) || (route.Hostname != domain && !strings.HasSuffix(route.Hostname, "."+domain)) || seen[route.Hostname] {
-			return nil, errors.New("invalid or duplicate route hostname")
+	for _, domain := range domains {
+		if domain != primary {
+			fmt.Fprintf(&b, "\n%s {\n", domain)
+			writeCloudflareTLS(&b)
+			b.WriteString("\trespond 404\n}\n")
 		}
-		if route.Hostname == domain {
-			return nil, errors.New("outlet domain is reserved for the dashboard")
+		fmt.Fprintf(&b, "\n*.%s {\n", domain)
+		writeCloudflareTLS(&b)
+		b.WriteString("\trespond 404\n}\n")
+	}
+	for _, route := range copyRoutes {
+		allowed := false
+		for _, domain := range domains {
+			if strings.HasSuffix(route.Hostname, "."+domain) {
+				allowed = true
+				break
+			}
+		}
+		if !validation.Hostname(route.Hostname) || !allowed || seen[route.Hostname] {
+			return nil, errors.New("invalid or duplicate route hostname")
 		}
 		if err := validation.Endpoint(route.Upstream); err != nil {
 			return nil, errors.New("invalid route upstream")

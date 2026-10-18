@@ -13,12 +13,12 @@ interface MockInput {
 }
 
 const state: {
-  outlet: { domain: string };
+  outlet: { domain: string; domains: string[] };
   connectors: Connector[];
   services: Service[];
   routes: Route[];
 } = {
-  outlet: { domain: 'example.test' },
+  outlet: { domain: 'example.test', domains: ['example.test'] },
   connectors: [{ id: 'mock-connector-home', name: 'home-server', status: 'connected', created_at: now(), last_seen: now() }],
   services: [{
     id: 'mock-service-whoami', connector_id: 'mock-connector-home', name: 'whoami', protocol: 'http',
@@ -52,8 +52,25 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
   if (path === '/api/v1/outlet' && method === 'GET') return { ...state.outlet };
   if (path === '/api/v1/outlet' && method === 'PUT') {
     if (!input.domain) fail('invalid_domain');
+    if (state.outlet.domain !== input.domain && state.routes.length) fail('domain_has_routes');
+    state.outlet.domains[0] = input.domain;
     state.outlet.domain = input.domain;
     return { ...state.outlet };
+  }
+  if (path === '/api/v1/outlet/domains' && method === 'POST') {
+    const domain = input.domain?.trim().toLowerCase();
+    if (!domain || !/^[a-z0-9.-]+$/.test(domain) || !domain.includes('.')) fail('invalid_domain');
+    if (state.outlet.domains.some((current) => current === domain || current.endsWith(`.${domain}`) || domain.endsWith(`.${current}`))) fail('domain_exists');
+    state.outlet.domains.push(domain);
+    return { ...state.outlet, domains: [...state.outlet.domains] };
+  }
+  if (parts.length === 5 && parts[2] === 'outlet' && parts[3] === 'domains' && method === 'DELETE') {
+    const domain = parts[4];
+    if (domain === state.outlet.domain) fail('primary_domain');
+    if (!state.outlet.domains.includes(domain)) fail('domain_not_found');
+    if (state.routes.some((route) => route.hostname.endsWith(`.${domain}`))) fail('domain_has_routes');
+    state.outlet.domains = state.outlet.domains.filter((item) => item !== domain);
+    return { ...state.outlet, domains: [...state.outlet.domains] };
   }
   if (path === '/api/v1/connectors' && method === 'GET') return { connectors: state.connectors.map((connector) => ({ ...connector })) };
   if (path === '/api/v1/connectors' && method === 'POST') {
@@ -125,11 +142,17 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     }
     if (parts.length === 5 && method === 'POST') {
       const hostname = input.hostname?.trim().toLowerCase();
-      if (!hostname || !(hostname === state.outlet.domain || hostname.endsWith(`.${state.outlet.domain}`))) fail('invalid_route');
+      if (!hostname || !state.outlet.domains.some((domain) => hostname.endsWith(`.${domain}`))) fail('invalid_route');
       if (state.routes.some((route) => route.hostname === hostname)) fail('hostname_taken');
       const route: Route = { id: id('route'), service_id: serviceId, kind: 'http', hostname, enabled: true, desired_revision: 1, applied_revision: 0, created_at: now(), updated_at: now() };
       state.routes.push(route);
       return { ...route };
+    }
+    if (parts.length === 6 && method === 'DELETE') {
+      const index = state.routes.findIndex((route) => route.id === parts[5] && route.service_id === serviceId);
+      if (index < 0) fail('route_not_found');
+      state.routes.splice(index, 1);
+      return {};
     }
   }
   fail('mock_endpoint_not_implemented');
