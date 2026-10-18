@@ -58,6 +58,24 @@ func Load(path string) (Config, error) {
 		c.DevelopmentHTTP = v
 	}
 	c.DataDir, _ = filepath.Abs(c.DataDir)
+	var saved struct {
+		OutletURL string `json:"outlet_url"`
+		Name      string `json:"name"`
+	}
+	savedErr := securefs.ReadJSON(filepath.Join(c.DataDir, "session.json"), &saved)
+	if c.OutletURL == "" || c.Name == "" {
+		if savedErr == nil {
+			if c.OutletURL == "" {
+				c.OutletURL = saved.OutletURL
+			}
+			if c.Name == "" {
+				c.Name = saved.Name
+			}
+		}
+	}
+	if c.Target == (contract.Target{}) && savedErr != nil {
+		return c, errors.New("initial connector configuration requires a target or a connect invitation")
+	}
 	return c, c.Validate()
 }
 
@@ -68,8 +86,10 @@ func (c Config) Validate() error {
 	if !validation.Label(c.Name) {
 		return errors.New("connector name must be a service label")
 	}
-	if err := validation.Target(c.Target); err != nil {
-		return err
+	if c.Target != (contract.Target{}) {
+		if err := validation.Target(c.Target); err != nil {
+			return err
+		}
 	}
 	if !filepath.IsAbs(c.RatholeBinary) || !filepath.IsAbs(c.DataDir) {
 		return errors.New("binary and data directory must be absolute paths")

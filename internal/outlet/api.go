@@ -259,10 +259,17 @@ func (s *Store) authenticated(r *http.Request) (string, Record, bool, bool) {
 func (s *Store) configuration(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, record, _, ok := s.authenticated(r)
+	id, record, managed, ok := s.authenticated(r)
 	if !ok {
 		fail(w, r, 401, "invalid_credential")
 		return
+	}
+	if managed && record.Configuration.ServiceID == "" {
+		record.LastSeen = s.now().UTC()
+		if err := s.saveManaged(id, record); err != nil {
+			fail(w, r, 503, "persistence_failed")
+			return
+		}
 	}
 	reply(w, 200, record.Configuration)
 }
@@ -628,6 +635,9 @@ func managedConnectorStatus(record Record, now time.Time) string {
 	if now.Sub(record.LastSeen) >= 15*time.Second {
 		return "stale"
 	}
+	if record.Configuration.ServiceID == "" {
+		return "connected"
+	}
 	if record.TunnelStatus == "connected" {
 		return "connected"
 	}
@@ -711,8 +721,8 @@ func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if errors.Is(err, control.ErrServiceRequired) {
-		fail(w, r, 409, "connector_service_required")
-		return
+		service = control.Service{}
+		err = nil
 	}
 	if err != nil {
 		fail(w, r, 503, "persistence_failed")
@@ -743,8 +753,14 @@ func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
 	}
 	if !exists {
 		port := s.nextProbePort()
-		record = Record{Seed: Seed{Name: name, Configuration: contract.Configuration{ConnectorID: id, ServiceID: service.ID, Revision: 1, Target: service.Target, Tunnel: contract.Tunnel{RemoteAddress: remoteAddress, ServerPublicKey: s.config.TunnelServerPublicKey, ServiceName: service.ID, ServiceToken: Token()}}, ProbeAddress: net.JoinHostPort("127.0.0.1", strconv.Itoa(port))}, TunnelStatus: "unknown"}
+		record = Record{Seed: Seed{Name: name, Configuration: contract.Configuration{ConnectorID: id}, ProbeAddress: net.JoinHostPort("127.0.0.1", strconv.Itoa(port))}, TunnelStatus: "unknown"}
 	} else {
+		record.Configuration.Revision = 0
+		record.Configuration.ServiceID = ""
+		record.Configuration.Target = contract.Target{}
+		record.Configuration.Tunnel = contract.Tunnel{}
+	}
+	if service.ID != "" {
 		record.Configuration.Revision++
 		record.Configuration.ServiceID = service.ID
 		record.Configuration.Target = service.Target
@@ -929,6 +945,28 @@ func (s *Store) createService(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
+	s.mu.Lock()
+	if record, ok := s.managed[r.PathValue("id")]; ok {
+		remoteAddress := s.config.TunnelRemoteAddress
+		if remoteAddress == "" {
+			outlet, outletErr := s.control.Outlet(r.Context())
+			_, port, splitErr := net.SplitHostPort(s.config.TunnelListenAddress)
+			if outletErr == nil && splitErr == nil {
+				remoteAddress = net.JoinHostPort(outlet.Domain, port)
+			}
+		}
+		record.Configuration = contract.Configuration{ConnectorID: r.PathValue("id"), ServiceID: service.ID, Revision: 1, Target: service.Target, Tunnel: contract.Tunnel{RemoteAddress: remoteAddress, ServerPublicKey: s.config.TunnelServerPublicKey, ServiceName: service.ID, ServiceToken: Token()}}
+		if err := s.saveManaged(r.PathValue("id"), record); err != nil {
+			s.mu.Unlock()
+			fail(w, r, 503, "persistence_failed")
+			return
+		}
+	}
+	s.mu.Unlock()
+	if err := s.reconcileTunnel(); err != nil {
+		fail(w, r, 503, "tunnel_reconcile_failed")
+		return
+	}
 	reply(w, 201, service)
 }
 
@@ -949,6 +987,22 @@ func (s *Store) deleteService(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		fail(w, r, 503, "persistence_failed")
 	default:
+		s.mu.Lock()
+		if record, ok := s.managed[r.PathValue("id")]; ok {
+			record.Configuration = contract.Configuration{ConnectorID: r.PathValue("id")}
+			record.LastHeartbeat = nil
+			record.TunnelStatus = "unknown"
+			if err := s.saveManaged(r.PathValue("id"), record); err != nil {
+				s.mu.Unlock()
+				fail(w, r, 503, "persistence_failed")
+				return
+			}
+		}
+		s.mu.Unlock()
+		if err := s.reconcileTunnel(); err != nil {
+			fail(w, r, 503, "tunnel_reconcile_failed")
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

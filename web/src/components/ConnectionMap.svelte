@@ -7,6 +7,7 @@
   let { data, navigate }: { data: DashboardData; navigate: (view: PageKey) => Promise<void> } = $props();
 
   const visible = $derived(data.records.slice(0, 4));
+  const hasConnectedTunnel = $derived(data.connectors.some((connector) => connector.status === 'connected'));
 
   function routeReady(route?: Route): boolean {
     return Boolean(route?.enabled && route.applied_revision >= route.desired_revision && !route.last_error);
@@ -26,9 +27,9 @@
     <div>
       <p class="section-kicker">CONNECTION MAP</p>
       <h2 id="connection-heading">서비스 연결 경로</h2>
-      <p>외부 주소에서 Connector를 거쳐 연결 서비스로 이어지는 경로입니다.</p>
+      <p>외부 주소에서 터널을 거쳐 연결 서비스로 이어지는 경로입니다.</p>
     </div>
-    <Button variant="text" size="sm" class="map-link" onclick={() => navigate('connectors')}>Connector 관리 <span aria-hidden="true">↗</span></Button>
+    <Button variant="text" size="sm" class="map-link" onclick={() => navigate('services')}>연결 서비스 <span aria-hidden="true">↗</span></Button>
   </div>
 
   {#if visible.length}
@@ -46,7 +47,7 @@
           </div>
           <span class="path-arrow" aria-hidden="true">→</span>
           <div class="path-step">
-            <span class="step-label">Connector</span>
+            <span class="step-label">터널</span>
             <div class="step-name"><strong title={record.connector.name}>{record.connector.name}</strong></div>
             <span class:active={record.connector.status === 'connected'} class="step-status"><span class="status-dot" aria-hidden="true"></span>{statusLabel(record.connector.status)}</span>
           </div>
@@ -63,7 +64,7 @@
   {:else}
     <Card variant="solid" padding="none" class="map-empty">
       <p>아직 표시할 연결이 없습니다.</p>
-      <Button variant="text" size="sm" onclick={() => navigate('connectors')}>첫 Connector 만들기 <span aria-hidden="true">↗</span></Button>
+      <Button variant="text" size="sm" onclick={() => navigate(hasConnectedTunnel ? 'services' : 'connectors')}>{hasConnectedTunnel ? '첫 서비스 등록' : '첫 터널 만들기'} <span aria-hidden="true">↗</span></Button>
     </Card>
   {/if}
 </section>

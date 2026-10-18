@@ -7,27 +7,27 @@
   import Card from '../components/ui/Card.svelte';
   import type { DashboardData, PageKey } from '../types';
 
-  type ConnectionIssue = { id: string; name: string; details: string[] };
+  type ConnectionIssue = { id: string; name: string; details: string[]; page: PageKey };
 
   let { data, navigate }: { data: DashboardData; navigate: (view: PageKey) => Promise<void> } = $props();
   const connected = $derived(data.connectors.filter((connector) => connector.status === 'connected').length);
   const next = $derived(!data.outlet.domain
     ? '도메인 관리에서 Outlet 도메인을 입력하세요.'
     : data.connectors.length === 0
-      ? 'Connector를 하나 만드세요.'
-      : data.services.length === 0
-        ? 'Connector에 연결할 서비스를 등록하세요.'
-        : data.routes.length === 0
-          ? '연결 서비스에 공개 주소를 추가하세요.'
-          : connected === 0
-            ? 'Connector를 실행하고 등록 토큰으로 연결하세요.'
+      ? '터널을 하나 만드세요.'
+      : connected === 0
+        ? data.services.length === 0 ? '터널 설치 명령을 확인하고 서버에서 실행하세요.' : '터널 연결 상태를 확인하세요.'
+        : data.services.length === 0
+          ? '연결 서비스에서 앱 주소를 등록하세요.'
+          : data.routes.length === 0
+            ? '연결 서비스에 공개 주소를 추가하세요.'
             : null);
   const items = $derived([
     ['도메인 확인', Boolean(data.outlet.domain), '도메인 관리에서 변경', 'domains'],
-    ['Connector 만들기', data.connectors.length > 0, 'Connector 등록', 'connectors'],
-    ['연결 서비스 등록', data.services.length > 0, '서비스 이름과 내부 주소 입력', 'connectors'],
-    ['공개 주소 추가', data.routes.length > 0, '도메인 등록', 'connectors'],
-    ['Connector 연결', connected > 0, '등록 토큰 발급', 'connectors'],
+    ['터널 만들기', data.connectors.length > 0, '새 터널 만들기', 'connectors'],
+    ['터널 설치 및 연결', connected > 0, data.connectors.some((connector) => connector.status === 'draft') ? '설치 명령 확인' : '연결 상태 확인', 'connectors'],
+    ['연결 서비스 등록', data.services.length > 0, '서비스 이름과 내부 주소 입력', 'services'],
+    ['공개 주소 추가', data.routes.length > 0, '도메인 등록', 'services'],
   ] as [string, boolean, string, PageKey][]);
   const showOnboarding = $derived(Boolean(next) && !(data.outlet.domain && data.routes.length > 0 && data.connectors.some((connector) => connector.status !== 'draft')));
   const connectionIssues = $derived.by((): ConnectionIssue[] => {
@@ -50,21 +50,21 @@
         }
       }
 
-      if (details.length) issues.push({ id: connector.id, name: connector.name, details });
+      if (details.length) issues.push({ id: connector.id, name: connector.name, details, page: connector.status === 'connected' ? 'services' : 'connectors' });
     }
     return issues;
   });
 </script>
 
-<PageHead kicker="MEERKAT OUTLET" title="오늘의 운영 상태" description={next ?? 'Connector와 공개 주소의 현황을 확인할 수 있습니다.'}>
+<PageHead kicker="MEERKAT OUTLET" title="오늘의 운영 상태" description={next ?? '터널과 공개 주소의 현황을 확인할 수 있습니다.'}>
   {#snippet action()}
-    <Button onclick={() => navigate('connectors')}>{data.connectors.length ? 'Connector 관리' : 'Connector 시작'}</Button>
+    <Button onclick={() => navigate('connectors')}>{data.connectors.length ? '터널 관리' : '터널 만들기'}</Button>
   {/snippet}
 </PageHead>
 
 <div class="dashboard-grid summary-grid">
   <Card class="summary-card">
-    <div class="stat-label">Connector</div>
+    <div class="stat-label">터널</div>
     <div class="connector-stats">
       <div><div class="stat-value">{data.connectors.length}</div><div class="stat-note">등록됨</div></div>
       <div><div class="stat-value">{connected}</div><div class="stat-note">현재 연결됨</div></div>
@@ -126,7 +126,7 @@
     </Panel>
     <div>
       <Card variant="solid" padding="none" class="callout"><strong>현재 할 일</strong><span>{next}</span></Card>
-      <Card class="help-panel"><h2>용어 안내</h2><p>Connector는 서비스가 실행되는 서버에서 Outlet으로 연결하는 프로그램입니다. 현재 Connector 하나에 연결 서비스 하나를 등록하고, 서비스에는 공개 주소를 추가할 수 있습니다.</p></Card>
+      <Card class="help-panel"><h2>용어 안내</h2><p>터널은 앱 서버에서 Outlet으로 이어지는 연결입니다. 연결 서비스 메뉴에서 터널에 앱 주소를 등록하고 공개 주소를 추가합니다. 현재 터널 하나에 서비스 하나를 등록할 수 있습니다.</p></Card>
     </div>
   </div>
 {:else if connectionIssues.length}
@@ -139,7 +139,7 @@
             <span class="issue-dot" aria-hidden="true"></span>
             <div><h3>{issue.name}</h3><p>{issue.details.join(' · ')}</p></div>
           </div>
-          <Button variant="text" size="sm" class="issue-action" onclick={() => navigate('connectors')}>Connector 관리 <span aria-hidden="true">↗</span></Button>
+          <Button variant="text" size="sm" class="issue-action" onclick={() => navigate(issue.page)}>{issue.page === 'services' ? '연결 서비스' : '터널 관리'} <span aria-hidden="true">↗</span></Button>
         </Card>
       {/each}
     </div>

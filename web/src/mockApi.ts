@@ -129,10 +129,21 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     }
   }
   if (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'connectors' && parts[4] === 'enrollment-tokens' && method === 'POST') {
-    if (!state.connectors.some((connector) => connector.id === parts[3])) fail('connector_not_found');
-    if (!state.services.some((service) => service.connector_id === parts[3])) fail('connector_service_required');
+    const connector = state.connectors.find((item) => item.id === parts[3]);
+    if (!connector) fail('connector_not_found');
+    if (new URL(url, 'http://localhost').searchParams.get('reset') === 'true') {
+      connector.status = 'draft';
+      delete connector.last_seen;
+    }
     const token = `mock_enrollment_${Math.random().toString(36).slice(2, 18)}`;
-    return { token, expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString() };
+    return { token, expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString() };
+  }
+  if (parts.length === 5 && parts[2] === 'connectors' && parts[4] === 'mock-connect' && method === 'POST') {
+    const connector = state.connectors.find((item) => item.id === parts[3]);
+    if (!connector) fail('connector_not_found');
+    connector.status = 'connected';
+    connector.last_seen = now();
+    return { ...connector };
   }
   if (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'services' && parts[4] === 'routes') {
     const serviceId = parts[3];

@@ -55,7 +55,7 @@ func allowed(local Config, remote contract.Configuration) error {
 	if err := validation.Configuration(remote); err != nil {
 		return err
 	}
-	if local.Target != remote.Target {
+	if local.Target != (contract.Target{}) && local.Target != remote.Target {
 		return errors.New("outlet target is not in the connector's local allowlist")
 	}
 	return nil
@@ -79,11 +79,13 @@ func enroll(ctx context.Context, cfg Config, api *transport.Client, token string
 		if err != nil {
 			return contract.EnrollmentResponse{}, err
 		}
-		if remote.ConnectorID != saved.Enrollment.ConnectorID || remote.ServiceID != saved.Enrollment.ServiceID {
+		if remote.ConnectorID != saved.Enrollment.ConnectorID {
 			return contract.EnrollmentResponse{}, errors.New("outlet returned a different identity")
 		}
-		if err := allowed(cfg, remote); err != nil {
-			return contract.EnrollmentResponse{}, err
+		if remote.ServiceID != "" {
+			if err := allowed(cfg, remote); err != nil {
+				return contract.EnrollmentResponse{}, err
+			}
 		}
 		saved.Enrollment.Configuration = remote
 		if err := securefs.WriteJSON(path, saved); err != nil {
@@ -105,8 +107,10 @@ func enroll(ctx context.Context, cfg Config, api *transport.Client, token string
 	if err != nil {
 		return response, err
 	}
-	if err := allowed(cfg, response.Configuration); err != nil {
-		return response, err
+	if response.ServiceID != "" {
+		if err := allowed(cfg, response.Configuration); err != nil {
+			return response, err
+		}
 	}
 	if !validation.Token(response.Credential) || !time.Now().Before(response.CredentialExpiresAt) {
 		return response, errors.New("invalid enrollment credential")
@@ -140,10 +144,7 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 	var response contract.EnrollmentResponse
 	var address string
 	for attempt := 0; attempt < 6; attempt++ {
-		address, err = health.Resolve(ctx, cfg.Target)
-		if err == nil {
-			response, err = enroll(ctx, cfg, api, token)
-		}
+		response, err = enroll(ctx, cfg, api, token)
 		if err == nil {
 			break
 		}
@@ -154,7 +155,7 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 		if attempt == 5 {
 			break
 		}
-		log.Warn("connector startup waiting for outlet and local target", "attempt", attempt+1)
+		log.Warn("connector startup waiting for outlet", "attempt", attempt+1)
 		timer := time.NewTimer(time.Duration(1<<attempt) * time.Second)
 		select {
 		case <-ctx.Done():
@@ -166,6 +167,59 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 	token = ""
 	if err != nil {
 		return err
+	}
+	if response.ServiceID == "" {
+		log.Info("connector connected; waiting for a service")
+	}
+	for response.ServiceID == "" {
+		timer := time.NewTimer(5 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
+		if !time.Now().Before(response.CredentialExpiresAt) {
+			return errors.New("connector credential expired while waiting for a service")
+		}
+		remote, configErr := api.Configuration(ctx, response.Credential)
+		if configErr != nil {
+			var httpErr *transport.HTTPError
+			if errors.As(configErr, &httpErr) && (httpErr.Status == 401 || httpErr.Status == 403) {
+				return errors.New("outlet rejected connector credential")
+			}
+			log.Warn("cannot fetch connector configuration")
+			continue
+		}
+		if remote.ConnectorID != response.ConnectorID {
+			return errors.New("outlet returned a different connector")
+		}
+		if remote.ServiceID != "" {
+			if err := allowed(cfg, remote); err != nil {
+				return err
+			}
+			response.Configuration = remote
+			if err := securefs.WriteJSON(filepath.Join(cfg.DataDir, "session.json"), session{cfg.OutletURL, cfg.Name, response}); err != nil {
+				return err
+			}
+		}
+	}
+	for attempt := 0; attempt < 6; attempt++ {
+		address, err = health.Resolve(ctx, response.Target)
+		if err == nil {
+			break
+		}
+		if attempt == 5 {
+			return err
+		}
+		log.Warn("connector waiting for local target", "attempt", attempt+1)
+		timer := time.NewTimer(time.Duration(1<<attempt) * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
 	}
 	log.Info("connector authenticated", "connector_id", response.ConnectorID, "service_id", response.ServiceID)
 	config, err := rathole.ClientAt(response.Configuration, address)
@@ -187,7 +241,7 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 	lastHealth, lastProcess := "", ""
 	report := func(reportCtx context.Context) error {
 		process := supervisor.Snapshot()
-		serviceHealth := health.Check(reportCtx, cfg.Target)
+		serviceHealth := health.Check(reportCtx, response.Target)
 		if serviceHealth != lastHealth || process.State != lastProcess {
 			log.Info("connector status", "process_state", process.State, "service_health", serviceHealth, "restarts", process.Restarts)
 			lastHealth, lastProcess = serviceHealth, process.State

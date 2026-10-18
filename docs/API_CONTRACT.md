@@ -2,7 +2,7 @@
 
 이 문서는 서비스별 Connector 모델의 전체 MVP API 방향이다. 첫 vertical slice에서 구현한 경로와 정확한 필드는 [api/openapi.json](../api/openapi.json)에 정의한다. 나머지 관리자 CRUD·폐기·설정 적용·stream 경로는 아직 구현하지 않았다.
 
-첫 단계는 Connector별 bearer credential을 사용하며, 기본 수명은 등록 토큰 10분·API credential 30일이다. 두 값은 설정 가능하며 자동 갱신과 mTLS는 후속 범위다. 등록 응답은 201이며, HTTP-only PoC의 단일 Service 설정을 `service_id`, `target`, `tunnel`로 반환한다.
+첫 단계는 Connector별 bearer credential을 사용하며, 기본 수명은 등록 토큰 1시간·API credential 30일이다. 두 값은 설정 가능하며 자동 갱신과 mTLS는 후속 범위다. 등록 응답은 201이다. 서비스 등록 전에는 Connector ID와 revision 0을 반환하고 Connector는 설정을 주기적으로 조회한다. 서비스 등록 후에는 `service_id`, `target`, `tunnel`이 포함된 설정을 반환해 단일 HTTP 터널을 시작한다.
 
 ## 1. 채널과 인증
 
@@ -105,7 +105,7 @@ Authorization: Bearer <one-time-token>
 }
 ~~~
 
-성공 응답은 Connector ID, 인증 자격 증명, Outlet endpoint, 허용된 Service ID와 설정 revision을 반환한다. 개인키와 등록 토큰 원문은 다시 반환하지 않는다. 응답에는 Cache-Control: no-store를 적용한다.
+성공 응답은 Connector ID, 인증 자격 증명과 설정 revision을 반환한다. 서비스 등록 전에는 revision 0이며 Service ID·target·tunnel이 비어 있다. 서비스 등록 후 설정 조회에서 완성된 대상과 터널 정보를 반환한다. 개인키와 등록 토큰 원문은 다시 반환하지 않는다. 응답에는 Cache-Control: no-store를 적용한다.
 
 토큰 만료·재사용은 401, 토큰과 Connector 불일치는 403, 이미 등록된 Connector는 409다.
 

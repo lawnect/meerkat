@@ -153,7 +153,8 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 		}
 	}
 	for id, record := range s.managed {
-		if !validation.Label(id) || validation.Configuration(record.Configuration) != nil || !isLoopbackAddress(record.ProbeAddress) {
+		pending := record.Configuration.ServiceID == "" && record.Configuration.ConnectorID == id && record.Configuration.Revision == 0 && record.Configuration.Target == (contract.Target{}) && record.Configuration.Tunnel == (contract.Tunnel{})
+		if !validation.Label(id) || (!pending && validation.Configuration(record.Configuration) != nil) || !isLoopbackAddress(record.ProbeAddress) {
 			return nil, errors.New("invalid managed connector state")
 		}
 		// Observed liveness never survives an Outlet restart.
@@ -176,6 +177,9 @@ func (s *Store) reconcileTunnel() error {
 	s.mu.Lock()
 	services := make([]rathole.ServerService, 0, len(s.managed))
 	for _, record := range s.managed {
+		if record.Configuration.ServiceID == "" {
+			continue
+		}
 		_, port, err := net.SplitHostPort(record.ProbeAddress)
 		if err != nil {
 			s.mu.Unlock()

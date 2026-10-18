@@ -120,7 +120,7 @@ func run() error {
 		TLSCertificate:         "/config/api-cert.pem",
 		TLSKey:                 "/config/api-key.pem",
 		AdminTokenHash:         outlet.Hash(admin),
-		EnrollmentTTLSeconds:   600,
+		EnrollmentTTLSeconds:   60 * 60,
 		CredentialTTLSeconds:   30 * 24 * 60 * 60,
 		Domain:                 *domain,
 		Region:                 *region,

@@ -31,37 +31,22 @@ Connector는 먼저 Outlet에 연결하므로 서버의 인바운드 포트와 �
 
 구체적인 명령과 파일 경로는 [README의 Outlet 초기 접속 절](../README.md#outlet-초기-접속)을 따른다. Cloudflare API token은 관리 DB나 브라우저에서 받지 않는다.
 
-### 2.2 서비스 Connector 등록
+### 2.2 터널 설치와 서비스 등록
 
-1. 관리자가 UI에서 Connector 이름과 연결할 Service를 만든다.
-2. Outlet이 짧은 수명의 일회성 등록 토큰을 발급한다.
-3. 운영자가 Compose 파일에 Connector 이미지와 토큰을 추가해 실행한다.
-4. Connector는 로컬에서 키와 identity를 생성하고 HTTPS로 등록한다. 개인키는 Connector 호스트에 남는다.
-5. Outlet은 토큰을 소비하고 Connector ID, 인증 자격 증명, 허용된 대상 설정을 반환한다.
-6. Connector는 rathole client 하나를 실행해 Outlet에 장기 연결을 만들고 heartbeat와 대상 health를 보고한다.
+1. 관리자가 UI에서 터널 이름을 만든다.
+2. Outlet이 터널 생성 직후 짧은 수명의 일회성 등록 토큰을 자동 발급한다. UI는 Outlet 주소·터널 이름·토큰을 초대 코드로 묶어 설치 명령만 표시한다. 토큰 단독 입력·복사 UI는 제공하지 않는다.
+3. 운영자가 앱 네트워크 입력 없이 Connector를 실행한다. Connector는 Docker의 기본 네트워크에서 Outlet으로 연결한다.
+4. Connector는 키와 identity를 생성하고 HTTPS로 등록한다. Outlet은 토큰을 소비하고 Connector ID와 인증 자격 증명을 반환한다. 서비스가 아직 없으면 Connector는 설정을 조회하며 대기하고, UI는 인증 연결 상태를 표시한다.
+5. 관리자가 별도 연결 서비스 화면에서 연결된 터널을 선택하고 서비스 이름과 앱 호스트·포트를 등록한다. Docker 앱에 필요하면 이 단계에서 터널 컨테이너를 앱 네트워크에 연결한다. Linux 호스트의 loopback 앱은 터널 컨테이너를 호스트 네트워크로 다시 실행한다. Outlet은 대상과 터널 설정을 생성한다.
+6. Connector가 설정을 받아 앱 주소를 확인하고 rathole 터널과 heartbeat를 시작한다. 그다음 공개 주소를 등록한다.
 
 등록 실패나 시간 초과 시 새 토큰을 발급한다. Connector 폐기 시 identity와 관련 Route를 비활성화한다.
 
 ### 2.3 Docker Compose 예시
 
-~~~
-services:
-  app:
-    image: example/app:latest
+앱과 Connector가 같은 Compose 파일에 있다면 Connector에 초대 코드를 전달하고 앱 네트워크와 외부 통신 네트워크를 함께 연결한다. 관리 UI가 해당 서비스 설정을 생성한다. 연결 후에는 초대 코드가 들어간 `command` 줄을 지우고 Connector를 재시작해도 볼륨에 저장된 identity를 사용한다.
 
-  connector:
-    image: meerkat/connector:latest
-    environment:
-      MEERKAT_OUTLET: https://outlet.example.com
-      MEERKAT_ENROLLMENT_TOKEN: <one-time-token>
-      MEERKAT_TARGET: app:3000
-    depends_on:
-      - app
-~~~
-
-Connector는 app:3000만 대상으로 연결한다. 서비스 컨테이너에 ports를 선언하지 않아도 된다.
-
-앱이 같은 Linux 서버에서 컨테이너 밖에 실행 중이고 `127.0.0.1:3000`에서 수신한다면, 관리 UI의 앱 호스트를 `127.0.0.1`, 내부 포트를 `3000`으로 등록한다. UI가 생성하는 `docker run` 명령에는 `--network host`가 들어간다. Compose로 Connector를 실행하는 경우에는 `network_mode: host`를 사용하고 `MEERKAT_TARGET`을 `127.0.0.1:3000`으로 지정한다. 이 서비스에 Compose의 `networks`를 함께 선언하지 않는다.
+앱이 같은 Linux 서버에서 컨테이너 밖에 실행 중이고 `127.0.0.1:3000`에서 수신한다면, 설치 화면에서 호스트 네트워크를 선택하고 서비스의 앱 호스트를 `127.0.0.1`, 내부 포트를 `3000`으로 등록한다. 이 서비스에 Compose의 `networks`를 함께 선언하지 않는다.
 
 ### 2.4 HTTPS 공개
 
@@ -122,7 +107,7 @@ SQLite는 Outlet의 관리 데이터를 저장한다. Connector 뒤의 PostgreSQ
 ## 6. 최소 UI
 
 - 대시보드: Outlet, Connector, 인증서, 적용 오류
-- Connector 상세: 등록 토큰, 버전, 연결 상태, heartbeat, 서비스
+- Connector 상세: 설치 명령, 버전, 연결 상태, heartbeat, 서비스
 - Service 상세: Compose 대상, health, 연결된 Route
 - Route 상세: 도메인 또는 TCP 포트, ACL, 인증서·적용 상태
 - 변경 이력: 설정 revision과 감사 기록

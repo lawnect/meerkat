@@ -388,7 +388,7 @@
         "properties": {
           "host": {
             "type": "string",
-            "description": "Explicit single-label Compose service name or loopback IP; must match the local Connector allowlist"
+            "description": "Explicit single-label Compose service name or loopback IP; checked against a local Connector target when one is configured"
           },
           "port": {
             "type": "integer",
@@ -424,6 +424,7 @@
       },
       "Configuration": {
         "type": "object",
+        "description": "Revision 0 means the Connector is enrolled and waiting for a service; service_id, target, and tunnel are empty until service registration.",
         "additionalProperties": false,
         "required": [
           "connector_id",
@@ -438,17 +439,34 @@
           },
           "revision": {
             "type": "integer",
-            "minimum": 1
+            "minimum": 0
           },
           "service_id": {
-            "$ref": "#/components/schemas/Label"
+            "anyOf": [{"$ref": "#/components/schemas/Label"}, {"const": ""}]
           },
           "target": {
-            "$ref": "#/components/schemas/Target"
+            "anyOf": [{"$ref": "#/components/schemas/Target"}, {"$ref": "#/components/schemas/PendingTarget"}]
           },
           "tunnel": {
-            "$ref": "#/components/schemas/Tunnel"
+            "anyOf": [{"$ref": "#/components/schemas/Tunnel"}, {"$ref": "#/components/schemas/PendingTunnel"}]
           }
+        }
+      },
+      "PendingTarget": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["host", "port"],
+        "properties": {"host": {"const": ""}, "port": {"const": 0}}
+      },
+      "PendingTunnel": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["remote_address", "server_public_key", "service_name", "service_token"],
+        "properties": {
+          "remote_address": {"const": ""},
+          "server_public_key": {"const": ""},
+          "service_name": {"const": ""},
+          "service_token": {"const": ""}
         }
       },
       "EnrollmentRequest": {
@@ -475,6 +493,7 @@
       },
       "EnrollmentResponse": {
         "type": "object",
+        "description": "Revision 0 is an enrolled Connector waiting for its service configuration.",
         "additionalProperties": false,
         "required": [
           "connector_id",
@@ -491,16 +510,16 @@
           },
           "revision": {
             "type": "integer",
-            "minimum": 1
+            "minimum": 0
           },
           "service_id": {
-            "$ref": "#/components/schemas/Label"
+            "anyOf": [{"$ref": "#/components/schemas/Label"}, {"const": ""}]
           },
           "target": {
-            "$ref": "#/components/schemas/Target"
+            "anyOf": [{"$ref": "#/components/schemas/Target"}, {"$ref": "#/components/schemas/PendingTarget"}]
           },
           "tunnel": {
-            "$ref": "#/components/schemas/Tunnel"
+            "anyOf": [{"$ref": "#/components/schemas/Tunnel"}, {"$ref": "#/components/schemas/PendingTunnel"}]
           },
           "credential": {
             "$ref": "#/components/schemas/Secret"

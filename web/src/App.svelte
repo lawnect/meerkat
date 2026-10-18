@@ -1,13 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, errorMessage, mockApiEnabled } from './api';
-  import { pageFromPath, pagePath } from './navigation';
+  import { clearStoredEnrollments, connectorState } from './connectorState.svelte';
+  import { connectorDetailPath, connectorIdFromPath, pageFromPath, pagePath } from './navigation';
   import type { AuthMode, Connector, DashboardData, Outlet, PageKey, Route, Service } from './types';
   import AuthPage from './components/AuthPage.svelte';
   import Status from './components/Status.svelte';
   import OverviewPage from './pages/OverviewPage.svelte';
   import DomainsPage from './pages/DomainsPage.svelte';
   import ConnectorsPage from './pages/ConnectorsPage.svelte';
+  import ServicesPage from './pages/ServicesPage.svelte';
   import DiagnosticsPage from './pages/DiagnosticsPage.svelte';
   import Button from './components/ui/Button.svelte';
   import Card from './components/ui/Card.svelte';
@@ -15,6 +17,7 @@
 
   let authMode = $state<AuthMode>('loading');
   let view = $state<PageKey>(currentPage());
+  let connectorDetailId = $state<string | null>(connectorIdFromPath(window.location.pathname));
   let loading = $state(false);
   let loadError = $state('');
   let data = $state<DashboardData>({ connectors: [], services: [], routes: [], records: [], outlet: {} });
@@ -56,6 +59,10 @@
     } catch (cause) {
       const code = errorMessage(cause);
       if (code === 'invalid_admin_session' || code === 'invalid_admin_credential') {
+        clearStoredEnrollments();
+        connectorState.selectedId = '';
+        connectorState.enrollment = null;
+        connectorState.enrollmentWasReset = false;
         authMode = 'login';
       } else {
         loadError = `대시보드를 불러오지 못했습니다: ${code}`;
@@ -70,7 +77,20 @@
       window.history.pushState(null, '', pagePath[nextView]);
     }
     view = nextView;
-    if (nextView === 'connectors') await refresh();
+    connectorDetailId = null;
+    if (nextView === 'connectors' || nextView === 'services') await refresh();
+  }
+
+  function openConnectorDetail(id: string): void {
+    window.history.pushState(null, '', connectorDetailPath(id));
+    view = 'connectors';
+    connectorDetailId = id;
+  }
+
+  function closeConnectorDetail(): void {
+    window.history.pushState(null, '', pagePath.connectors);
+    view = 'connectors';
+    connectorDetailId = null;
   }
 
   function navigateFromLink(event: MouseEvent, nextView: PageKey): void {
@@ -81,11 +101,16 @@
 
   function handlePopState(): void {
     view = currentPage();
-    if (view === 'connectors' && authMode === 'dashboard') void refresh();
+    connectorDetailId = connectorIdFromPath(window.location.pathname);
+    if ((view === 'connectors' || view === 'services') && authMode === 'dashboard') void refresh();
   }
 
   async function logout() {
     await api('/api/v1/session', { method: 'DELETE' });
+    clearStoredEnrollments();
+    connectorState.selectedId = '';
+    connectorState.enrollment = null;
+    connectorState.enrollmentWasReset = false;
     authMode = 'login';
   }
 
@@ -132,11 +157,12 @@
       <p class="rail-label">운영</p>
       <nav class="nav" aria-label="운영 메뉴">
         <LinkButton href={pagePath.overview} variant="text" class={view === 'overview' ? 'nav-item active' : 'nav-item'} aria-current={view === 'overview' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'overview')}>개요</LinkButton>
-        <LinkButton href={pagePath.connectors} variant="text" class={view === 'connectors' ? 'nav-item active' : 'nav-item'} aria-current={view === 'connectors' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'connectors')}>Connector 관리</LinkButton>
+        <LinkButton href={pagePath.connectors} variant="text" class={view === 'connectors' ? 'nav-item active' : 'nav-item'} aria-current={view === 'connectors' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'connectors')}>터널 관리</LinkButton>
+        <LinkButton href={pagePath.services} variant="text" class={view === 'services' ? 'nav-item active' : 'nav-item'} aria-current={view === 'services' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'services')}>연결 서비스</LinkButton>
         <LinkButton href={pagePath.domains} variant="text" class={view === 'domains' ? 'nav-item active' : 'nav-item'} aria-current={view === 'domains' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'domains')}>도메인 관리</LinkButton>
         <LinkButton href={pagePath.diagnostics} variant="text" class={view === 'diagnostics' ? 'nav-item active' : 'nav-item'} aria-current={view === 'diagnostics' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'diagnostics')}>요청 진단</LinkButton>
       </nav>
-      <div class="rail-note"><strong>도움이 필요하신가요?</strong>서비스와 Connector를 연결하면 등록한 공개 주소로 접속할 수 있습니다.</div>
+      <div class="rail-note"><strong>도움이 필요하신가요?</strong>터널을 연결한 뒤 연결 서비스에서 앱 주소를 등록하세요.</div>
     </aside>
     <main class="content">
       {#if loadError}<p class="error" role="alert">{loadError}</p>{/if}
@@ -146,7 +172,9 @@
       {:else if view === 'domains'}
         <DomainsPage outlet={data.outlet} onSaved={refresh} />
       {:else if view === 'connectors'}
-        <ConnectorsPage {data} onChanged={refresh} />
+        <ConnectorsPage {data} onChanged={refresh} detailId={connectorDetailId} onOpenDetail={openConnectorDetail} onBack={closeConnectorDetail} />
+      {:else if view === 'services'}
+        <ServicesPage {data} onChanged={refresh} {navigate} />
       {:else if view === 'diagnostics'}
         <DiagnosticsPage />
       {/if}

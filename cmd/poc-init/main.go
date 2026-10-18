@@ -54,7 +54,7 @@ func certificate(dir string) error {
 
 func run() error {
 	dirFlag := flag.String("dir", ".local/poc", "new local fixture directory")
-	enrollmentTTL := flag.Duration("enrollment-ttl", 10*time.Minute, "initial one-time token lifetime")
+	enrollmentTTL := flag.Duration("enrollment-ttl", time.Hour, "initial one-time token lifetime")
 	credentialTTL := flag.Duration("credential-ttl", 30*24*time.Hour, "connector API credential lifetime")
 	flag.Parse()
 	if *enrollmentTTL < time.Minute || *credentialTTL < time.Minute {

@@ -3,6 +3,7 @@
   import type { Outlet, ServiceRecord } from '../types';
   import Status from './Status.svelte';
   import Button from './ui/Button.svelte';
+  import InfoTooltip from './ui/InfoTooltip.svelte';
   import LinkButton from './ui/LinkButton.svelte';
   import { pagePath } from '../navigation';
 
@@ -13,10 +14,23 @@
   let routeError = $state('');
   let busy = $state(false);
   let deletingRoute = $state('');
+  let targetCopied = $state(false);
+  let targetCopyError = $state('');
   let routeDialog = $state<HTMLDialogElement>();
   const domains = $derived(outlet.domains?.length ? outlet.domains : outlet.domain ? [outlet.domain] : []);
   const baseDomain = $derived(domains.includes(selectedDomain) ? selectedDomain : domains[0] || '');
   const routeHostname = $derived(subdomain.trim().toLowerCase() && baseDomain ? `${subdomain.trim().toLowerCase()}.${baseDomain}` : '');
+  const targetAddress = $derived(`${record.service.target.host.includes(':') ? `[${record.service.target.host}]` : record.service.target.host}:${record.service.target.port}`);
+
+  async function copyTarget(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(targetAddress);
+      targetCopied = true;
+      targetCopyError = '';
+    } catch {
+      targetCopyError = '연결 대상을 복사하지 못했습니다. 주소를 직접 선택해 복사하세요.';
+    }
+  }
 
   function openRouteDialog(): void {
     addError = '';
@@ -66,7 +80,7 @@
     if (route.last_error) return { label: '설정 오류', kind: 'error' };
     if (route.applied_revision < route.desired_revision) return { label: '반영 중', kind: 'waiting' };
     if (!record.service.enabled) return { label: '서비스 사용 안 함', kind: 'off' };
-    if (record.connector.status !== 'connected') return { label: 'Connector 연결 대기', kind: 'waiting' };
+    if (record.connector.status !== 'connected') return { label: '터널 연결 대기', kind: 'waiting' };
     if (record.service.observed_status !== 'connected') return { label: '서비스 응답 대기', kind: 'waiting' };
     return { label: '공개 중', kind: 'live' };
   }
@@ -75,11 +89,17 @@
 <article class="service">
   <div class="service-grid">
     <section class="service-column" aria-label="연결 서비스">
-      <div class="section-heading"><h3>연결 서비스</h3></div>
-      <div class="app-row"><strong>{record.service.name}</strong><code>{record.service.target.host}:{record.service.target.port}</code><Status label={statusLabel(record.service.observed_status)} value={record.service.observed_status} /></div>
+      <div class="section-heading"><div class="section-title"><h3 class="ui-meta-label">연결 서비스</h3><InfoTooltip id={`service-help-${record.service.id}`} label="연결 서비스" description="터널이 요청을 전달하는 앱과 내부 주소입니다. 상태는 해당 앱 포트의 응답을 나타냅니다." /></div></div>
+      <div class="app-row">
+        <div class="app-summary"><strong>{record.service.name}</strong><Status label={statusLabel(record.service.observed_status)} value={record.service.observed_status} /></div>
+        <div class="target-row"><span class="ui-meta-label">연결 대상</span><code>{targetAddress}</code><Button variant="plain" size="sm" class={targetCopied ? 'target-copy copied' : 'target-copy'} aria-label={targetCopied ? '연결 대상 복사 완료' : '연결 대상 복사'} title={targetCopied ? '복사 완료' : '연결 대상 복사'} onclick={copyTarget}>
+          {#if targetCopied}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>{/if}
+        </Button></div>
+        {#if targetCopyError}<p class="error" role="alert">{targetCopyError}</p>{/if}
+      </div>
     </section>
     <section class="service-column routes-section" aria-label="공개 주소">
-      <div class="section-heading"><h3>공개 주소</h3>{#if baseDomain}<Button variant="text" size="sm" onclick={openRouteDialog}>+ 주소 추가</Button>{/if}</div>
+      <div class="section-heading"><div class="section-title"><h3 class="ui-meta-label">공개 주소</h3><InfoTooltip id={`routes-help-${record.service.id}`} label="공개 주소" description="인터넷에서 연결 서비스에 접속할 HTTPS 주소입니다. 등록된 도메인의 서브도메인을 선택해 추가할 수 있습니다." /></div>{#if baseDomain}<Button variant="text" size="sm" onclick={openRouteDialog}>+ 주소 추가</Button>{/if}</div>
       {#if record.routes.length}
         <ul class="route-list">
           {#each record.routes as route (route.id)}
@@ -137,10 +157,17 @@
   .service-column { min-width: 0; }
   .routes-section { border-left: 1px solid var(--line); padding-left: 20px; }
   .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 24px; margin-bottom: 8px; }
-  .section-heading h3 { margin: 0; color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .02em; }
-  .app-row { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 10px; min-height: 40px; }
-  .app-row strong { font-size: 16px; }
-  .app-row code { color: var(--muted); font-size: 12px; }
+  .section-title { display: flex; align-items: center; gap: 5px; }
+  .section-heading h3 { margin: 0; }
+  .app-row { display: grid; gap: 5px; min-width: 0; padding: 3px 0; }
+  .app-summary, .target-row { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 10px; min-width: 0; }
+  .app-summary strong { font-size: 16px; }
+  .target-row { gap: 5px 8px; color: var(--muted); font-size: 11px; }
+  .target-row code { overflow-wrap: anywhere; color: var(--ink); font-size: 12px; font-weight: 600; user-select: all; }
+  .target-row :global(.target-copy) { display: grid; place-items: center; width: 27px; height: 27px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); }
+  .target-row :global(.target-copy:hover) { border-color: #b9aba0; background: #f6f1ec; color: var(--ink); }
+  .target-row :global(.target-copy.copied) { border-color: var(--green); color: var(--green); }
+  .target-row :global(.target-copy svg) { width: 15px; height: 15px; }
   .app-row :global(.connection-status) { margin-left: 0; }
   .route-list { list-style: none; margin: 0; padding: 0; }
   .route-list li { display: grid; grid-template-columns: minmax(0, 1fr) 24px 30px; align-items: center; gap: 10px; min-height: 40px; border-top: 1px solid var(--line); padding: 5px 0; }
