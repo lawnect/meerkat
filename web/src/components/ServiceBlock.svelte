@@ -85,7 +85,7 @@
         <form class="route-form" onsubmit={addRoute}>
           <div class="field">
             <label for="route-{record.service.id}">서브도메인</label>
-            <div class="domain-input"><input id="route-{record.service.id}" aria-describedby="domain-suffix-{record.service.id}" bind:value={subdomain} placeholder="app" pattern="[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?" maxlength="63" autocapitalize="none" spellcheck="false" required /><span class="domain-suffix" id="domain-suffix-{record.service.id}">.{baseDomain}</span></div>
+            <div class="domain-input"><input id="route-{record.service.id}" aria-describedby="domain-suffix-{record.service.id}" bind:value={subdomain} placeholder="app" pattern={'[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?'} maxlength="63" autocapitalize="none" spellcheck="false" required /><span class="domain-suffix" id="domain-suffix-{record.service.id}">.{baseDomain}</span></div>
             {#if routeHostname}<small class="route-preview">생성될 주소: https://{routeHostname}</small>{/if}
           </div>
           <div class="form-actions"><Button type="submit" disabled={busy}>{busy ? '추가 중…' : '주소 추가'}</Button>{#if record.routes.length}<Button variant="text" onclick={() => { showRouteForm = false; routeError = ''; subdomain = ''; }}>취소</Button>{/if}</div>
