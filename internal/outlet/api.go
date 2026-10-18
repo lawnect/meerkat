@@ -686,7 +686,21 @@ func (s *Store) issueToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
-	if s.config.TunnelRemoteAddress == "" || !validation.PublicKey(s.config.TunnelServerPublicKey) || validation.Endpoint(s.config.TunnelRemoteAddress) != nil {
+	remoteAddress := s.config.TunnelRemoteAddress
+	if remoteAddress == "" {
+		outlet, err := s.control.Outlet(r.Context())
+		if err != nil {
+			fail(w, r, 503, "persistence_failed")
+			return
+		}
+		if outlet.Domain != "" {
+			_, port, err := net.SplitHostPort(s.config.TunnelListenAddress)
+			if err == nil {
+				remoteAddress = net.JoinHostPort(outlet.Domain, port)
+			}
+		}
+	}
+	if remoteAddress == "" || !validation.PublicKey(s.config.TunnelServerPublicKey) || validation.Endpoint(remoteAddress) != nil {
 		fail(w, r, 503, "tunnel_runtime_unconfigured")
 		return
 	}
@@ -729,12 +743,12 @@ func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
 	}
 	if !exists {
 		port := s.nextProbePort()
-		record = Record{Seed: Seed{Name: name, Configuration: contract.Configuration{ConnectorID: id, ServiceID: service.ID, Revision: 1, Target: service.Target, Tunnel: contract.Tunnel{RemoteAddress: s.config.TunnelRemoteAddress, ServerPublicKey: s.config.TunnelServerPublicKey, ServiceName: service.ID, ServiceToken: Token()}}, ProbeAddress: net.JoinHostPort("127.0.0.1", strconv.Itoa(port))}, TunnelStatus: "unknown"}
+		record = Record{Seed: Seed{Name: name, Configuration: contract.Configuration{ConnectorID: id, ServiceID: service.ID, Revision: 1, Target: service.Target, Tunnel: contract.Tunnel{RemoteAddress: remoteAddress, ServerPublicKey: s.config.TunnelServerPublicKey, ServiceName: service.ID, ServiceToken: Token()}}, ProbeAddress: net.JoinHostPort("127.0.0.1", strconv.Itoa(port))}, TunnelStatus: "unknown"}
 	} else {
 		record.Configuration.Revision++
 		record.Configuration.ServiceID = service.ID
 		record.Configuration.Target = service.Target
-		record.Configuration.Tunnel.RemoteAddress = s.config.TunnelRemoteAddress
+		record.Configuration.Tunnel.RemoteAddress = remoteAddress
 		record.Configuration.Tunnel.ServerPublicKey = s.config.TunnelServerPublicKey
 		record.Configuration.Tunnel.ServiceName = service.ID
 		record.Configuration.Tunnel.ServiceToken = Token()

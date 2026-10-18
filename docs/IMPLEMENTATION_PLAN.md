@@ -1,6 +1,6 @@
 # Meerkat 구현 계획 및 새 세션 인수인계
 
-이 문서는 구현 순서와 세션 인수인계를 위한 작업 기준이다. 첫 vertical slice의 Go Outlet/Connector 코드, 로컬 Compose, 테스트, 초기 OpenAPI 스키마를 구현했다. 실행 방법과 현재 제약은 [README.md](../README.md)를 따른다. 실제 서버1·서버3 테스트와 이후 SQLite/UI 단계는 아직 남아 있다.
+이 문서는 첫 vertical slice의 구현 순서와 당시 인수인계 기록이다. Go Outlet/Connector 코드, 로컬 Compose, 초기 OpenAPI 스키마의 설계와 검증 이력을 보존한다. 현재 설치 순서는 [README의 Outlet 초기 접속 절](../README.md#outlet-초기-접속)을 따른다. 빈 서버에서는 도메인 없이 Outlet을 시작하고 SSH 포트 포워딩으로 첫 관리자를 만든 뒤, 대표 도메인·DNS·Cloudflare token을 설정하고 Caddy를 시작한다. 실제 서버 간 운영 검증은 별도 과제로 남아 있다.
 
 2026-10-09: 로컬 ARM64 Compose에서 두 Connector의 Noise/HTTP 전달, 등록 토큰·권한 거부, rathole crash 복구, 대상 서비스 장애 격리, Connector 재시작과 Outlet 재시작 복구를 E2E 6개 항목으로 검증했다. Go race·정적 검사, 초기 OpenAPI 검사, ARM64/AMD64 이미지 빌드도 통과했다. 테스트 컨테이너는 종료하고 `.local/poc-verified/`의 설정과 상태 파일을 보존한다. SQLite를 시작하기 전에 실제 서버 테스트 정보 또는 로컬 검증을 기준으로 다음 단계로 진행한다는 범위를 확인한다.
 

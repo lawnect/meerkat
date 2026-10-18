@@ -24,6 +24,8 @@ services:
       - "${MEERKAT_DEPLOY_DIR}/configs/api-key.pem:/config/api-key.pem:ro"
       - "${MEERKAT_DEPLOY_DIR}/outlet-data:/state"
     ports:
+      # SSH-only bootstrap and recovery path; never bind the admin port publicly.
+      - "127.0.0.1:${MEERKAT_ADMIN_PORT:-18443}:8443"
       - "${MEERKAT_BIND_ADDRESS}:${MEERKAT_TUNNEL_PORT:-2333}:2333"
 
   rathole:
@@ -36,9 +38,10 @@ services:
     depends_on: [outlet]
 
   caddy:
+    # Start only after the primary domain, DNS records and token are configured.
     image: ${MEERKAT_CADDY_IMAGE:-ghcr.io/lawnect/meerkat-caddy:latest}
     environment:
-      CLOUDFLARE_API_TOKEN: "replace-with-your-scoped-cloudflare-token"
+      CLOUDFLARE_API_TOKEN: ${MEERKAT_CLOUDFLARE_API_TOKEN:-}
     read_only: true
     security_opt: [no-new-privileges:true]
     tmpfs: [/tmp]

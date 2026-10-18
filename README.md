@@ -45,37 +45,43 @@ docker compose --env-file .local/poc/compose.env -f deploy/compose.poc.yaml up -
 `ghcr.io/lawnect/meerkat:latest`와 커밋 SHA 태그로 게시합니다. 원격 Outlet/Connector VM에서는
 소스 코드를 빌드하지 않고 GHCR 이미지를 가져와 Compose로 실행합니다.
 
-```sh
-docker login ghcr.io
-MEERKAT_IMAGE=ghcr.io/lawnect/meerkat:latest \
-  docker compose --env-file compose.env -f deploy/compose.outlet.yaml pull
-MEERKAT_IMAGE=ghcr.io/lawnect/meerkat:latest \
-  docker compose --env-file compose.env -f deploy/compose.outlet.yaml up -d
-```
-
-GHCR 패키지가 private이면 VM에서 `read:packages` 권한이 있는 GitHub 토큰으로 로그인해야 합니다.
+새 서버의 첫 실행은 아래 **Outlet 초기 접속** 순서대로 진행합니다. 기존 설치를 업데이트할 때는
+서버의 `compose.env`와 `compose.outlet.yaml`을 확인한 뒤 이미지를 가져와 Compose를 다시 실행합니다.
+GHCR 패키지가 private이면 VM에서 `read:packages` 권한이 있는 GitHub 토큰으로 `docker login ghcr.io`를 실행합니다.
 운영 배포에서는 `latest` 대신 검증한 커밋 SHA 태그를 `MEERKAT_IMAGE`로 지정하는 것을 권장합니다.
 
-### Oracle Outlet 초기화
+### Outlet 초기 접속
 
 운영용 Outlet은 로컬 `poc-init`을 사용하지 않고, 게시된 Meerkat 이미지의
-`outlet-init`으로 새 키와 설정을 생성합니다. Oracle VM에서 다음을 실행합니다.
+`outlet-init`으로 키와 설정 코드를 생성합니다. 첫 실행에는 도메인이 필요하지 않습니다.
+서버에 쓰기 가능한 배포 디렉터리를 만듭니다.
+
+```sh
+sudo install -d -o "$(id -u)" -g "$(id -g)" -m 700 /opt/meerkat-outlet
+```
+
+운영자의 컴퓨터에서 저장소의 Compose 파일을 서버로 복사합니다.
+
+```sh
+scp deploy/compose.outlet.yaml user@SERVER_IP:/opt/meerkat-outlet/compose.outlet.yaml
+```
+
+이후 서버에서 다음을 실행합니다.
 
 ```sh
 docker pull ghcr.io/lawnect/meerkat:latest
-docker pull ghcr.io/lawnect/meerkat-caddy:latest
 docker run --rm \
   --user "$(id -u):$(id -g)" \
   --entrypoint /usr/local/bin/outlet-init \
   -v /opt/meerkat-outlet:/out \
   ghcr.io/lawnect/meerkat:latest \
-  -dir /out -domain saeoo.com -region 'Chuncheon, KR'
+  -dir /out -region 'Chuncheon, KR'
 ```
 
 `outlet-init`은 `/opt/meerkat-outlet/configs/`에 내부 Outlet 인증서,
-관리자 토큰과 Noise 서버 키를 생성합니다. 실행 중인 Outlet은 이 키로
-`outlet-data/rathole/server.toml`과 `outlet-data/caddy/Caddyfile`을 자동 생성합니다.
-두 파일은 직접 수정하지 않습니다.
+일회성 관리자 설정 코드(`admin.token`)와 Noise 서버 키를 생성합니다. 도메인을
+등록하기 전에는 Caddyfile을 만들지 않습니다. 실행 중인 Outlet이 관리하는
+`outlet-data/rathole/server.toml`과 `outlet-data/caddy/Caddyfile`은 직접 수정하지 않습니다.
 
 요청 진단 화면의 Outlet 지역은 위 `-region` 값으로 표시됩니다. 기존 설치에서는
 `/opt/meerkat-outlet/configs/outlet.json`에 `"region": "Chuncheon, KR"`를 추가한 뒤
@@ -88,6 +94,7 @@ MEERKAT_DEPLOY_DIR=/opt/meerkat-outlet
 MEERKAT_UID=1000
 MEERKAT_GID=1000
 MEERKAT_BIND_ADDRESS=0.0.0.0
+MEERKAT_ADMIN_PORT=18443
 MEERKAT_IMAGE=ghcr.io/lawnect/meerkat:latest
 MEERKAT_CADDY_IMAGE=ghcr.io/lawnect/meerkat-caddy:latest
 EOF
@@ -95,26 +102,57 @@ chmod 600 /opt/meerkat-outlet/compose.env
 ```
 
 `MEERKAT_UID`와 `MEERKAT_GID`는 실제 `id -u`, `id -g` 결과로 바꿉니다.
-Caddy는 Cloudflare DNS-01 검증으로 `*.saeoo.com` 와일드카드 인증서를 발급·갱신합니다.
-Cloudflare API token은 대상 zone의 `Zone:DNS:Edit`과 `Zone:Zone:Read` 권한으로 제한합니다.
-추가 도메인은 Outlet의 설정 화면에서 등록합니다. 각 도메인의 Cloudflare DNS에
-`*` A 레코드를 Outlet 서버의 공인 IPv4 주소로 지정하고, 대표 도메인에는 루트 주소(`@`)의
-A 레코드도 지정합니다. IPv6를 사용한다면 해당 AAAA 레코드도 같은 방식으로 설정합니다.
-추가한 모든 도메인의 zone을 Cloudflare API token 권한 범위에 포함해야 Caddy가
-각 도메인의 인증서를 발급·갱신할 수 있습니다. DNS 레코드는 Outlet이 자동 생성하지 않습니다.
-서버에 내려받은 `compose.outlet.yaml`의 Caddy `environment` 항목에 직접 입력하세요.
-이 서버 전용 파일은 Git에 올리지 마세요.
-`saeoo.com`과 `*.saeoo.com`의 DNS가 Outlet IP를 가리켜야 하며, 공개 HTTPS와 HTTP redirect를
-위해 TCP 80·443을 외부에서 열어야 합니다. 마지막으로 아래처럼 실행합니다.
+`MEERKAT_BIND_ADDRESS`에는 서버의 터널·공개 HTTP 수신 인터페이스를 지정합니다.
+모든 인터페이스에서 수신하려면 예시처럼 `0.0.0.0`을 사용합니다.
+`compose.env`는 서버 전용 파일이며 Git에 올리지 않습니다. 먼저 Outlet과 rathole만 시작합니다.
 
 ```sh
 docker compose --env-file /opt/meerkat-outlet/compose.env \
-  -f deploy/compose.outlet.yaml up -d
+  -f /opt/meerkat-outlet/compose.outlet.yaml up -d outlet rathole
 ```
 
-기존 초기화 디렉터리에는 새 키를 만들지 말고, 새 이미지로 아래 업그레이드를 한 번 실행합니다.
-기존 설치는 Compose 명령을 실행하기 전에 서버의 Compose 파일에 Cloudflare API token을
-입력해야 합니다.
+Compose는 Outlet의 HTTPS 관리 포트 `8443`을 서버의 `127.0.0.1:18443`에만 연결합니다.
+공인 IP의 `18443` 포트에는 접속할 수 없습니다. 운영자의 컴퓨터에서 공개 인증서만 복사하고
+SSH 터널을 엽니다. 개인키나 `admin.token` 파일은 복사하지 않습니다.
+
+```sh
+scp user@SERVER_IP:/opt/meerkat-outlet/configs/root-ca.pem ./meerkat-root-ca.pem
+ssh -N -L 18443:127.0.0.1:18443 user@SERVER_IP
+```
+
+브라우저에서 `https://localhost:18443`을 엽니다. 서버에서만
+`/opt/meerkat-outlet/configs/admin.token` 값을 확인해 설정 코드로 입력하고 관리자 계정을 만든 뒤
+로그인합니다. 이 코드는 관리자 생성에 한 번만 사용할 수 있습니다.
+첫 도메인을 등록할 때까지는 이 SSH 경로로 관리합니다. 브라우저가 자체 서명 인증서를
+신뢰하지 않으면 복사한 `meerkat-root-ca.pem`을 브라우저 또는 운영체제의 신뢰 저장소에
+등록합니다. HTTPS를 유지해야 세션 쿠키가 정상적으로 동작합니다.
+
+### 공개 도메인으로 전환
+
+1. 로컬 관리 화면의 **도메인 관리**에서 대표 도메인을 등록합니다. Outlet이 Caddyfile을 생성합니다.
+2. Cloudflare DNS에서 대표 도메인의 루트(`@`)와 와일드카드(`*`) A 레코드를 Outlet의 공인
+   IPv4 주소로 지정하고 DNS-only로 둡니다. IPv6를 사용한다면 AAAA 레코드도 설정합니다.
+3. Cloudflare API token에 해당 zone의 `Zone:DNS:Edit`과 `Zone:Zone:Read` 권한을 줍니다.
+   서버의 `compose.env`에 `MEERKAT_CLOUDFLARE_API_TOKEN` 값을 설정합니다. 토큰은
+   대시보드 DB에 저장하지 않으며, 명령행 인자나 Git에 넣지 않습니다.
+4. TCP 80·443을 외부에 열고 Caddy를 시작합니다.
+
+```sh
+docker compose --env-file /opt/meerkat-outlet/compose.env \
+  -f /opt/meerkat-outlet/compose.outlet.yaml up -d
+```
+
+Caddy는 Cloudflare DNS-01로 대표 도메인과 `*.대표도메인` 인증서를 발급·갱신합니다.
+인증서 발급 후 `https://대표도메인`에 접속해 다시 로그인합니다. SSH 터널은 DNS 또는
+인증서 장애 시 복구 경로로 유지합니다. 추가 도메인은 **도메인 관리**에서 등록하고,
+각 zone의 DNS 레코드와 Cloudflare token 권한도 같은 방식으로 설정합니다.
+
+기존 설치는 `outlet-init -domain` 방식을 계속 사용할 수 있습니다. 새 Compose 파일로
+업데이트할 때는 기존 Cloudflare token을 `compose.env`의
+`MEERKAT_CLOUDFLARE_API_TOKEN`으로 옮긴 후 위 Compose 명령으로 재실행합니다.
+
+구형 초기화 디렉터리에 도메인·터널 설정이 없다면 새 키를 만들지 말고 아래 업그레이드를
+한 번 실행합니다. 이미 업그레이드한 디렉터리에는 다시 실행하지 않습니다.
 
 ```sh
 docker run --rm --user "$(id -u):$(id -g)" \
@@ -123,6 +161,8 @@ docker run --rm --user "$(id -u):$(id -g)" \
   ghcr.io/lawnect/meerkat:latest \
   -upgrade -dir /out -domain saeoo.com
 ```
+
+### 로컬 PoC 확인
 
 실행되는 컨테이너는 Outlet API, rathole server, Connector 2개, HTTP 테스트 서비스 2개입니다. API에는 로컬 테스트용 HTTPS 인증서를 사용하고, 데이터 터널에는 Noise를 사용합니다. 앱과 rathole service 포트에는 호스트 공개 포트를 만들지 않습니다. rathole service 포트는 Outlet 컨테이너 네트워크에서만 접근할 수 있습니다. 두 앱은 서로 다른 Compose 네트워크에 있습니다.
 

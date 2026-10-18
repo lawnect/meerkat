@@ -106,7 +106,7 @@
                   <div><h3>용도</h3><p>{primary ? 'Outlet 관리 화면과 공개 주소에 사용하는 도메인입니다.' : '연결 서비스의 공개 주소에 사용하는 도메인입니다.'}</p></div>
                   <div><h3>DNS 설정</h3><p><code>*.{registeredDomain}</code>을 Outlet 서버 IP로 연결하세요.{#if primary} <code>{registeredDomain}</code>도 연결해야 합니다.{/if}</p></div>
                 </div>
-                <p class="dns-help">Caddy의 Cloudflare API 토큰에 이 도메인 영역의 DNS 권한이 필요합니다.</p>
+                <p class="dns-help">Cloudflare에서 DNS를 설정하고, 서버의 <code>compose.env</code>에 이 도메인 영역의 권한을 가진 <code>MEERKAT_CLOUDFLARE_API_TOKEN</code>을 넣은 뒤 Caddy를 시작하세요.</p>
                 <div class="domain-footer">
                   {#if primary}<Button variant="secondary" size="sm" onclick={() => openDomainDialog('primary')}>대표 도메인 변경</Button>
                   {:else}<Button variant="danger" size="sm" onclick={() => openDeleteDialog(registeredDomain)}>도메인 삭제</Button>{/if}

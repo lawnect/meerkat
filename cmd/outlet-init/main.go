@@ -80,10 +80,10 @@ func run() error {
 	region := flag.String("region", "", "human-readable Outlet region shown in diagnostics")
 	upgrade := flag.Bool("upgrade", false, "add generated-runtime fields to an existing Outlet configuration")
 	flag.Parse()
-	if *domain == "" {
-		return errors.New("-domain is required")
-	}
 	if *upgrade {
+		if *domain == "" {
+			return errors.New("-domain is required for -upgrade")
+		}
 		return upgradeConfig(*dir, *domain)
 	}
 	if err := securefs.Directory(*dir); err != nil {
@@ -111,6 +111,10 @@ func run() error {
 		return err
 	}
 	admin := outlet.Token()
+	remoteAddress := ""
+	if *domain != "" {
+		remoteAddress = net.JoinHostPort(*domain, "2333")
+	}
 	cfg := outlet.Config{
 		ListenAddress:          "0.0.0.0:8443",
 		TLSCertificate:         "/config/api-cert.pem",
@@ -121,7 +125,7 @@ func run() error {
 		Domain:                 *domain,
 		Region:                 *region,
 		TunnelListenAddress:    "0.0.0.0:2333",
-		TunnelRemoteAddress:    net.JoinHostPort(*domain, "2333"),
+		TunnelRemoteAddress:    remoteAddress,
 		TunnelServerPublicKey:  base64.StdEncoding.EncodeToString(noise.PublicKey().Bytes()),
 		TunnelServerPrivateKey: base64.StdEncoding.EncodeToString(noise.Bytes()),
 		Connectors:             []outlet.Seed{},
@@ -143,12 +147,14 @@ func run() error {
 	if err := writeNew(filepath.Join(configDir, "admin.token"), []byte(admin+"\n")); err != nil {
 		return err
 	}
-	caddyfile, err := proxy.Caddyfile(*domain, nil)
-	if err != nil {
-		return err
-	}
-	if err := writeNew(filepath.Join(configDir, "Caddyfile"), caddyfile); err != nil {
-		return err
+	if *domain != "" {
+		caddyfile, err := proxy.Caddyfile(*domain, nil)
+		if err != nil {
+			return err
+		}
+		if err := writeNew(filepath.Join(configDir, "Caddyfile"), caddyfile); err != nil {
+			return err
+		}
 	}
 	fmt.Println("Outlet bootstrap files created.")
 	fmt.Println("Admin token: /configs/admin.token")
