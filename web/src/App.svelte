@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, errorMessage, mockApiEnabled } from './api';
+  import { pageFromPath, pagePath } from './navigation';
   import type { AuthMode, Connector, DashboardData, Outlet, PageKey, Route, Service } from './types';
   import AuthPage from './components/AuthPage.svelte';
   import Status from './components/Status.svelte';
@@ -11,9 +12,10 @@
   import DiagnosticsPage from './pages/DiagnosticsPage.svelte';
   import Button from './components/ui/Button.svelte';
   import Card from './components/ui/Card.svelte';
+  import LinkButton from './components/ui/LinkButton.svelte';
 
   let authMode = $state<AuthMode>('loading');
-  let view = $state<PageKey>('overview');
+  let view = $state<PageKey>(pageFromPath(window.location.pathname));
   let loading = $state(false);
   let loadError = $state('');
   let data = $state<DashboardData>({ connectors: [], services: [], routes: [], records: [], outlet: {} });
@@ -55,8 +57,22 @@
   }
 
   async function navigate(nextView: PageKey): Promise<void> {
+    if (window.location.pathname !== pagePath[nextView]) {
+      window.history.pushState(null, '', pagePath[nextView]);
+    }
     view = nextView;
     if (nextView === 'connectors') await refresh();
+  }
+
+  function navigateFromLink(event: MouseEvent, nextView: PageKey): void {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    void navigate(nextView);
+  }
+
+  function handlePopState(): void {
+    view = pageFromPath(window.location.pathname);
+    if (view === 'connectors' && authMode === 'dashboard') void refresh();
   }
 
   async function logout() {
@@ -65,6 +81,7 @@
   }
 
   onMount(() => {
+    window.addEventListener('popstate', handlePopState);
     void (async () => {
       try {
         const status = await api<{ setup_complete: boolean }>('/api/v1/setup/status');
@@ -81,7 +98,10 @@
     const timer = window.setInterval(() => {
       if (authMode === 'dashboard' && !loading) void refresh(true);
     }, 10000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('popstate', handlePopState);
+    };
   });
 </script>
 
@@ -102,11 +122,11 @@
     <aside class="rail">
       <p class="rail-label">운영</p>
       <nav class="nav" aria-label="운영 메뉴">
-        <Button variant="plain" class={view === 'overview' ? 'nav-item active' : 'nav-item'} onclick={() => navigate('overview')}>개요</Button>
-        <Button variant="plain" class={view === 'connectors' ? 'nav-item active' : 'nav-item'} onclick={() => navigate('connectors')}>앱 연결</Button>
-        <Button variant="plain" class={view === 'routes' ? 'nav-item active' : 'nav-item'} onclick={() => navigate('routes')}>공개 서비스</Button>
-        <Button variant="plain" class={view === 'diagnostics' ? 'nav-item active' : 'nav-item'} onclick={() => navigate('diagnostics')}>요청 진단</Button>
-        <Button variant="plain" class={view === 'settings' ? 'nav-item active' : 'nav-item'} onclick={() => navigate('settings')}>설정</Button>
+        <LinkButton href={pagePath.overview} variant="text" class={view === 'overview' ? 'nav-item active' : 'nav-item'} aria-current={view === 'overview' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'overview')}>개요</LinkButton>
+        <LinkButton href={pagePath.connectors} variant="text" class={view === 'connectors' ? 'nav-item active' : 'nav-item'} aria-current={view === 'connectors' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'connectors')}>앱 연결</LinkButton>
+        <LinkButton href={pagePath.routes} variant="text" class={view === 'routes' ? 'nav-item active' : 'nav-item'} aria-current={view === 'routes' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'routes')}>공개 서비스</LinkButton>
+        <LinkButton href={pagePath.diagnostics} variant="text" class={view === 'diagnostics' ? 'nav-item active' : 'nav-item'} aria-current={view === 'diagnostics' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'diagnostics')}>요청 진단</LinkButton>
+        <LinkButton href={pagePath.settings} variant="text" class={view === 'settings' ? 'nav-item active' : 'nav-item'} aria-current={view === 'settings' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'settings')}>설정</LinkButton>
       </nav>
       <div class="rail-note"><strong>도움이 필요하신가요?</strong>앱과 Connector를 연결하면 등록한 공개 주소로 접속할 수 있습니다.</div>
     </aside>
@@ -150,7 +170,7 @@
   .rail-label { margin: 0 12px 11px; color: #938d85; font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
   .nav { display: grid; gap: 3px; }
   .nav :global(.nav-item) { display: block; width: 100%; border-left: 2px solid transparent; border-radius: 0 5px 5px 0; padding: 11px 12px; color: #635f59; text-align: left; }
-  .nav :global(.nav-item:hover) { background: #f1ebe4; }
+  .nav :global(.nav-item:hover) { background: #f1ebe4; text-decoration: none; }
   .nav :global(.nav-item.active) { border-left-color: var(--accent); background: #f6eee8; color: var(--accent-dark); font-weight: 700; }
   .rail-note { margin-top: auto; border-top: 1px solid var(--line); padding: 18px 10px 0; color: var(--muted); font-size: 12px; }
   .rail-note strong { display: block; margin-bottom: 4px; color: var(--ink); font-size: 13px; }

@@ -18,7 +18,8 @@ func Handler() http.Handler {
 	files := http.FileServer(http.FS(site))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
-		if r.URL.Path == "/" {
+		switch r.URL.Path {
+		case "/", "/connectors", "/routes", "/diagnostics", "/settings":
 			w.Header().Set("Cache-Control", "no-store")
 			http.ServeFileFS(w, r, site, "index.html")
 			return
