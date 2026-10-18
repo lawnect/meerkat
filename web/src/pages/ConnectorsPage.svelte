@@ -1,10 +1,10 @@
 <script lang="ts">
   import { api, errorMessage, statusLabel } from '../api';
   import { connectorState } from '../connectorState.svelte';
-  import Panel from '../components/Panel.svelte';
   import ServiceBlock from '../components/ServiceBlock.svelte';
   import Status from '../components/Status.svelte';
   import Button from '../components/ui/Button.svelte';
+  import Card from '../components/ui/Card.svelte';
   import type { Connector, DashboardData, EnrollmentToken } from '../types';
 
   let { data, onChanged }: { data: DashboardData; onChanged: () => Promise<void> } = $props();
@@ -22,19 +22,52 @@
   let deleteError = $state('');
   let deleteName = $state('');
   let deleteTarget = $state<Connector | null>(null);
+  let openedInitialConnector = $state(false);
+  let searchQuery = $state('');
+  let connectionFilter = $state<'all' | 'connected' | 'pending' | 'problem'>('all');
   let createDialog: HTMLDialogElement;
   let deleteDialog: HTMLDialogElement;
 
   const selected = $derived(data.connectors.find((connector) => connector.id === connectorState.selectedId));
   const records = $derived(data.records.filter((record) => record.connector.id === connectorState.selectedId));
   const service = $derived(records[0]?.service);
+  const filtersActive = $derived(Boolean(searchQuery.trim()) || connectionFilter !== 'all');
+  const visibleConnectors = $derived.by(() => {
+    const terms = searchQuery.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    return data.connectors.filter((connector) => {
+      if (connectionFilter === 'connected' && connector.status !== 'connected') return false;
+      if (connectionFilter === 'pending' && !['draft', 'connecting', 'unknown'].includes(connector.status)) return false;
+      if (connectionFilter === 'problem' && !['stale', 'disconnected', 'error'].includes(connector.status)) return false;
+      const connectorRecords = data.records.filter((record) => record.connector.id === connector.id);
+      if (!terms.length) return true;
+      const searchable = [connector.name, ...connectorRecords.flatMap((record) => [record.service.name, record.service.target.host, String(record.service.target.port), ...record.routes.map((route) => route.hostname)])].join(' ').toLocaleLowerCase();
+      return terms.every((term) => searchable.includes(term));
+    });
+  });
+
+  function clearFilters(): void {
+    searchQuery = '';
+    connectionFilter = 'all';
+  }
 
   $effect(() => {
-    if (!connectorState.selectedId && data.connectors.length) connectorState.selectedId = data.connectors[0].id;
-    if (connectorState.selectedId && !data.connectors.some((connector) => connector.id === connectorState.selectedId)) {
-      connectorState.selectedId = data.connectors[0]?.id || '';
+    if (!openedInitialConnector && data.connectors.length) {
+      openedInitialConnector = true;
+      if (!connectorState.selectedId || !data.connectors.some((connector) => connector.id === connectorState.selectedId)) {
+        connectorState.selectedId = data.connectors[0].id;
+      }
+    } else if (connectorState.selectedId && !data.connectors.some((connector) => connector.id === connectorState.selectedId)) {
+      connectorState.selectedId = '';
     }
   });
+
+  function toggleConnector(id: string): void {
+    connectorState.selectedId = connectorState.selectedId === id ? '' : id;
+    connectorState.enrollment = null;
+    connectorState.enrollmentWasReset = false;
+    tokenError = '';
+    deleteError = '';
+  }
 
   function openCreateDialog(): void {
     createError = '';
@@ -67,6 +100,7 @@
       connectorState.enrollmentWasReset = false;
       name = '';
       await onChanged();
+      clearFilters();
       connectorState.selectedId = connector.id;
       createDialog.close();
     } catch (cause) {
@@ -158,67 +192,72 @@
 
 </script>
 
-<div class="connector-layout">
-  <Panel title="Connector">
-    {#snippet action()}
-      <Button variant="text" size="sm" onclick={openCreateDialog}>+ 새로 만들기</Button>
-    {/snippet}
-    {#if data.connectors.length}
+<div class="connector-page">
+  <div class="connector-toolbar"><h2>Connector <small>{data.connectors.length}</small></h2><Button variant="secondary" size="sm" onclick={openCreateDialog}>+ 새로 만들기</Button></div>
+
+  {#if data.connectors.length}
+    <div class="connector-filters" role="search" aria-label="Connector 검색 및 필터">
+      <div class="field search-field"><label for="connector-search">검색</label><input class="input input-bordered" id="connector-search" type="search" bind:value={searchQuery} placeholder="Connector, 내부 앱, 도메인 검색" autocomplete="off" /></div>
+      <div class="field"><label for="connection-filter">연결 상태</label><select id="connection-filter" bind:value={connectionFilter}><option value="all">전체 상태</option><option value="connected">연결됨</option><option value="pending">연결 대기</option><option value="problem">연결 문제</option></select></div>
+    </div>
+    {#if filtersActive}<div class="filter-summary"><span aria-live="polite">{data.connectors.length}개 중 {visibleConnectors.length}개 표시</span><Button variant="text" size="sm" onclick={clearFilters}>초기화</Button></div>{/if}
+    {#if visibleConnectors.length}
       <div class="connector-list">
-        {#each data.connectors as connector}
-          <Button variant="plain" aria-current={connectorState.selectedId === connector.id ? 'true' : undefined} class={connectorState.selectedId === connector.id ? 'connector-item selected' : 'connector-item'} onclick={() => { connectorState.selectedId = connector.id; connectorState.enrollment = null; connectorState.enrollmentWasReset = false; tokenError = ''; deleteError = ''; }}>
-            <strong>{connector.name}</strong><Status label={statusLabel(connector.status)} value={connector.status} />
-          </Button>
+        {#each visibleConnectors as connector (connector.id)}
+          <Card as="section" padding="none" class="connector-card" aria-label={`${connector.name} Connector`}>
+            <Button variant="plain" class="connector-toggle" aria-expanded={connectorState.selectedId === connector.id} aria-controls={connectorState.selectedId === connector.id ? `connector-body-${connector.id}` : undefined} onclick={() => toggleConnector(connector.id)}>
+              <strong>{connector.name}</strong>
+              <span class="connector-summary"><Status label={`터널 ${statusLabel(connector.status)}`} value={connector.status} /><svg class:expanded={connectorState.selectedId === connector.id} aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m4 6 4 4 4-4" /></svg></span>
+            </Button>
+            {#if connectorState.selectedId === connector.id && selected}
+              <div class="connector-body" id={`connector-body-${connector.id}`}>
+                {#if service}
+                  {#key service.id}<ServiceBlock record={records[0]} outlet={data.outlet} onChanged={onChanged} />{/key}
+                {:else}
+                  <section class="detail-section setup-section">
+                    <div class="section-heading"><div><h3>내부 앱 등록</h3><p>이 Connector가 연결할 앱의 내부 주소와 포트를 입력하세요.</p></div></div>
+                    <form class="form-grid" onsubmit={createService}>
+                      <div class="field"><label for="service-name">앱 이름</label><input class="input input-bordered" id="service-name" bind:value={serviceName} placeholder="예: memo" required /></div>
+                      <div class="field"><label for="service-host">내부 호스트</label><input class="input input-bordered" id="service-host" bind:value={host} placeholder="예: memo-app" required /></div>
+                      <div class="field"><label for="service-port">내부 포트</label><input class="input input-bordered" id="service-port" bind:value={port} type="number" min="1" max="65535" placeholder="예: 3000" required /></div>
+                      <div class="form-actions"><Button type="submit" disabled={serviceBusy}>{serviceBusy ? '등록 중…' : '내부 앱 등록'}</Button></div>
+                      {#if serviceError}<p class="error" role="alert">{serviceError}</p>{/if}
+                    </form>
+                  </section>
+                {/if}
+                {#if service && (selected.status !== 'connected' || connectorState.enrollment)}
+                  <section class="detail-section token-panel">
+                    <div class="section-heading"><div><h3>Connector 연결</h3><p>{selected.status === 'draft' ? '토큰을 발급해 앱이 실행되는 서버에서 Connector를 실행하세요.' : selected.status === 'connecting' ? 'Connector가 연결 중입니다. 잠시 후 상태를 확인하세요.' : selected.status === 'connected' ? 'Connector가 연결되었습니다. 발급한 토큰은 이 화면을 벗어나면 다시 볼 수 없습니다.' : 'Connector의 응답이 없습니다. 실행 중인 Connector와 네트워크를 확인하세요.'}</p></div></div>
+                    {#if !connectorState.enrollment && selected.status === 'draft'}<Button onclick={() => issueToken()} disabled={tokenBusy}>{tokenBusy ? '발급 중…' : '등록 토큰 발급'}</Button>{/if}
+                    {#if !connectorState.enrollment && selected.status !== 'draft' && selected.status !== 'connected'}<Button variant="secondary" onclick={() => { if (confirm('기존 Connector 자격 증명을 무효화하고 새 토큰을 발급합니다. 실행 중인 연결은 끊깁니다. 계속할까요?')) issueToken(true); }} disabled={tokenBusy}>{tokenBusy ? '발급 중…' : '연결 초기화 후 새 토큰 발급'}</Button>{/if}
+                    {#if tokenError}<p class:error={!tokenError.includes('복사했습니다')} class:success={tokenError.includes('복사했습니다')} role="status">{tokenError}</p>{/if}
+                    {#if tokenError.includes('already_enrolled') && selected.status === 'draft'}
+                      <Button variant="secondary" class="reset-token-button" onclick={() => { if (confirm('기존 Connector 자격 증명을 무효화하고 새 토큰을 발급합니다. 실행 중인 연결은 끊깁니다. 계속할까요?')) issueToken(true); }}>연결 초기화 후 새 토큰 발급</Button>
+                    {/if}
+                    {#if connectorState.enrollment}
+                      {@const enrollment = connectorState.enrollment}
+                      <div class="token-box">
+                        <strong>토큰을 지금 복사하세요</strong><p>이 화면을 닫으면 다시 확인할 수 없습니다.</p>
+                        <input class="input input-bordered" aria-label="등록 토큰" value={enrollment.token} readonly />
+                        <Button class="token-copy" onclick={() => copy(enrollment.token, '토큰')}>토큰 복사</Button>
+                        <p>만료: {new Date(enrollment.expires_at).toLocaleString()}</p>
+                        <p>앱이 실행되는 서버에서 실행할 명령</p><pre>{installCommand()}</pre>
+                        <Button class="token-copy" onclick={() => copy(installCommand(), '설치 명령')}>설치 명령 복사</Button>
+                      </div>
+                    {/if}
+                  </section>
+                {/if}
+                <div class="detail-footer"><Button variant="danger" size="sm" onclick={openDeleteDialog}>Connector 삭제</Button></div>
+              </div>
+            {/if}
+          </Card>
         {/each}
       </div>
     {:else}
-      <p class="list-empty">아직 Connector가 없습니다. 새로 만들기를 눌러 시작하세요.</p>
+      <p class="list-empty filter-empty">검색 조건에 맞는 Connector가 없습니다.</p>
     {/if}
-  </Panel>
-
-  {#if selected}
-    <div class="connector-detail">
-      <Panel title={selected.name}>
-        {#snippet action()}<Status label={`터널 ${statusLabel(selected.status)}`} value={selected.status} />{/snippet}
-        {#if service}
-          {#key service.id}<ServiceBlock record={records[0]} outlet={data.outlet} onChanged={onChanged} />{/key}
-        {:else}
-          <section class="detail-section setup-section">
-            <div class="section-heading"><div><h3>내부 앱 등록</h3><p>이 Connector가 연결할 앱의 내부 주소와 포트를 입력하세요.</p></div></div>
-            <form class="form-grid" onsubmit={createService}>
-              <div class="field"><label for="service-name">앱 이름</label><input class="input input-bordered" id="service-name" bind:value={serviceName} placeholder="예: memo" required /></div>
-              <div class="field"><label for="service-host">내부 호스트</label><input class="input input-bordered" id="service-host" bind:value={host} placeholder="예: memo-app" required /></div>
-              <div class="field"><label for="service-port">내부 포트</label><input class="input input-bordered" id="service-port" bind:value={port} type="number" min="1" max="65535" placeholder="예: 3000" required /></div>
-              <div class="form-actions"><Button type="submit" disabled={serviceBusy}>{serviceBusy ? '등록 중…' : '내부 앱 등록'}</Button></div>
-              {#if serviceError}<p class="error" role="alert">{serviceError}</p>{/if}
-            </form>
-          </section>
-        {/if}
-        {#if service && (selected.status !== 'connected' || connectorState.enrollment)}
-          <section class="detail-section token-panel">
-            <div class="section-heading"><div><h3>Connector 연결</h3><p>{selected.status === 'draft' ? '토큰을 발급해 앱이 실행되는 서버에서 Connector를 실행하세요.' : selected.status === 'connecting' ? 'Connector가 연결 중입니다. 잠시 후 상태를 확인하세요.' : selected.status === 'connected' ? 'Connector가 연결되었습니다. 발급한 토큰은 이 화면을 벗어나면 다시 볼 수 없습니다.' : 'Connector의 응답이 없습니다. 실행 중인 Connector와 네트워크를 확인하세요.'}</p></div></div>
-            {#if !connectorState.enrollment && selected.status === 'draft'}<Button onclick={() => issueToken()} disabled={tokenBusy}>{tokenBusy ? '발급 중…' : '등록 토큰 발급'}</Button>{/if}
-            {#if !connectorState.enrollment && selected.status !== 'draft' && selected.status !== 'connected'}<Button variant="secondary" onclick={() => { if (confirm('기존 Connector 자격 증명을 무효화하고 새 토큰을 발급합니다. 실행 중인 연결은 끊깁니다. 계속할까요?')) issueToken(true); }} disabled={tokenBusy}>{tokenBusy ? '발급 중…' : '연결 초기화 후 새 토큰 발급'}</Button>{/if}
-            {#if tokenError}<p class:error={!tokenError.includes('복사했습니다')} class:success={tokenError.includes('복사했습니다')} role="status">{tokenError}</p>{/if}
-            {#if tokenError.includes('already_enrolled') && selected.status === 'draft'}
-              <Button variant="secondary" class="reset-token-button" onclick={() => { if (confirm('기존 Connector 자격 증명을 무효화하고 새 토큰을 발급합니다. 실행 중인 연결은 끊깁니다. 계속할까요?')) issueToken(true); }}>연결 초기화 후 새 토큰 발급</Button>
-            {/if}
-            {#if connectorState.enrollment}
-              {@const enrollment = connectorState.enrollment}
-              <div class="token-box">
-                <strong>토큰을 지금 복사하세요</strong><p>이 화면을 닫으면 다시 확인할 수 없습니다.</p>
-                <input class="input input-bordered" aria-label="등록 토큰" value={enrollment.token} readonly />
-                <Button class="token-copy" onclick={() => copy(enrollment.token, '토큰')}>토큰 복사</Button>
-                <p>만료: {new Date(enrollment.expires_at).toLocaleString()}</p>
-                <p>앱이 실행되는 서버에서 실행할 명령</p><pre>{installCommand()}</pre>
-                <Button class="token-copy" onclick={() => copy(installCommand(), '설치 명령')}>설치 명령 복사</Button>
-              </div>
-            {/if}
-          </section>
-        {/if}
-        <div class="detail-footer"><Button variant="danger" size="sm" onclick={openDeleteDialog}>Connector 삭제</Button></div>
-      </Panel>
-    </div>
+  {:else}
+    <p class="list-empty">아직 Connector가 없습니다. 새로 만들기를 눌러 시작하세요.</p>
   {/if}
 </div>
 
@@ -243,14 +282,25 @@
 </dialog>
 
 <style>
-  .connector-layout { display: grid; grid-template-columns: 238px minmax(0, 1fr); align-items: start; gap: 12px; }
-  .connector-list { padding: 0; }
-  .connector-list :global(.connector-item) { display: block; width: 100%; border-bottom: 1px solid var(--line); padding: 9px 11px; color: var(--ink); text-align: left; }
-  .connector-list :global(.connector-item:first-child) { border-top: 1px solid var(--line); }
-  .connector-list :global(.connector-item:hover), .connector-list :global(.connector-item.selected) { background: #f5eee8; }
-  .connector-list :global(.connector-item.selected) { box-shadow: inset 3px 0 var(--accent); }
-  .connector-list strong { display: block; font-size: 13px; }
-  .connector-detail > :global(.panel) { min-width: 0; }
+  .connector-page { min-width: 0; }
+  .connector-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+  .connector-toolbar h2 { margin: 0; font-size: 16px; letter-spacing: -.025em; }
+  .connector-toolbar small { margin-left: 5px; color: var(--muted); font-size: 12px; font-weight: 500; }
+  .connector-filters { display: grid; grid-template-columns: minmax(0, 2fr) minmax(130px, 1fr); gap: 10px; width: 50%; margin: 0 0 12px auto; }
+  .connector-filters input, .connector-filters select { width: 100%; min-height: 34px; }
+  .connector-filters select { border: 1px solid #d8d1c9; border-radius: 6px; padding: 5px 8px; background: #fffdfa; color: var(--ink); }
+  .connector-filters select:focus-visible { outline: 2px solid #ef9b6f; outline-offset: 2px; }
+  .filter-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 50%; margin: -2px 0 8px auto; color: var(--muted); font-size: 12px; }
+  .filter-empty { border: 1px dashed var(--line); border-radius: 8px; padding: 26px 18px; text-align: center; }
+  .connector-list { display: grid; gap: 10px; }
+  .connector-list :global(.connector-card) { overflow: visible; }
+  .connector-list :global(.connector-toggle) { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; min-height: 58px; border-radius: 8px; padding: 13px 18px; color: var(--ink); text-align: left; }
+  .connector-list :global(.connector-toggle:hover) { background: rgba(246, 239, 232, .7); }
+  .connector-list :global(.connector-toggle strong) { font-size: 16px; font-weight: 650; }
+  .connector-summary { display: flex; align-items: center; gap: 14px; color: var(--muted); }
+  .connector-summary svg { width: 17px; height: 17px; transition: transform .15s ease; }
+  .connector-summary svg.expanded { transform: rotate(180deg); }
+  .connector-body { border-top: 1px solid var(--line); padding: 16px 18px 14px; }
   .list-empty { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
   .connector-dialog { width: min(440px, calc(100vw - 32px)); max-width: none; margin: auto; border: 1px solid var(--line); border-radius: 10px; padding: 22px; background: var(--panel); color: var(--ink); box-shadow: 0 22px 70px rgba(48, 36, 28, .18); }
   .connector-dialog::backdrop { background: rgba(35, 30, 26, .38); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
@@ -271,5 +321,7 @@
   .token-box pre { overflow-wrap: anywhere; border: 1px solid #59636a; padding: 12px; background: #171c20; color: #d9e0da; font: 12px/1.5 ui-monospace, SFMono-Regular, monospace; white-space: pre-wrap; }
   .token-box :global(.token-copy) { border-color: #e7a27f; background: #e7a27f; color: #2b201b; }
   .detail-footer { display: flex; justify-content: flex-end; margin-top: 18px; border-top: 1px solid var(--line); padding-top: 10px; }
-  @media (max-width: 900px) { .connector-layout, .form-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 900px) { .form-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 700px) { .connector-filters, .filter-summary { width: 100%; } }
+  @media (max-width: 420px) { .connector-filters { grid-template-columns: 1fr; } }
 </style>
