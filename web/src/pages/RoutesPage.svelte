@@ -12,7 +12,7 @@
 
 <PageHead kicker="운영 / 공개 서비스" title="공개 서비스" description="내부 앱과 인터넷 주소가 연결된 현황입니다.">
   {#snippet action()}
-    <Button variant="secondary" onclick={() => navigate('connectors')}>앱 연결 관리</Button>
+    <Button variant="secondary" onclick={() => navigate('connectors')}>Connector 관리</Button>
   {/snippet}
 </PageHead>
 
@@ -30,7 +30,7 @@
     {/each}
   </div>
 {:else}
-  <Card class="empty"><h2>아직 공개 서비스가 없습니다</h2><p>Connector를 만들고 내부 앱을 등록한 뒤, 원하는 공개 주소를 추가하세요.</p><Button onclick={() => navigate('connectors')}>앱 연결 관리</Button></Card>
+  <Card class="empty"><h2>아직 공개 서비스가 없습니다</h2><p>Connector를 만들고 내부 앱을 등록한 뒤, 원하는 공개 주소를 추가하세요.</p><Button onclick={() => navigate('connectors')}>Connector 관리</Button></Card>
 {/if}
 
 <style>
