@@ -12,7 +12,7 @@
   let { data, navigate }: { data: DashboardData; navigate: (view: PageKey) => Promise<void> } = $props();
   const connected = $derived(data.connectors.filter((connector) => connector.status === 'connected').length);
   const next = $derived(!data.outlet.domain
-    ? '설정에서 Outlet 도메인을 입력하세요.'
+    ? '도메인 관리에서 Outlet 도메인을 입력하세요.'
     : data.connectors.length === 0
       ? 'Connector를 하나 만드세요.'
       : data.services.length === 0
@@ -23,7 +23,7 @@
             ? 'Connector를 실행하고 등록 토큰으로 연결하세요.'
             : null);
   const items = $derived([
-    ['도메인 확인', Boolean(data.outlet.domain), '설정에서 변경', 'settings'],
+    ['도메인 확인', Boolean(data.outlet.domain), '도메인 관리에서 변경', 'domains'],
     ['Connector 만들기', data.connectors.length > 0, 'Connector 등록', 'connectors'],
     ['연결 서비스 등록', data.services.length > 0, '서비스 이름과 내부 주소 입력', 'connectors'],
     ['공개 주소 추가', data.routes.length > 0, '도메인 등록', 'connectors'],

@@ -6,7 +6,7 @@
   import AuthPage from './components/AuthPage.svelte';
   import Status from './components/Status.svelte';
   import OverviewPage from './pages/OverviewPage.svelte';
-  import SettingsPage from './pages/SettingsPage.svelte';
+  import DomainsPage from './pages/DomainsPage.svelte';
   import ConnectorsPage from './pages/ConnectorsPage.svelte';
   import DiagnosticsPage from './pages/DiagnosticsPage.svelte';
   import Button from './components/ui/Button.svelte';
@@ -22,6 +22,9 @@
   function currentPage(): PageKey {
     if (window.location.pathname.replace(/\/+$/, '') === '/routes') {
       window.history.replaceState(null, '', `${pagePath.connectors}${window.location.search}${window.location.hash}`);
+    }
+    if (window.location.pathname.replace(/\/+$/, '') === '/settings') {
+      window.history.replaceState(null, '', `${pagePath.domains}${window.location.search}${window.location.hash}`);
     }
     return pageFromPath(window.location.pathname);
   }
@@ -130,18 +133,18 @@
       <nav class="nav" aria-label="운영 메뉴">
         <LinkButton href={pagePath.overview} variant="text" class={view === 'overview' ? 'nav-item active' : 'nav-item'} aria-current={view === 'overview' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'overview')}>개요</LinkButton>
         <LinkButton href={pagePath.connectors} variant="text" class={view === 'connectors' ? 'nav-item active' : 'nav-item'} aria-current={view === 'connectors' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'connectors')}>Connector 관리</LinkButton>
+        <LinkButton href={pagePath.domains} variant="text" class={view === 'domains' ? 'nav-item active' : 'nav-item'} aria-current={view === 'domains' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'domains')}>도메인 관리</LinkButton>
         <LinkButton href={pagePath.diagnostics} variant="text" class={view === 'diagnostics' ? 'nav-item active' : 'nav-item'} aria-current={view === 'diagnostics' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'diagnostics')}>요청 진단</LinkButton>
-        <LinkButton href={pagePath.settings} variant="text" class={view === 'settings' ? 'nav-item active' : 'nav-item'} aria-current={view === 'settings' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'settings')}>설정</LinkButton>
       </nav>
-      <div class="rail-note"><strong>도움이 필요하신가요?</strong>앱과 Connector를 연결하면 등록한 공개 주소로 접속할 수 있습니다.</div>
+      <div class="rail-note"><strong>도움이 필요하신가요?</strong>서비스와 Connector를 연결하면 등록한 공개 주소로 접속할 수 있습니다.</div>
     </aside>
     <main class="content">
       {#if loadError}<p class="error" role="alert">{loadError}</p>{/if}
       {#if loading}<p class="loading-note">상태를 불러오는 중입니다…</p>{/if}
       {#if view === 'overview'}
         <OverviewPage {data} {navigate} />
-      {:else if view === 'settings'}
-        <SettingsPage outlet={data.outlet} onSaved={refresh} />
+      {:else if view === 'domains'}
+        <DomainsPage outlet={data.outlet} onSaved={refresh} />
       {:else if view === 'connectors'}
         <ConnectorsPage {data} onChanged={refresh} />
       {:else if view === 'diagnostics'}

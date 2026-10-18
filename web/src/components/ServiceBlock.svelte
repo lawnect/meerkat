@@ -107,7 +107,7 @@
         {#if baseDomain}<p class="route-empty">아직 공개 주소가 없습니다.</p>{/if}
       {/if}
       {#if !baseDomain}
-        <p class="route-empty">주소를 추가하려면 먼저 기본 도메인을 설정하세요. <LinkButton href={pagePath.settings} variant="text" size="sm">도메인 설정 ↗</LinkButton></p>
+        <p class="route-empty">주소를 추가하려면 먼저 기본 도메인을 설정하세요. <LinkButton href={pagePath.domains} variant="text" size="sm">도메인 관리 ↗</LinkButton></p>
       {/if}
       {#if routeError}<p class="error" role="alert">{routeError}</p>{/if}
     </section>
