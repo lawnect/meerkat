@@ -2,12 +2,12 @@
   import { statusLabel } from '../api';
   import PageHead from '../components/PageHead.svelte';
   import Panel from '../components/Panel.svelte';
-  import Status from '../components/Status.svelte';
   import ConnectionMap from '../components/ConnectionMap.svelte';
   import Button from '../components/ui/Button.svelte';
   import Card from '../components/ui/Card.svelte';
-  import LinkButton from '../components/ui/LinkButton.svelte';
   import type { DashboardData, PageKey } from '../types';
+
+  type ConnectionIssue = { id: string; name: string; details: string[] };
 
   let { data, navigate }: { data: DashboardData; navigate: (view: PageKey) => Promise<void> } = $props();
   const connected = $derived(data.connectors.filter((connector) => connector.status === 'connected').length);
@@ -30,12 +30,30 @@
     ['Connector 연결', connected > 0, '등록 토큰 발급', 'connectors'],
   ] as [string, boolean, string, PageKey][]);
   const showOnboarding = $derived(Boolean(next) && !(data.outlet.domain && data.routes.length > 0 && data.connectors.some((connector) => connector.status !== 'draft')));
+  const connectionIssues = $derived.by((): ConnectionIssue[] => {
+    const issues: ConnectionIssue[] = [];
+    for (const connector of data.connectors) {
+      const record = data.records.find((item) => item.connector.id === connector.id);
+      const details: string[] = [];
 
-  function lastResponse(value?: string): string {
-    if (!value) return '아직 없음';
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? '확인할 수 없음' : date.toLocaleString('ko-KR');
-  }
+      if (connector.status !== 'connected') details.push(`터널 ${statusLabel(connector.status)}`);
+      if (!record) {
+        details.push('내부 앱 미등록');
+      } else {
+        if (!record.service.enabled) details.push('내부 앱 사용 안 함');
+        else if (record.service.observed_status !== 'connected') details.push(`앱 포트 ${statusLabel(record.service.observed_status)}`);
+
+        if (!record.routes.length) details.push('공개 주소 없음');
+        else {
+          const needsReview = record.routes.filter((route) => !route.enabled || Boolean(route.last_error) || route.applied_revision < route.desired_revision).length;
+          if (needsReview) details.push(`공개 주소 ${needsReview}개 확인 필요`);
+        }
+      }
+
+      if (details.length) issues.push({ id: connector.id, name: connector.name, details });
+    }
+    return issues;
+  });
 </script>
 
 <PageHead kicker="MEERKAT OUTLET" title="오늘의 운영 상태" description={next ?? 'Connector와 공개 주소의 현황을 확인할 수 있습니다.'}>
@@ -81,26 +99,16 @@
   :global(.help-panel) { margin-top: 16px; }
   :global(.help-panel h2) { margin: 0 0 5px; font-size: 17px; }
   :global(.help-panel p) { margin: 0; color: var(--muted); }
-  .monitor-list { display: grid; gap: 8px; }
-  :global(.monitor-item) { padding: 13px 15px; }
-  :global(.monitor-item.attention) { border-left: 3px solid #bb4d3d; }
-  .monitor-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  .monitor-type { display: block; margin-bottom: 2px; color: var(--muted); font-size: 11px; font-weight: 700; }
-  .monitor-head .monitor-type { display: inline; margin-right: 8px; }
-  .monitor-head h3 { display: inline; margin: 0; font-size: 16px; }
-  .monitor-head p, .monitor-empty { color: var(--muted); font-size: 12px; }
-  :global(.monitor-app-card) { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(0, 1.4fr) auto; align-items: center; gap: 12px; margin-top: 10px; border-radius: 5px; padding: 10px 12px; }
-  :global(.monitor-app-card.attention) { border-left: 2px solid #bb4d3d; }
-  :global(.monitor-app-card.empty-app) { display: block; }
-  .monitor-app-head h4 { display: inline; margin: 0 8px 0 0; font-size: 14px; }
-  .monitor-app-head code { color: var(--muted); font-size: 12px; }
-  .monitor-route-group { min-width: 0; }
-  .monitor-routes { display: flex; flex-wrap: wrap; gap: 4px 12px; }
-  .monitor-routes :global(.ui-button) { justify-content: flex-start; overflow-wrap: anywhere; white-space: normal; font-size: 13px; text-align: left; }
-  .monitor-routes span { color: var(--muted); font-size: 12px; }
+  .issue-heading { margin: 0 0 12px; font-size: 18px; font-weight: 700; letter-spacing: -.035em; }
+  .issue-list { display: grid; gap: 8px; }
+  .issue-list :global(.issue-card) { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .issue-copy { display: flex; align-items: start; gap: 10px; min-width: 0; }
+  .issue-dot { flex: none; width: 7px; height: 7px; margin-top: 7px; border-radius: 50%; background: var(--accent); }
+  .issue-copy h3 { margin: 0 0 2px; font-size: 13px; font-weight: 700; }
+  .issue-copy p { margin: 0; color: var(--muted); font-size: 12px; }
+  .issue-list :global(.issue-action) { flex: none; }
   @media (max-width: 900px) { .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .two-col { grid-template-columns: 1fr; } }
-  @media (max-width: 700px) { :global(.monitor-app-card) { grid-template-columns: 1fr; gap: 8px; } }
-  @media (max-width: 600px) { .summary-grid { grid-template-columns: 1fr; } .monitor-head { align-items: flex-start; flex-direction: column; } }
+  @media (max-width: 600px) { .summary-grid { grid-template-columns: 1fr; } .issue-list :global(.issue-card) { align-items: start; flex-direction: column; gap: 8px; } .issue-list :global(.issue-action) { margin-left: 17px; } }
 </style>
 
 {#if showOnboarding}
@@ -121,38 +129,19 @@
       <Card class="help-panel"><h2>용어 안내</h2><p>Connector는 앱이 실행되는 서버에서 Outlet으로 연결하는 프로그램입니다. 현재 Connector 하나에 내부 앱 하나를 등록하고, 앱에는 공개 주소를 추가할 수 있습니다.</p></Card>
     </div>
   </div>
-{:else}
-  <Panel title="앱별 운영 현황" description="Connector의 마지막 응답과 내부 앱 상태, 공개 주소를 확인합니다.">
-    <div class="monitor-list">
-      {#each data.connectors as connector}
-        {@const records = data.records.filter((record) => record.connector.id === connector.id)}
-        <Card as="article" padding="none" class={connector.status !== 'connected' || records.some((record) => record.service.observed_status !== 'connected') ? 'monitor-item attention' : 'monitor-item'}>
-          <div class="monitor-head">
-            <div><span class="monitor-type">CONNECTOR</span><h3>{connector.name}</h3><p>마지막 응답: {lastResponse(connector.last_seen)}</p></div>
-            <Status label={statusLabel(connector.status)} value={connector.status} />
+{:else if connectionIssues.length}
+  <section class="connection-alerts" aria-label="연결 상태">
+    <h2 class="issue-heading">확인이 필요한 연결</h2>
+    <div class="issue-list">
+      {#each connectionIssues as issue (issue.id)}
+        <Card as="article" padding="sm" class="issue-card">
+          <div class="issue-copy">
+            <span class="issue-dot" aria-hidden="true"></span>
+            <div><h3>{issue.name}</h3><p>{issue.details.join(' · ')}</p></div>
           </div>
-          {#each records as record}
-            <Card variant="solid" padding="none" class={record.service.observed_status !== 'connected' ? 'monitor-app-card attention' : 'monitor-app-card'}>
-              <div class="monitor-app-head">
-                <span class="monitor-type">내부 앱</span><h4>{record.service.name}</h4><code>내부 주소 {record.service.target.host}:{record.service.target.port}</code>
-              </div>
-              <div class="monitor-route-group">
-                <span class="monitor-type">공개 주소</span>
-                <div class="monitor-routes">
-                  {#each record.routes as route}
-                    <LinkButton href="https://{route.hostname}" variant="text" size="sm" target="_blank" rel="noopener noreferrer">https://{route.hostname}</LinkButton>
-                  {:else}
-                    <span>공개 주소 없음</span>
-                  {/each}
-                </div>
-              </div>
-              <Status label={statusLabel(record.service.observed_status)} value={record.service.observed_status} />
-            </Card>
-          {:else}
-            <Card variant="solid" padding="none" class="monitor-app-card attention empty-app"><span class="monitor-type">내부 앱</span><p class="monitor-empty">등록된 내부 앱이 없습니다.</p></Card>
-          {/each}
+          <Button variant="text" size="sm" class="issue-action" onclick={() => navigate('connectors')}>Connector 관리 <span aria-hidden="true">↗</span></Button>
         </Card>
       {/each}
     </div>
-  </Panel>
+  </section>
 {/if}
