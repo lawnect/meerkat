@@ -364,7 +364,6 @@
                     {#if connectorState.enrollment}
                       {@const enrollment = connectorState.enrollment}
                       <div class="token-box">
-                        <p>터널을 먼저 설치하세요. 앱 주소와 앱에 필요한 네트워크 연결은 터널이 연결된 뒤 설정합니다.</p>
                         <div class="install-tabs" role="tablist" aria-label="터널 설치 방법">
                           <Button variant="plain" class={installMethod === 'terminal' ? 'install-tab active' : 'install-tab'} id={`install-terminal-tab-${selected.id}`} role="tab" aria-selected={installMethod === 'terminal'} aria-controls={`install-terminal-panel-${selected.id}`} tabindex={installMethod === 'terminal' ? 0 : -1} onclick={() => installMethod = 'terminal'} onkeydown={onInstallTabKeydown}>Docker 명령</Button>
                           <Button variant="plain" class={installMethod === 'existing-compose' ? 'install-tab active' : 'install-tab'} id={`install-existing-compose-tab-${selected.id}`} role="tab" aria-selected={installMethod === 'existing-compose'} aria-controls={`install-existing-compose-panel-${selected.id}`} tabindex={installMethod === 'existing-compose' ? 0 : -1} onclick={() => installMethod = 'existing-compose'} onkeydown={onInstallTabKeydown}>기존 Compose 파일에 추가</Button>
@@ -561,6 +560,7 @@
   .metric :global(.connection-status) { color: var(--ink); font-size: 13px; font-weight: 650; }
   .connector-body { padding: 0 18px 16px; }
   .connector-body .detail-section:first-child { margin-top: 0; border-top: 0; padding-top: 0; }
+  .connector-body .token-panel:first-child { padding-top: 18px; }
   .connected-panel > .ui-card-header { margin: 0 -18px 16px; }
   .service-list { list-style: none; margin: 0; padding: 0; }
   .path-list { list-style: none; margin: 0; padding: 0; }
@@ -594,11 +594,11 @@
   .service-actions { display: flex; justify-content: flex-end; }
   .mock-connect { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; }
   .token-panel :global(.reset-token-button) { margin-top: 10px; }
-  .token-box { display: grid; gap: 10px; margin-top: 12px; }
+  .token-box { display: grid; gap: 10px; margin-top: 4px; }
   .command-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
   .token-box p { margin: 2px 0 0 !important; color: var(--muted); font-size: 12px; }
   .install-expiry { margin-top: 4px !important; }
-  .install-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; border-bottom: 1px solid var(--line); }
+  .install-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; border-bottom: 1px solid var(--line); }
   .install-tabs :global(.install-tab) { border-bottom: 2px solid transparent; padding: 7px 12px; color: var(--muted); font-size: 12px; font-weight: 650; }
   .install-tabs :global(.install-tab:hover), .install-tabs :global(.install-tab.active) { color: var(--accent-dark); }
   .install-tabs :global(.install-tab.active) { border-bottom-color: var(--accent); }
