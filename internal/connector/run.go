@@ -125,6 +125,69 @@ func enroll(ctx context.Context, cfg Config, api *transport.Client, token string
 	return response, nil
 }
 
+// Keep the authenticated control connection alive while an app name is not yet
+// available on the Connector's Docker network. Re-read configuration so an
+// operator can correct the target without recreating the tunnel container.
+func waitForTargets(ctx context.Context, cfg Config, api *transport.Client, response *contract.EnrollmentResponse, log *slog.Logger) (map[string]string, error) {
+	for {
+		services := response.ActiveServices()
+		addresses := make(map[string]string, len(services))
+		healths := make(map[string]string, len(services))
+		for _, service := range services {
+			address, err := health.Resolve(ctx, service.Target)
+			if err != nil {
+				healths[service.ServiceID] = "unhealthy"
+				log.Warn("connector waiting for local target", "service_id", service.ServiceID)
+				continue
+			}
+			addresses[service.ServiceID] = address
+			healths[service.ServiceID] = health.Check(ctx, service.Target)
+		}
+		if len(addresses) == len(services) {
+			return addresses, nil
+		}
+		hb := contract.Heartbeat{ConnectorID: response.ConnectorID, Revision: response.Revision, Version: contract.Version, ProcessState: "not_started", ServiceHealth: "unknown", ServiceHealths: healths, ObservedAt: time.Now().UTC()}
+		if err := api.Heartbeat(ctx, response.Credential, hb); err != nil {
+			var httpErr *transport.HTTPError
+			if errors.As(err, &httpErr) && (httpErr.Status == 401 || httpErr.Status == 403) {
+				return nil, errors.New("outlet rejected connector credential")
+			}
+			log.Warn("heartbeat failed while waiting for local targets")
+		}
+		timer := time.NewTimer(5 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, nil
+		case <-timer.C:
+		}
+		if !time.Now().Before(response.CredentialExpiresAt) {
+			return nil, errors.New("connector credential expired while waiting for local targets")
+		}
+		remote, err := api.Configuration(ctx, response.Credential)
+		if err != nil {
+			var httpErr *transport.HTTPError
+			if errors.As(err, &httpErr) && (httpErr.Status == 401 || httpErr.Status == 403) {
+				return nil, errors.New("outlet rejected connector credential")
+			}
+			log.Warn("cannot fetch connector configuration while waiting for local targets")
+			continue
+		}
+		if remote.ConnectorID != response.ConnectorID {
+			return nil, errors.New("outlet returned a different connector")
+		}
+		if remote.Revision != response.Revision {
+			if err := allowed(cfg, remote); err != nil {
+				return nil, err
+			}
+			response.Configuration = remote
+			if err := securefs.WriteJSON(filepath.Join(cfg.DataDir, "session.json"), session{cfg.OutletURL, cfg.Name, *response}); err != nil {
+				return nil, err
+			}
+		}
+	}
+}
+
 func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error {
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -146,7 +209,7 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 	}
 	defer api.Close()
 	var response contract.EnrollmentResponse
-	addresses := map[string]string{}
+	var addresses map[string]string
 	for attempt := 0; attempt < 6; attempt++ {
 		response, err = enroll(ctx, cfg, api, token)
 		if err == nil {
@@ -172,64 +235,56 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 	if err != nil {
 		return err
 	}
-	if len(response.ActiveServices()) == 0 {
-		log.Info("connector connected; waiting for a service")
-	}
-	for len(response.ActiveServices()) == 0 {
-		hb := contract.Heartbeat{ConnectorID: response.ConnectorID, Revision: response.Revision, Version: contract.Version, ProcessState: "running", ServiceHealth: "unknown", ObservedAt: time.Now().UTC()}
-		if heartbeatErr := api.Heartbeat(ctx, response.Credential, hb); heartbeatErr != nil {
-			log.Warn("heartbeat failed while waiting for services")
+	for {
+		if len(response.ActiveServices()) == 0 {
+			log.Info("connector connected; waiting for a service")
 		}
-		timer := time.NewTimer(5 * time.Second)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil
-		case <-timer.C:
-		}
-		if !time.Now().Before(response.CredentialExpiresAt) {
-			return errors.New("connector credential expired while waiting for a service")
-		}
-		remote, configErr := api.Configuration(ctx, response.Credential)
-		if configErr != nil {
-			var httpErr *transport.HTTPError
-			if errors.As(configErr, &httpErr) && (httpErr.Status == 401 || httpErr.Status == 403) {
-				return errors.New("outlet rejected connector credential")
+		for len(response.ActiveServices()) == 0 {
+			hb := contract.Heartbeat{ConnectorID: response.ConnectorID, Revision: response.Revision, Version: contract.Version, ProcessState: "running", ServiceHealth: "unknown", ObservedAt: time.Now().UTC()}
+			if heartbeatErr := api.Heartbeat(ctx, response.Credential, hb); heartbeatErr != nil {
+				log.Warn("heartbeat failed while waiting for services")
 			}
-			log.Warn("cannot fetch connector configuration")
-			continue
-		}
-		if remote.ConnectorID != response.ConnectorID {
-			return errors.New("outlet returned a different connector")
-		}
-		if len(remote.ActiveServices()) != 0 {
-			if err := allowed(cfg, remote); err != nil {
-				return err
-			}
-			response.Configuration = remote
-			if err := securefs.WriteJSON(filepath.Join(cfg.DataDir, "session.json"), session{cfg.OutletURL, cfg.Name, response}); err != nil {
-				return err
-			}
-		}
-	}
-	for _, service := range response.ActiveServices() {
-		for attempt := 0; attempt < 6; attempt++ {
-			address, resolveErr := health.Resolve(ctx, service.Target)
-			if resolveErr == nil {
-				addresses[service.ServiceID] = address
-				break
-			}
-			if attempt == 5 {
-				return resolveErr
-			}
-			log.Warn("connector waiting for local target", "service_id", service.ServiceID, "attempt", attempt+1)
-			timer := time.NewTimer(time.Duration(1<<attempt) * time.Second)
+			timer := time.NewTimer(5 * time.Second)
 			select {
 			case <-ctx.Done():
 				timer.Stop()
 				return nil
 			case <-timer.C:
 			}
+			if !time.Now().Before(response.CredentialExpiresAt) {
+				return errors.New("connector credential expired while waiting for a service")
+			}
+			remote, configErr := api.Configuration(ctx, response.Credential)
+			if configErr != nil {
+				var httpErr *transport.HTTPError
+				if errors.As(configErr, &httpErr) && (httpErr.Status == 401 || httpErr.Status == 403) {
+					return errors.New("outlet rejected connector credential")
+				}
+				log.Warn("cannot fetch connector configuration")
+				continue
+			}
+			if remote.ConnectorID != response.ConnectorID {
+				return errors.New("outlet returned a different connector")
+			}
+			if len(remote.ActiveServices()) != 0 {
+				if err := allowed(cfg, remote); err != nil {
+					return err
+				}
+				response.Configuration = remote
+				if err := securefs.WriteJSON(filepath.Join(cfg.DataDir, "session.json"), session{cfg.OutletURL, cfg.Name, response}); err != nil {
+					return err
+				}
+			}
+		}
+		addresses, err = waitForTargets(ctx, cfg, api, &response, log)
+		if err != nil {
+			return err
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		if len(response.ActiveServices()) != 0 {
+			break
 		}
 	}
 	log.Info("connector authenticated", "connector_id", response.ConnectorID, "service_count", len(response.ActiveServices()))

@@ -623,12 +623,13 @@
 <dialog bind:this={serviceDialog} class="connector-dialog service-dialog" aria-labelledby="service-dialog-title" aria-describedby="service-dialog-description" oncancel={(event) => { if (serviceBusy) event.preventDefault(); }} onclose={clearServiceForm}>
   <form onsubmit={createService}>
     <h2 id="service-dialog-title">연결 서비스 추가</h2>
-    <p id="service-dialog-description">{selected?.name || '선택한 터널'}에서 연결할 앱의 내부 주소를 입력하세요.</p>
+    <p id="service-dialog-description">{selected?.name || '선택한 터널'}에서 연결할 앱의 내부 주소를 입력하세요. 서비스 이름과 앱 호스트는 서로 다를 수 있습니다.</p>
     <div class="service-fields">
       <div class="field service-name-field"><label for="connector-service-name">서비스 이름</label><input class="input input-bordered" id="connector-service-name" bind:value={serviceName} placeholder="예: app" required /></div>
-      <div class="field"><label for="connector-service-host">앱 호스트</label><input class="input input-bordered" id="connector-service-host" bind:value={serviceHost} placeholder="app 또는 127.0.0.1" required /></div>
-      <div class="field"><label for="connector-service-port">내부 포트</label><input class="input input-bordered" id="connector-service-port" type="number" min="1" max="65535" bind:value={servicePort} placeholder="3000" required /></div>
+      <div class="field"><label for="connector-service-host">앱 호스트</label><input class="input input-bordered" id="connector-service-host" bind:value={serviceHost} placeholder="예: app" aria-describedby="connector-service-target-help" required /></div>
+      <div class="field"><label for="connector-service-port">내부 포트</label><input class="input input-bordered" id="connector-service-port" type="number" min="1" max="65535" bind:value={servicePort} placeholder="예: 80" aria-describedby="connector-service-target-help" required /></div>
     </div>
+    <p id="connector-service-target-help">같은 Compose 파일이면 앱 호스트에 <code>services:</code> 아래 이름(예: <code>app</code>), 내부 포트에 앱이 컨테이너에서 듣는 포트(예: <code>80</code>)를 입력하세요. 터널과 앱은 같은 Docker 네트워크에 있어야 합니다.</p>
     {#if serviceError}<p class="error" role="alert">{serviceError}</p>{/if}
     <div class="dialog-actions"><Button variant="secondary" disabled={serviceBusy} onclick={closeServiceDialog}>취소</Button><Button type="submit" disabled={serviceBusy}>{serviceBusy ? '등록 중…' : '서비스 등록'}</Button></div>
   </form>

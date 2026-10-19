@@ -59,6 +59,13 @@ func (d *Database) CreateService(ctx context.Context, connectorID, name, protoco
 		return Service{}, err
 	}
 	if affected == 0 {
+		var nameExists bool
+		if err := d.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM services WHERE connector_id = ? AND name = ?)`, connectorID, name).Scan(&nameExists); err != nil {
+			return Service{}, err
+		}
+		if nameExists {
+			return Service{}, ErrServiceExists
+		}
 		return Service{}, ErrServiceTargetExists
 	}
 	return s, nil

@@ -665,13 +665,9 @@ func managedConnectorStatus(record Record, now time.Time) string {
 	if now.Sub(record.LastSeen) >= 15*time.Second {
 		return "stale"
 	}
-	if len(record.Configuration.ActiveServices()) == 0 {
-		return "connected"
-	}
-	if record.TunnelStatus == "connected" {
-		return "connected"
-	}
-	return "connecting"
+	// Tunnel connectivity is the Connector's recent authenticated response.
+	// Service health and tunnel forwarding are reported per service below.
+	return "connected"
 }
 
 func managedServiceStatus(record Record, serviceID string, now time.Time) string {

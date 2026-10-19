@@ -155,13 +155,14 @@
         <div class="target-row"><span class="ui-meta-label">연결 대상</span><code>{targetAddress}</code><Button variant="plain" size="sm" class={targetCopied ? 'target-copy copied' : 'target-copy'} aria-label={targetCopied ? '연결 대상 복사 완료' : '연결 대상 복사'} title={targetCopied ? '복사 완료' : '연결 대상 복사'} onclick={copyTarget}>
           {#if targetCopied}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>{/if}
         </Button><Button variant="text" size="sm" onclick={startTargetEdit}>수정</Button><Button variant="text" size="sm" disabled={deletingService || record.routes.length > 0} title={record.routes.length ? '공개 주소를 먼저 삭제하세요' : '연결 서비스 삭제'} onclick={deleteService}>삭제</Button></div>
+        {#if record.service.observed_status === 'error'}<p class="target-health-note">앱 호스트·내부 포트·Docker 네트워크를 확인하세요.</p>{/if}
         {#if targetCopyError}<p class="error" role="alert">{targetCopyError}</p>{/if}
         {#if serviceError}<p class="error" role="alert">{serviceError}</p>{/if}
         {#if editingTarget}
           <form class="target-edit" onsubmit={saveTarget}>
             <div class="field"><label for={`edit-host-${record.service.id}`}>앱 호스트</label><input id={`edit-host-${record.service.id}`} class="input input-bordered" bind:value={editHost} required /></div>
             <div class="field"><label for={`edit-port-${record.service.id}`}>내부 포트</label><input id={`edit-port-${record.service.id}`} class="input input-bordered" type="number" min="1" max="65535" bind:value={editPort} required /></div>
-            <p class="target-edit-note">저장하면 터널 연결이 잠시 끊길 수 있습니다.</p>
+            <p class="target-edit-note">Compose 앱이라면 앱 호스트는 <code>services:</code> 아래 이름, 내부 포트는 컨테이너에서 듣는 포트입니다. 터널과 앱이 같은 Docker 네트워크에 있어야 합니다.</p>
             {#if editError}<p class="error" role="alert">{editError}</p>{/if}
             <div class="target-edit-actions"><Button variant="secondary" size="sm" disabled={editBusy} onclick={() => editingTarget = false}>취소</Button><Button type="submit" size="sm" disabled={editBusy}>{editBusy ? '저장 중…' : '저장'}</Button></div>
           </form>
@@ -251,6 +252,7 @@
   .target-edit-note { margin: 0; color: var(--muted); font-size: 11px; }
   .target-edit-actions { display: flex; justify-content: flex-end; gap: 6px; }
   .app-row :global(.connection-status) { margin-left: 0; }
+  .target-health-note { margin: 4px 0 0; color: var(--accent-dark); font-size: 11px; }
   .route-list { list-style: none; margin: 0; padding: 0; }
   .route-list li { display: grid; grid-template-columns: minmax(0, 1fr) 24px 30px; align-items: center; gap: 10px; min-height: 40px; border-top: 1px solid var(--line); padding: 5px 0; }
   .route-list li:first-child { border-top: 0; }

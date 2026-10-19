@@ -86,6 +86,72 @@ func TestServiceAPIStoresDesiredService(t *testing.T) {
 	}
 }
 
+func TestAddingServiceDoesNotMarkHealthyTunnelAsConnecting(t *testing.T) {
+	f := setup(t)
+	db, err := control.Open(context.Background(), filepath.Join(f.dir, "connected-control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, err := OpenWithControl(f.cfg, f.dir, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := store.Handler()
+	if w := request(h, "PUT", "/api/v1/outlet", f.admin, map[string]any{"domain": "example.com"}); w.Code != 200 {
+		t.Fatalf("outlet: %d %s", w.Code, w.Body.String())
+	}
+	w := request(h, "POST", "/api/v1/connectors", f.admin, map[string]any{"name": "edge-connected"})
+	if w.Code != 201 {
+		t.Fatalf("connector: %d %s", w.Code, w.Body.String())
+	}
+	var connector control.Connector
+	if err := json.Unmarshal(w.Body.Bytes(), &connector); err != nil {
+		t.Fatal(err)
+	}
+	w = request(h, "POST", "/api/v1/connectors/"+connector.ID+"/enrollment-tokens", f.admin, nil)
+	if w.Code != 201 {
+		t.Fatalf("token: %d %s", w.Code, w.Body.String())
+	}
+	var token struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &token); err != nil {
+		t.Fatal(err)
+	}
+	w = request(h, "POST", "/connector/v1/enrollment", token.Token, enrollment("edge-connected"))
+	if w.Code != 201 {
+		t.Fatalf("enrollment: %d %s", w.Code, w.Body.String())
+	}
+	var enrolled contract.EnrollmentResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &enrolled); err != nil {
+		t.Fatal(err)
+	}
+	hb := contract.Heartbeat{ConnectorID: connector.ID, Revision: enrolled.Revision, Version: contract.Version, ProcessState: "running", ServiceHealth: "unknown", ObservedAt: time.Now().UTC()}
+	w = request(h, "POST", "/connector/v1/heartbeat", enrolled.Credential, hb)
+	if w.Code != 200 {
+		t.Fatalf("heartbeat: %d %s", w.Code, w.Body.String())
+	}
+	w = request(h, "POST", "/api/v1/connectors/"+connector.ID+"/services", f.admin, map[string]any{"name": "web", "protocol": "http", "target": map[string]any{"host": "app", "port": 80}})
+	if w.Code != 201 {
+		t.Fatalf("service: %d %s", w.Code, w.Body.String())
+	}
+	w = request(h, "GET", "/api/v1/connectors", f.admin, nil)
+	var listed struct {
+		Connectors []control.Connector `json:"connectors"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &listed); err != nil || len(listed.Connectors) != 1 || listed.Connectors[0].Status != "connected" {
+		t.Fatalf("tunnel status after service creation: %d %s", w.Code, w.Body.String())
+	}
+	w = request(h, "GET", "/api/v1/connectors/"+connector.ID+"/services", f.admin, nil)
+	var services struct {
+		Services []control.Service `json:"services"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &services); err != nil || len(services.Services) != 1 || services.Services[0].ObservedStatus != "unknown" {
+		t.Fatalf("service status before a new heartbeat: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestTunnelHostsMultipleServices(t *testing.T) {
 	f := setup(t)
 	f.cfg.TunnelListenAddress = "0.0.0.0:2333"

@@ -31,6 +31,9 @@ func TestCreateAndListServices(t *testing.T) {
 	if _, err := db.CreateService(ctx, connector.ID, "web", "http", target); !errors.Is(err, ErrServiceExists) {
 		t.Fatalf("duplicate error = %v", err)
 	}
+	if _, err := db.CreateService(ctx, connector.ID, "other", "http", target); !errors.Is(err, ErrServiceTargetExists) {
+		t.Fatalf("duplicate target error = %v", err)
+	}
 	second, err := db.CreateService(ctx, connector.ID, "api", "http", contract.Target{Host: "api", Port: 8080})
 	if err != nil {
 		t.Fatal(err)
