@@ -3,6 +3,7 @@
   import { api, errorMessage, mockApiEnabled, statusLabel } from '../api';
   import { connectorState, forgetEnrollment, rememberEnrollment, storedEnrollment } from '../connectorState.svelte';
   import ServiceBlock from '../components/ServiceBlock.svelte';
+  import RouteGraph from '../components/RouteGraph.svelte';
   import Status from '../components/Status.svelte';
   import Button from '../components/ui/Button.svelte';
   import Card from '../components/ui/Card.svelte';
@@ -548,18 +549,8 @@
           <div class="routes-content">
             <Card as="section" padding="none" class="paths-card" aria-label="요청 경로">
               <div class="ui-card-header"><h3 class="ui-card-title">요청 경로 <small>{selectedPaths.length}</small></h3></div>
-              {#if selectedPaths.length}
-                <ul class="path-list">
-                  {#each selectedPaths as path (path.route.id)}
-                    <li class="path-row">
-                      <LinkButton href={`https://${path.route.hostname}`} target="_blank" rel="noopener noreferrer" variant="text" size="sm" class="path-address">{path.route.hostname} ↗</LinkButton>
-                      <span class="path-arrow" aria-hidden="true">→</span>
-                      <span class="path-tunnel">{selected.name}</span>
-                      <span class="path-arrow" aria-hidden="true">→</span>
-                      <span class="path-target">{path.record.service.name} <code>{path.record.service.target.host}:{path.record.service.target.port}</code></span>
-                    </li>
-                  {/each}
-                </ul>
+              {#if selectedRecords.length}
+                <RouteGraph tunnelName={selected.name} records={selectedRecords} />
               {:else}
                 <p class="paths-empty">아직 공개 주소가 없습니다. 아래 서비스에서 주소를 추가하세요.</p>
               {/if}
@@ -710,13 +701,6 @@
   .connected-card-body .route-service-item + .route-service-item { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 16px; }
   .route-service-item:focus { outline: 2px solid var(--accent); outline-offset: 5px; border-radius: 3px; }
   .connected-card-body p { margin: 0; color: var(--muted); font-size: 12px; }
-  .path-list { list-style: none; margin: 0; padding: 0; }
-  .path-row { display: grid; grid-template-columns: minmax(0, 1.4fr) 18px minmax(0, 1fr) 18px minmax(0, 1.4fr); align-items: center; gap: 10px; min-height: 54px; padding: 10px 18px; }
-  .path-row + .path-row { border-top: 1px solid var(--line); }
-  .path-row :global(.path-address) { min-width: 0; justify-content: flex-start; overflow: hidden; text-overflow: ellipsis; }
-  .path-arrow { color: var(--muted); text-align: center; }
-  .path-tunnel, .path-target { overflow-wrap: anywhere; font-size: 12px; font-weight: 650; }
-  .path-target code { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
   .paths-empty { margin: 0; padding: 18px; color: var(--muted); font-size: 12px; }
   :global(.detail-missing) { display: grid; justify-items: start; gap: 12px; }
   :global(.detail-missing p) { margin: 0; }
@@ -775,6 +759,6 @@
   @media (max-width: 1000px) { .detail-layout { grid-template-columns: 1fr; } .detail-sidebar { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   @media (max-width: 700px) { .connector-filters, .filter-summary { width: 100%; } }
   @media (max-width: 480px) { .service-fields { grid-template-columns: 1fr; } }
-  @media (max-width: 600px) { .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .metric:nth-child(3) { border-left: 0; } .metric:nth-child(n+3) { border-top: 1px solid var(--line); } .detail-sidebar { grid-template-columns: 1fr; } .path-row { grid-template-columns: 1fr; gap: 2px; } .path-arrow { text-align: left; transform: rotate(90deg); transform-origin: 8px center; } }
+  @media (max-width: 600px) { .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .metric:nth-child(3) { border-left: 0; } .metric:nth-child(n+3) { border-top: 1px solid var(--line); } .detail-sidebar { grid-template-columns: 1fr; } }
   @media (max-width: 420px) { .connector-filters { grid-template-columns: 1fr; } }
 </style>
