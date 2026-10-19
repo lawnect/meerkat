@@ -4,10 +4,16 @@
   import Button from './ui/Button.svelte';
   import Card from './ui/Card.svelte';
 
-  let { data, navigate }: { data: DashboardData; navigate: (view: PageKey) => Promise<void> } = $props();
+  let { data, navigate, onOpenDetail }: { data: DashboardData; navigate: (view: PageKey) => Promise<void>; onOpenDetail: (id: string) => void } = $props();
 
   const visible = $derived(data.records.slice(0, 4));
   const hasConnectedTunnel = $derived(data.connectors.some((connector) => connector.status === 'connected'));
+
+  function openFirstTunnel(): void {
+    const connector = data.connectors.find((item) => item.status === 'connected') ?? data.connectors[0];
+    if (connector) onOpenDetail(connector.id);
+    else void navigate('connectors');
+  }
 
   function routeReady(route?: Route): boolean {
     return Boolean(route?.enabled && route.applied_revision >= route.desired_revision && !route.last_error);
@@ -29,7 +35,7 @@
       <h2 id="connection-heading">서비스 연결 경로</h2>
       <p>외부 주소에서 터널을 거쳐 연결 서비스로 이어지는 경로입니다.</p>
     </div>
-    <Button variant="text" size="sm" class="map-link" onclick={() => navigate('services')}>연결 서비스 <span aria-hidden="true">↗</span></Button>
+    <Button variant="text" size="sm" class="map-link" onclick={() => navigate('connectors')}>터널 관리 <span aria-hidden="true">↗</span></Button>
   </div>
 
   {#if visible.length}
@@ -64,7 +70,7 @@
   {:else}
     <Card variant="solid" padding="none" class="map-empty">
       <p>아직 표시할 연결이 없습니다.</p>
-      <Button variant="text" size="sm" onclick={() => navigate(hasConnectedTunnel ? 'services' : 'connectors')}>{hasConnectedTunnel ? '첫 서비스 등록' : '첫 터널 만들기'} <span aria-hidden="true">↗</span></Button>
+      <Button variant="text" size="sm" onclick={openFirstTunnel}>{hasConnectedTunnel ? '첫 서비스 등록' : '첫 터널 만들기'} <span aria-hidden="true">↗</span></Button>
     </Card>
   {/if}
 </section>

@@ -7,9 +7,9 @@
   import Card from '../components/ui/Card.svelte';
   import type { DashboardData, PageKey } from '../types';
 
-  type ConnectionIssue = { id: string; name: string; details: string[]; page: PageKey };
+  type ConnectionIssue = { id: string; name: string; details: string[] };
 
-  let { data, navigate }: { data: DashboardData; navigate: (view: PageKey) => Promise<void> } = $props();
+  let { data, navigate, onOpenDetail }: { data: DashboardData; navigate: (view: PageKey) => Promise<void>; onOpenDetail: (id: string) => void } = $props();
   const connected = $derived(data.connectors.filter((connector) => connector.status === 'connected').length);
   const next = $derived(!data.outlet.domain
     ? '도메인 관리에서 Outlet 도메인을 입력하세요.'
@@ -18,17 +18,28 @@
       : connected === 0
         ? data.services.length === 0 ? '터널 설치 명령을 확인하고 서버에서 실행하세요.' : '터널 연결 상태를 확인하세요.'
         : data.services.length === 0
-          ? '연결 서비스에서 앱 주소를 등록하세요.'
+          ? '터널 상세에서 앱 주소를 등록하세요.'
           : data.routes.length === 0
-            ? '연결 서비스에 공개 주소를 추가하세요.'
+            ? '터널 상세에서 공개 주소를 추가하세요.'
             : null);
   const items = $derived([
     ['도메인 확인', Boolean(data.outlet.domain), '도메인 관리에서 변경', 'domains'],
     ['터널 만들기', data.connectors.length > 0, '새 터널 만들기', 'connectors'],
     ['터널 설치 및 연결', connected > 0, data.connectors.some((connector) => connector.status === 'draft') ? '설치 명령 확인' : '연결 상태 확인', 'connectors'],
-    ['연결 서비스 등록', data.services.length > 0, '서비스 이름과 내부 주소 입력', 'services'],
-    ['공개 주소 추가', data.routes.length > 0, '도메인 등록', 'services'],
-  ] as [string, boolean, string, PageKey][]);
+    ['연결 서비스 등록', data.services.length > 0, '서비스 이름과 내부 주소 입력', 'connectors', true],
+    ['공개 주소 추가', data.routes.length > 0, '도메인 등록', 'connectors', true],
+  ] as [string, boolean, string, PageKey, boolean?][]);
+
+  function openOnboardingTarget(view: PageKey, openDetail?: boolean): void {
+    if (openDetail) {
+      const connector = data.connectors.find((item) => item.status === 'connected') ?? data.connectors[0];
+      if (connector) {
+        onOpenDetail(connector.id);
+        return;
+      }
+    }
+    void navigate(view);
+  }
   const showOnboarding = $derived(Boolean(next) && !(data.outlet.domain && data.routes.length > 0 && data.connectors.some((connector) => connector.status !== 'draft')));
   const connectionIssues = $derived.by((): ConnectionIssue[] => {
     const issues: ConnectionIssue[] = [];
@@ -50,7 +61,7 @@
         }
       }
 
-      if (details.length) issues.push({ id: connector.id, name: connector.name, details, page: connector.status === 'connected' ? 'services' : 'connectors' });
+      if (details.length) issues.push({ id: connector.id, name: connector.name, details });
     }
     return issues;
   });
@@ -74,7 +85,7 @@
   <Card class="summary-card"><div class="stat-label">설정된 공개 주소</div><div class="stat-value">{data.routes.length}</div><div class="stat-note">접속 상태와 별개로 등록된 도메인</div></Card>
 </div>
 
-<ConnectionMap {data} {navigate} />
+<ConnectionMap {data} {navigate} {onOpenDetail} />
 
 <style>
   .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 20px; }
@@ -115,8 +126,8 @@
   <div class="dashboard-grid two-col">
     <Panel title="시작하기" description="Meerkat에서 서비스를 공개하는 순서입니다.">
       <div class="onboarding-list">
-        {#each items as [label, done, action, view], i}
-          <Button variant="plain" class={done ? 'onboarding-item done' : 'onboarding-item'} onclick={() => navigate(view)}>
+        {#each items as [label, done, action, view, openDetail], i}
+          <Button variant="plain" class={done ? 'onboarding-item done' : 'onboarding-item'} onclick={() => openOnboardingTarget(view, openDetail)}>
             <span class="onboarding-number">{done ? '✓' : i + 1}</span>
             <span><strong>{label}</strong><small>{done ? '완료됨' : action}</small></span>
             <span class="onboarding-action">{done ? '완료' : action}</span>
@@ -126,7 +137,7 @@
     </Panel>
     <div>
       <Card variant="solid" padding="none" class="callout"><strong>현재 할 일</strong><span>{next}</span></Card>
-      <Card class="help-panel"><h2>용어 안내</h2><p>터널은 앱 서버에서 Outlet으로 이어지는 연결입니다. 연결 서비스 메뉴에서 하나의 터널에 여러 앱 주소를 등록하고 각 서비스에 공개 주소를 추가할 수 있습니다.</p></Card>
+      <Card class="help-panel"><h2>용어 안내</h2><p>터널은 앱 서버에서 Outlet으로 이어지는 연결입니다. 터널 상세에서 여러 앱 주소를 등록하고 각 서비스에 공개 주소를 추가할 수 있습니다.</p></Card>
     </div>
   </div>
 {:else if connectionIssues.length}
@@ -139,7 +150,7 @@
             <span class="issue-dot" aria-hidden="true"></span>
             <div><h3>{issue.name}</h3><p>{issue.details.join(' · ')}</p></div>
           </div>
-          <Button variant="text" size="sm" class="issue-action" onclick={() => navigate(issue.page)}>{issue.page === 'services' ? '연결 서비스' : '터널 관리'} <span aria-hidden="true">↗</span></Button>
+          <Button variant="text" size="sm" class="issue-action" onclick={() => onOpenDetail(issue.id)}>터널 보기 <span aria-hidden="true">↗</span></Button>
         </Card>
       {/each}
     </div>

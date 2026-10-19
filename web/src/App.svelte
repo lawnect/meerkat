@@ -9,7 +9,6 @@
   import OverviewPage from './pages/OverviewPage.svelte';
   import DomainsPage from './pages/DomainsPage.svelte';
   import ConnectorsPage from './pages/ConnectorsPage.svelte';
-  import ServicesPage from './pages/ServicesPage.svelte';
   import DiagnosticsPage from './pages/DiagnosticsPage.svelte';
   import Button from './components/ui/Button.svelte';
   import Card from './components/ui/Card.svelte';
@@ -40,6 +39,9 @@
 
   function currentPage(): PageKey {
     if (window.location.pathname.replace(/\/+$/, '') === '/routes') {
+      window.history.replaceState(null, '', `${pagePath.connectors}${window.location.search}${window.location.hash}`);
+    }
+    if (window.location.pathname.replace(/\/+$/, '') === '/services') {
       window.history.replaceState(null, '', `${pagePath.connectors}${window.location.search}${window.location.hash}`);
     }
     if (window.location.pathname.replace(/\/+$/, '') === '/settings') {
@@ -94,7 +96,7 @@
     }
     view = nextView;
     connectorDetailId = null;
-    if (nextView === 'connectors' || nextView === 'services') await refresh();
+    if (nextView === 'connectors') await refresh();
   }
 
   function openConnectorDetail(id: string): void {
@@ -118,7 +120,7 @@
   function handlePopState(): void {
     view = currentPage();
     connectorDetailId = connectorIdFromPath(window.location.pathname);
-    if ((view === 'connectors' || view === 'services') && authMode === 'dashboard') void refresh();
+    if (view === 'connectors' && authMode === 'dashboard') void refresh();
   }
 
   async function logout() {
@@ -183,23 +185,20 @@
       <nav class="nav" aria-label="운영 메뉴">
         <LinkButton href={pagePath.overview} variant="text" class={view === 'overview' ? 'nav-item active' : 'nav-item'} aria-current={view === 'overview' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'overview')}>개요</LinkButton>
         <LinkButton href={pagePath.connectors} variant="text" class={view === 'connectors' ? 'nav-item active' : 'nav-item'} aria-current={view === 'connectors' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'connectors')}>터널 관리</LinkButton>
-        <LinkButton href={pagePath.services} variant="text" class={view === 'services' ? 'nav-item active' : 'nav-item'} aria-current={view === 'services' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'services')}>연결 서비스</LinkButton>
         <LinkButton href={pagePath.domains} variant="text" class={view === 'domains' ? 'nav-item active' : 'nav-item'} aria-current={view === 'domains' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'domains')}>도메인 관리</LinkButton>
         <LinkButton href={pagePath.diagnostics} variant="text" class={view === 'diagnostics' ? 'nav-item active' : 'nav-item'} aria-current={view === 'diagnostics' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'diagnostics')}>요청 진단</LinkButton>
       </nav>
-      <div class="rail-note"><strong>도움이 필요하신가요?</strong>터널을 연결한 뒤 연결 서비스에서 앱 주소를 등록하세요.</div>
+      <div class="rail-note"><strong>도움이 필요하신가요?</strong>터널 상세에서 앱의 내부 주소와 공개 주소를 등록하세요.</div>
     </aside>
     <main class="content">
       {#if loadError}<p class="error" role="alert">{loadError}</p>{/if}
       {#if loading}<p class="loading-note">상태를 불러오는 중입니다…</p>{/if}
       {#if view === 'overview'}
-        <OverviewPage {data} {navigate} />
+        <OverviewPage {data} {navigate} onOpenDetail={openConnectorDetail} />
       {:else if view === 'domains'}
         <DomainsPage outlet={data.outlet} onSaved={refresh} />
       {:else if view === 'connectors'}
         <ConnectorsPage {data} onChanged={refresh} onCheckConnection={refreshConnectorStatus} detailId={connectorDetailId} onOpenDetail={openConnectorDetail} onBack={closeConnectorDetail} />
-      {:else if view === 'services'}
-        <ServicesPage {data} onChanged={refresh} {navigate} />
       {:else if view === 'diagnostics'}
         <DiagnosticsPage />
       {/if}
