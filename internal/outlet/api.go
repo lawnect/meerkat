@@ -1001,6 +1001,10 @@ func (s *Store) createService(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 409, "service_name_taken")
 		return
 	}
+	if errors.Is(err, control.ErrServiceTargetExists) {
+		fail(w, r, 409, "service_target_taken")
+		return
+	}
 	if errors.Is(err, control.ErrInvalidService) {
 		fail(w, r, 400, "invalid_service")
 		return
@@ -1094,6 +1098,8 @@ func (s *Store) updateServiceTarget(w http.ResponseWriter, r *http.Request) {
 			fail(w, r, 400, "invalid_service")
 		case errors.Is(err, control.ErrServiceNotFound):
 			fail(w, r, 404, "service_not_found")
+		case errors.Is(err, control.ErrServiceTargetExists):
+			fail(w, r, 409, "service_target_taken")
 		default:
 			fail(w, r, 503, "persistence_failed")
 		}

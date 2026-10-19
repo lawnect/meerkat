@@ -65,7 +65,11 @@
       await onChanged();
     } catch (cause) {
       const code = errorMessage(cause);
-      editError = code === 'invalid_service' ? '앱 호스트와 내부 포트를 확인하세요.' : `연결 대상을 저장하지 못했습니다: ${code}`;
+      editError = code === 'invalid_service'
+        ? '앱 호스트와 내부 포트를 확인하세요.'
+        : code === 'service_target_taken'
+          ? '같은 터널의 다른 서비스가 이 앱 호스트와 포트를 사용 중입니다.'
+          : `연결 대상을 저장하지 못했습니다: ${code}`;
     } finally {
       editBusy = false;
     }

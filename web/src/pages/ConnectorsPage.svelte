@@ -221,6 +221,7 @@
       const message: Record<string, string> = {
         connector_not_found: '터널을 찾을 수 없습니다.',
         service_name_taken: '이미 사용 중인 서비스 이름입니다.',
+        service_target_taken: '같은 터널에 동일한 앱 호스트와 포트가 이미 등록되어 있습니다. 기존 서비스에 공개 주소를 추가하세요.',
         invalid_service: '서비스 이름과 앱 주소를 확인하세요.',
       };
       serviceError = `연결 서비스를 등록하지 못했습니다: ${message[code] || code}`;

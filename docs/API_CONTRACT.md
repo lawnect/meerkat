@@ -46,7 +46,7 @@ POST   /api/v1/routes/:id/disable
 ~~~
 
 Service 생성은 외부 공개를 뜻하지 않는다. Route를 활성화해야 외부 endpoint가 생긴다.
-서비스의 앱 호스트와 포트는 `PATCH /api/v1/connectors/:id/services/:service_id`에 `{"target":{"host":"app","port":3000}}`을 보내 수정한다. 한 터널에 여러 서비스를 등록할 수 있다. 서비스 추가·수정·삭제 시 설정 revision을 올려 Connector가 저장된 identity로 재시작하고, 각 대상의 응답이 확인될 때까지 해당 공개 경로를 보류한다. 재시작 중에는 같은 터널의 다른 서비스도 잠시 중단될 수 있다.
+서비스의 앱 호스트와 포트는 `PATCH /api/v1/connectors/:id/services/:service_id`에 `{"target":{"host":"app","port":3000}}`을 보내 수정한다. 한 터널에 여러 서비스를 등록할 수 있지만, 같은 터널 안에서 대상 호스트(대소문자 구분 없음)와 포트의 조합은 고유해야 한다. 생성·수정 시 중복이면 `409 service_target_taken`을 반환한다. 같은 앱의 공개 주소가 여러 개 필요하면 하나의 서비스에 Route를 여러 개 추가한다. 서비스 추가·수정·삭제 시 설정 revision을 올려 Connector가 저장된 identity로 재시작하고, 각 대상의 응답이 확인될 때까지 해당 공개 경로를 보류한다. 재시작 중에는 같은 터널의 다른 서비스도 잠시 중단될 수 있다.
 
 ### 예시: Service 생성
 

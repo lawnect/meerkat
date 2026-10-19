@@ -10,9 +10,10 @@ import (
 )
 
 var (
-	ErrServiceExists    = errors.New("service already exists")
-	ErrServiceHasRoutes = errors.New("service has routes")
-	ErrInvalidService   = errors.New("invalid service")
+	ErrServiceExists       = errors.New("service already exists")
+	ErrServiceTargetExists = errors.New("service target already exists")
+	ErrServiceHasRoutes    = errors.New("service has routes")
+	ErrInvalidService      = errors.New("invalid service")
 )
 
 // Service is desired state only. It has no public endpoint until a Route is
@@ -46,10 +47,19 @@ func (d *Database) CreateService(ctx context.Context, connectorID, name, protoco
 	}
 	now := time.Now().UTC()
 	s := Service{ID: id, ConnectorID: connectorID, Name: name, Protocol: protocol, Target: target, Enabled: true, ObservedStatus: "unknown", CreatedAt: now, UpdatedAt: now}
-	_, err = d.db.ExecContext(ctx, `INSERT INTO services(id, connector_id, name, protocol, target_host, target_port, enabled, observed_status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, s.ID, s.ConnectorID, s.Name, s.Protocol, s.Target.Host, s.Target.Port, 1, s.ObservedStatus, s.CreatedAt.Format(time.RFC3339Nano), s.UpdatedAt.Format(time.RFC3339Nano))
+	result, err := d.db.ExecContext(ctx, `INSERT INTO services(id, connector_id, name, protocol, target_host, target_port, enabled, observed_status, created_at, updated_at)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE NOT EXISTS (SELECT 1 FROM services WHERE connector_id = ? AND target_host = ? COLLATE NOCASE AND target_port = ?)`,
+		s.ID, s.ConnectorID, s.Name, s.Protocol, s.Target.Host, s.Target.Port, 1, s.ObservedStatus, s.CreatedAt.Format(time.RFC3339Nano), s.UpdatedAt.Format(time.RFC3339Nano), connectorID, target.Host, target.Port)
 	if err != nil {
 		return Service{}, ErrServiceExists
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Service{}, err
+	}
+	if affected == 0 {
+		return Service{}, ErrServiceTargetExists
 	}
 	return s, nil
 }
@@ -59,7 +69,10 @@ func (d *Database) UpdateServiceTarget(ctx context.Context, connectorID, service
 		return Service{}, ErrInvalidService
 	}
 	now := time.Now().UTC()
-	result, err := d.db.ExecContext(ctx, `UPDATE services SET target_host = ?, target_port = ?, observed_status = 'unknown', updated_at = ? WHERE id = ? AND connector_id = ?`, target.Host, target.Port, now.Format(time.RFC3339Nano), serviceID, connectorID)
+	result, err := d.db.ExecContext(ctx, `UPDATE services SET target_host = ?, target_port = ?, observed_status = 'unknown', updated_at = ?
+		WHERE id = ? AND connector_id = ?
+		AND NOT EXISTS (SELECT 1 FROM services WHERE connector_id = ? AND id != ? AND target_host = ? COLLATE NOCASE AND target_port = ?)`,
+		target.Host, target.Port, now.Format(time.RFC3339Nano), serviceID, connectorID, connectorID, serviceID, target.Host, target.Port)
 	if err != nil {
 		return Service{}, err
 	}
@@ -68,6 +81,13 @@ func (d *Database) UpdateServiceTarget(ctx context.Context, connectorID, service
 		return Service{}, err
 	}
 	if affected == 0 {
+		var exists bool
+		if err := d.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM services WHERE id = ? AND connector_id = ?)`, serviceID, connectorID).Scan(&exists); err != nil {
+			return Service{}, err
+		}
+		if exists {
+			return Service{}, ErrServiceTargetExists
+		}
 		return Service{}, ErrServiceNotFound
 	}
 	services, err := d.ListServices(ctx, connectorID)

@@ -7,6 +7,7 @@
 - Outlet 한 대에 관리 UI/API, SQLite, Caddy, HAProxy를 배치한다.
 - 서비스 서버에는 Docker Compose로 앱과 service-connector를 함께 실행할 수 있다.
 - Connector는 터널마다 하나씩 실행되며, 하나의 rathole client 설정으로 여러 서비스를 전달한다.
+- 같은 터널에서는 앱 호스트와 포트의 조합을 서비스마다 고유하게 유지한다. 같은 앱을 여러 공개 주소로 노출할 때는 하나의 서비스에 주소를 여러 개 추가한다.
 - HTTP/HTTPS Route는 Caddy가, 공개 TCP Route는 HAProxy가 처리한다.
 - Caddy가 공개 HTTP 도메인의 ACME 인증서 발급·갱신과 외부 TLS 종료를 담당한다.
 - Caddy에서 TLS를 종료하므로 Outlet과 서비스 사이에 애플리케이션 인증서는 필요하지 않다. 터널 자체는 rathole TLS 또는 Noise로 암호화한다.

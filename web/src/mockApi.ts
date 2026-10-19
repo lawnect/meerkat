@@ -108,12 +108,14 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     }
     if (parts.length === 5 && method === 'POST') {
       const name = input.name?.trim();
-      const host = input.target?.host;
-      const port = input.target?.port;
-      if (!name || !host || !port) fail('invalid_service');
+      const host = input.target?.host?.trim();
+      const port = Number(input.target?.port);
+      if (!name || !host || !Number.isInteger(port) || port < 1 || port > 65535) fail('invalid_service');
+      if (state.services.some((item) => item.connector_id === connectorId && item.name === name)) fail('service_name_taken');
+      if (state.services.some((item) => item.connector_id === connectorId && item.target.host.toLowerCase() === host.toLowerCase() && item.target.port === port)) fail('service_target_taken');
       const service: Service = {
         id: id('service'), connector_id: connectorId, name, protocol: input.protocol || 'http',
-        target: { host, port: Number(port) }, enabled: true, observed_status: 'unknown', created_at: now(), updated_at: now(),
+        target: { host, port }, enabled: true, observed_status: 'unknown', created_at: now(), updated_at: now(),
       };
       state.services.push(service);
       return { ...service, target: { ...service.target } };
@@ -124,6 +126,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
       const host = input.target?.host?.trim();
       const port = Number(input.target?.port);
       if (!host || !Number.isInteger(port) || port < 1 || port > 65535) fail('invalid_service');
+      if (state.services.some((item) => item.connector_id === connectorId && item.id !== service.id && item.target.host.toLowerCase() === host.toLowerCase() && item.target.port === port)) fail('service_target_taken');
       service.target = { host, port };
       service.observed_status = 'unknown';
       service.updated_at = now();
