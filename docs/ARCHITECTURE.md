@@ -6,12 +6,12 @@ Meerkat은 외부 요청을 받는 Outlet과 실제 서비스를 실행하는 Se
 
 - 사용자는 Outlet에 접속한다.
 - 서비스 서버는 인바운드 포트를 공개하지 않아도 된다.
-- 각 서비스의 Connector가 Outlet으로 아웃바운드 연결을 만든다.
+- 각 터널의 Connector가 Outlet으로 아웃바운드 연결을 만든다.
 - HTTP/HTTPS와 TCP 서비스를 지원한다.
 - 관리 UI에서 Outlet, Connector, 서비스, 라우팅, 권한, 상태를 관리한다.
 - 특정 국가나 지역에 종속되지 않는다.
 
-WireGuard와 서버 간 공통 인트라넷은 기본 구성요소에서 제외한다. 필요한 서비스만 개별 Connector 터널로 연결한다.
+WireGuard와 서버 간 공통 인트라넷은 기본 구성요소에서 제외한다. 필요한 서비스만 등록된 Connector 터널에 연결한다.
 
 ## 2. 확정된 MVP 방향
 
@@ -24,8 +24,8 @@ WireGuard와 서버 간 공통 인트라넷은 기본 구성요소에서 제외�
 - Caddy가 HTTP/HTTPS 인증서를 발급·갱신하고, Outlet API가 상태·오류를 관찰한다.
 - DB/Redis 같은 TCP 서비스는 기본적으로 공개하지 않는다.
 - 외부 TCP 공개는 명시적으로 활성화하고 서비스별 ACL을 적용한다.
-- 서비스 하나당 Connector 컨테이너 하나를 배포한다.
-- 서비스 하나당 rathole client와 터널 하나를 사용한다. 여러 서비스 multiplex는 MVP에서 사용하지 않는다.
+- 하나의 Connector 컨테이너에 여러 서비스를 등록할 수 있다.
+- Connector의 rathole client 하나가 등록된 서비스들을 전달하며, Outlet은 서비스별 수신 포트를 구분한다.
 
 ## 3. 논리 구조
 
@@ -75,7 +75,7 @@ Connector가 먼저 Outlet으로 연결하므로 서비스 서버의 인바운�
 
 ```text
 example.com     -> connector-a -> app:3000
-db.example.com  -> connector-b -> postgres:5432
+api.example.com -> connector-a -> api:8080
 ```
 
 ### 4.2 검증된 데이터 플레인 사용
@@ -109,7 +109,7 @@ Outlet
   외부 트래픽을 받고 Connector 터널을 종단하는 실행 위치
 
 Connector
-  하나의 서비스 또는 Compose 서비스 그룹을 Outlet에 연결하는 실행 구성요소
+  하나 이상의 서비스를 Outlet에 연결하는 실행 구성요소
 
 ConnectorIdentity
   Connector의 고유 식별자와 인증 정보

@@ -82,17 +82,45 @@ func OutletURL(s string, development bool) error {
 }
 
 func Configuration(c contract.Configuration) error {
-	if !Label(c.ConnectorID) || !Label(c.ServiceID) || !Label(c.Tunnel.ServiceName) || c.Revision < 1 {
-		return errors.New("invalid service identity or revision")
+	if !Label(c.ConnectorID) || c.Revision < 0 {
+		return errors.New("invalid connector identity or revision")
 	}
-	if err := Target(c.Target); err != nil {
-		return err
+	services := c.ActiveServices()
+	if len(services) == 0 {
+		if c.ServiceID != "" || c.Target != (contract.Target{}) || c.Tunnel != (contract.Tunnel{}) {
+			return errors.New("invalid empty configuration")
+		}
+		return nil
 	}
-	if err := Endpoint(c.Tunnel.RemoteAddress); err != nil {
-		return err
+	if c.Revision < 1 {
+		return errors.New("invalid service revision")
 	}
-	if !PublicKey(c.Tunnel.ServerPublicKey) || !Token(c.Tunnel.ServiceToken) {
-		return errors.New("invalid Noise key or service token")
+	seen := map[string]bool{}
+	for _, service := range services {
+		if !Label(service.ServiceID) || !Label(service.Tunnel.ServiceName) || service.Tunnel.ServiceName != service.ServiceID || seen[service.ServiceID] {
+			return errors.New("invalid or duplicate service identity")
+		}
+		seen[service.ServiceID] = true
+		if err := Target(service.Target); err != nil {
+			return err
+		}
+		if err := Endpoint(service.Tunnel.RemoteAddress); err != nil {
+			return err
+		}
+		if !PublicKey(service.Tunnel.ServerPublicKey) || !Token(service.Tunnel.ServiceToken) {
+			return errors.New("invalid Noise key or service token")
+		}
+	}
+	if len(c.Services) != 0 {
+		if c.ServiceID != "" || c.Target != (contract.Target{}) || c.Tunnel != (contract.Tunnel{}) {
+			return errors.New("mixed service configuration")
+		}
+		remote, key := services[0].Tunnel.RemoteAddress, services[0].Tunnel.ServerPublicKey
+		for _, service := range services[1:] {
+			if service.Tunnel.RemoteAddress != remote || service.Tunnel.ServerPublicKey != key {
+				return errors.New("services must share a tunnel endpoint")
+			}
+		}
 	}
 	return nil
 }

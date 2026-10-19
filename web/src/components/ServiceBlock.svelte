@@ -21,6 +21,8 @@
   let editPort = $state('');
   let editBusy = $state(false);
   let editError = $state('');
+  let deletingService = $state(false);
+  let serviceError = $state('');
   let routeDialog = $state<HTMLDialogElement>();
   const domains = $derived(outlet.domains?.length ? outlet.domains : outlet.domain ? [outlet.domain] : []);
   const baseDomain = $derived(domains.includes(selectedDomain) ? selectedDomain : domains[0] || '');
@@ -62,6 +64,20 @@
       editError = code === 'invalid_service' ? '앱 호스트와 내부 포트를 확인하세요.' : `연결 대상을 저장하지 못했습니다: ${code}`;
     } finally {
       editBusy = false;
+    }
+  }
+
+  async function deleteService(): Promise<void> {
+    if (deletingService || record.routes.length || !confirm(`${record.service.name} 연결 서비스를 삭제할까요? 같은 터널의 다른 서비스도 잠시 다시 연결될 수 있습니다.`)) return;
+    deletingService = true;
+    serviceError = '';
+    try {
+      await api(`/api/v1/connectors/${encodeURIComponent(record.connector.id)}/services/${encodeURIComponent(record.service.id)}`, { method: 'DELETE' });
+      await onChanged();
+    } catch (cause) {
+      serviceError = `연결 서비스를 삭제하지 못했습니다: ${errorMessage(cause)}`;
+    } finally {
+      deletingService = false;
     }
   }
 
@@ -130,8 +146,9 @@
         <div class="app-summary"><strong>{record.service.name}</strong><Status label={statusLabel(record.service.observed_status)} value={record.service.observed_status} /></div>
         <div class="target-row"><span class="ui-meta-label">연결 대상</span><code>{targetAddress}</code><Button variant="plain" size="sm" class={targetCopied ? 'target-copy copied' : 'target-copy'} aria-label={targetCopied ? '연결 대상 복사 완료' : '연결 대상 복사'} title={targetCopied ? '복사 완료' : '연결 대상 복사'} onclick={copyTarget}>
           {#if targetCopied}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>{/if}
-        </Button><Button variant="text" size="sm" onclick={startTargetEdit}>수정</Button></div>
+        </Button><Button variant="text" size="sm" onclick={startTargetEdit}>수정</Button><Button variant="text" size="sm" disabled={deletingService || record.routes.length > 0} title={record.routes.length ? '공개 주소를 먼저 삭제하세요' : '연결 서비스 삭제'} onclick={deleteService}>삭제</Button></div>
         {#if targetCopyError}<p class="error" role="alert">{targetCopyError}</p>{/if}
+        {#if serviceError}<p class="error" role="alert">{serviceError}</p>{/if}
         {#if editingTarget}
           <form class="target-edit" onsubmit={saveTarget}>
             <div class="field"><label for={`edit-host-${record.service.id}`}>앱 호스트</label><input id={`edit-host-${record.service.id}`} class="input input-bordered" bind:value={editHost} required /></div>
@@ -146,7 +163,7 @@
     {/if}
     {#if view !== 'service'}
     <section class="service-column routes-section" aria-label="공개 주소">
-      <div class="section-heading">{#if view === 'both'}<div class="section-title"><h3 class="ui-meta-label">공개 주소</h3><InfoTooltip id={`routes-help-${record.service.id}`} label="공개 주소" description="인터넷에서 연결 서비스에 접속할 HTTPS 주소입니다. 등록된 도메인의 서브도메인을 선택해 추가할 수 있습니다." /></div>{/if}{#if baseDomain}<Button variant="text" size="sm" onclick={openRouteDialog}>+ 주소 추가</Button>{/if}</div>
+      <div class="section-heading">{#if view === 'both'}<div class="section-title"><h3 class="ui-meta-label">공개 주소</h3><InfoTooltip id={`routes-help-${record.service.id}`} label="공개 주소" description="인터넷에서 연결 서비스에 접속할 HTTPS 주소입니다. 등록된 도메인의 서브도메인을 선택해 추가할 수 있습니다." /></div>{:else}<strong class="route-service-name">{record.service.name}</strong>{/if}{#if baseDomain}<Button variant="text" size="sm" onclick={openRouteDialog}>+ 주소 추가</Button>{/if}</div>
       {#if record.routes.length}
         <ul class="route-list">
           {#each record.routes as route (route.id)}
@@ -206,10 +223,11 @@
   .service-column { min-width: 0; }
   .routes-section { border-left: 1px solid var(--line); padding-left: 20px; }
   .service-grid.single .routes-section { border-left: 0; padding-left: 0; }
-  .service-grid.single .routes-section .section-heading { justify-content: flex-end; }
+  .service-grid.single .routes-section .section-heading { justify-content: space-between; }
   .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 24px; margin-bottom: 8px; }
   .section-title { display: flex; align-items: center; gap: 5px; }
   .section-heading h3 { margin: 0; }
+  .route-service-name { font-size: 14px; }
   .app-row { display: grid; gap: 5px; min-width: 0; padding: 3px 0; }
   .app-summary, .target-row { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 10px; min-width: 0; }
   .app-summary strong { font-size: 16px; }

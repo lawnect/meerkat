@@ -126,7 +126,7 @@
     </Panel>
     <div>
       <Card variant="solid" padding="none" class="callout"><strong>현재 할 일</strong><span>{next}</span></Card>
-      <Card class="help-panel"><h2>용어 안내</h2><p>터널은 앱 서버에서 Outlet으로 이어지는 연결입니다. 연결 서비스 메뉴에서 터널에 앱 주소를 등록하고 공개 주소를 추가합니다. 현재 터널 하나에 서비스 하나를 등록할 수 있습니다.</p></Card>
+      <Card class="help-panel"><h2>용어 안내</h2><p>터널은 앱 서버에서 Outlet으로 이어지는 연결입니다. 연결 서비스 메뉴에서 하나의 터널에 여러 앱 주소를 등록하고 각 서비스에 공개 주소를 추가할 수 있습니다.</p></Card>
     </div>
   </div>
 {:else if connectionIssues.length}

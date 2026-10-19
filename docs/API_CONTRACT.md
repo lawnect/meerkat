@@ -1,8 +1,8 @@
 # API Contract 방향
 
-이 문서는 서비스별 Connector 모델의 전체 MVP API 방향이다. 첫 vertical slice에서 구현한 경로와 정확한 필드는 [api/openapi.json](../api/openapi.json)에 정의한다. 나머지 관리자 CRUD·폐기·설정 적용·stream 경로는 아직 구현하지 않았다.
+이 문서는 터널별 Connector 모델의 API 방향이다. 구현된 경로와 정확한 필드는 [api/openapi.json](../api/openapi.json)에 정의한다. 일부 폐기·설정 적용·stream 경로는 아직 구현하지 않았다.
 
-첫 단계는 Connector별 bearer credential을 사용하며, 기본 수명은 등록 토큰 1시간·API credential 30일이다. 두 값은 설정 가능하며 자동 갱신과 mTLS는 후속 범위다. 등록 응답은 201이다. 서비스 등록 전에는 Connector ID와 revision 0을 반환하고 Connector는 설정을 주기적으로 조회한다. 서비스 등록 후에는 `service_id`, `target`, `tunnel`이 포함된 설정을 반환해 단일 HTTP 터널을 시작한다.
+Connector별 bearer credential을 사용하며, 기본 수명은 등록 토큰 1시간·API credential 30일이다. 두 값은 설정 가능하며 자동 갱신과 mTLS는 후속 범위다. 등록 응답은 201이다. 서비스 등록 전에는 `services`가 없거나 비어 있고 Connector는 설정을 주기적으로 조회한다. 서비스 등록 후에는 각 서비스의 `service_id`, `target`, `tunnel`을 담은 `services` 배열을 반환한다.
 
 ## 1. 채널과 인증
 
@@ -46,7 +46,7 @@ POST   /api/v1/routes/:id/disable
 ~~~
 
 Service 생성은 외부 공개를 뜻하지 않는다. Route를 활성화해야 외부 endpoint가 생긴다.
-서비스의 앱 호스트와 포트는 `PATCH /api/v1/connectors/:id/services/:service_id`에 `{"target":{"host":"app","port":3000}}`을 보내 수정한다. 대상이 바뀌면 설정 revision을 올려 Connector가 저장된 identity로 재시작하고, 새 대상의 응답이 확인될 때까지 공개 경로를 보류한다.
+서비스의 앱 호스트와 포트는 `PATCH /api/v1/connectors/:id/services/:service_id`에 `{"target":{"host":"app","port":3000}}`을 보내 수정한다. 한 터널에 여러 서비스를 등록할 수 있다. 서비스 추가·수정·삭제 시 설정 revision을 올려 Connector가 저장된 identity로 재시작하고, 각 대상의 응답이 확인될 때까지 해당 공개 경로를 보류한다. 재시작 중에는 같은 터널의 다른 서비스도 잠시 중단될 수 있다.
 
 ### 예시: Service 생성
 
@@ -106,7 +106,7 @@ Authorization: Bearer <one-time-token>
 }
 ~~~
 
-성공 응답은 Connector ID, 인증 자격 증명과 설정 revision을 반환한다. 서비스 등록 전에는 revision 0이며 Service ID·target·tunnel이 비어 있다. 서비스 등록 후 설정 조회에서 완성된 대상과 터널 정보를 반환한다. 개인키와 등록 토큰 원문은 다시 반환하지 않는다. 응답에는 Cache-Control: no-store를 적용한다.
+성공 응답은 Connector ID, 인증 자격 증명과 설정 revision을 반환한다. 서비스 등록 전에는 `services`가 비어 있다. 서비스 등록 후 설정 조회에서 각 대상과 터널 정보를 반환한다. 개인키와 등록 토큰 원문은 다시 반환하지 않는다. 응답에는 Cache-Control: no-store를 적용한다.
 
 토큰 만료·재사용은 401, 토큰과 Connector 불일치는 403, 이미 등록된 Connector는 409다.
 
@@ -128,16 +128,16 @@ Connector 설정에는 자신에게 허용된 Service만 포함한다.
   "services": [
     {
       "service_id": "service_1",
-      "target": "app:3000",
-      "state": "active"
+      "target": {"host": "app", "port": 3000},
+      "tunnel": {"remote_address": "outlet.example.com:2333", "server_public_key": "<key>", "service_name": "service_1", "service_token": "<secret>"}
     }
   ]
 }
 ~~~
 
-heartbeat에는 Connector 버전, 서비스별 health, 관찰 시각을 포함한다. apply-results는 prepared, committed, aborted, failed 중 하나를 보고한다.
+heartbeat에는 Connector 버전, `service_healths`의 서비스별 health, 관찰 시각을 포함한다. apply-results는 prepared, committed, aborted, failed 중 하나를 보고한다.
 
-MVP의 실제 데이터 스트림은 Connector별 rathole client 하나의 단일 서비스 터널로 처리한다. Outlet은 Connector ID와 Service ID를 검증하고, 해당 Service에 연결된 rathole server 포트로 전달한다. 여러 서비스를 하나의 Connector 스트림에 multiplex하는 방식은 후속 범위다.
+한 Connector의 rathole client 설정에 여러 서비스가 들어간다. Outlet은 서비스마다 고유한 rathole server 포트를 할당하고, 공개 경로를 해당 포트로 전달한다. 기존 단일 서비스 설정 필드는 저장된 Connector 세션과 상태 파일을 읽기 위해 유지한다.
 
 ## 5. 상태와 비밀정보
 

@@ -21,7 +21,7 @@
   let copiedNetwork = $state('');
   let networkCopyError = $state('');
 
-  const availableTunnels = $derived(data.connectors.filter((connector) => connector.status === 'connected' && !data.services.some((service) => service.connector_id === connector.id)));
+  const availableTunnels = $derived(data.connectors.filter((connector) => connector.status !== 'draft'));
   const target = $derived.by(() => {
     const address = host.trim();
     const number = String(port).trim();
@@ -66,7 +66,6 @@
       const code = errorMessage(cause);
       const message: Record<string, string> = {
         connector_not_found: '선택한 터널을 찾을 수 없습니다.',
-        connector_service_limit: '이 터널에는 이미 서비스가 등록되어 있습니다.',
         service_name_taken: '이미 사용 중인 서비스 이름입니다.',
         invalid_service: '서비스 이름과 앱 주소를 확인하세요.',
       };
@@ -145,7 +144,7 @@
     </Card>
   {/if}
 
-  {#if data.records.length && !availableTunnels.length}<p class="availability-note">서비스를 더 등록하려면 새 터널을 만들고 연결하세요.</p>{/if}
+  {#if data.records.length && !availableTunnels.length}<p class="availability-note">서비스를 더 등록하려면 터널을 연결하세요.</p>{/if}
 </div>
 
 <dialog bind:this={dialog} class="service-dialog" aria-labelledby="service-dialog-title" aria-describedby="service-dialog-description" oncancel={(event) => { if (busy) event.preventDefault(); }} onclose={clearForm}>
@@ -153,7 +152,7 @@
     <h2 id="service-dialog-title">연결 서비스 등록</h2>
     <p id="service-dialog-description">연결된 터널을 선택하고 앱의 내부 주소를 입력하세요.</p>
     <div class="form-fields">
-      <div class="field full"><div class="field-label"><label for="service-tunnel">연결할 터널</label><InfoTooltip id="service-tunnel-help" label="연결할 터널" description="앱에 접근할 수 있는 네트워크로 설치한 터널을 선택하세요. 한 터널에는 서비스 하나를 등록할 수 있습니다." /></div><select id="service-tunnel" aria-describedby="service-tunnel-help" bind:value={tunnelId} required>{#each availableTunnels as connector}<option value={connector.id}>{connector.name}</option>{/each}</select></div>
+      <div class="field full"><div class="field-label"><label for="service-tunnel">연결할 터널</label><InfoTooltip id="service-tunnel-help" label="연결할 터널" description="앱에 접근할 수 있는 네트워크로 설치한 터널을 선택하세요. 한 터널에 여러 서비스를 등록할 수 있습니다." /></div><select id="service-tunnel" aria-describedby="service-tunnel-help" bind:value={tunnelId} required>{#each availableTunnels as connector}<option value={connector.id}>{connector.name}</option>{/each}</select></div>
       <div class="field full"><div class="field-label"><label for="service-name">서비스 이름</label><InfoTooltip id="service-name-help" label="서비스 이름" description="관리 화면에서 앱을 구별할 이름입니다. 공개 주소와는 별개입니다. 예: app" /></div><input id="service-name" class="input input-bordered" bind:value={name} placeholder="예: app" required /></div>
       <div class="field"><div class="field-label"><label for="service-host">앱 호스트</label><InfoTooltip id="service-host-help" label="앱 호스트" description="터널과 같은 Docker 네트워크의 앱은 컨테이너 이름(예: app)을 입력하세요. Linux 호스트 앱이 127.0.0.1에서만 수신한다면 터널을 호스트 네트워크로 다시 실행해야 합니다." /></div><input id="service-host" class="input input-bordered" bind:value={host} oninput={() => copied = false} placeholder="app 또는 127.0.0.1" required /></div>
       <div class="field"><div class="field-label"><label for="service-port">내부 포트</label><InfoTooltip id="service-port-help" label="내부 포트" description="앱이 실제로 듣는 포트입니다. 서버에 공개한 포트와 다를 수 있습니다. 예: 3000" /></div><input id="service-port" class="input input-bordered" type="number" min="1" max="65535" bind:value={port} oninput={() => copied = false} placeholder="3000" required /></div>

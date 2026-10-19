@@ -14,7 +14,7 @@ func TestOpenMigratesAndPreservesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version, err := db.Version(ctx); err != nil || version != 1 {
+	if version, err := db.Version(ctx); err != nil || version != 2 {
 		t.Fatalf("version = %d, %v", version, err)
 	}
 	if _, err := db.SQL().ExecContext(ctx, "INSERT INTO outlet_settings(key, value, updated_at) VALUES ('domain', 'example.com', 'now')"); err != nil {

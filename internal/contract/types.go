@@ -17,11 +17,30 @@ type Tunnel struct {
 }
 
 type Configuration struct {
-	ConnectorID string `json:"connector_id"`
-	Revision    int    `json:"revision"`
-	ServiceID   string `json:"service_id"`
-	Target      Target `json:"target"`
-	Tunnel      Tunnel `json:"tunnel"`
+	ConnectorID string                 `json:"connector_id"`
+	Revision    int                    `json:"revision"`
+	ServiceID   string                 `json:"service_id"`
+	Target      Target                 `json:"target"`
+	Tunnel      Tunnel                 `json:"tunnel"`
+	Services    []ServiceConfiguration `json:"services,omitempty"`
+}
+
+type ServiceConfiguration struct {
+	ServiceID string `json:"service_id"`
+	Target    Target `json:"target"`
+	Tunnel    Tunnel `json:"tunnel"`
+}
+
+// ActiveServices accepts the original single-service configuration so existing
+// connector sessions and Outlet state remain readable after an upgrade.
+func (c Configuration) ActiveServices() []ServiceConfiguration {
+	if len(c.Services) != 0 {
+		return c.Services
+	}
+	if c.ServiceID != "" {
+		return []ServiceConfiguration{{c.ServiceID, c.Target, c.Tunnel}}
+	}
+	return nil
 }
 
 type EnrollmentRequest struct {
@@ -37,14 +56,15 @@ type EnrollmentResponse struct {
 }
 
 type Heartbeat struct {
-	ConnectorID     string    `json:"connector_id"`
-	ServiceID       string    `json:"service_id"`
-	Revision        int       `json:"revision"`
-	Version         string    `json:"connector_version"`
-	ProcessState    string    `json:"process_state"`
-	ProcessRestarts int       `json:"process_restarts"`
-	ServiceHealth   string    `json:"service_health"`
-	ObservedAt      time.Time `json:"observed_at"`
+	ConnectorID     string            `json:"connector_id"`
+	ServiceID       string            `json:"service_id"`
+	Revision        int               `json:"revision"`
+	Version         string            `json:"connector_version"`
+	ProcessState    string            `json:"process_state"`
+	ProcessRestarts int               `json:"process_restarts"`
+	ServiceHealth   string            `json:"service_health"`
+	ServiceHealths  map[string]string `json:"service_healths,omitempty"`
+	ObservedAt      time.Time         `json:"observed_at"`
 }
 
 type Error struct {

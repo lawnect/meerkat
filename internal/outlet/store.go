@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"time"
 
@@ -47,6 +48,8 @@ type Config struct {
 
 type Record struct {
 	Seed
+	ProbeAddresses      map[string]string   `json:"probe_addresses,omitempty"`
+	ServiceStatuses     map[string]string   `json:"service_statuses,omitempty"`
 	Enrolled            bool                `json:"enrolled"`
 	PublicKey           string              `json:"public_key,omitempty"`
 	CredentialHash      string              `json:"credential_hash,omitempty"`
@@ -54,6 +57,16 @@ type Record struct {
 	LastHeartbeat       *contract.Heartbeat `json:"last_heartbeat,omitempty"`
 	LastSeen            time.Time           `json:"last_seen,omitempty"`
 	TunnelStatus        string              `json:"tunnel_status"`
+}
+
+func (r Record) probeFor(serviceID string) string {
+	if address := r.ProbeAddresses[serviceID]; address != "" {
+		return address
+	}
+	if r.Configuration.ServiceID == serviceID {
+		return r.ProbeAddress
+	}
+	return ""
 }
 
 type Store struct {
@@ -131,7 +144,7 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 		}
 		for id, r := range records {
 			seed, ok := s.records[id]
-			if !ok || seed.Configuration != r.Configuration || seed.Name != r.Name || seed.ProbeAddress != r.ProbeAddress {
+			if !ok || !reflect.DeepEqual(seed.Configuration, r.Configuration) || seed.Name != r.Name || seed.ProbeAddress != r.ProbeAddress {
 				return nil, errors.New("state and bootstrap configuration differ")
 			}
 			// A persisted heartbeat does not prove current liveness after restart.
@@ -153,12 +166,16 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 		}
 	}
 	for id, record := range s.managed {
-		pending := record.Configuration.ServiceID == "" && record.Configuration.ConnectorID == id && record.Configuration.Revision == 0 && record.Configuration.Target == (contract.Target{}) && record.Configuration.Tunnel == (contract.Tunnel{})
-		if !validation.Label(id) || (!pending && validation.Configuration(record.Configuration) != nil) || !isLoopbackAddress(record.ProbeAddress) {
+		if !validation.Label(id) || validation.Configuration(record.Configuration) != nil || !isLoopbackAddress(record.ProbeAddress) {
 			return nil, errors.New("invalid managed connector state")
 		}
+		for serviceID, address := range record.ProbeAddresses {
+			if !validation.Label(serviceID) || !isLoopbackAddress(address) {
+				return nil, errors.New("invalid managed service probe")
+			}
+		}
 		// Observed liveness never survives an Outlet restart.
-		record.LastSeen, record.TunnelStatus = time.Time{}, "unknown"
+		record.LastSeen, record.TunnelStatus, record.ServiceStatuses = time.Time{}, "unknown", nil
 		s.managed[id] = record
 	}
 	if err := s.reconcileProxy(context.Background()); err != nil {
@@ -177,19 +194,18 @@ func (s *Store) reconcileTunnel() error {
 	s.mu.Lock()
 	services := make([]rathole.ServerService, 0, len(s.managed))
 	for _, record := range s.managed {
-		if record.Configuration.ServiceID == "" {
-			continue
+		for _, service := range record.Configuration.ActiveServices() {
+			_, port, err := net.SplitHostPort(record.probeFor(service.ServiceID))
+			if err != nil {
+				s.mu.Unlock()
+				return err
+			}
+			// The Outlet probes through loopback, while Caddy reaches the same
+			// Outlet container over the Compose network. Bind internally on all
+			// interfaces; this port is deliberately not published on the host.
+			bindAddress := net.JoinHostPort("0.0.0.0", port)
+			services = append(services, rathole.ServerService{Name: service.Tunnel.ServiceName, Token: service.Tunnel.ServiceToken, BindAddress: bindAddress})
 		}
-		_, port, err := net.SplitHostPort(record.ProbeAddress)
-		if err != nil {
-			s.mu.Unlock()
-			return err
-		}
-		// The Outlet probes through loopback, while Caddy reaches the same
-		// Outlet container over the Compose network. Bind internally on all
-		// interfaces; this port is deliberately not published on the host.
-		bindAddress := net.JoinHostPort("0.0.0.0", port)
-		services = append(services, rathole.ServerService{Name: record.Configuration.Tunnel.ServiceName, Token: record.Configuration.Tunnel.ServiceToken, BindAddress: bindAddress})
 	}
 	s.mu.Unlock()
 	config, err := rathole.Server(s.config.TunnelListenAddress, s.config.TunnelServerPrivateKey, services)
@@ -217,8 +233,8 @@ func (s *Store) reconcileProxy(ctx context.Context) error {
 	routes := make([]proxy.HTTPRoute, 0, len(plans))
 	for _, plan := range plans {
 		record, ok := s.managed[plan.ConnectorID]
-		if plan.Enabled && ok && record.Enrolled && record.TunnelStatus == "connected" && record.Configuration.ServiceID == plan.ServiceID {
-			_, port, splitErr := net.SplitHostPort(record.ProbeAddress)
+		if plan.Enabled && ok && record.Enrolled && record.TunnelStatus == "connected" && record.ServiceStatuses[plan.ServiceID] == "connected" && record.probeFor(plan.ServiceID) != "" {
+			_, port, splitErr := net.SplitHostPort(record.probeFor(plan.ServiceID))
 			if splitErr == nil {
 				routes = append(routes, proxy.HTTPRoute{Hostname: plan.Hostname, Upstream: net.JoinHostPort("outlet", port)})
 			}

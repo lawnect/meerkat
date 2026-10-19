@@ -231,7 +231,7 @@ func TestHeartbeatOwnershipAndStatusSeparation(t *testing.T) {
 	hb := contract.Heartbeat{ConnectorID: response.ConnectorID, ServiceID: response.ServiceID, Revision: response.Revision, Version: contract.Version, ProcessState: "running", ServiceHealth: "unhealthy", ObservedAt: time.Now().UTC()}
 	hb.ServiceID = "service_b"
 	if w := request(h, "POST", "/connector/v1/heartbeat", response.Credential, hb); w.Code != 403 {
-		t.Fatal("cross-service heartbeat accepted")
+		t.Fatalf("cross-service heartbeat status %d: %s", w.Code, w.Body.String())
 	}
 	hb.ServiceID = response.ServiceID
 	if w := request(h, "POST", "/connector/v1/heartbeat", response.Credential, hb); w.Code != 200 {

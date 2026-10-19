@@ -1,6 +1,6 @@
 # Meerkat
 
-서비스 서버가 Outlet으로 아웃바운드 터널을 만드는 self-hosted gateway입니다. 현재 구현 범위는 [첫 vertical slice](docs/IMPLEMENTATION_PLAN.md): Go Connector 등록, rathole v0.5.0 Noise 터널, HTTP 전달, heartbeat, 자식 프로세스 재시작입니다.
+서비스 서버의 Connector가 Outlet으로 아웃바운드 터널을 만드는 self-hosted gateway입니다. 하나의 터널에 여러 서비스를 연결하고 각각 HTTPS 주소로 공개할 수 있습니다. 초기 구현 이력은 [구현 계획](docs/IMPLEMENTATION_PLAN.md)에 남아 있습니다.
 
 제품의 최종 목표와 현재 범위는 [제품 방향 문서](docs/PRODUCT_DIRECTION.md)에서 확인할 수 있습니다.
 
@@ -221,8 +221,8 @@ Connector JSON 예제는 [configs/connector.example.json](configs/connector.exam
 
 **터널 관리** 목록에는 터널 이름, 연결 상태, 연결 서비스, 최근 응답, 생성일이 표시됩니다. 터널 이름을 누르면 상세 화면에서 현황, 연결 서비스, 공개 주소와 요청 경로를 확인할 수 있습니다. 터널 ID는 목록 대신 상세 정보에 표시됩니다. 터널을 만들면 상세 화면에 설치 명령이 바로 표시됩니다. Outlet은 이 명령 안에 일회용 등록 토큰을 포함시켜 새 터널만 등록할 수 있게 합니다. 화면에서 토큰을 따로 입력하거나 복사할 필요는 없습니다. 이 명령으로 터널을 실행하면 Outlet이 서비스가 없는 터널의 인증 연결 상태를 확인합니다. 화면에 **터널 연결됨**이 표시되면 같은 상세 화면에서 서비스 이름, 앱 호스트, 내부 포트를 등록하고 공개 주소를 추가할 수 있습니다. 실행 중인 Connector가 새 설정을 받아 서비스 터널을 시작합니다. 별도 **연결 서비스** 메뉴에서도 등록된 서비스를 관리할 수 있습니다.
 
-연결 서비스 화면의 **서비스 이름**은 대시보드에서 구별할 이름이고, **앱 호스트**와 **내부 포트**는 터널이 실제 앱에 접속할 주소입니다. 공개 서브도메인은 이후 **공개 주소**에서 별도로 입력합니다.
-터널 상세 화면에서는 연결 서비스와 공개 주소를 별도 카드로 보여줍니다. 연결 대상의 **수정**을 누르면 앱 호스트와 내부 포트를 변경할 수 있습니다. 저장하면 터널이 새 대상 설정으로 다시 연결하는 동안 접속이 잠시 중단될 수 있습니다.
+연결 서비스 화면의 **서비스 이름**은 대시보드에서 구별할 이름이고, **앱 호스트**와 **내부 포트**는 터널이 실제 앱에 접속할 주소입니다. 하나의 터널에 여러 서비스를 등록할 수 있으며, 서비스마다 별도의 내부 전달 포트와 공개 주소를 사용합니다. 공개 서브도메인은 이후 **공개 주소**에서 별도로 입력합니다.
+터널 상세 화면에서는 연결 서비스와 공개 주소를 별도 카드로 보여줍니다. 연결 대상의 **수정**을 누르면 앱 호스트와 내부 포트를 변경할 수 있습니다. 서비스 삭제 전에는 해당 서비스의 공개 주소를 먼저 삭제해야 합니다. 서비스를 추가·수정·삭제하면 Connector가 변경된 전체 서비스 설정을 다시 받아 연결하므로 같은 터널의 다른 서비스도 잠시 중단될 수 있습니다.
 
 | 앱 실행 방식 | 앱 호스트 | 내부 포트 | 앱 연결 시 작업 |
 | --- | --- | --- | --- |
@@ -241,7 +241,7 @@ Linux 서버의 앱이 `127.0.0.1:3000`에서만 수신한다면 터널 컨테�
 
 관리 API의 토큰과 등록 토큰은 Outlet 상태 파일에 SHA-256 해시로 저장합니다. Connector API 자격 증명도 Outlet에는 해시만 남깁니다. rathole service token과 서버 Noise 개인키는 rathole 설정에 필요한 별도의 비밀정보입니다. 파일은 0600, state directory는 0700으로 저장하며 `.local/`은 Git 및 Docker 빌드 컨텍스트에서 제외합니다. 같은 data directory를 두 프로세스가 동시에 사용하지 못하도록 잠급니다.
 
-수동 설정에서 `MEERKAT_TARGET`을 지정한 경우 Connector는 로컬 host/port와 Outlet이 보낸 host/port가 일치하는지 확인합니다. 초대 코드 방식에서는 서비스 등록 후 Outlet이 보낸 대상 주소를 사용합니다. 대상은 loopback 또는 명시한 단일 Compose 서비스 이름만 허용하고, DNS 결과가 local/private IP인지 확인해 실제 rathole 대상 IP를 고정합니다. Compose 서비스가 재생성되어 IP가 바뀌면 Connector를 재시작해야 합니다. 사설 IP라는 사실만으로 네트워크 격리가 보장되지는 않으므로 실제 배포에도 서비스별 Compose 네트워크 분리를 유지해야 합니다.
+수동 설정에서 `MEERKAT_TARGET`을 지정한 경우 Connector는 등록된 모든 서비스 대상이 해당 host/port와 일치하는지 확인합니다. 여러 서비스를 연결하려면 이 설정을 생략하고 관리 화면에서 각 서비스 대상을 등록하세요. 대상은 loopback 또는 명시한 Compose 서비스 이름만 허용하고, DNS 결과가 local/private IP인지 확인해 실제 rathole 대상 IP를 고정합니다. Compose 서비스가 재생성되어 IP가 바뀌면 Connector를 재시작해야 합니다. 사설 IP라는 사실만으로 네트워크 격리가 보장되지는 않으므로 실제 배포에도 필요한 Docker 네트워크만 터널에 연결해야 합니다.
 
 ## 현재 경계와 다음 단계
 
@@ -253,4 +253,4 @@ Outlet의 관리 저장소는 원자적으로 저장하는 JSON 파일이며 SQL
 
 API credential 만료는 Meerkat Connector가 터널을 종료하게 하지만 rathole service token 자체에 TTL을 부여하지는 않습니다. 독립 rathole client까지 강제로 폐기하려면 서버 설정의 service token 제거·교체와 연결 drain이 필요합니다. 등록 응답을 수신하지 못한 채 토큰이 소비된 경우의 identity 복구도 후속 작업입니다. 현재 fixture를 공개 운영에 배포하는 기능은 제공하지 않습니다.
 
-다음 구현 순서는 SQLite, Connector/Service CRUD, rathole server 설정 적용, Caddy, HAProxy/ACL, SvelteKit UI입니다. 실제 서로 다른 서버에서의 연결과 공인 방화벽 검증은 아직 남아 있습니다. 설계 기준은 [ARCHITECTURE.md](docs/ARCHITECTURE.md), [IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md), [CONFIG_ROLLOUT.md](docs/CONFIG_ROLLOUT.md)를 참고합니다.
+실제 서로 다른 서버에서의 연결과 공인 방화벽 검증, 서비스 변경 시 무중단 적용은 남아 있습니다. 설계 기준은 [ARCHITECTURE.md](docs/ARCHITECTURE.md), [IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md), [CONFIG_ROLLOUT.md](docs/CONFIG_ROLLOUT.md)를 참고합니다.

@@ -107,7 +107,6 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
       return { services: state.services.filter((service) => service.connector_id === connectorId).map((service) => ({ ...service, target: { ...service.target } })) };
     }
     if (parts.length === 5 && method === 'POST') {
-      if (state.services.some((service) => service.connector_id === connectorId)) fail('connector_service_limit');
       const name = input.name?.trim();
       const host = input.target?.host;
       const port = input.target?.port;

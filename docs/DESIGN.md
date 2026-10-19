@@ -1,12 +1,12 @@
 # MVP 사용 흐름과 데이터 모델
 
-이 문서는 서비스별 Connector 터널 구조의 첫 버전 사용 경험과 관리 데이터 의미를 정한다.
+이 문서는 하나의 터널에 여러 서비스를 연결하는 사용 경험과 관리 데이터 의미를 정한다.
 
 ## 1. 범위와 구성
 
 - Outlet 한 대에 관리 UI/API, SQLite, Caddy, HAProxy를 배치한다.
 - 서비스 서버에는 Docker Compose로 앱과 service-connector를 함께 실행할 수 있다.
-- Connector는 서비스마다 하나씩 실행되며, rathole client 하나와 터널 하나를 유지한다.
+- Connector는 터널마다 하나씩 실행되며, 하나의 rathole client 설정으로 여러 서비스를 전달한다.
 - HTTP/HTTPS Route는 Caddy가, 공개 TCP Route는 HAProxy가 처리한다.
 - Caddy가 공개 HTTP 도메인의 ACME 인증서 발급·갱신과 외부 TLS 종료를 담당한다.
 - Caddy에서 TLS를 종료하므로 Outlet과 서비스 사이에 애플리케이션 인증서는 필요하지 않다. 터널 자체는 rathole TLS 또는 Noise로 암호화한다.
@@ -36,8 +36,8 @@ Connector는 먼저 Outlet에 연결하므로 서버의 인바운드 포트와 �
 1. 관리자가 UI에서 터널 이름을 만든다.
 2. Outlet이 터널 생성 직후 짧은 수명의 일회성 등록 토큰을 자동 발급한다. UI는 Outlet 주소·터널 이름·토큰을 초대 코드로 묶어 설치 명령만 표시한다. 토큰 단독 입력·복사 UI는 제공하지 않는다.
 3. 운영자가 앱 네트워크 입력 없이 Connector를 실행한다. Connector는 Docker의 기본 네트워크에서 Outlet으로 연결한다.
-4. Connector는 키와 identity를 생성하고 HTTPS로 등록한다. Outlet은 토큰을 소비하고 Connector ID와 인증 자격 증명을 반환한다. 서비스가 아직 없으면 Connector는 설정을 조회하며 대기하고, UI는 인증 연결 상태를 표시한다.
-5. 관리자가 별도 연결 서비스 화면에서 연결된 터널을 선택하고 서비스 이름과 앱 호스트·포트를 등록한다. Docker 앱에 필요하면 이 단계에서 터널 컨테이너를 앱 네트워크에 연결한다. Linux 호스트의 loopback 앱은 터널 컨테이너를 호스트 네트워크로 다시 실행한다. Outlet은 대상과 터널 설정을 생성한다.
+4. Connector는 키와 identity를 생성하고 HTTPS로 등록한다. Outlet은 토큰을 소비하고 Connector ID와 인증 자격 증명을 반환한다. 서비스가 아직 없으면 Connector는 heartbeat를 보내며 설정을 조회하고, UI는 인증 연결 상태를 표시한다.
+5. 관리자가 별도 연결 서비스 화면에서 터널을 선택하고 하나 이상의 서비스 이름과 앱 호스트·포트를 등록한다. Docker 앱에 필요하면 이 단계에서 터널 컨테이너를 앱 네트워크에 연결한다. Linux 호스트의 loopback 앱은 터널 컨테이너를 호스트 네트워크로 다시 실행한다. Outlet은 각 서비스의 대상과 전달 포트를 생성한다.
 6. Connector가 설정을 받아 앱 주소를 확인하고 rathole 터널과 heartbeat를 시작한다. 그다음 공개 주소를 등록한다.
 
 등록 실패나 시간 초과 시 새 토큰을 발급한다. Connector 폐기 시 identity와 관련 Route를 비활성화한다.

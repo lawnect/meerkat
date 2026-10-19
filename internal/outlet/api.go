@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -265,7 +266,7 @@ func (s *Store) configuration(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 401, "invalid_credential")
 		return
 	}
-	if managed && record.Configuration.ServiceID == "" {
+	if managed && len(record.Configuration.ActiveServices()) == 0 {
 		record.LastSeen = s.now().UTC()
 		if err := s.saveManaged(id, record); err != nil {
 			fail(w, r, 503, "persistence_failed")
@@ -289,7 +290,7 @@ func (s *Store) heartbeat(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 401, "invalid_credential")
 		return
 	}
-	if hb.ConnectorID != id || hb.ServiceID != record.Configuration.ServiceID {
+	if hb.ConnectorID != id || (len(record.Configuration.Services) == 0 && hb.ServiceID != record.Configuration.ServiceID) || (len(record.Configuration.Services) != 0 && hb.ServiceID != "") {
 		s.mu.Unlock()
 		fail(w, r, 403, "service_not_allowed")
 		return
@@ -304,18 +305,31 @@ func (s *Store) heartbeat(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 400, "invalid_heartbeat")
 		return
 	}
+	for _, service := range record.Configuration.ActiveServices() {
+		if len(record.Configuration.Services) != 0 && hb.ServiceHealths[service.ServiceID] != "healthy" && hb.ServiceHealths[service.ServiceID] != "unhealthy" && hb.ServiceHealths[service.ServiceID] != "unknown" {
+			s.mu.Unlock()
+			fail(w, r, 400, "invalid_heartbeat")
+			return
+		}
+	}
 	s.mu.Unlock()
 	// An open server listening port alone is not proof of an active tunnel.
 	// An application response through that port confirms the HTTP forwarding path.
-	probe := "disconnected"
+	statuses := map[string]string{}
 	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true}
 	client := &http.Client{Transport: transport, Timeout: 2 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
-	probeReq, _ := http.NewRequestWithContext(r.Context(), "GET", "http://"+record.ProbeAddress+"/", nil)
-	if res, err := client.Do(probeReq); err == nil {
-		if res.StatusCode < 500 {
-			probe = "connected"
+	for _, service := range record.Configuration.ActiveServices() {
+		probe := "disconnected"
+		if address := record.probeFor(service.ServiceID); address != "" {
+			probeReq, _ := http.NewRequestWithContext(r.Context(), "GET", "http://"+address+"/", nil)
+			if res, err := client.Do(probeReq); err == nil {
+				if res.StatusCode < 500 {
+					probe = "connected"
+				}
+				res.Body.Close()
+			}
 		}
-		res.Body.Close()
+		statuses[service.ServiceID] = probe
 	}
 	transport.CloseIdleConnections()
 	s.mu.Lock()
@@ -326,12 +340,27 @@ func (s *Store) heartbeat(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 401, "invalid_credential")
 		return
 	}
+	if hb.Revision != record.Configuration.Revision {
+		s.mu.Unlock()
+		fail(w, r, 409, "revision_mismatch")
+		return
+	}
 	if record.LastHeartbeat != nil && hb.ObservedAt.Before(record.LastHeartbeat.ObservedAt) {
 		s.mu.Unlock()
 		fail(w, r, 409, "out_of_order_heartbeat")
 		return
 	}
-	record.LastHeartbeat, record.LastSeen, record.TunnelStatus = &hb, s.now().UTC(), probe
+	record.LastHeartbeat, record.LastSeen, record.ServiceStatuses = &hb, s.now().UTC(), statuses
+	record.TunnelStatus = "connected"
+	if len(statuses) != 0 {
+		record.TunnelStatus = "disconnected"
+		for _, status := range statuses {
+			if status == "connected" {
+				record.TunnelStatus = "connected"
+				break
+			}
+		}
+	}
 	var saveErr error
 	if managed {
 		saveErr = s.saveManaged(id, record)
@@ -636,7 +665,7 @@ func managedConnectorStatus(record Record, now time.Time) string {
 	if now.Sub(record.LastSeen) >= 15*time.Second {
 		return "stale"
 	}
-	if record.Configuration.ServiceID == "" {
+	if len(record.Configuration.ActiveServices()) == 0 {
 		return "connected"
 	}
 	if record.TunnelStatus == "connected" {
@@ -646,17 +675,21 @@ func managedConnectorStatus(record Record, now time.Time) string {
 }
 
 func managedServiceStatus(record Record, serviceID string, now time.Time) string {
-	if !record.Enrolled || record.Configuration.ServiceID != serviceID || record.LastHeartbeat == nil {
+	if !record.Enrolled || record.probeFor(serviceID) == "" || record.LastHeartbeat == nil {
 		return "unknown"
 	}
 	status := managedConnectorStatus(record, now)
 	if status == "disconnected" || status == "stale" {
 		return status
 	}
-	if record.LastHeartbeat.ServiceHealth == "unhealthy" {
+	health := record.LastHeartbeat.ServiceHealth
+	if len(record.Configuration.Services) != 0 {
+		health = record.LastHeartbeat.ServiceHealths[serviceID]
+	}
+	if health == "unhealthy" {
 		return "error"
 	}
-	if record.LastHeartbeat.ServiceHealth == "healthy" && status == "connected" {
+	if health == "healthy" && record.ServiceStatuses[serviceID] == "connected" && status == "connected" {
 		return "connected"
 	}
 	return "connecting"
@@ -716,14 +749,10 @@ func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	service, err := s.control.EnrollmentService(r.Context(), id)
+	services, err := s.control.ListServices(r.Context(), id)
 	if errors.Is(err, control.ErrConnectorNotFound) {
 		fail(w, r, 404, "connector_not_found")
 		return
-	}
-	if errors.Is(err, control.ErrServiceRequired) {
-		service = control.Service{}
-		err = nil
 	}
 	if err != nil {
 		fail(w, r, 503, "persistence_failed")
@@ -755,25 +784,32 @@ func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
 	if !exists {
 		port := s.nextProbePort()
 		record = Record{Seed: Seed{Name: name, Configuration: contract.Configuration{ConnectorID: id}, ProbeAddress: net.JoinHostPort("127.0.0.1", strconv.Itoa(port))}, TunnelStatus: "unknown"}
-	} else {
-		record.Configuration.Revision = 0
-		record.Configuration.ServiceID = ""
-		record.Configuration.Target = contract.Target{}
-		record.Configuration.Tunnel = contract.Tunnel{}
 	}
-	if service.ID != "" {
-		record.Configuration.Revision++
-		record.Configuration.ServiceID = service.ID
-		record.Configuration.Target = service.Target
-		record.Configuration.Tunnel.RemoteAddress = remoteAddress
-		record.Configuration.Tunnel.ServerPublicKey = s.config.TunnelServerPublicKey
-		record.Configuration.Tunnel.ServiceName = service.ID
-		record.Configuration.Tunnel.ServiceToken = Token()
+	previous := record.Configuration.ActiveServices()
+	record.Configuration = contract.Configuration{ConnectorID: id, Revision: record.Configuration.Revision + 1}
+	record.ProbeAddresses = maps.Clone(record.ProbeAddresses)
+	if record.ProbeAddresses == nil {
+		record.ProbeAddresses = map[string]string{}
+	}
+	nextPort := s.nextProbePort()
+	for _, service := range services {
+		if record.ProbeAddresses[service.ID] == "" {
+			if len(previous) == 1 && previous[0].ServiceID == service.ID && record.ProbeAddress != "" {
+				record.ProbeAddresses[service.ID] = record.ProbeAddress
+			} else {
+				for s.probePortUsed(nextPort, record.ProbeAddresses) {
+					nextPort++
+				}
+				record.ProbeAddresses[service.ID] = net.JoinHostPort("127.0.0.1", strconv.Itoa(nextPort))
+				nextPort++
+			}
+		}
+		record.Configuration.Services = append(record.Configuration.Services, contract.ServiceConfiguration{ServiceID: service.ID, Target: service.Target, Tunnel: contract.Tunnel{RemoteAddress: remoteAddress, ServerPublicKey: s.config.TunnelServerPublicKey, ServiceName: service.ID, ServiceToken: Token()}})
 	}
 	token := Token()
 	record.Enrolled = false
 	record.PublicKey, record.CredentialHash = "", ""
-	record.LastHeartbeat, record.LastSeen, record.TunnelStatus = nil, time.Time{}, "unknown"
+	record.LastHeartbeat, record.LastSeen, record.TunnelStatus, record.ServiceStatuses = nil, time.Time{}, "unknown", nil
 	record.EnrollmentHash, record.EnrollmentExpiresAt = Hash(token), s.now().Add(time.Duration(s.config.EnrollmentTTLSeconds)*time.Second)
 	if err := s.saveManaged(id, record); err != nil {
 		s.mu.Unlock()
@@ -785,7 +821,7 @@ func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "tunnel_reconcile_failed")
 		return
 	}
-	reply(w, 201, map[string]any{"token": token, "expires_at": record.EnrollmentExpiresAt, "service": service})
+	reply(w, 201, map[string]any{"token": token, "expires_at": record.EnrollmentExpiresAt, "services": services})
 }
 
 func (s *Store) nextProbePort() int {
@@ -797,6 +833,14 @@ func (s *Store) nextProbePort() int {
 				used[value] = true
 			}
 			_ = err
+			for _, address := range record.ProbeAddresses {
+				_, value, splitErr := net.SplitHostPort(address)
+				if splitErr == nil {
+					if port, parseErr := strconv.Atoi(value); parseErr == nil {
+						used[port] = true
+					}
+				}
+			}
 		}
 	}
 	for port := 24000; port < 30000; port++ {
@@ -805,6 +849,29 @@ func (s *Store) nextProbePort() int {
 		}
 	}
 	return 0
+}
+
+func (s *Store) probePortUsed(port int, extra map[string]string) bool {
+	for _, address := range extra {
+		_, value, err := net.SplitHostPort(address)
+		if err == nil && value == strconv.Itoa(port) {
+			return true
+		}
+	}
+	for _, set := range []map[string]Record{s.records, s.managed} {
+		for _, record := range set {
+			if _, value, err := net.SplitHostPort(record.ProbeAddress); err == nil && value == strconv.Itoa(port) {
+				return true
+			}
+			for _, address := range record.ProbeAddresses {
+				_, value, err := net.SplitHostPort(address)
+				if err == nil && value == strconv.Itoa(port) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 type connectorRequest struct {
@@ -934,10 +1001,6 @@ func (s *Store) createService(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 409, "service_name_taken")
 		return
 	}
-	if errors.Is(err, control.ErrServiceLimit) {
-		fail(w, r, 409, "connector_service_limit")
-		return
-	}
 	if errors.Is(err, control.ErrInvalidService) {
 		fail(w, r, 400, "invalid_service")
 		return
@@ -956,7 +1019,20 @@ func (s *Store) createService(w http.ResponseWriter, r *http.Request) {
 				remoteAddress = net.JoinHostPort(outlet.Domain, port)
 			}
 		}
-		record.Configuration = contract.Configuration{ConnectorID: r.PathValue("id"), ServiceID: service.ID, Revision: 1, Target: service.Target, Tunnel: contract.Tunnel{RemoteAddress: remoteAddress, ServerPublicKey: s.config.TunnelServerPublicKey, ServiceName: service.ID, ServiceToken: Token()}}
+		prior := record.Configuration.ActiveServices()
+		record.Configuration = contract.Configuration{ConnectorID: r.PathValue("id"), Revision: record.Configuration.Revision + 1, Services: append([]contract.ServiceConfiguration(nil), prior...)}
+		record.Configuration.Services = append(record.Configuration.Services, contract.ServiceConfiguration{ServiceID: service.ID, Target: service.Target, Tunnel: contract.Tunnel{RemoteAddress: remoteAddress, ServerPublicKey: s.config.TunnelServerPublicKey, ServiceName: service.ID, ServiceToken: Token()}})
+		record.ProbeAddresses = maps.Clone(record.ProbeAddresses)
+		if record.ProbeAddresses == nil {
+			record.ProbeAddresses = map[string]string{}
+		}
+		for _, old := range prior {
+			if record.ProbeAddresses[old.ServiceID] == "" {
+				record.ProbeAddresses[old.ServiceID] = record.ProbeAddress
+			}
+		}
+		record.ProbeAddresses[service.ID] = net.JoinHostPort("127.0.0.1", strconv.Itoa(s.nextProbePort()))
+		record.LastHeartbeat, record.ServiceStatuses, record.TunnelStatus = nil, nil, "unknown"
 		if err := s.saveManaged(r.PathValue("id"), record); err != nil {
 			s.mu.Unlock()
 			fail(w, r, 503, "persistence_failed")
@@ -966,6 +1042,10 @@ func (s *Store) createService(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	if err := s.reconcileTunnel(); err != nil {
 		fail(w, r, 503, "tunnel_reconcile_failed")
+		return
+	}
+	if err := s.reconcileProxy(r.Context()); err != nil {
+		fail(w, r, 503, "proxy_reconcile_failed")
 		return
 	}
 	reply(w, 201, service)
@@ -990,12 +1070,22 @@ func (s *Store) updateServiceTarget(w http.ResponseWriter, r *http.Request) {
 	id, serviceID := r.PathValue("id"), r.PathValue("service_id")
 	s.mu.Lock()
 	record, ok := s.managed[id]
-	if !ok || record.Configuration.ServiceID != serviceID {
+	index := -1
+	if ok {
+		for i, item := range record.Configuration.ActiveServices() {
+			if item.ServiceID == serviceID {
+				index = i
+				break
+			}
+		}
+	}
+	if index < 0 {
 		s.mu.Unlock()
 		fail(w, r, 404, "service_not_found")
 		return
 	}
-	changed := record.Configuration.Target != req.Target
+	services := append([]contract.ServiceConfiguration(nil), record.Configuration.ActiveServices()...)
+	changed := services[index].Target != req.Target
 	service, err := s.control.UpdateServiceTarget(r.Context(), id, serviceID, req.Target)
 	if err != nil {
 		s.mu.Unlock()
@@ -1010,9 +1100,12 @@ func (s *Store) updateServiceTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if changed {
-		record.Configuration.Target = req.Target
+		services[index].Target = req.Target
+		record.Configuration.ServiceID, record.Configuration.Target, record.Configuration.Tunnel = "", contract.Target{}, contract.Tunnel{}
+		record.Configuration.Services = services
 		record.Configuration.Revision++
 		record.LastHeartbeat = nil
+		record.ServiceStatuses = nil
 		record.TunnelStatus = "unknown"
 		if err := s.saveManaged(id, record); err != nil {
 			s.mu.Unlock()
@@ -1049,8 +1142,17 @@ func (s *Store) deleteService(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.mu.Lock()
 		if record, ok := s.managed[r.PathValue("id")]; ok {
-			record.Configuration = contract.Configuration{ConnectorID: r.PathValue("id")}
+			remaining := []contract.ServiceConfiguration{}
+			for _, item := range record.Configuration.ActiveServices() {
+				if item.ServiceID != r.PathValue("service_id") {
+					remaining = append(remaining, item)
+				}
+			}
+			record.Configuration = contract.Configuration{ConnectorID: r.PathValue("id"), Revision: record.Configuration.Revision + 1, Services: remaining}
+			record.ProbeAddresses = maps.Clone(record.ProbeAddresses)
+			delete(record.ProbeAddresses, r.PathValue("service_id"))
 			record.LastHeartbeat = nil
+			record.ServiceStatuses = nil
 			record.TunnelStatus = "unknown"
 			if err := s.saveManaged(r.PathValue("id"), record); err != nil {
 				s.mu.Unlock()
@@ -1061,6 +1163,10 @@ func (s *Store) deleteService(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		if err := s.reconcileTunnel(); err != nil {
 			fail(w, r, 503, "tunnel_reconcile_failed")
+			return
+		}
+		if err := s.reconcileProxy(r.Context()); err != nil {
+			fail(w, r, 503, "proxy_reconcile_failed")
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)

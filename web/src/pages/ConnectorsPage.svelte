@@ -16,6 +16,7 @@
   let serviceHost = $state('');
   let servicePort = $state('');
   let serviceBusy = $state(false);
+  let serviceFormOpen = $state(false);
   let serviceError = $state('');
   let createError = $state('');
   let tokenError = $state('');
@@ -63,8 +64,6 @@
       invalid_connector: '터널 이름을 확인하세요.',
       connector_name_taken: '이미 사용 중인 터널 이름입니다.',
       connector_not_found: '터널을 찾을 수 없습니다.',
-      connector_service_limit: '이 터널에는 연결 서비스가 이미 등록되어 있습니다.',
-      connector_service_required: '연결 서비스를 먼저 등록하세요.',
     };
     return labels[code] || code;
   }
@@ -82,6 +81,7 @@
     serviceHost = '';
     servicePort = '';
     serviceError = '';
+    serviceFormOpen = false;
     idCopied = false;
     idCopyError = '';
   });
@@ -184,7 +184,7 @@
 
   async function createService(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-    if (!selected || selected.status !== 'connected' || selectedRecords.length || serviceBusy) return;
+    if (!selected || selected.status === 'draft' || serviceBusy) return;
     serviceError = '';
     serviceBusy = true;
     try {
@@ -196,11 +196,11 @@
       serviceName = '';
       serviceHost = '';
       servicePort = '';
+      serviceFormOpen = false;
     } catch (cause) {
       const code = errorMessage(cause);
       const message: Record<string, string> = {
         connector_not_found: '터널을 찾을 수 없습니다.',
-        connector_service_limit: '이 터널에는 이미 서비스가 등록되어 있습니다.',
         service_name_taken: '이미 사용 중인 서비스 이름입니다.',
         invalid_service: '서비스 이름과 앱 주소를 확인하세요.',
       };
@@ -404,9 +404,9 @@
             </div>
           </Card>
           {/if}
-          {#if selected.status === 'connected'}
+          {#if selected.status !== 'draft'}
             <Card as="section" padding="none" aria-label="연결 서비스">
-              <div class="ui-card-header"><div class="section-title"><h3 class="ui-card-title">연결 서비스 <small>{selectedRecords.length}</small></h3><InfoTooltip id={`connector-service-help-${selected.id}`} label="연결 서비스" description="이 터널이 요청을 전달할 앱의 내부 주소입니다. 한 터널에는 서비스 하나를 연결할 수 있습니다." /></div></div>
+              <div class="ui-card-header"><div class="section-title"><h3 class="ui-card-title">연결 서비스 <small>{selectedRecords.length}</small></h3><InfoTooltip id={`connector-service-help-${selected.id}`} label="연결 서비스" description="이 터널이 요청을 전달할 앱의 내부 주소입니다. 한 터널에 여러 서비스를 연결할 수 있습니다." /></div>{#if selectedRecords.length}<Button variant="secondary" size="sm" onclick={() => serviceFormOpen = !serviceFormOpen}>{serviceFormOpen ? '닫기' : '+ 서비스 추가'}</Button>{/if}</div>
               <div class="connected-card-body">
                 {#if selectedRecords.length}
                   {#each selectedRecords as record (record.service.id)}
@@ -414,6 +414,8 @@
                   {/each}
                 {:else}
                   <p>아직 연결된 서비스가 없습니다. 이 터널에서 접속할 앱을 등록하세요.</p>
+                {/if}
+                {#if !selectedRecords.length || serviceFormOpen}
                   <form class="service-form" onsubmit={createService}>
                     <div class="field"><label for={`service-name-${selected.id}`}>서비스 이름</label><input class="input input-bordered" id={`service-name-${selected.id}`} bind:value={serviceName} placeholder="예: app" required /></div>
                     <div class="field"><label for={`service-host-${selected.id}`}>앱 호스트</label><input class="input input-bordered" id={`service-host-${selected.id}`} bind:value={serviceHost} placeholder="app 또는 127.0.0.1" required /></div>
@@ -437,7 +439,7 @@
               </div>
             </Card>
           {/if}
-          {#if selected.status === 'connected'}
+          {#if selected.status !== 'draft'}
             <Card as="section" padding="none" class="paths-card" aria-label="요청 경로">
               <div class="ui-card-header"><h3 class="ui-card-title">요청 경로 <small>{selectedPaths.length}</small></h3></div>
               {#if selectedPaths.length}
@@ -496,11 +498,11 @@
               <thead><tr><th scope="col">이름</th><th scope="col">연결 상태</th><th scope="col">연결 서비스</th><th scope="col">최근 응답</th><th scope="col">생성일</th><th scope="col">작업</th></tr></thead>
               <tbody>
                 {#each visibleConnectors as connector (connector.id)}
-                  {@const serviceName = data.services.find((service) => service.connector_id === connector.id)?.name}
+                  {@const serviceCount = data.services.filter((service) => service.connector_id === connector.id).length}
                   <tr>
                     <td><LinkButton href={connectorDetailPath(connector.id)} variant="text" size="sm" class="tunnel-name" onclick={(event) => openDetailFromLink(event, connector.id)}>{connector.name}</LinkButton></td>
                     <td><Status label={statusLabel(connector.status)} value={connector.status} /></td>
-                    <td><span class:muted-cell={!serviceName}>{serviceName || '미등록'}</span></td>
+                    <td><span class:muted-cell={!serviceCount}>{serviceCount ? `${serviceCount}개` : '미등록'}</span></td>
                     <td><span class:muted-cell={!connector.last_seen}>{connector.last_seen ? new Date(connector.last_seen).toLocaleString('ko-KR', { dateStyle: 'medium', timeStyle: 'short' }) : '—'}</span></td>
                     <td>{new Date(connector.created_at).toLocaleDateString('ko-KR')}</td>
                     <td><LinkButton href={connectorDetailPath(connector.id)} variant="text" size="sm" class="detail-link" aria-label={`${connector.name} 터널 상세 보기`} onclick={(event) => openDetailFromLink(event, connector.id)}>상세 →</LinkButton></td>
@@ -522,7 +524,7 @@
 <dialog bind:this={createDialog} class="connector-dialog" aria-labelledby="create-dialog-title" aria-describedby="create-dialog-description" oncancel={(event) => { if (createBusy) event.preventDefault(); }} onclose={() => { name = ''; createError = ''; }}>
   <form onsubmit={createConnector}>
     <h2 id="create-dialog-title">새 터널 만들기</h2>
-    <p id="create-dialog-description">공개할 서비스마다 터널을 하나씩 만듭니다.</p>
+    <p id="create-dialog-description">터널을 설치한 뒤 여러 연결 서비스를 등록할 수 있습니다.</p>
     <div class="field"><label for="connector-name">터널 이름</label><input class="input input-bordered" id="connector-name" bind:value={name} placeholder="예: app-tunnel" required /></div>
     {#if createError}<p class="error" role="alert">{createError}</p>{/if}
     <div class="dialog-actions"><Button variant="secondary" onclick={closeCreateDialog} disabled={createBusy}>취소</Button><Button type="submit" disabled={createBusy}>{createBusy ? '만드는 중…' : '터널 만들기'}</Button></div>
@@ -578,6 +580,7 @@
   .connector-body .detail-section:first-child { margin-top: 0; border-top: 0; padding-top: 0; }
   .connector-body .token-panel:first-child { padding-top: 18px; }
   .connected-card-body { padding: 16px 18px; }
+  .connected-card-body :global(.service + .service) { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 16px; }
   .connected-card-body p { margin: 0; color: var(--muted); font-size: 12px; }
   .path-list { list-style: none; margin: 0; padding: 0; }
   .path-row { display: grid; grid-template-columns: minmax(0, 1.4fr) 18px minmax(0, 1fr) 18px minmax(0, 1.4fr); align-items: center; gap: 10px; min-height: 54px; padding: 10px 18px; }

@@ -3,7 +3,7 @@
   "info": {
     "title": "Meerkat vertical slice API",
     "version": "0.1.0",
-    "description": "Initial registration, fixed single-service configuration, heartbeat and administrator status API. Routes, revocation, config rollout and streaming control are not implemented in this slice."
+    "description": "Connector registration, multi-service configuration, heartbeat and administrator status API. Legacy single-service fields remain for compatibility with existing connectors."
   },
   "servers": [
     {
@@ -424,7 +424,7 @@
       },
       "Configuration": {
         "type": "object",
-        "description": "Revision 0 means the Connector is enrolled and waiting for a service; service_id, target, and tunnel are empty until service registration.",
+        "description": "The services array contains all services for a tunnel. An absent or empty array means the connector is enrolled and waiting. Legacy service_id, target, and tunnel fields are retained for older persisted configurations.",
         "additionalProperties": false,
         "required": [
           "connector_id",
@@ -449,7 +449,21 @@
           },
           "tunnel": {
             "anyOf": [{"$ref": "#/components/schemas/Tunnel"}, {"$ref": "#/components/schemas/PendingTunnel"}]
+          },
+          "services": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/ServiceConfiguration"}
           }
+        }
+      },
+      "ServiceConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["service_id", "target", "tunnel"],
+        "properties": {
+          "service_id": {"$ref": "#/components/schemas/Label"},
+          "target": {"$ref": "#/components/schemas/Target"},
+          "tunnel": {"$ref": "#/components/schemas/Tunnel"}
         }
       },
       "PendingTarget": {
@@ -493,7 +507,7 @@
       },
       "EnrollmentResponse": {
         "type": "object",
-        "description": "Revision 0 is an enrolled Connector waiting for its service configuration.",
+        "description": "An enrolled Connector receives its complete services array; an absent or empty array means no service has been added yet.",
         "additionalProperties": false,
         "required": [
           "connector_id",
@@ -520,6 +534,10 @@
           },
           "tunnel": {
             "anyOf": [{"$ref": "#/components/schemas/Tunnel"}, {"$ref": "#/components/schemas/PendingTunnel"}]
+          },
+          "services": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/ServiceConfiguration"}
           },
           "credential": {
             "$ref": "#/components/schemas/Secret"
@@ -548,11 +566,11 @@
             "$ref": "#/components/schemas/Label"
           },
           "service_id": {
-            "$ref": "#/components/schemas/Label"
+            "anyOf": [{"$ref": "#/components/schemas/Label"}, {"const": ""}]
           },
           "revision": {
             "type": "integer",
-            "minimum": 1
+            "minimum": 0
           },
           "connector_version": {
             "type": "string",
@@ -581,6 +599,10 @@
               "healthy",
               "unhealthy"
             ]
+          },
+          "service_healths": {
+            "type": "object",
+            "additionalProperties": {"type": "string", "enum": ["unknown", "healthy", "unhealthy"]}
           },
           "observed_at": {
             "type": "string",

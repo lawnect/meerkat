@@ -11,10 +11,8 @@ import (
 
 var (
 	ErrServiceExists    = errors.New("service already exists")
-	ErrServiceLimit     = errors.New("connector supports exactly one service")
 	ErrServiceHasRoutes = errors.New("service has routes")
 	ErrInvalidService   = errors.New("invalid service")
-	ErrServiceRequired  = errors.New("connector needs exactly one service")
 )
 
 // Service is desired state only. It has no public endpoint until a Route is
@@ -31,20 +29,6 @@ type Service struct {
 	UpdatedAt      time.Time       `json:"updated_at"`
 }
 
-// Enrollment currently starts one rathole client per Connector. Multiple
-// services require a future multiplexed connector protocol and are rejected
-// until then rather than silently exposing the wrong target.
-func (d *Database) EnrollmentService(ctx context.Context, connectorID string) (Service, error) {
-	services, err := d.ListServices(ctx, connectorID)
-	if err != nil {
-		return Service{}, err
-	}
-	if len(services) != 1 {
-		return Service{}, ErrServiceRequired
-	}
-	return services[0], nil
-}
-
 func (d *Database) CreateService(ctx context.Context, connectorID, name, protocol string, target contract.Target) (Service, error) {
 	if !validation.Label(connectorID) || !validation.Label(name) || protocol != "http" || validation.Target(target) != nil {
 		return Service{}, ErrInvalidService
@@ -55,13 +39,6 @@ func (d *Database) CreateService(ctx context.Context, connectorID, name, protoco
 	}
 	if !exists {
 		return Service{}, ErrConnectorNotFound
-	}
-	var count int
-	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM services WHERE connector_id = ?`, connectorID).Scan(&count); err != nil {
-		return Service{}, err
-	}
-	if count != 0 {
-		return Service{}, ErrServiceLimit
 	}
 	id, err := randomID()
 	if err != nil {

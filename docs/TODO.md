@@ -13,9 +13,9 @@
 
 - [x] WireGuard를 기본 구성요소에서 제외한다.
 - [x] 서버 전체를 하나의 인트라넷으로 묶지 않는다.
-- [x] 서비스별 Connector가 Outlet으로 아웃바운드 터널을 만든다.
-- [x] 서비스별 Connector를 Docker Compose로 배포할 수 있게 한다.
-- [x] 서비스 하나당 rathole client 하나와 터널 하나를 사용한다.
+- [x] 터널별 Connector가 Outlet으로 아웃바운드 연결을 만든다.
+- [x] Connector를 Docker Compose로 배포할 수 있게 한다.
+- [x] 하나의 Connector 터널에 여러 서비스를 등록하고 전달한다.
 - [x] 하나의 Outlet이 여러 Connector를 처리하게 한다.
 - [ ] 하나의 Connector가 여러 Outlet으로 failover하는 정책을 정의한다.
 - [x] HTTP 계층(L7)과 TCP 계층(L4)을 분리해서 설계한다.
@@ -50,9 +50,10 @@
 
 - [x] 단일 Outlet에 관리 UI와 데이터 플레인을 함께 둔다.
 - [ ] 중앙 Control Plane을 별도 서비스로 분리할지 결정한다.
-- [x] 서버 단위 Inlet Agent 대신 서비스 단위 Connector를 사용한다.
-- [ ] Connector 하나가 담당할 수 있는 Compose 서비스 범위 확정
-- [x] MVP에서는 Connector multiplex를 사용하지 않고 서비스별 터널 하나만 사용한다.
+- [x] 서버 단위 Inlet Agent 대신 명시적으로 등록한 서비스만 전달하는 Connector를 사용한다.
+- [x] Connector 하나가 여러 Compose 서비스에 접근할 수 있다. 필요한 Docker 네트워크만 연결한다.
+- [x] 한 Connector 설정에 여러 서비스별 rathole 항목을 넣는다.
+- [ ] 서비스 설정 변경 시 다른 서비스의 연결을 끊지 않는 적용 방식 구현
 - [ ] Outlet 장애 시 Connector 재연결·failover 동작 정의
 - [ ] 하나의 Connector를 여러 Outlet에서 사용할 때의 라우팅 정책 정의
 - [ ] 설정 저장소와 비밀정보 저장 방식을 결정한다.
@@ -112,8 +113,8 @@
 ### UI
 
 - [ ] Outlet 상태
-- [ ] Connector 목록·상세·연결 상태
-- [ ] 서비스와 Connector 연결
+- [x] Connector 목록·상세·연결 상태
+- [x] 하나의 Connector에 여러 서비스 연결
 - [ ] HTTP Route와 인증서 상태
 - [ ] TCP Route와 ACL
 - [ ] 설정 적용 작업과 오류
@@ -123,7 +124,7 @@
 - [ ] 여러 Outlet과 지역별 선택
 - [ ] Outlet 이중화 및 failover
 - [ ] Connector 다중 Outlet failover
-- [ ] 서비스별 Connector 통합 관리와 재시작 복구
+- [ ] 서비스 설정 변경 시 터널 내 다른 서비스 연결을 유지하는 적용 방식
 - [ ] 서비스별 rate limit과 circuit breaker
 - [ ] UDP 지원 검토
 - [ ] 선택적 WireGuard 연동 검토
@@ -131,7 +132,7 @@
 
 ## 기록해 둔 결정
 
-- [x] 기본 네트워크 모델 — 서비스별 아웃바운드 Connector 터널
+- [x] 기본 네트워크 모델 — 터널별 아웃바운드 Connector 연결과 서비스별 전달 포트
 - [x] 서버 간 WireGuard 인트라넷 — 사용하지 않음
 - [x] 프론트엔드 — SvelteKit/TypeScript
 - [x] 백엔드·Connector — Go

@@ -28,11 +28,15 @@ func TestCreateAndListServices(t *testing.T) {
 	if service.Target != target || !service.Enabled || service.ObservedStatus != "unknown" {
 		t.Fatalf("service = %#v", service)
 	}
-	if _, err := db.CreateService(ctx, connector.ID, "web", "http", target); !errors.Is(err, ErrServiceLimit) {
+	if _, err := db.CreateService(ctx, connector.ID, "web", "http", target); !errors.Is(err, ErrServiceExists) {
 		t.Fatalf("duplicate error = %v", err)
 	}
+	second, err := db.CreateService(ctx, connector.ID, "api", "http", contract.Target{Host: "api", Port: 8080})
+	if err != nil {
+		t.Fatal(err)
+	}
 	services, err := db.ListServices(ctx, connector.ID)
-	if err != nil || len(services) != 1 || services[0].ID != service.ID {
+	if err != nil || len(services) != 2 || services[0].ID != second.ID || services[1].ID != service.ID {
 		t.Fatalf("services = %#v, %v", services, err)
 	}
 }

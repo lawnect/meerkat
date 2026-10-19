@@ -50,6 +50,29 @@ local_addr = %s
 `, strconv.Quote(c.Tunnel.RemoteAddress), strconv.Quote(c.Tunnel.ServerPublicKey), c.Tunnel.ServiceName, strconv.Quote(c.Tunnel.ServiceToken), strconv.Quote(address))), nil
 }
 
+// ClientsAt places every service on one rathole client connection.
+func ClientsAt(c contract.Configuration, addresses map[string]string) ([]byte, error) {
+	if err := validation.Configuration(c); err != nil {
+		return nil, err
+	}
+	services := c.ActiveServices()
+	if len(services) == 0 {
+		return nil, errors.New("no services configured")
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "[client]\nremote_addr = %s\nretry_interval = 1\n\n[client.transport]\ntype = \"noise\"\n\n[client.transport.noise]\npattern = \"Noise_NK_25519_ChaChaPoly_BLAKE2s\"\nremote_public_key = %s\n", strconv.Quote(services[0].Tunnel.RemoteAddress), strconv.Quote(services[0].Tunnel.ServerPublicKey))
+	for _, service := range services {
+		address := addresses[service.ServiceID]
+		host, port, err := net.SplitHostPort(address)
+		ip := net.ParseIP(host)
+		if err != nil || ip == nil || (!ip.IsLoopback() && !ip.IsPrivate()) || port != strconv.Itoa(service.Target.Port) {
+			return nil, errors.New("resolved target must be a local IP with the allowed port")
+		}
+		fmt.Fprintf(&b, "\n[client.services.%s]\ntype = \"tcp\"\ntoken = %s\nlocal_addr = %s\n", service.Tunnel.ServiceName, strconv.Quote(service.Tunnel.ServiceToken), strconv.Quote(address))
+	}
+	return []byte(b.String()), nil
+}
+
 type ServerService struct{ Name, Token, BindAddress string }
 
 func Server(bind, privateKey string, services []ServerService) ([]byte, error) {

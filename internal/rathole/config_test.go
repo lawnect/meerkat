@@ -26,3 +26,23 @@ func TestPinnedTargetAndNoiseAuthentication(t *testing.T) {
 		t.Fatal("TOML injection accepted")
 	}
 }
+
+func TestClientsAtMultipleServices(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	c := contract.Configuration{ConnectorID: "connector_1", Revision: 2, Services: []contract.ServiceConfiguration{
+		{ServiceID: "web", Target: contract.Target{Host: "app", Port: 3000}, Tunnel: contract.Tunnel{RemoteAddress: "outlet:2333", ServerPublicKey: key, ServiceName: "web", ServiceToken: "abcdefghijklmnopqrstuvwxyz0123456789"}},
+		{ServiceID: "api", Target: contract.Target{Host: "api", Port: 8080}, Tunnel: contract.Tunnel{RemoteAddress: "outlet:2333", ServerPublicKey: key, ServiceName: "api", ServiceToken: "abcdefghijklmnopqrstuvwxyz0123456789"}},
+	}}
+	b, err := ClientsAt(c, map[string]string{"web": "172.20.0.2:3000", "api": "172.20.0.3:8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"[client.services.web]", "[client.services.api]", `local_addr = "172.20.0.2:3000"`, `local_addr = "172.20.0.3:8080"`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("missing %q", want)
+		}
+	}
+	if _, err := ClientsAt(c, map[string]string{"web": "172.20.0.2:3000", "api": "8.8.8.8:8080"}); err == nil {
+		t.Fatal("public target accepted")
+	}
+}

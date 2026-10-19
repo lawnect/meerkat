@@ -55,8 +55,12 @@ func allowed(local Config, remote contract.Configuration) error {
 	if err := validation.Configuration(remote); err != nil {
 		return err
 	}
-	if local.Target != (contract.Target{}) && local.Target != remote.Target {
-		return errors.New("outlet target is not in the connector's local allowlist")
+	if local.Target != (contract.Target{}) {
+		for _, service := range remote.ActiveServices() {
+			if local.Target != service.Target {
+				return errors.New("outlet target is not in the connector's local allowlist")
+			}
+		}
 	}
 	return nil
 }
@@ -82,7 +86,7 @@ func enroll(ctx context.Context, cfg Config, api *transport.Client, token string
 		if remote.ConnectorID != saved.Enrollment.ConnectorID {
 			return contract.EnrollmentResponse{}, errors.New("outlet returned a different identity")
 		}
-		if remote.ServiceID != "" {
+		if len(remote.ActiveServices()) != 0 {
 			if err := allowed(cfg, remote); err != nil {
 				return contract.EnrollmentResponse{}, err
 			}
@@ -107,7 +111,7 @@ func enroll(ctx context.Context, cfg Config, api *transport.Client, token string
 	if err != nil {
 		return response, err
 	}
-	if response.ServiceID != "" {
+	if len(response.ActiveServices()) != 0 {
 		if err := allowed(cfg, response.Configuration); err != nil {
 			return response, err
 		}
@@ -142,7 +146,7 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 	}
 	defer api.Close()
 	var response contract.EnrollmentResponse
-	var address string
+	addresses := map[string]string{}
 	for attempt := 0; attempt < 6; attempt++ {
 		response, err = enroll(ctx, cfg, api, token)
 		if err == nil {
@@ -168,10 +172,14 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 	if err != nil {
 		return err
 	}
-	if response.ServiceID == "" {
+	if len(response.ActiveServices()) == 0 {
 		log.Info("connector connected; waiting for a service")
 	}
-	for response.ServiceID == "" {
+	for len(response.ActiveServices()) == 0 {
+		hb := contract.Heartbeat{ConnectorID: response.ConnectorID, Revision: response.Revision, Version: contract.Version, ProcessState: "running", ServiceHealth: "unknown", ObservedAt: time.Now().UTC()}
+		if heartbeatErr := api.Heartbeat(ctx, response.Credential, hb); heartbeatErr != nil {
+			log.Warn("heartbeat failed while waiting for services")
+		}
 		timer := time.NewTimer(5 * time.Second)
 		select {
 		case <-ctx.Done():
@@ -194,7 +202,7 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 		if remote.ConnectorID != response.ConnectorID {
 			return errors.New("outlet returned a different connector")
 		}
-		if remote.ServiceID != "" {
+		if len(remote.ActiveServices()) != 0 {
 			if err := allowed(cfg, remote); err != nil {
 				return err
 			}
@@ -204,25 +212,28 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 			}
 		}
 	}
-	for attempt := 0; attempt < 6; attempt++ {
-		address, err = health.Resolve(ctx, response.Target)
-		if err == nil {
-			break
-		}
-		if attempt == 5 {
-			return err
-		}
-		log.Warn("connector waiting for local target", "attempt", attempt+1)
-		timer := time.NewTimer(time.Duration(1<<attempt) * time.Second)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil
-		case <-timer.C:
+	for _, service := range response.ActiveServices() {
+		for attempt := 0; attempt < 6; attempt++ {
+			address, resolveErr := health.Resolve(ctx, service.Target)
+			if resolveErr == nil {
+				addresses[service.ServiceID] = address
+				break
+			}
+			if attempt == 5 {
+				return resolveErr
+			}
+			log.Warn("connector waiting for local target", "service_id", service.ServiceID, "attempt", attempt+1)
+			timer := time.NewTimer(time.Duration(1<<attempt) * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil
+			case <-timer.C:
+			}
 		}
 	}
-	log.Info("connector authenticated", "connector_id", response.ConnectorID, "service_id", response.ServiceID)
-	config, err := rathole.ClientAt(response.Configuration, address)
+	log.Info("connector authenticated", "connector_id", response.ConnectorID, "service_count", len(response.ActiveServices()))
+	config, err := rathole.ClientsAt(response.Configuration, addresses)
 	if err != nil {
 		return err
 	}
@@ -241,12 +252,19 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 	lastHealth, lastProcess := "", ""
 	report := func(reportCtx context.Context) error {
 		process := supervisor.Snapshot()
-		serviceHealth := health.Check(reportCtx, response.Target)
+		serviceHealths := map[string]string{}
+		for _, service := range response.ActiveServices() {
+			serviceHealths[service.ServiceID] = health.Check(reportCtx, service.Target)
+		}
+		serviceHealth := "unknown"
+		if len(response.ActiveServices()) == 1 {
+			serviceHealth = serviceHealths[response.ActiveServices()[0].ServiceID]
+		}
 		if serviceHealth != lastHealth || process.State != lastProcess {
 			log.Info("connector status", "process_state", process.State, "service_health", serviceHealth, "restarts", process.Restarts)
 			lastHealth, lastProcess = serviceHealth, process.State
 		}
-		hb := contract.Heartbeat{ConnectorID: response.ConnectorID, ServiceID: response.ServiceID, Revision: response.Revision, Version: contract.Version, ProcessState: process.State, ProcessRestarts: process.Restarts, ServiceHealth: serviceHealth, ObservedAt: time.Now().UTC()}
+		hb := contract.Heartbeat{ConnectorID: response.ConnectorID, ServiceID: response.ServiceID, Revision: response.Revision, Version: contract.Version, ProcessState: process.State, ProcessRestarts: process.Restarts, ServiceHealth: serviceHealth, ServiceHealths: serviceHealths, ObservedAt: time.Now().UTC()}
 		return api.Heartbeat(reportCtx, response.Credential, hb)
 	}
 	if err := report(ctx); err != nil {

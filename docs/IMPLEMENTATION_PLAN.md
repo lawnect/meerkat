@@ -6,7 +6,7 @@
 
 ## 1. 프로젝트 한 줄 요약
 
-Meerkat은 rathole을 데이터 플레인 터널 엔진으로 사용하고, 여러 서비스별 rathole client를 Outlet에서 중앙 관리하는 self-hosted gateway다.
+Meerkat은 rathole을 데이터 플레인 터널 엔진으로 사용하고, 하나의 Connector 터널에 여러 서비스를 연결하는 self-hosted gateway다.
 
 ## 2. 현재 확정된 결정
 
@@ -17,13 +17,12 @@ Meerkat은 rathole을 데이터 플레인 터널 엔진으로 사용하고, 여�
 - 서비스 서버가 먼저 Outlet으로 아웃바운드 연결을 만든다.
 - 서비스 서버의 인바운드 포트와 공유기 포트포워딩은 필요하지 않다.
 - 서버1은 공인 IP를 가진 Outlet이다.
-- 실제 서비스가 실행되는 각 서버에는 서비스별 Connector를 설치한다.
+- 실제 서비스가 실행되는 서버에는 터널별 Connector를 설치하고 필요한 서비스를 등록한다.
 
 ### 터널
 
-- 서비스 하나당 Connector 컨테이너 하나를 실행한다.
-- 서비스 하나당 rathole client 하나와 논리적 터널 하나를 사용한다.
-- MVP에서는 여러 서비스를 하나의 rathole client나 multiplex 연결에 넣지 않는다.
+- 터널 하나당 Connector 컨테이너 하나를 실행한다.
+- 한 Connector의 rathole client 설정에 여러 서비스 항목을 넣고, Outlet에서 서비스별 전달 포트를 관리한다.
 - Meerkat은 자체 암호화 터널 프로토콜을 구현하지 않는다.
 - rathole client/server의 설정을 Meerkat이 생성하고 프로세스를 관리한다.
 - rathole HTTP API에 의존하지 않는다. 초기에는 설정 파일과 프로세스 관리 방식을 사용한다.
@@ -116,6 +115,8 @@ DB 클라이언트
 
 ### 첫 단계에서 하지 않을 것
 
+아래 목록은 첫 vertical slice 당시의 범위 기록이다. 현재는 Svelte UI, Caddy 자동 설정, 다중 서비스 전달이 구현되어 있다.
+
 - Svelte UI
 - 사용자 로그인
 - Caddy 자동 설정
@@ -126,7 +127,7 @@ DB 클라이언트
 - Kubernetes
 - WireGuard
 - 자체 터널 프로토콜
-- 여러 서비스를 하나의 Connector에서 multiplex
+- 여러 서비스를 하나의 Connector에서 전달
 - Coolify API 연동
 - 운영 서버에 자동 설치
 - 인증서 자동 발급 UI
@@ -372,7 +373,7 @@ rathole process가 살아 있다는 사실만으로 Service가 healthy인 것으
 
 ## 13. 새 세션 첫 프롬프트
 
-새 채팅창에서 다음과 같이 시작하면 된다.
+아래 프롬프트는 첫 vertical slice 당시의 기록이며 현재 작업 지시로 사용하지 않는다.
 
 ~~~
 README.md와 docs/ 아래의 Markdown 문서를 먼저 읽고 docs/IMPLEMENTATION_PLAN.md의 4~10절을 기준으로 작업해줘.
