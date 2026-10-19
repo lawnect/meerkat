@@ -15,6 +15,7 @@
   let busy = $state(false);
   let deletingRoute = $state('');
   let targetCopied = $state(false);
+  let targetCopyTimer: ReturnType<typeof setTimeout> | undefined;
   let targetCopyError = $state('');
   let editingTarget = $state(false);
   let editHost = $state('');
@@ -34,7 +35,10 @@
       await navigator.clipboard.writeText(targetAddress);
       targetCopied = true;
       targetCopyError = '';
+      if (targetCopyTimer) clearTimeout(targetCopyTimer);
+      targetCopyTimer = setTimeout(() => { targetCopied = false; }, 2500);
     } catch {
+      targetCopied = false;
       targetCopyError = '연결 대상을 복사하지 못했습니다. 주소를 직접 선택해 복사하세요.';
     }
   }

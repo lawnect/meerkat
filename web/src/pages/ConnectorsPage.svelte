@@ -20,7 +20,10 @@
   let serviceError = $state('');
   let createError = $state('');
   let tokenError = $state('');
+  let copiedCode = $state('');
+  let copyTimer: ReturnType<typeof setTimeout> | undefined;
   let idCopied = $state(false);
+  let idCopyTimer: ReturnType<typeof setTimeout> | undefined;
   let idCopyError = $state('');
   let tokenBusy = $state(false);
   let installMethod = $state<'terminal' | 'compose'>('terminal');
@@ -77,6 +80,9 @@
     connectorState.enrollment = saved?.enrollment || null;
     connectorState.enrollmentWasReset = saved?.reset || false;
     tokenError = '';
+    copiedCode = '';
+    if (copyTimer) clearTimeout(copyTimer);
+    if (idCopyTimer) clearTimeout(idCopyTimer);
     deleteError = '';
     if (serviceDialog?.open) serviceDialog.close();
     clearServiceForm();
@@ -248,13 +254,16 @@
     await onChanged();
   }
 
-  async function copy(value: string, label: string): Promise<void> {
+  async function copy(value: string, label: string, key: string): Promise<void> {
     try {
       await navigator.clipboard.writeText(value);
-      tokenError = `${label}을(를) 복사했습니다.`;
-      setTimeout(() => { if (tokenError.startsWith(label)) tokenError = ''; }, 2500);
+      tokenError = '';
+      copiedCode = key;
+      if (copyTimer) clearTimeout(copyTimer);
+      copyTimer = setTimeout(() => { copiedCode = ''; }, 2500);
     } catch {
-      tokenError = '클립보드에 복사하지 못했습니다. 내용을 직접 선택해 복사하세요.';
+      copiedCode = '';
+      tokenError = `${label}을(를) 복사하지 못했습니다. 내용을 직접 선택해 복사하세요.`;
     }
   }
 
@@ -264,7 +273,10 @@
       await navigator.clipboard.writeText(selected.id);
       idCopied = true;
       idCopyError = '';
+      if (idCopyTimer) clearTimeout(idCopyTimer);
+      idCopyTimer = setTimeout(() => { idCopied = false; }, 2500);
     } catch {
+      idCopied = false;
       idCopyError = '터널 ID를 복사하지 못했습니다.';
     }
   }
@@ -396,7 +408,7 @@
                       {#if tokenBusy}<p role="status">설치 명령을 준비하고 있습니다…</p>{:else}<Button variant="secondary" onclick={() => issueToken()}>설치 안내 다시 만들기</Button>{/if}
                     {/if}
                     {#if !connectorState.enrollment && ['stale', 'disconnected', 'error'].includes(selected.status)}<Button variant="secondary" onclick={() => { if (confirm('기존 터널 자격 증명을 무효화하고 설치 명령을 다시 만듭니다. 실행 중인 연결은 끊깁니다. 계속할까요?')) issueToken(true); }} disabled={tokenBusy}>{tokenBusy ? '준비 중…' : '연결 초기화 후 설치 명령 만들기'}</Button>{/if}
-                    {#if tokenError}<p class:error={!tokenError.includes('복사했습니다')} class:success={tokenError.includes('복사했습니다')} role="status">{tokenError}</p>{/if}
+                    {#if tokenError}<p class="error" role="alert">{tokenError}</p>{/if}
                     {#if tokenError.includes('already_enrolled') && selected.status === 'draft'}
                       <Button variant="secondary" class="reset-token-button" onclick={() => { if (confirm('기존 터널 자격 증명을 무효화하고 설치 명령을 다시 만듭니다. 실행 중인 연결은 끊깁니다. 계속할까요?')) issueToken(true); }}>연결 초기화 후 설치 명령 만들기</Button>
                     {/if}
@@ -411,7 +423,7 @@
                           <p>터널을 실행할 서버에서 아래 명령을 실행하세요. 인증 정보는 Docker 볼륨에 보관됩니다.</p>
                           {#if connectorState.enrollmentWasReset}<p>기존 터널 컨테이너를 중지·삭제한 뒤 새 명령을 실행하세요.</p>{/if}
                           <div class="command-heading"><strong class="ui-meta-label">실행 명령</strong></div>
-                          <div class="code-block"><pre>{installCommand()}</pre><Button variant="plain" class="code-copy" aria-label="실행 명령 복사" title="실행 명령 복사" onclick={() => copy(installCommand(), '실행 명령')}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg></Button></div>
+                          <div class="code-block"><pre>{installCommand()}</pre><Button variant="plain" class={copiedCode === 'terminal' ? 'code-copy copied' : 'code-copy'} aria-label={copiedCode === 'terminal' ? '실행 명령 복사 완료' : '실행 명령 복사'} title={copiedCode === 'terminal' ? '복사 완료' : '실행 명령 복사'} onclick={() => copy(installCommand(), '실행 명령', 'terminal')}>{#if copiedCode === 'terminal'}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>{/if}</Button></div>
                         </div>
                         <div class="install-panel" role="tabpanel" id={`install-compose-panel-${selected.id}`} aria-labelledby={`install-compose-tab-${selected.id}`} tabindex="0" hidden={installMethod !== 'compose'}>
                           <div class="compose-choice" role="group" aria-label="Compose 파일 사용 방법">
@@ -421,16 +433,16 @@
                           {#if composeFileMode === 'existing'}
                           <p>기존 Compose 파일의 <code>services</code>에 터널 서비스를 추가합니다. 앱 네트워크는 연결 서비스를 등록할 때 설정할 수 있습니다.</p>
                           <div class="command-heading"><strong class="ui-meta-label">기존 파일의 services 아래에 추가</strong></div>
-                          <div class="code-block"><pre>{existingComposeService()}</pre><Button variant="plain" class="code-copy" aria-label="터널 서비스 설정 복사" title="터널 서비스 설정 복사" onclick={() => copy(existingComposeService(), '터널 서비스 설정')}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg></Button></div>
+                          <div class="code-block"><pre>{existingComposeService()}</pre><Button variant="plain" class={copiedCode === 'existing-service' ? 'code-copy copied' : 'code-copy'} aria-label={copiedCode === 'existing-service' ? '터널 서비스 설정 복사 완료' : '터널 서비스 설정 복사'} title={copiedCode === 'existing-service' ? '복사 완료' : '터널 서비스 설정 복사'} onclick={() => copy(existingComposeService(), '터널 서비스 설정', 'existing-service')}>{#if copiedCode === 'existing-service'}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>{/if}</Button></div>
                           <div class="command-heading"><strong class="ui-meta-label">기존 파일의 최상위 volumes 아래에 추가</strong></div>
-                          <div class="code-block"><pre>{existingComposeVolume()}</pre><Button variant="plain" class="code-copy" aria-label="볼륨 설정 복사" title="볼륨 설정 복사" onclick={() => copy(existingComposeVolume(), '볼륨 설정')}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg></Button></div>
+                          <div class="code-block"><pre>{existingComposeVolume()}</pre><Button variant="plain" class={copiedCode === 'existing-volume' ? 'code-copy copied' : 'code-copy'} aria-label={copiedCode === 'existing-volume' ? '볼륨 설정 복사 완료' : '볼륨 설정 복사'} title={copiedCode === 'existing-volume' ? '복사 완료' : '볼륨 설정 복사'} onclick={() => copy(existingComposeVolume(), '볼륨 설정', 'existing-volume')}>{#if copiedCode === 'existing-volume'}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>{/if}</Button></div>
                           <p>이미 <code>connector</code> 서비스가 있다면 새로 추가하지 말고 해당 설정을 갱신하세요. <code>volumes:</code>가 없다면 최상위에 먼저 추가하세요. 등록 후에는 일회용 초대 코드가 들어간 command 줄을 삭제하세요.</p>
                           {:else}
                           <p>기존 Compose 파일을 수정하지 않고, 아래 내용을 터널 전용 <code>meerkat-tunnel.yaml</code> 파일로 저장하세요.</p>
                           <div class="command-heading"><strong class="ui-meta-label">meerkat-tunnel.yaml</strong></div>
-                          <div class="code-block"><pre>{composeFile()}</pre><Button variant="plain" class="code-copy" aria-label="Compose 파일 복사" title="Compose 파일 복사" onclick={() => copy(composeFile(), 'Compose 파일')}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg></Button></div>
+                          <div class="code-block"><pre>{composeFile()}</pre><Button variant="plain" class={copiedCode === 'compose-file' ? 'code-copy copied' : 'code-copy'} aria-label={copiedCode === 'compose-file' ? 'Compose 파일 복사 완료' : 'Compose 파일 복사'} title={copiedCode === 'compose-file' ? '복사 완료' : 'Compose 파일 복사'} onclick={() => copy(composeFile(), 'Compose 파일', 'compose-file')}>{#if copiedCode === 'compose-file'}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>{/if}</Button></div>
                           <div class="command-heading"><strong class="ui-meta-label">실행</strong></div>
-                          <div class="code-block"><pre>{composeUpCommand}</pre><Button variant="plain" class="code-copy" aria-label="실행 명령 복사" title="실행 명령 복사" onclick={() => copy(composeUpCommand, '실행 명령')}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg></Button></div>
+                          <div class="code-block"><pre>{composeUpCommand}</pre><Button variant="plain" class={copiedCode === 'compose-up' ? 'code-copy copied' : 'code-copy'} aria-label={copiedCode === 'compose-up' ? '실행 명령 복사 완료' : '실행 명령 복사'} title={copiedCode === 'compose-up' ? '복사 완료' : '실행 명령 복사'} onclick={() => copy(composeUpCommand, '실행 명령', 'compose-up')}>{#if copiedCode === 'compose-up'}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>{/if}</Button></div>
                           <p>등록이 끝나면 파일에서 일회용 초대 코드가 들어간 <code>command</code> 줄을 삭제하고 터널 컨테이너를 다시 시작하세요. 인증 정보는 Docker 볼륨에 남습니다.</p>
                           {/if}
                         </div>
@@ -694,6 +706,7 @@
   .code-block pre { overflow-x: auto; overflow-wrap: anywhere; margin: 0; border-radius: 6px; padding: 12px 48px 12px 14px; background: #242a2f; color: #f5f3ec; font: 12px/1.55 ui-monospace, SFMono-Regular, monospace; white-space: pre-wrap; }
   .code-block :global(.code-copy) { position: absolute; top: 8px; right: 8px; display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid #59636a; border-radius: 5px; background: #343b40; color: #f5f3ec; cursor: pointer; }
   .code-block :global(.code-copy:hover) { border-color: #aeb7b3; background: #454d51; }
+  .code-block :global(.code-copy.copied), .code-block :global(.code-copy.copied:hover) { border-color: #65b48d; background: #234737; color: #a8e7c4; }
   .code-block :global(.code-copy svg) { width: 16px; height: 16px; }
   .sidebar-body { padding: 16px 18px; }
   .sidebar-body dl { display: grid; gap: 14px; margin: 0; }

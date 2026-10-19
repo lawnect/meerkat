@@ -16,9 +16,11 @@
   let busy = $state(false);
   let error = $state('');
   let copied = $state(false);
+  let targetCopyTimer: ReturnType<typeof setTimeout> | undefined;
   let copyError = $state('');
   let appNetworks = $state<Record<string, string>>({});
   let copiedNetwork = $state('');
+  let networkCopyTimer: ReturnType<typeof setTimeout> | undefined;
   let networkCopyError = $state('');
 
   const availableTunnels = $derived(data.connectors.filter((connector) => connector.status !== 'draft'));
@@ -81,6 +83,8 @@
       await navigator.clipboard.writeText(target);
       copied = true;
       copyError = '';
+      if (targetCopyTimer) clearTimeout(targetCopyTimer);
+      targetCopyTimer = setTimeout(() => { copied = false; }, 2500);
     } catch {
       copied = false;
       copyError = '복사하지 못했습니다. 주소를 직접 선택해 복사하세요.';
@@ -92,14 +96,17 @@
     return `docker network connect ${network} meerkat-${connectorName}`;
   }
 
-  async function copyNetworkCommand(connectorId: string, connectorName: string): Promise<void> {
+  async function copyNetworkCommand(connectorId: string, connectorName: string, serviceId: string): Promise<void> {
     const network = appNetworks[connectorId]?.trim() || '';
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(network)) return;
     try {
       await navigator.clipboard.writeText(networkCommand(connectorId, connectorName));
-      copiedNetwork = connectorId;
+      copiedNetwork = serviceId;
       networkCopyError = '';
+      if (networkCopyTimer) clearTimeout(networkCopyTimer);
+      networkCopyTimer = setTimeout(() => { copiedNetwork = ''; }, 2500);
     } catch {
+      copiedNetwork = '';
       networkCopyError = '명령을 복사하지 못했습니다. 직접 선택해 복사하세요.';
     }
   }
@@ -123,8 +130,8 @@
           <details class="access-guide">
             <summary>앱과 터널 연결 방법</summary>
             <p>Docker 앱이 터널과 다른 네트워크에 있다면 앱의 네트워크 이름을 입력하고, 앱 서버에서 아래 명령을 실행하세요. 이미 같은 네트워크에 있다면 이 단계는 필요 없습니다.</p>
-            <div class="field"><label for={`app-network-${record.connector.id}`}>앱의 Docker 네트워크</label><input id={`app-network-${record.connector.id}`} class="input input-bordered" value={appNetworks[record.connector.id] || ''} oninput={(event) => { appNetworks[record.connector.id] = event.currentTarget.value; copiedNetwork = ''; }} placeholder="예: myapp_default" spellcheck="false" /></div>
-            <div class="network-command"><code>{networkCommand(record.connector.id, record.connector.name)}</code><Button variant="secondary" size="sm" disabled={!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(appNetworks[record.connector.id]?.trim() || '')} onclick={() => copyNetworkCommand(record.connector.id, record.connector.name)}>{copiedNetwork === record.connector.id ? '복사됨' : '명령 복사'}</Button></div>
+            <div class="field"><label for={`app-network-${record.service.id}`}>앱의 Docker 네트워크</label><input id={`app-network-${record.service.id}`} class="input input-bordered" value={appNetworks[record.connector.id] || ''} oninput={(event) => { appNetworks[record.connector.id] = event.currentTarget.value; copiedNetwork = ''; }} placeholder="예: myapp_default" spellcheck="false" /></div>
+            <div class="network-command"><code>{networkCommand(record.connector.id, record.connector.name)}</code><Button variant="secondary" size="sm" class={copiedNetwork === record.service.id ? 'network-copy copied' : 'network-copy'} aria-label={copiedNetwork === record.service.id ? '네트워크 연결 명령 복사 완료' : '네트워크 연결 명령 복사'} title={copiedNetwork === record.service.id ? '복사 완료' : '네트워크 연결 명령 복사'} disabled={!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(appNetworks[record.connector.id]?.trim() || '')} onclick={() => copyNetworkCommand(record.connector.id, record.connector.name, record.service.id)}>{#if copiedNetwork === record.service.id}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0 2 2h2" /></svg>{/if}</Button></div>
             {#if networkCopyError}<p class="error" role="alert">{networkCopyError}</p>{/if}
             <p>Compose로 터널을 관리한다면 다음 재생성 때도 유지되도록 터널 서비스의 <code>networks:</code>에 앱 네트워크를 추가하세요. 기존 외부 통신 네트워크도 유지해야 합니다.</p>
             <p>Linux 서버에서 실행 중인 앱이 <code>127.0.0.1</code>에서만 수신한다면, 터널의 기존 데이터 볼륨을 유지한 채 컨테이너를 호스트 네트워크(<code>--network host</code> 또는 Compose의 <code>network_mode: host</code>)로 다시 만드세요.</p>
@@ -180,6 +187,9 @@
   .access-guide .field input { width: 100%; }
   .network-command { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 9px; }
   .network-command code { overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 5px; padding: 7px 10px; background: #f7f5f1; color: var(--ink); }
+  .network-command :global(.network-copy) { display: grid; place-items: center; width: 30px; min-height: 30px; padding: 0; }
+  .network-command :global(.network-copy svg) { width: 16px; height: 16px; }
+  .network-command :global(.network-copy.copied) { border-color: var(--green); color: var(--green); }
   .empty-state { display: grid; justify-items: start; gap: 10px; }
   .empty-state p { margin: 0; color: var(--muted); font-size: 12px; }
   .availability-note { margin: 14px 2px 0; color: var(--muted); font-size: 12px; }
