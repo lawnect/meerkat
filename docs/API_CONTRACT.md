@@ -37,7 +37,7 @@ Connector 폐기는 관련 Service·Route의 새 연결을 먼저 차단한 뒤 
 ~~~
 GET    /api/v1/connectors/:id/services
 POST   /api/v1/connectors/:id/services
-PATCH  /api/v1/services/:id
+PATCH  /api/v1/connectors/:id/services/:service_id
 POST   /api/v1/services/:id/revoke
 GET    /api/v1/services/:id/routes
 POST   /api/v1/services/:id/routes
@@ -46,6 +46,7 @@ POST   /api/v1/routes/:id/disable
 ~~~
 
 Service 생성은 외부 공개를 뜻하지 않는다. Route를 활성화해야 외부 endpoint가 생긴다.
+서비스의 앱 호스트와 포트는 `PATCH /api/v1/connectors/:id/services/:service_id`에 `{"target":{"host":"app","port":3000}}`을 보내 수정한다. 대상이 바뀌면 설정 revision을 올려 Connector가 저장된 identity로 재시작하고, 새 대상의 응답이 확인될 때까지 공개 경로를 보류한다.
 
 ### 예시: Service 생성
 

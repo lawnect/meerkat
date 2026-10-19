@@ -119,6 +119,17 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
       state.services.push(service);
       return { ...service, target: { ...service.target } };
     }
+    if (parts.length === 6 && method === 'PATCH') {
+      const service = state.services.find((item) => item.id === parts[5] && item.connector_id === connectorId);
+      if (!service) fail('service_not_found');
+      const host = input.target?.host?.trim();
+      const port = Number(input.target?.port);
+      if (!host || !Number.isInteger(port) || port < 1 || port > 65535) fail('invalid_service');
+      service.target = { host, port };
+      service.observed_status = 'unknown';
+      service.updated_at = now();
+      return { ...service, target: { ...service.target } };
+    }
     if (parts.length === 6 && method === 'DELETE') {
       const serviceId = parts[5];
       if (state.routes.some((route) => route.service_id === serviceId)) fail('service_has_routes');

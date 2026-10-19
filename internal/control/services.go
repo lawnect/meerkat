@@ -77,6 +77,34 @@ func (d *Database) CreateService(ctx context.Context, connectorID, name, protoco
 	return s, nil
 }
 
+func (d *Database) UpdateServiceTarget(ctx context.Context, connectorID, serviceID string, target contract.Target) (Service, error) {
+	if !validation.Label(connectorID) || !validation.Label(serviceID) || validation.Target(target) != nil {
+		return Service{}, ErrInvalidService
+	}
+	now := time.Now().UTC()
+	result, err := d.db.ExecContext(ctx, `UPDATE services SET target_host = ?, target_port = ?, observed_status = 'unknown', updated_at = ? WHERE id = ? AND connector_id = ?`, target.Host, target.Port, now.Format(time.RFC3339Nano), serviceID, connectorID)
+	if err != nil {
+		return Service{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Service{}, err
+	}
+	if affected == 0 {
+		return Service{}, ErrServiceNotFound
+	}
+	services, err := d.ListServices(ctx, connectorID)
+	if err != nil {
+		return Service{}, err
+	}
+	for _, service := range services {
+		if service.ID == serviceID {
+			return service, nil
+		}
+	}
+	return Service{}, ErrServiceNotFound
+}
+
 // DeleteService removes a service only when it has no public routes.
 func (d *Database) DeleteService(ctx context.Context, connectorID, serviceID string) error {
 	if !validation.Label(connectorID) || !validation.Label(serviceID) {

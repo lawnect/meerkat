@@ -7,7 +7,7 @@
   import LinkButton from './ui/LinkButton.svelte';
   import { pagePath } from '../navigation';
 
-  let { record, outlet, onChanged }: { record: ServiceRecord; outlet: Outlet; onChanged: () => Promise<void> } = $props();
+  let { record, outlet, onChanged, view = 'both' }: { record: ServiceRecord; outlet: Outlet; onChanged: () => Promise<void>; view?: 'both' | 'service' | 'routes' } = $props();
   let subdomain = $state('');
   let selectedDomain = $state('');
   let addError = $state('');
@@ -16,6 +16,11 @@
   let deletingRoute = $state('');
   let targetCopied = $state(false);
   let targetCopyError = $state('');
+  let editingTarget = $state(false);
+  let editHost = $state('');
+  let editPort = $state('');
+  let editBusy = $state(false);
+  let editError = $state('');
   let routeDialog = $state<HTMLDialogElement>();
   const domains = $derived(outlet.domains?.length ? outlet.domains : outlet.domain ? [outlet.domain] : []);
   const baseDomain = $derived(domains.includes(selectedDomain) ? selectedDomain : domains[0] || '');
@@ -29,6 +34,34 @@
       targetCopyError = '';
     } catch {
       targetCopyError = '연결 대상을 복사하지 못했습니다. 주소를 직접 선택해 복사하세요.';
+    }
+  }
+
+  function startTargetEdit(): void {
+    editHost = record.service.target.host;
+    editPort = String(record.service.target.port);
+    editError = '';
+    editingTarget = true;
+  }
+
+  async function saveTarget(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    if (editBusy) return;
+    editBusy = true;
+    editError = '';
+    try {
+      await api(`/api/v1/connectors/${encodeURIComponent(record.connector.id)}/services/${encodeURIComponent(record.service.id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ target: { host: editHost.trim(), port: Number(editPort) } }),
+      });
+      editingTarget = false;
+      targetCopied = false;
+      await onChanged();
+    } catch (cause) {
+      const code = errorMessage(cause);
+      editError = code === 'invalid_service' ? '앱 호스트와 내부 포트를 확인하세요.' : `연결 대상을 저장하지 못했습니다: ${code}`;
+    } finally {
+      editBusy = false;
     }
   }
 
@@ -87,19 +120,33 @@
 </script>
 
 <article class="service">
-  <div class="service-grid">
+  <div class:single={view !== 'both'} class="service-grid">
+    {#if view !== 'routes'}
     <section class="service-column" aria-label="연결 서비스">
+      {#if view === 'both'}
       <div class="section-heading"><div class="section-title"><h3 class="ui-meta-label">연결 서비스</h3><InfoTooltip id={`service-help-${record.service.id}`} label="연결 서비스" description="터널이 요청을 전달하는 앱과 내부 주소입니다. 상태는 해당 앱 포트의 응답을 나타냅니다." /></div></div>
+      {/if}
       <div class="app-row">
         <div class="app-summary"><strong>{record.service.name}</strong><Status label={statusLabel(record.service.observed_status)} value={record.service.observed_status} /></div>
         <div class="target-row"><span class="ui-meta-label">연결 대상</span><code>{targetAddress}</code><Button variant="plain" size="sm" class={targetCopied ? 'target-copy copied' : 'target-copy'} aria-label={targetCopied ? '연결 대상 복사 완료' : '연결 대상 복사'} title={targetCopied ? '복사 완료' : '연결 대상 복사'} onclick={copyTarget}>
           {#if targetCopied}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>{/if}
-        </Button></div>
+        </Button><Button variant="text" size="sm" onclick={startTargetEdit}>수정</Button></div>
         {#if targetCopyError}<p class="error" role="alert">{targetCopyError}</p>{/if}
+        {#if editingTarget}
+          <form class="target-edit" onsubmit={saveTarget}>
+            <div class="field"><label for={`edit-host-${record.service.id}`}>앱 호스트</label><input id={`edit-host-${record.service.id}`} class="input input-bordered" bind:value={editHost} required /></div>
+            <div class="field"><label for={`edit-port-${record.service.id}`}>내부 포트</label><input id={`edit-port-${record.service.id}`} class="input input-bordered" type="number" min="1" max="65535" bind:value={editPort} required /></div>
+            <p class="target-edit-note">저장하면 터널 연결이 잠시 끊길 수 있습니다.</p>
+            {#if editError}<p class="error" role="alert">{editError}</p>{/if}
+            <div class="target-edit-actions"><Button variant="secondary" size="sm" disabled={editBusy} onclick={() => editingTarget = false}>취소</Button><Button type="submit" size="sm" disabled={editBusy}>{editBusy ? '저장 중…' : '저장'}</Button></div>
+          </form>
+        {/if}
       </div>
     </section>
+    {/if}
+    {#if view !== 'service'}
     <section class="service-column routes-section" aria-label="공개 주소">
-      <div class="section-heading"><div class="section-title"><h3 class="ui-meta-label">공개 주소</h3><InfoTooltip id={`routes-help-${record.service.id}`} label="공개 주소" description="인터넷에서 연결 서비스에 접속할 HTTPS 주소입니다. 등록된 도메인의 서브도메인을 선택해 추가할 수 있습니다." /></div>{#if baseDomain}<Button variant="text" size="sm" onclick={openRouteDialog}>+ 주소 추가</Button>{/if}</div>
+      <div class="section-heading">{#if view === 'both'}<div class="section-title"><h3 class="ui-meta-label">공개 주소</h3><InfoTooltip id={`routes-help-${record.service.id}`} label="공개 주소" description="인터넷에서 연결 서비스에 접속할 HTTPS 주소입니다. 등록된 도메인의 서브도메인을 선택해 추가할 수 있습니다." /></div>{/if}{#if baseDomain}<Button variant="text" size="sm" onclick={openRouteDialog}>+ 주소 추가</Button>{/if}</div>
       {#if record.routes.length}
         <ul class="route-list">
           {#each record.routes as route (route.id)}
@@ -131,10 +178,11 @@
       {/if}
       {#if routeError}<p class="error" role="alert">{routeError}</p>{/if}
     </section>
+    {/if}
   </div>
 </article>
 
-{#if baseDomain}
+{#if baseDomain && view !== 'service'}
   <dialog bind:this={routeDialog} class="route-dialog" aria-labelledby="route-dialog-title-{record.service.id}" aria-describedby="route-dialog-description-{record.service.id}" oncancel={(event) => { if (busy) event.preventDefault(); }} onclose={() => { subdomain = ''; selectedDomain = ''; addError = ''; }}>
     <form class="route-form" onsubmit={addRoute}>
       <h2 id="route-dialog-title-{record.service.id}">공개 주소 추가</h2>
@@ -154,8 +202,11 @@
 <style>
   .service { min-width: 0; }
   .service-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .service-grid.single { grid-template-columns: 1fr; }
   .service-column { min-width: 0; }
   .routes-section { border-left: 1px solid var(--line); padding-left: 20px; }
+  .service-grid.single .routes-section { border-left: 0; padding-left: 0; }
+  .service-grid.single .routes-section .section-heading { justify-content: flex-end; }
   .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 24px; margin-bottom: 8px; }
   .section-title { display: flex; align-items: center; gap: 5px; }
   .section-heading h3 { margin: 0; }
@@ -168,6 +219,11 @@
   .target-row :global(.target-copy:hover) { border-color: #b9aba0; background: #f6f1ec; color: var(--ink); }
   .target-row :global(.target-copy.copied) { border-color: var(--green); color: var(--green); }
   .target-row :global(.target-copy svg) { width: 15px; height: 15px; }
+  .target-edit { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
+  .target-edit input { width: 100%; }
+  .target-edit .error, .target-edit-note, .target-edit-actions { grid-column: 1 / -1; }
+  .target-edit-note { margin: 0; color: var(--muted); font-size: 11px; }
+  .target-edit-actions { display: flex; justify-content: flex-end; gap: 6px; }
   .app-row :global(.connection-status) { margin-left: 0; }
   .route-list { list-style: none; margin: 0; padding: 0; }
   .route-list li { display: grid; grid-template-columns: minmax(0, 1fr) 24px 30px; align-items: center; gap: 10px; min-height: 40px; border-top: 1px solid var(--line); padding: 5px 0; }
@@ -204,5 +260,7 @@
   @media (max-width: 700px) {
     .service-grid { grid-template-columns: 1fr; gap: 14px; }
     .routes-section { border-top: 1px solid var(--line); border-left: 0; padding-top: 12px; padding-left: 0; }
+    .service-grid.single .routes-section { border-top: 0; padding-top: 0; }
+    .target-edit { grid-template-columns: 1fr; }
   }
 </style>

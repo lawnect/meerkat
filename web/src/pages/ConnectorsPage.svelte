@@ -349,9 +349,9 @@
               <div class="metric"><span class="ui-meta-label">최근 응답</span><strong class="metric-date">{selected.last_seen ? new Date(selected.last_seen).toLocaleString('ko-KR', { dateStyle: 'medium', timeStyle: 'short' }) : '기록 없음'}</strong></div>
             </div>
           </Card>
-          <Card as="section" padding="none" class="connector-detail" aria-label={`${selected.name} 터널 서비스와 설치 안내`}>
+          {#if selected.status !== 'connected' || connectorState.enrollment}
+          <Card as="section" padding="none" class="connector-detail" aria-label={`${selected.name} 터널 설치 안내`}>
             <div class="connector-body">
-                {#if selected.status !== 'connected' || connectorState.enrollment}
                   <section class="detail-section token-panel">
                     <div class="section-heading"><div><div class="section-title"><h3 class="ui-meta-label">터널 설치 및 연결</h3><InfoTooltip id={`connector-connection-help-${selected.id}`} label="터널 설치 및 연결" description="서버에서 터널을 실행하고 연결 상태를 확인합니다. 앱 주소는 연결 서비스 메뉴에서 별도로 등록합니다." /></div>{#if selected.status !== 'draft'}<p>{selected.status === 'connecting' ? '터널이 연결을 준비 중입니다.' : selected.status === 'connected' ? '터널이 연결되었습니다.' : '터널의 응답이 없습니다. 설치한 컨테이너와 네트워크를 확인하세요.'}</p>{/if}</div></div>
                     {#if !connectorState.enrollment && selected.status === 'draft'}
@@ -401,31 +401,42 @@
                       </div>
                     {/if}
                   </section>
-                {/if}
-                {#if selected.status === 'connected'}
-                  <section class="detail-section connected-panel">
-                    <div class="ui-card-header"><h3 class="ui-card-title">서비스 및 공개 주소 <small>{selectedRecords.length}</small></h3></div>
-                    {#if selectedRecords.length}
-                      <ul class="service-list">
-                        {#each selectedRecords as record (record.service.id)}
-                          <li class="service-entry"><ServiceBlock {record} outlet={data.outlet} {onChanged} /></li>
-                        {/each}
-                      </ul>
-                    {:else}
-                      <div class="section-heading"><div class="section-title"><h3 class="ui-meta-label">연결 서비스</h3><InfoTooltip id={`connector-service-help-${selected.id}`} label="연결 서비스" description="이 터널이 요청을 전달할 앱의 내부 주소를 등록합니다. 한 터널에는 서비스 하나를 연결할 수 있습니다." /></div></div>
-                      <p>아직 연결된 서비스가 없습니다. 이 터널에서 접속할 앱을 등록하세요.</p>
-                      <form class="service-form" onsubmit={createService}>
-                        <div class="field"><label for={`service-name-${selected.id}`}>서비스 이름</label><input class="input input-bordered" id={`service-name-${selected.id}`} bind:value={serviceName} placeholder="예: app" required /></div>
-                        <div class="field"><label for={`service-host-${selected.id}`}>앱 호스트</label><input class="input input-bordered" id={`service-host-${selected.id}`} bind:value={serviceHost} placeholder="app 또는 127.0.0.1" required /></div>
-                        <div class="field"><label for={`service-port-${selected.id}`}>내부 포트</label><input class="input input-bordered" id={`service-port-${selected.id}`} type="number" min="1" max="65535" bind:value={servicePort} placeholder="3000" required /></div>
-                        {#if serviceError}<p class="error" role="alert">{serviceError}</p>{/if}
-                        <div class="service-actions"><Button type="submit" disabled={serviceBusy}>{serviceBusy ? '등록 중…' : '연결 서비스 등록'}</Button></div>
-                      </form>
-                    {/if}
-                  </section>
-                {/if}
             </div>
           </Card>
+          {/if}
+          {#if selected.status === 'connected'}
+            <Card as="section" padding="none" aria-label="연결 서비스">
+              <div class="ui-card-header"><div class="section-title"><h3 class="ui-card-title">연결 서비스 <small>{selectedRecords.length}</small></h3><InfoTooltip id={`connector-service-help-${selected.id}`} label="연결 서비스" description="이 터널이 요청을 전달할 앱의 내부 주소입니다. 한 터널에는 서비스 하나를 연결할 수 있습니다." /></div></div>
+              <div class="connected-card-body">
+                {#if selectedRecords.length}
+                  {#each selectedRecords as record (record.service.id)}
+                    <ServiceBlock {record} outlet={data.outlet} {onChanged} view="service" />
+                  {/each}
+                {:else}
+                  <p>아직 연결된 서비스가 없습니다. 이 터널에서 접속할 앱을 등록하세요.</p>
+                  <form class="service-form" onsubmit={createService}>
+                    <div class="field"><label for={`service-name-${selected.id}`}>서비스 이름</label><input class="input input-bordered" id={`service-name-${selected.id}`} bind:value={serviceName} placeholder="예: app" required /></div>
+                    <div class="field"><label for={`service-host-${selected.id}`}>앱 호스트</label><input class="input input-bordered" id={`service-host-${selected.id}`} bind:value={serviceHost} placeholder="app 또는 127.0.0.1" required /></div>
+                    <div class="field"><label for={`service-port-${selected.id}`}>내부 포트</label><input class="input input-bordered" id={`service-port-${selected.id}`} type="number" min="1" max="65535" bind:value={servicePort} placeholder="3000" required /></div>
+                    {#if serviceError}<p class="error" role="alert">{serviceError}</p>{/if}
+                    <div class="service-actions"><Button type="submit" disabled={serviceBusy}>{serviceBusy ? '등록 중…' : '연결 서비스 등록'}</Button></div>
+                  </form>
+                {/if}
+              </div>
+            </Card>
+            <Card as="section" padding="none" aria-label="공개 주소">
+              <div class="ui-card-header"><div class="section-title"><h3 class="ui-card-title">공개 주소 <small>{selectedRecords.reduce((total, record) => total + record.routes.length, 0)}</small></h3><InfoTooltip id={`connector-route-help-${selected.id}`} label="공개 주소" description="인터넷에서 연결 서비스에 접속할 HTTPS 주소입니다." /></div></div>
+              <div class="connected-card-body">
+                {#if selectedRecords.length}
+                  {#each selectedRecords as record (record.service.id)}
+                    <ServiceBlock {record} outlet={data.outlet} {onChanged} view="routes" />
+                  {/each}
+                {:else}
+                  <p>연결 서비스를 등록한 뒤 공개 주소를 추가할 수 있습니다.</p>
+                {/if}
+              </div>
+            </Card>
+          {/if}
           {#if selected.status === 'connected'}
             <Card as="section" padding="none" class="paths-card" aria-label="요청 경로">
               <div class="ui-card-header"><h3 class="ui-card-title">요청 경로 <small>{selectedPaths.length}</small></h3></div>
@@ -442,7 +453,7 @@
                   {/each}
                 </ul>
               {:else}
-                <p class="paths-empty">아직 공개 주소가 없습니다. 위 연결 서비스에서 주소를 추가할 수 있습니다.</p>
+                <p class="paths-empty">아직 공개 주소가 없습니다. 위 공개 주소에서 주소를 추가할 수 있습니다.</p>
               {/if}
             </Card>
           {/if}
@@ -566,8 +577,8 @@
   .connector-body { padding: 0 18px 16px; }
   .connector-body .detail-section:first-child { margin-top: 0; border-top: 0; padding-top: 0; }
   .connector-body .token-panel:first-child { padding-top: 18px; }
-  .connected-panel > .ui-card-header { margin: 0 -18px 16px; }
-  .service-list { list-style: none; margin: 0; padding: 0; }
+  .connected-card-body { padding: 16px 18px; }
+  .connected-card-body p { margin: 0; color: var(--muted); font-size: 12px; }
   .path-list { list-style: none; margin: 0; padding: 0; }
   .path-row { display: grid; grid-template-columns: minmax(0, 1.4fr) 18px minmax(0, 1fr) 18px minmax(0, 1.4fr); align-items: center; gap: 10px; min-height: 54px; padding: 10px 18px; }
   .path-row + .path-row { border-top: 1px solid var(--line); }
@@ -589,10 +600,6 @@
   .section-title { display: flex; align-items: center; gap: 5px; }
   .section-heading h3 { margin: 0; }
   .section-heading p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
-  .connected-panel { display: grid; gap: 8px; min-width: 0; }
-  .connected-panel p { margin: 0; color: var(--muted); font-size: 12px; }
-  .service-entry { min-width: 0; padding: 2px 0; }
-  .service-entry + .service-entry { border-top: 1px solid var(--line); padding-top: 14px; }
   .service-form { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) minmax(110px, 1fr); gap: 10px; margin-top: 8px; }
   .service-form input { width: 100%; }
   .service-form .error, .service-actions { grid-column: 1 / -1; }

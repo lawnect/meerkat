@@ -104,6 +104,7 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/connectors/{id}", s.deleteConnector)
 	mux.HandleFunc("GET /api/v1/connectors/{id}/services", s.listServices)
 	mux.HandleFunc("POST /api/v1/connectors/{id}/services", s.createService)
+	mux.HandleFunc("PATCH /api/v1/connectors/{id}/services/{service_id}", s.updateServiceTarget)
 	mux.HandleFunc("DELETE /api/v1/connectors/{id}/services/{service_id}", s.deleteService)
 	mux.HandleFunc("GET /api/v1/services/{id}/routes", s.listRoutes)
 	mux.HandleFunc("POST /api/v1/services/{id}/routes", s.createHTTPRoute)
@@ -968,6 +969,65 @@ func (s *Store) createService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, 201, service)
+}
+
+type serviceTargetRequest struct {
+	Target contract.Target `json:"target"`
+}
+
+func (s *Store) updateServiceTarget(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	var req serviceTargetRequest
+	if !decode(w, r, &req, "target") {
+		return
+	}
+	id, serviceID := r.PathValue("id"), r.PathValue("service_id")
+	s.mu.Lock()
+	record, ok := s.managed[id]
+	if !ok || record.Configuration.ServiceID != serviceID {
+		s.mu.Unlock()
+		fail(w, r, 404, "service_not_found")
+		return
+	}
+	changed := record.Configuration.Target != req.Target
+	service, err := s.control.UpdateServiceTarget(r.Context(), id, serviceID, req.Target)
+	if err != nil {
+		s.mu.Unlock()
+		switch {
+		case errors.Is(err, control.ErrInvalidService):
+			fail(w, r, 400, "invalid_service")
+		case errors.Is(err, control.ErrServiceNotFound):
+			fail(w, r, 404, "service_not_found")
+		default:
+			fail(w, r, 503, "persistence_failed")
+		}
+		return
+	}
+	if changed {
+		record.Configuration.Target = req.Target
+		record.Configuration.Revision++
+		record.LastHeartbeat = nil
+		record.TunnelStatus = "unknown"
+		if err := s.saveManaged(id, record); err != nil {
+			s.mu.Unlock()
+			fail(w, r, 503, "persistence_failed")
+			return
+		}
+	}
+	s.mu.Unlock()
+	if changed {
+		if err := s.reconcileProxy(r.Context()); err != nil {
+			fail(w, r, 503, "proxy_reconcile_failed")
+			return
+		}
+	}
+	reply(w, 200, service)
 }
 
 func (s *Store) deleteService(w http.ResponseWriter, r *http.Request) {
