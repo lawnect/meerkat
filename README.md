@@ -232,7 +232,7 @@ Connector JSON 예제는 [configs/connector.example.json](configs/connector.exam
 
 Linux 서버의 앱이 `127.0.0.1:3000`에서만 수신한다면 터널 컨테이너도 Linux 호스트 네트워크에서 실행해야 합니다. 터널 연결 후 기존 데이터 볼륨을 유지하며 컨테이너를 `--network host`로 다시 만들거나 Compose 서비스에 `network_mode: host`를 지정하고 다시 생성하세요. 연결 서비스에는 `127.0.0.1`과 `3000`을 입력합니다. 앱 포트를 인터넷에 공개할 필요는 없습니다.
 
-설치 안내에서는 **Docker 명령**, **기존 Compose 파일에 추가**, **터널 전용 Compose 파일** 중 설치 방법을 선택할 수 있습니다. 어느 방법도 터널 설치 시 앱 네트워크를 요구하지 않습니다. 전용 파일은 `meerkat-tunnel.yaml`로 저장하고 `docker compose -f meerkat-tunnel.yaml up -d`로 실행합니다.
+설치 안내에서는 **Docker 명령** 또는 **Docker Compose**를 선택할 수 있습니다. Compose 안에서는 기존 파일에 터널 서비스를 추가하거나 새 터널 전용 파일을 만들 수 있습니다. 어느 방법도 터널 설치 시 앱 네트워크를 요구하지 않습니다. 전용 파일은 `meerkat-tunnel.yaml`로 저장하고 `docker compose -f meerkat-tunnel.yaml up -d`로 실행합니다.
 
 관리 화면은 Outlet 주소, 터널 이름, 일회용 등록 토큰을 초대 코드 하나로 묶어 `docker run ... ghcr.io/lawnect/meerkat:latest connect <초대코드>` 형태의 명령을 만듭니다. 초대 코드에는 비밀 토큰이 포함되므로 공유하지 마세요. 설치 안내는 같은 브라우저 탭에서 새로고침해도 토큰 만료 전까지 유지되고, 터널 연결이 확인되면 사라집니다. 터널은 등록 후 자격 증명을 Docker 볼륨에 저장합니다. Compose에서는 연결이 끝난 후 일회용 초대 코드가 들어간 `command` 줄을 제거하고 터널 컨테이너를 다시 시작할 수 있습니다. 볼륨의 저장된 identity를 사용해 재접속합니다. 기존 PoC와 수동 설정에서는 `MEERKAT_ENROLLMENT_TOKEN` 또는 `MEERKAT_ENROLLMENT_TOKEN_FILE` 방식도 계속 사용할 수 있습니다.
 

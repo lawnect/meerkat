@@ -22,7 +22,8 @@
   let idCopied = $state(false);
   let idCopyError = $state('');
   let tokenBusy = $state(false);
-  let installMethod = $state<'terminal' | 'existing-compose' | 'compose'>('terminal');
+  let installMethod = $state<'terminal' | 'compose'>('terminal');
+  let composeFileMode = $state<'existing' | 'new'>('existing');
   let createBusy = $state(false);
   let deleteBusy = $state(false);
   let deleteError = $state('');
@@ -314,7 +315,7 @@
   }
 
   function onInstallTabKeydown(event: KeyboardEvent): void {
-    const methods = ['terminal', 'existing-compose', 'compose'] as const;
+    const methods = ['terminal', 'compose'] as const;
     let next: typeof methods[number];
     if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
       const direction = event.key === 'ArrowRight' ? 1 : -1;
@@ -366,8 +367,7 @@
                       <div class="token-box">
                         <div class="install-tabs" role="tablist" aria-label="터널 설치 방법">
                           <Button variant="plain" class={installMethod === 'terminal' ? 'install-tab active' : 'install-tab'} id={`install-terminal-tab-${selected.id}`} role="tab" aria-selected={installMethod === 'terminal'} aria-controls={`install-terminal-panel-${selected.id}`} tabindex={installMethod === 'terminal' ? 0 : -1} onclick={() => installMethod = 'terminal'} onkeydown={onInstallTabKeydown}>Docker 명령</Button>
-                          <Button variant="plain" class={installMethod === 'existing-compose' ? 'install-tab active' : 'install-tab'} id={`install-existing-compose-tab-${selected.id}`} role="tab" aria-selected={installMethod === 'existing-compose'} aria-controls={`install-existing-compose-panel-${selected.id}`} tabindex={installMethod === 'existing-compose' ? 0 : -1} onclick={() => installMethod = 'existing-compose'} onkeydown={onInstallTabKeydown}>기존 Compose 파일에 추가</Button>
-                          <Button variant="plain" class={installMethod === 'compose' ? 'install-tab active' : 'install-tab'} id={`install-compose-tab-${selected.id}`} role="tab" aria-selected={installMethod === 'compose'} aria-controls={`install-compose-panel-${selected.id}`} tabindex={installMethod === 'compose' ? 0 : -1} onclick={() => installMethod = 'compose'} onkeydown={onInstallTabKeydown}>터널 전용 Compose 파일</Button>
+                          <Button variant="plain" class={installMethod === 'compose' ? 'install-tab active' : 'install-tab'} id={`install-compose-tab-${selected.id}`} role="tab" aria-selected={installMethod === 'compose'} aria-controls={`install-compose-panel-${selected.id}`} tabindex={installMethod === 'compose' ? 0 : -1} onclick={() => installMethod = 'compose'} onkeydown={onInstallTabKeydown}>Docker Compose</Button>
                         </div>
                         <div class="install-panel" role="tabpanel" id={`install-terminal-panel-${selected.id}`} aria-labelledby={`install-terminal-tab-${selected.id}`} tabindex="0" hidden={installMethod !== 'terminal'}>
                           <p>터널을 실행할 서버에서 아래 명령을 실행하세요. 인증 정보는 Docker 볼륨에 보관됩니다.</p>
@@ -375,21 +375,26 @@
                           <div class="command-heading"><strong class="ui-meta-label">실행 명령</strong></div>
                           <div class="code-block"><pre>{installCommand()}</pre><Button variant="plain" class="code-copy" aria-label="실행 명령 복사" title="실행 명령 복사" onclick={() => copy(installCommand(), '실행 명령')}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg></Button></div>
                         </div>
-                        <div class="install-panel" role="tabpanel" id={`install-existing-compose-panel-${selected.id}`} aria-labelledby={`install-existing-compose-tab-${selected.id}`} tabindex="0" hidden={installMethod !== 'existing-compose'}>
+                        <div class="install-panel" role="tabpanel" id={`install-compose-panel-${selected.id}`} aria-labelledby={`install-compose-tab-${selected.id}`} tabindex="0" hidden={installMethod !== 'compose'}>
+                          <div class="compose-choice" role="group" aria-label="Compose 파일 사용 방법">
+                            <Button variant="secondary" size="sm" aria-pressed={composeFileMode === 'existing'} onclick={() => composeFileMode = 'existing'}>기존 파일에 추가</Button>
+                            <Button variant="secondary" size="sm" aria-pressed={composeFileMode === 'new'} onclick={() => composeFileMode = 'new'}>새 파일로 만들기</Button>
+                          </div>
+                          {#if composeFileMode === 'existing'}
                           <p>기존 Compose 파일의 <code>services</code>에 터널 서비스를 추가합니다. 앱 네트워크는 연결 서비스를 등록할 때 설정할 수 있습니다.</p>
                           <div class="command-heading"><strong class="ui-meta-label">기존 파일의 services 아래에 추가</strong></div>
                           <div class="code-block"><pre>{existingComposeService()}</pre><Button variant="plain" class="code-copy" aria-label="터널 서비스 설정 복사" title="터널 서비스 설정 복사" onclick={() => copy(existingComposeService(), '터널 서비스 설정')}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg></Button></div>
                           <div class="command-heading"><strong class="ui-meta-label">기존 파일의 최상위 volumes 아래에 추가</strong></div>
                           <div class="code-block"><pre>{existingComposeVolume()}</pre><Button variant="plain" class="code-copy" aria-label="볼륨 설정 복사" title="볼륨 설정 복사" onclick={() => copy(existingComposeVolume(), '볼륨 설정')}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg></Button></div>
                           <p>이미 <code>connector</code> 서비스가 있다면 새로 추가하지 말고 해당 설정을 갱신하세요. <code>volumes:</code>가 없다면 최상위에 먼저 추가하세요. 등록 후에는 일회용 초대 코드가 들어간 command 줄을 삭제하세요.</p>
-                        </div>
-                        <div class="install-panel" role="tabpanel" id={`install-compose-panel-${selected.id}`} aria-labelledby={`install-compose-tab-${selected.id}`} tabindex="0" hidden={installMethod !== 'compose'}>
+                          {:else}
                           <p>기존 Compose 파일을 수정하지 않고, 아래 내용을 터널 전용 <code>meerkat-tunnel.yaml</code> 파일로 저장하세요.</p>
                           <div class="command-heading"><strong class="ui-meta-label">meerkat-tunnel.yaml</strong></div>
                           <div class="code-block"><pre>{composeFile()}</pre><Button variant="plain" class="code-copy" aria-label="Compose 파일 복사" title="Compose 파일 복사" onclick={() => copy(composeFile(), 'Compose 파일')}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg></Button></div>
                           <div class="command-heading"><strong class="ui-meta-label">실행</strong></div>
                           <div class="code-block"><pre>{composeUpCommand}</pre><Button variant="plain" class="code-copy" aria-label="실행 명령 복사" title="실행 명령 복사" onclick={() => copy(composeUpCommand, '실행 명령')}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg></Button></div>
                           <p>등록이 끝나면 파일에서 일회용 초대 코드가 들어간 <code>command</code> 줄을 삭제하고 터널 컨테이너를 다시 시작하세요. 인증 정보는 Docker 볼륨에 남습니다.</p>
+                          {/if}
                         </div>
                         <p class="install-expiry">설치 명령 유효 시간: {new Date(enrollment.expires_at).toLocaleString('ko-KR', { dateStyle: 'medium', timeStyle: 'short' })}</p>
                         {#if mockApiEnabled}<div class="mock-connect"><span>미리보기에서는 실제 터널이 연결되지 않습니다.</span><Button variant="secondary" size="sm" onclick={mockConnect}>연결 상태로 전환</Button></div>{/if}
@@ -604,6 +609,8 @@
   .install-tabs :global(.install-tab.active) { border-bottom-color: var(--accent); }
   .install-panel { display: grid; gap: 8px; min-width: 0; }
   .install-panel[hidden] { display: none; }
+  .compose-choice { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 2px; }
+  .compose-choice :global(.ui-button[aria-pressed="true"]) { border-color: var(--accent); background: #fff3eb; color: var(--accent-dark); }
   .install-panel .command-heading { align-items: center; margin-top: 6px; }
   .install-panel code { overflow-wrap: anywhere; font-size: 11px; }
   .code-block { position: relative; min-width: 0; }
