@@ -21,6 +21,22 @@
   let loading = $state(false);
   let loadError = $state('');
   let data = $state<DashboardData>({ connectors: [], services: [], routes: [], records: [], outlet: {} });
+  let statusRefreshPromise: Promise<void> | null = null;
+  let backgroundRefreshBusy = false;
+
+  function refreshConnectorStatus(): Promise<void> {
+    if (statusRefreshPromise) return statusRefreshPromise;
+    statusRefreshPromise = (async () => {
+      const response = await api<{ connectors: Connector[] }>('/api/v1/connectors');
+      const connectors = new Map(response.connectors.map((connector) => [connector.id, connector]));
+      data = {
+        ...data,
+        connectors: response.connectors,
+        records: data.records.map((record) => ({ ...record, connector: connectors.get(record.connector.id) || record.connector })),
+      };
+    })().finally(() => { statusRefreshPromise = null; });
+    return statusRefreshPromise;
+  }
 
   function currentPage(): PageKey {
     if (window.location.pathname.replace(/\/+$/, '') === '/routes') {
@@ -129,9 +145,18 @@
         authMode = 'unavailable';
       }
     })();
+    let pollCount = 0;
     const timer = window.setInterval(() => {
-      if (authMode === 'dashboard' && !loading) void refresh(true);
-    }, 10000);
+      if (authMode !== 'dashboard' || loading) return;
+      pollCount++;
+      if (pollCount % 5 === 0) {
+        if (backgroundRefreshBusy) return;
+        backgroundRefreshBusy = true;
+        void refresh(true).finally(() => { backgroundRefreshBusy = false; });
+      } else if (view === 'connectors' && connectorDetailId && data.connectors.find((connector) => connector.id === connectorDetailId)?.status !== 'connected' && !backgroundRefreshBusy) {
+        void refreshConnectorStatus().catch(() => {});
+      }
+    }, 2000);
     return () => {
       window.clearInterval(timer);
       window.removeEventListener('popstate', handlePopState);
@@ -172,7 +197,7 @@
       {:else if view === 'domains'}
         <DomainsPage outlet={data.outlet} onSaved={refresh} />
       {:else if view === 'connectors'}
-        <ConnectorsPage {data} onChanged={refresh} detailId={connectorDetailId} onOpenDetail={openConnectorDetail} onBack={closeConnectorDetail} />
+        <ConnectorsPage {data} onChanged={refresh} onCheckConnection={refreshConnectorStatus} detailId={connectorDetailId} onOpenDetail={openConnectorDetail} onBack={closeConnectorDetail} />
       {:else if view === 'services'}
         <ServicesPage {data} onChanged={refresh} {navigate} />
       {:else if view === 'diagnostics'}

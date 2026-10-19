@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { api, errorMessage, mockApiEnabled, statusLabel } from '../api';
   import { connectorState, forgetEnrollment, rememberEnrollment, storedEnrollment } from '../connectorState.svelte';
   import ServiceBlock from '../components/ServiceBlock.svelte';
@@ -10,7 +11,7 @@
   import { connectorDetailPath, pagePath } from '../navigation';
   import type { Connector, DashboardData, EnrollmentToken } from '../types';
 
-  let { data, onChanged, detailId, onOpenDetail, onBack }: { data: DashboardData; onChanged: () => Promise<void>; detailId: string | null; onOpenDetail: (id: string) => void; onBack: () => void } = $props();
+  let { data, onChanged, onCheckConnection, detailId, onOpenDetail, onBack }: { data: DashboardData; onChanged: () => Promise<void>; onCheckConnection: () => Promise<void>; detailId: string | null; onOpenDetail: (id: string) => void; onBack: () => void } = $props();
   let name = $state('');
   let serviceName = $state('');
   let serviceHost = $state('');
@@ -26,6 +27,9 @@
   let idCopyTimer: ReturnType<typeof setTimeout> | undefined;
   let idCopyError = $state('');
   let tokenBusy = $state(false);
+  let checkingConnection = $state(false);
+  let connectionCheckMessage = $state('');
+  let now = $state(Date.now());
   let installMethod = $state<'terminal' | 'compose'>('terminal');
   let composeFileMode = $state<'existing' | 'new'>('existing');
   let createBusy = $state(false);
@@ -44,6 +48,7 @@
   const selected = $derived(data.connectors.find((connector) => connector.id === detailId));
   const selectedRecords = $derived(data.records.filter((record) => record.connector.id === detailId));
   const selectedPaths = $derived(selectedRecords.flatMap((record) => record.routes.map((route) => ({ record, route }))));
+  const invitationExpired = $derived(Boolean(connectorState.enrollment && now >= Date.parse(connectorState.enrollment.expires_at)));
   const filtersActive = $derived(Boolean(searchQuery.trim()) || connectionFilter !== 'all');
   const visibleConnectors = $derived.by(() => {
     const terms = searchQuery.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
@@ -55,6 +60,11 @@
       const searchable = connector.name.toLocaleLowerCase();
       return terms.every((term) => searchable.includes(term));
     });
+  });
+
+  onMount(() => {
+    const timer = window.setInterval(() => { now = Date.now(); }, 1000);
+    return () => window.clearInterval(timer);
   });
 
   function clearFilters(): void {
@@ -80,6 +90,7 @@
     connectorState.enrollment = saved?.enrollment || null;
     connectorState.enrollmentWasReset = saved?.reset || false;
     tokenError = '';
+    connectionCheckMessage = '';
     copiedCode = '';
     if (copyTimer) clearTimeout(copyTimer);
     if (idCopyTimer) clearTimeout(idCopyTimer);
@@ -236,16 +247,42 @@
     tokenBusy = true;
     try {
       const enrollment = await api<EnrollmentToken>(`/api/v1/connectors/${encodeURIComponent(id)}/enrollment-tokens${reset ? '?reset=true' : ''}`, { method: 'POST' });
-      rememberEnrollment(id, enrollment, reset);
+      const useResetVolume = reset || (connectorState.selectedId === id && connectorState.enrollmentWasReset);
+      rememberEnrollment(id, enrollment, useResetVolume);
       if (connectorState.selectedId === id) {
         connectorState.enrollment = enrollment;
-        connectorState.enrollmentWasReset = reset;
+        connectorState.enrollmentWasReset = useResetVolume;
+        now = Date.now();
         installMethod = 'terminal';
       }
     } catch (cause) {
       if (connectorState.selectedId === id) tokenError = `설치 안내를 준비하지 못했습니다: ${tunnelError(cause)}`;
     } finally {
       tokenBusy = false;
+    }
+  }
+
+  function renewExpiredInvitation(): void {
+    if (!selected) return;
+    if (selected.status !== 'draft') {
+      if (!confirm('기존 터널 자격 증명을 무효화하고 설치 명령을 다시 만듭니다. 실행 중인 연결은 끊깁니다. 계속할까요?')) return;
+      void issueToken(true);
+      return;
+    }
+    void issueToken();
+  }
+
+  async function checkConnection(): Promise<void> {
+    if (checkingConnection) return;
+    checkingConnection = true;
+    connectionCheckMessage = '';
+    try {
+      await onCheckConnection();
+      connectionCheckMessage = selected?.status === 'connected' ? '터널 연결을 확인했습니다.' : '아직 터널 연결이 확인되지 않았습니다.';
+    } catch {
+      connectionCheckMessage = '연결 상태를 확인하지 못했습니다. 잠시 후 다시 시도하세요.';
+    } finally {
+      checkingConnection = false;
     }
   }
 
@@ -404,7 +441,8 @@
           <Card as="section" padding="none" class="connector-detail" aria-label={`${selected.name} 터널 설치 안내`}>
             <div class="connector-body">
                   <section class="detail-section token-panel">
-                    <div class="section-heading"><div><div class="section-title"><h3 class="ui-meta-label">터널 설치 및 연결</h3><InfoTooltip id={`connector-connection-help-${selected.id}`} label="터널 설치 및 연결" description="서버에서 터널을 실행하고 연결 상태를 확인합니다. 앱 주소는 연결 서비스 메뉴에서 별도로 등록합니다." /></div>{#if selected.status !== 'draft'}<p>{selected.status === 'connecting' ? '터널이 연결을 준비 중입니다.' : selected.status === 'connected' ? '터널이 연결되었습니다.' : '터널의 응답이 없습니다. 설치한 컨테이너와 네트워크를 확인하세요.'}</p>{/if}</div></div>
+                    <div class="section-heading"><div><div class="section-title"><h3 class="ui-meta-label">터널 설치 및 연결</h3><InfoTooltip id={`connector-connection-help-${selected.id}`} label="터널 설치 및 연결" description="서버에서 터널을 실행하고 연결 상태를 확인합니다. 앱 주소는 연결 서비스 메뉴에서 별도로 등록합니다." /></div>{#if selected.status !== 'draft'}<p>{selected.status === 'connecting' ? '터널이 연결을 준비 중입니다.' : selected.status === 'connected' ? '터널이 연결되었습니다.' : '터널의 응답이 없습니다. 설치한 컨테이너와 네트워크를 확인하세요.'}</p>{/if}</div><Button variant="secondary" size="sm" class="connection-check" disabled={checkingConnection} onclick={checkConnection}>{checkingConnection ? '확인 중…' : '연결 확인'}</Button></div>
+                    {#if connectionCheckMessage}<p class="connection-check-message" role="status">{connectionCheckMessage}</p>{/if}
                     {#if !connectorState.enrollment && selected.status === 'draft'}
                       {#if tokenBusy}<p role="status">설치 명령을 준비하고 있습니다…</p>{:else}<Button variant="secondary" onclick={() => issueToken()}>설치 안내 다시 만들기</Button>{/if}
                     {/if}
@@ -416,6 +454,14 @@
                     {#if connectorState.enrollment}
                       {@const enrollment = connectorState.enrollment}
                       <div class="token-box">
+                        <div class:expired={invitationExpired} class="install-validity" role="status">
+                          <strong>{invitationExpired ? '설치 명령이 만료되었습니다' : '설치 명령 유효 시간'}</strong>
+                          <span>{new Date(enrollment.expires_at).toLocaleString('ko-KR', { dateStyle: 'medium', timeStyle: 'short' })}{invitationExpired ? '에 만료됨' : '까지'}</span>
+                        </div>
+                        {#if invitationExpired}
+                          <p>만료된 설치 명령은 사용할 수 없습니다. 새 명령을 발급받아 Docker 명령이나 Compose 파일의 초대 코드를 교체하세요.</p>
+                          <Button variant="secondary" disabled={tokenBusy} onclick={renewExpiredInvitation}>{tokenBusy ? '발급 중…' : '설치 명령 재발급'}</Button>
+                        {:else}
                         <div class="install-tabs" role="tablist" aria-label="터널 설치 방법">
                           <Button variant="plain" class={installMethod === 'terminal' ? 'install-tab active' : 'install-tab'} id={`install-terminal-tab-${selected.id}`} role="tab" aria-selected={installMethod === 'terminal'} aria-controls={`install-terminal-panel-${selected.id}`} tabindex={installMethod === 'terminal' ? 0 : -1} onclick={() => installMethod = 'terminal'} onkeydown={onInstallTabKeydown}>Docker 명령</Button>
                           <Button variant="plain" class={installMethod === 'compose' ? 'install-tab active' : 'install-tab'} id={`install-compose-tab-${selected.id}`} role="tab" aria-selected={installMethod === 'compose'} aria-controls={`install-compose-panel-${selected.id}`} tabindex={installMethod === 'compose' ? 0 : -1} onclick={() => installMethod = 'compose'} onkeydown={onInstallTabKeydown}>Docker Compose</Button>
@@ -447,8 +493,9 @@
                           <p>등록이 끝나면 파일에서 일회용 초대 코드가 들어간 <code>command</code> 줄을 삭제하고 터널 컨테이너를 다시 시작하세요. 인증 정보는 Docker 볼륨에 남습니다.</p>
                           {/if}
                         </div>
-                        <p class="install-expiry">설치 명령 유효 시간: {new Date(enrollment.expires_at).toLocaleString('ko-KR', { dateStyle: 'medium', timeStyle: 'short' })}</p>
+                        <p>설치 명령의 초대 코드는 최초 등록에 한 번만 사용할 수 있습니다. 새 명령을 발급하면 이전 코드는 무효가 됩니다.</p>
                         {#if mockApiEnabled}<div class="mock-connect"><span>미리보기에서는 실제 터널이 연결되지 않습니다.</span><Button variant="secondary" size="sm" onclick={mockConnect}>연결 상태로 전환</Button></div>{/if}
+                        {/if}
                       </div>
                     {/if}
                   </section>
@@ -679,7 +726,9 @@
   .connector-dialog p:not(.error) { margin: 0 0 16px; color: var(--muted); font-size: 12px; }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
   .detail-section { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 15px; }
-  .section-heading { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
+  .section-heading { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; }
+  .section-heading :global(.connection-check) { margin-left: auto; }
+  .connection-check-message { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
   .section-title { display: flex; align-items: center; gap: 5px; }
   .section-heading h3 { margin: 0; }
   .section-heading p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
@@ -692,7 +741,9 @@
   .token-box { display: grid; gap: 10px; margin-top: 4px; }
   .command-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
   .token-box p { margin: 2px 0 0 !important; color: var(--muted); font-size: 12px; }
-  .install-expiry { margin-top: 4px !important; }
+  .install-validity { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; color: var(--ink); font-size: 12px; }
+  .install-validity span { color: var(--muted); }
+  .install-validity.expired { border-color: var(--accent); color: var(--accent-dark); }
   .install-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; border-bottom: 1px solid var(--line); }
   .install-tabs :global(.install-tab) { border-bottom: 2px solid transparent; padding: 7px 12px; color: var(--muted); font-size: 12px; font-weight: 650; }
   .install-tabs :global(.install-tab:hover), .install-tabs :global(.install-tab.active) { color: var(--accent-dark); }
