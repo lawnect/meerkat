@@ -16,7 +16,7 @@
   let serviceHost = $state('');
   let servicePort = $state('');
   let serviceBusy = $state(false);
-  let serviceFormOpen = $state(false);
+  let detailTab = $state<'overview' | 'routes'>('overview');
   let serviceError = $state('');
   let createError = $state('');
   let tokenError = $state('');
@@ -34,6 +34,7 @@
   let searchQuery = $state('');
   let connectionFilter = $state<'all' | 'connected' | 'pending' | 'problem'>('all');
   let createDialog: HTMLDialogElement;
+  let serviceDialog: HTMLDialogElement;
   let deleteDialog: HTMLDialogElement;
   const composeUpCommand = 'docker compose -f meerkat-tunnel.yaml up -d';
 
@@ -77,11 +78,9 @@
     connectorState.enrollmentWasReset = saved?.reset || false;
     tokenError = '';
     deleteError = '';
-    serviceName = '';
-    serviceHost = '';
-    servicePort = '';
-    serviceError = '';
-    serviceFormOpen = false;
+    if (serviceDialog?.open) serviceDialog.close();
+    clearServiceForm();
+    detailTab = 'overview';
     idCopied = false;
     idCopyError = '';
   });
@@ -126,6 +125,23 @@
 
   function closeCreateDialog(): void {
     if (!createBusy) createDialog.close();
+  }
+
+  function clearServiceForm(): void {
+    serviceName = '';
+    serviceHost = '';
+    servicePort = '';
+    serviceError = '';
+  }
+
+  function openServiceDialog(): void {
+    if (!selected || selected.status === 'draft') return;
+    clearServiceForm();
+    serviceDialog.showModal();
+  }
+
+  function closeServiceDialog(): void {
+    if (!serviceBusy) serviceDialog.close();
   }
 
   function openDeleteDialog(): void {
@@ -193,10 +209,7 @@
         body: JSON.stringify({ name: serviceName, protocol: 'http', target: { host: serviceHost.trim(), port: Number(servicePort) } }),
       });
       await onChanged();
-      serviceName = '';
-      serviceHost = '';
-      servicePort = '';
-      serviceFormOpen = false;
+      serviceDialog.close();
     } catch (cause) {
       const code = errorMessage(cause);
       const message: Record<string, string> = {
@@ -329,6 +342,26 @@
     document.getElementById(`install-${next}-tab-${selected?.id}`)?.focus();
   }
 
+  function onDetailTabKeydown(event: KeyboardEvent): void {
+    let next: 'overview' | 'routes';
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') next = detailTab === 'overview' ? 'routes' : 'overview';
+    else if (event.key === 'Home') next = 'overview';
+    else if (event.key === 'End') next = 'routes';
+    else return;
+    event.preventDefault();
+    detailTab = next;
+    document.getElementById(`detail-${next}-tab-${selected?.id}`)?.focus();
+  }
+
+  function openServiceRoutes(serviceId: string): void {
+    detailTab = 'routes';
+    requestAnimationFrame(() => {
+      const item = document.getElementById(`service-routes-${serviceId}`);
+      item?.focus({ preventScroll: true });
+      item?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  }
+
 </script>
 
 <div class="connector-page">
@@ -338,6 +371,11 @@
       <div class="detail-header">
         <h2>{selected.name}</h2>
       </div>
+      <div class="detail-tabs" role="tablist" aria-label="터널 상세 화면">
+        <Button variant="plain" class={detailTab === 'overview' ? 'detail-tab active' : 'detail-tab'} id={`detail-overview-tab-${selected.id}`} role="tab" aria-selected={detailTab === 'overview'} aria-controls={`detail-overview-panel-${selected.id}`} tabindex={detailTab === 'overview' ? 0 : -1} onclick={() => detailTab = 'overview'} onkeydown={onDetailTabKeydown}>개요</Button>
+        <Button variant="plain" class={detailTab === 'routes' ? 'detail-tab active' : 'detail-tab'} id={`detail-routes-tab-${selected.id}`} role="tab" aria-selected={detailTab === 'routes'} aria-controls={`detail-routes-panel-${selected.id}`} tabindex={detailTab === 'routes' ? 0 : -1} onclick={() => detailTab = 'routes'} onkeydown={onDetailTabKeydown}>경로 <small>{selectedPaths.length}</small></Button>
+      </div>
+      <div role="tabpanel" id={`detail-overview-panel-${selected.id}`} aria-labelledby={`detail-overview-tab-${selected.id}`} hidden={detailTab !== 'overview'}>
       <div class="detail-layout">
         <div class="detail-main">
           <Card as="section" padding="none" class="metrics-card" aria-label="터널 현황">
@@ -406,57 +444,19 @@
           {/if}
           {#if selected.status !== 'draft'}
             <Card as="section" padding="none" aria-label="연결 서비스">
-              <div class="ui-card-header"><div class="section-title"><h3 class="ui-card-title">연결 서비스 <small>{selectedRecords.length}</small></h3><InfoTooltip id={`connector-service-help-${selected.id}`} label="연결 서비스" description="이 터널이 요청을 전달할 앱의 내부 주소입니다. 한 터널에 여러 서비스를 연결할 수 있습니다." /></div>{#if selectedRecords.length}<Button variant="secondary" size="sm" onclick={() => serviceFormOpen = !serviceFormOpen}>{serviceFormOpen ? '닫기' : '+ 서비스 추가'}</Button>{/if}</div>
+              <div class="ui-card-header service-card-header"><div class="section-title"><h3 class="ui-card-title">연결 서비스 <small>{selectedRecords.length}</small></h3><InfoTooltip id={`connector-service-help-${selected.id}`} label="연결 서비스" description="이 터널이 요청을 전달할 앱의 내부 주소입니다. 한 터널에 여러 서비스를 연결할 수 있습니다." /></div><Button variant="secondary" size="sm" onclick={openServiceDialog}>+ 서비스 추가</Button></div>
               <div class="connected-card-body">
                 {#if selectedRecords.length}
                   {#each selectedRecords as record (record.service.id)}
-                    <ServiceBlock {record} outlet={data.outlet} {onChanged} view="service" />
+                    <div class="service-summary">
+                      <ServiceBlock {record} outlet={data.outlet} {onChanged} view="service" />
+                      <Button variant="text" size="sm" onclick={() => openServiceRoutes(record.service.id)}>공개 주소 {record.routes.length}개 · 경로 보기 →</Button>
+                    </div>
                   {/each}
                 {:else}
                   <p>아직 연결된 서비스가 없습니다. 이 터널에서 접속할 앱을 등록하세요.</p>
                 {/if}
-                {#if !selectedRecords.length || serviceFormOpen}
-                  <form class="service-form" onsubmit={createService}>
-                    <div class="field"><label for={`service-name-${selected.id}`}>서비스 이름</label><input class="input input-bordered" id={`service-name-${selected.id}`} bind:value={serviceName} placeholder="예: app" required /></div>
-                    <div class="field"><label for={`service-host-${selected.id}`}>앱 호스트</label><input class="input input-bordered" id={`service-host-${selected.id}`} bind:value={serviceHost} placeholder="app 또는 127.0.0.1" required /></div>
-                    <div class="field"><label for={`service-port-${selected.id}`}>내부 포트</label><input class="input input-bordered" id={`service-port-${selected.id}`} type="number" min="1" max="65535" bind:value={servicePort} placeholder="3000" required /></div>
-                    {#if serviceError}<p class="error" role="alert">{serviceError}</p>{/if}
-                    <div class="service-actions"><Button type="submit" disabled={serviceBusy}>{serviceBusy ? '등록 중…' : '연결 서비스 등록'}</Button></div>
-                  </form>
-                {/if}
               </div>
-            </Card>
-            <Card as="section" padding="none" aria-label="공개 주소">
-              <div class="ui-card-header"><div class="section-title"><h3 class="ui-card-title">공개 주소 <small>{selectedRecords.reduce((total, record) => total + record.routes.length, 0)}</small></h3><InfoTooltip id={`connector-route-help-${selected.id}`} label="공개 주소" description="인터넷에서 연결 서비스에 접속할 HTTPS 주소입니다." /></div></div>
-              <div class="connected-card-body">
-                {#if selectedRecords.length}
-                  {#each selectedRecords as record (record.service.id)}
-                    <ServiceBlock {record} outlet={data.outlet} {onChanged} view="routes" />
-                  {/each}
-                {:else}
-                  <p>연결 서비스를 등록한 뒤 공개 주소를 추가할 수 있습니다.</p>
-                {/if}
-              </div>
-            </Card>
-          {/if}
-          {#if selected.status !== 'draft'}
-            <Card as="section" padding="none" class="paths-card" aria-label="요청 경로">
-              <div class="ui-card-header"><h3 class="ui-card-title">요청 경로 <small>{selectedPaths.length}</small></h3></div>
-              {#if selectedPaths.length}
-                <ul class="path-list">
-                  {#each selectedPaths as path (path.route.id)}
-                    <li class="path-row">
-                      <LinkButton href={`https://${path.route.hostname}`} target="_blank" rel="noopener noreferrer" variant="text" size="sm" class="path-address">{path.route.hostname} ↗</LinkButton>
-                      <span class="path-arrow" aria-hidden="true">→</span>
-                      <span class="path-tunnel">{selected.name}</span>
-                      <span class="path-arrow" aria-hidden="true">→</span>
-                      <span class="path-target">{path.record.service.name} <code>{path.record.service.target.host}:{path.record.service.target.port}</code></span>
-                    </li>
-                  {/each}
-                </ul>
-              {:else}
-                <p class="paths-empty">아직 공개 주소가 없습니다. 위 공개 주소에서 주소를 추가할 수 있습니다.</p>
-              {/if}
             </Card>
           {/if}
         </div>
@@ -479,6 +479,45 @@
             </div>
           </Card>
         </aside>
+      </div>
+      </div>
+      <div role="tabpanel" id={`detail-routes-panel-${selected.id}`} aria-labelledby={`detail-routes-tab-${selected.id}`} hidden={detailTab !== 'routes'}>
+        {#if selected.status === 'draft'}
+          <Card as="section"><div class="routes-start"><p>터널이 연결되면 서비스를 등록하고 공개 주소를 추가할 수 있습니다.</p><Button variant="secondary" size="sm" onclick={() => detailTab = 'overview'}>설치 안내 보기</Button></div></Card>
+        {:else}
+          <div class="routes-content">
+            <Card as="section" padding="none" class="paths-card" aria-label="요청 경로">
+              <div class="ui-card-header"><h3 class="ui-card-title">요청 경로 <small>{selectedPaths.length}</small></h3></div>
+              {#if selectedPaths.length}
+                <ul class="path-list">
+                  {#each selectedPaths as path (path.route.id)}
+                    <li class="path-row">
+                      <LinkButton href={`https://${path.route.hostname}`} target="_blank" rel="noopener noreferrer" variant="text" size="sm" class="path-address">{path.route.hostname} ↗</LinkButton>
+                      <span class="path-arrow" aria-hidden="true">→</span>
+                      <span class="path-tunnel">{selected.name}</span>
+                      <span class="path-arrow" aria-hidden="true">→</span>
+                      <span class="path-target">{path.record.service.name} <code>{path.record.service.target.host}:{path.record.service.target.port}</code></span>
+                    </li>
+                  {/each}
+                </ul>
+              {:else}
+                <p class="paths-empty">아직 공개 주소가 없습니다. 아래 서비스에서 주소를 추가하세요.</p>
+              {/if}
+            </Card>
+            <Card as="section" padding="none" aria-label="서비스별 공개 주소">
+              <div class="ui-card-header"><h3 class="ui-card-title">서비스별 공개 주소 <small>{selectedRecords.length}</small></h3></div>
+              <div class="connected-card-body">
+                {#if selectedRecords.length}
+                  {#each selectedRecords as record (record.service.id)}
+                    <div class="route-service-item" id={`service-routes-${record.service.id}`} tabindex="-1"><ServiceBlock {record} outlet={data.outlet} {onChanged} view="routes" /></div>
+                  {/each}
+                {:else}
+                  <p>먼저 연결 서비스를 등록하세요. <Button variant="text" size="sm" onclick={() => detailTab = 'overview'}>개요에서 서비스 추가 →</Button></p>
+                {/if}
+              </div>
+            </Card>
+          </div>
+        {/if}
       </div>
     {:else}
       <Card as="section" class="detail-missing"><p>터널을 찾을 수 없습니다. 삭제되었거나 주소가 잘못되었습니다.</p><LinkButton href={pagePath.connectors} variant="secondary" size="sm" onclick={backFromLink}>터널 목록으로</LinkButton></Card>
@@ -520,6 +559,20 @@
     {/if}
   {/if}
 </div>
+
+<dialog bind:this={serviceDialog} class="connector-dialog service-dialog" aria-labelledby="service-dialog-title" aria-describedby="service-dialog-description" oncancel={(event) => { if (serviceBusy) event.preventDefault(); }} onclose={clearServiceForm}>
+  <form onsubmit={createService}>
+    <h2 id="service-dialog-title">연결 서비스 추가</h2>
+    <p id="service-dialog-description">{selected?.name || '선택한 터널'}에서 연결할 앱의 내부 주소를 입력하세요.</p>
+    <div class="service-fields">
+      <div class="field service-name-field"><label for="connector-service-name">서비스 이름</label><input class="input input-bordered" id="connector-service-name" bind:value={serviceName} placeholder="예: app" required /></div>
+      <div class="field"><label for="connector-service-host">앱 호스트</label><input class="input input-bordered" id="connector-service-host" bind:value={serviceHost} placeholder="app 또는 127.0.0.1" required /></div>
+      <div class="field"><label for="connector-service-port">내부 포트</label><input class="input input-bordered" id="connector-service-port" type="number" min="1" max="65535" bind:value={servicePort} placeholder="3000" required /></div>
+    </div>
+    {#if serviceError}<p class="error" role="alert">{serviceError}</p>{/if}
+    <div class="dialog-actions"><Button variant="secondary" disabled={serviceBusy} onclick={closeServiceDialog}>취소</Button><Button type="submit" disabled={serviceBusy}>{serviceBusy ? '등록 중…' : '서비스 등록'}</Button></div>
+  </form>
+</dialog>
 
 <dialog bind:this={createDialog} class="connector-dialog" aria-labelledby="create-dialog-title" aria-describedby="create-dialog-description" oncancel={(event) => { if (createBusy) event.preventDefault(); }} onclose={() => { name = ''; createError = ''; }}>
   <form onsubmit={createConnector}>
@@ -568,8 +621,16 @@
   .detail-toolbar :global(.ui-button) { padding-left: 0; }
   .detail-header { margin-bottom: 16px; }
   .detail-header h2 { margin: 0; font-size: 20px; letter-spacing: -.025em; }
+  .detail-tabs { display: flex; gap: 6px; margin-bottom: 16px; border-bottom: 1px solid var(--line); }
+  .detail-tabs :global(.detail-tab) { border-bottom: 2px solid transparent; padding: 9px 16px; color: var(--muted); font-size: 13px; font-weight: 650; }
+  .detail-tabs :global(.detail-tab:hover), .detail-tabs :global(.detail-tab.active) { color: var(--accent-dark); }
+  .detail-tabs :global(.detail-tab.active) { border-bottom-color: var(--accent); }
+  .detail-tabs :global(.detail-tab small) { margin-left: 4px; font-size: 11px; font-weight: 500; }
   .detail-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 280px); align-items: start; gap: 16px; }
   .detail-main, .detail-sidebar { display: grid; gap: 14px; min-width: 0; }
+  .routes-content { display: grid; gap: 14px; }
+  .routes-start { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+  .routes-start p { margin: 0; color: var(--muted); font-size: 12px; }
   .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .metric { display: grid; align-content: center; gap: 7px; min-height: 86px; padding: 14px 18px; }
   .metric + .metric { border-left: 1px solid var(--line); }
@@ -579,8 +640,14 @@
   .connector-body { padding: 0 18px 16px; }
   .connector-body .detail-section:first-child { margin-top: 0; border-top: 0; padding-top: 0; }
   .connector-body .token-panel:first-child { padding-top: 18px; }
+  .service-card-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
   .connected-card-body { padding: 16px 18px; }
-  .connected-card-body :global(.service + .service) { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 16px; }
+  .connected-card-body .service-summary { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px; }
+  .service-summary :global(.service) { flex: 1 1 280px; }
+  .service-summary > :global(.ui-button) { margin-left: auto; }
+  .connected-card-body .service-summary + .service-summary { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 16px; }
+  .connected-card-body .route-service-item + .route-service-item { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 16px; }
+  .route-service-item:focus { outline: 2px solid var(--accent); outline-offset: 5px; border-radius: 3px; }
   .connected-card-body p { margin: 0; color: var(--muted); font-size: 12px; }
   .path-list { list-style: none; margin: 0; padding: 0; }
   .path-row { display: grid; grid-template-columns: minmax(0, 1.4fr) 18px minmax(0, 1fr) 18px minmax(0, 1.4fr); align-items: center; gap: 10px; min-height: 54px; padding: 10px 18px; }
@@ -590,8 +657,8 @@
   .path-tunnel, .path-target { overflow-wrap: anywhere; font-size: 12px; font-weight: 650; }
   .path-target code { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
   .paths-empty { margin: 0; padding: 18px; color: var(--muted); font-size: 12px; }
-  .detail-missing { display: grid; justify-items: start; gap: 12px; }
-  .detail-missing p { margin: 0; }
+  :global(.detail-missing) { display: grid; justify-items: start; gap: 12px; }
+  :global(.detail-missing p) { margin: 0; }
   .list-empty { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
   .connector-dialog { width: min(440px, calc(100vw - 32px)); max-width: none; margin: auto; border: 1px solid var(--line); border-radius: 10px; padding: 22px; background: var(--panel); color: var(--ink); box-shadow: 0 22px 70px rgba(48, 36, 28, .18); }
   .connector-dialog::backdrop { background: rgba(35, 30, 26, .38); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
@@ -603,10 +670,10 @@
   .section-title { display: flex; align-items: center; gap: 5px; }
   .section-heading h3 { margin: 0; }
   .section-heading p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
-  .service-form { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) minmax(110px, 1fr); gap: 10px; margin-top: 8px; }
-  .service-form input { width: 100%; }
-  .service-form .error, .service-actions { grid-column: 1 / -1; }
-  .service-actions { display: flex; justify-content: flex-end; }
+  .service-dialog { width: min(500px, calc(100vw - 32px)); }
+  .service-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .service-name-field { grid-column: 1 / -1; }
+  .service-fields input { width: 100%; }
   .mock-connect { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; }
   .token-panel :global(.reset-token-button) { margin-top: 10px; }
   .token-box { display: grid; gap: 10px; margin-top: 4px; }
@@ -640,7 +707,8 @@
   .id-value :global(.id-copy.copied) { border-color: var(--green); color: var(--green); }
   .sidebar-body > p { margin: 0 0 12px; color: var(--muted); font-size: 11px; line-height: 1.5; }
   @media (max-width: 1000px) { .detail-layout { grid-template-columns: 1fr; } .detail-sidebar { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-  @media (max-width: 700px) { .connector-filters, .filter-summary { width: 100%; } .service-form { grid-template-columns: 1fr; } }
+  @media (max-width: 700px) { .connector-filters, .filter-summary { width: 100%; } }
+  @media (max-width: 480px) { .service-fields { grid-template-columns: 1fr; } }
   @media (max-width: 600px) { .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .metric:nth-child(3) { border-left: 0; } .metric:nth-child(n+3) { border-top: 1px solid var(--line); } .detail-sidebar { grid-template-columns: 1fr; } .path-row { grid-template-columns: 1fr; gap: 2px; } .path-arrow { text-align: left; transform: rotate(90deg); transform-origin: 8px center; } }
   @media (max-width: 420px) { .connector-filters { grid-template-columns: 1fr; } }
 </style>
