@@ -188,7 +188,6 @@
         <LinkButton href={pagePath.domains} variant="text" class={view === 'domains' ? 'nav-item active' : 'nav-item'} aria-current={view === 'domains' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'domains')}>도메인 관리</LinkButton>
         <LinkButton href={pagePath.diagnostics} variant="text" class={view === 'diagnostics' ? 'nav-item active' : 'nav-item'} aria-current={view === 'diagnostics' ? 'page' : undefined} onclick={(event) => navigateFromLink(event, 'diagnostics')}>요청 진단</LinkButton>
       </nav>
-      <div class="rail-note"><strong>도움이 필요하신가요?</strong>터널 상세에서 앱의 내부 주소와 공개 주소를 등록하세요.</div>
     </aside>
     <main class="content">
       {#if loadError}<p class="error" role="alert">{loadError}</p>{/if}
@@ -230,14 +229,12 @@
   .nav :global(.nav-item) { display: block; width: 100%; border-left: 2px solid transparent; border-radius: 0 5px 5px 0; padding: 8px 10px; color: #635f59; text-align: left; }
   .nav :global(.nav-item:hover) { background: #f1ebe4; text-decoration: none; }
   .nav :global(.nav-item.active) { border-left-color: var(--accent); background: #f6eee8; color: var(--accent-dark); font-weight: 700; }
-  .rail-note { margin-top: auto; border-top: 1px solid var(--line); padding: 12px 10px 0; color: var(--muted); font-size: 12px; }
-  .rail-note strong { display: block; margin-bottom: 4px; color: var(--ink); font-size: 13px; }
   .content { width: 100%; max-width: 1600px; padding: 22px 28px 40px; }
   .loading-note { margin: 0 0 12px; color: var(--muted); }
   @media (max-width: 900px) {
     .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: max-content minmax(0, 1fr); }
     .rail { display: block; min-width: 0; border-right: 0; border-bottom: 1px solid var(--line); padding: 7px 12px; }
-    .rail-label, .rail-note { display: none; }
+    .rail-label { display: none; }
     .nav { display: flex; overflow: auto; }
     .nav :global(.nav-item) { width: auto; border-bottom: 3px solid transparent; border-left: 0; white-space: nowrap; }
     .nav :global(.nav-item.active) { border-bottom-color: var(--accent); }
