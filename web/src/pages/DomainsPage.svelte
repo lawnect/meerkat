@@ -2,7 +2,7 @@
   import { api, errorMessage } from '../api';
   import Button from '../components/ui/Button.svelte';
   import Card from '../components/ui/Card.svelte';
-  import type { Outlet } from '../types';
+  import type { DomainDNSCheck, Outlet } from '../types';
 
   let { outlet, onSaved }: { outlet: Outlet; onSaved: () => Promise<void> } = $props();
   let selectedDomain = $state('');
@@ -15,6 +15,9 @@
   let deleteInput = $state('');
   let deleteError = $state('');
   let deleteBusy = $state(false);
+  let dnsChecks = $state<Record<string, DomainDNSCheck>>({});
+  let dnsBusy = $state<Record<string, boolean>>({});
+  let dnsErrors = $state<Record<string, string>>({});
   let domainDialog: HTMLDialogElement;
   let deleteDialog: HTMLDialogElement;
 
@@ -37,6 +40,19 @@
     domainInput = mode === 'primary' ? outlet.domain || '' : '';
     dialogError = '';
     domainDialog.showModal();
+  }
+
+  async function checkDNS(domain: string): Promise<void> {
+    if (dnsBusy[domain]) return;
+    dnsBusy[domain] = true;
+    dnsErrors[domain] = '';
+    try {
+      dnsChecks[domain] = await api<DomainDNSCheck>(`/api/v1/outlet/domains/${encodeURIComponent(domain)}/check-dns`, { method: 'POST' });
+    } catch (cause) {
+      dnsErrors[domain] = `DNS를 확인하지 못했습니다: ${errorMessage(cause)}`;
+    } finally {
+      dnsBusy[domain] = false;
+    }
   }
 
   async function saveDomain(event: SubmitEvent): Promise<void> {
@@ -107,6 +123,24 @@
                   <div><h3>DNS 설정</h3><p><code>*.{registeredDomain}</code>을 Outlet 서버 IP로 연결하세요.{#if primary} <code>{registeredDomain}</code>도 연결해야 합니다.{/if}</p></div>
                 </div>
                 <p class="dns-help">Cloudflare에서 DNS를 설정하고, 서버의 <code>compose.env</code>에 이 도메인 영역의 권한을 가진 <code>MEERKAT_CLOUDFLARE_API_TOKEN</code>을 넣은 뒤 Caddy를 시작하세요.</p>
+                <div class="dns-check">
+                  <Button variant="secondary" size="sm" disabled={dnsBusy[registeredDomain]} onclick={() => checkDNS(registeredDomain)}>{dnsBusy[registeredDomain] ? '확인 중…' : 'DNS 연결 확인'}</Button>
+                  {#if dnsErrors[registeredDomain]}<p class="error" role="alert">{dnsErrors[registeredDomain]}</p>{/if}
+                  {#if dnsChecks[registeredDomain]}
+                    {@const check = dnsChecks[registeredDomain]}
+                    <div class="dns-results" aria-live="polite">
+                      {#each check.records as record (record.hostname)}
+                        <div class="dns-result">
+                          <code>{record.hostname === registeredDomain ? registeredDomain : `*.${registeredDomain}`}</code>
+                          {#if record.addresses.length}<span class="dns-ok">DNS 응답: {record.addresses.join(', ')}</span>
+                          {:else}<span class="dns-fail">DNS 응답 없음</span>{/if}
+                        </div>
+                      {/each}
+                      <p>조회 시각: {new Date(check.checked_at).toLocaleString()}</p>
+                      <p>이 검사는 DNS 응답 여부를 확인합니다. Cloudflare 프록시가 켜져 있으면 표시 IP는 서버 IP가 아닌 Cloudflare IP일 수 있습니다. HTTPS 인증서와 실제 접속은 Caddy를 시작한 뒤 도메인으로 접속해 확인하세요.</p>
+                    </div>
+                  {/if}
+                </div>
                 <div class="domain-footer">
                   {#if primary}<Button variant="secondary" size="sm" onclick={() => openDomainDialog('primary')}>대표 도메인 변경</Button>
                   {:else}<Button variant="danger" size="sm" onclick={() => openDeleteDialog(registeredDomain)}>도메인 삭제</Button>{/if}
@@ -162,6 +196,13 @@
   .domain-details p { margin: 0; font-size: 13px; line-height: 1.5; }
   .domain-details code { overflow-wrap: anywhere; color: var(--accent-dark); }
   .dns-help { margin: 12px 0 0; color: var(--muted); font-size: 11px; }
+  .dns-check { display: grid; justify-items: start; gap: 8px; margin-top: 12px; }
+  .dns-results { display: grid; gap: 5px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+  .dns-results p { margin: 0; }
+  .dns-result { display: flex; flex-wrap: wrap; gap: 8px; }
+  .dns-ok { color: var(--ok, #39744d); }
+  .dns-fail { color: var(--danger, #b4432f); }
+  .dns-check :global(.error) { margin: 0; }
   .domain-footer { display: flex; justify-content: flex-end; margin-top: 16px; border-top: 1px solid var(--line); padding-top: 10px; }
   .list-empty { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
   .domain-dialog { width: min(440px, calc(100vw - 32px)); max-width: none; margin: auto; border: 1px solid var(--line); border-radius: 10px; padding: 22px; background: var(--panel); color: var(--ink); box-shadow: 0 22px 70px rgba(48, 36, 28, .18); }

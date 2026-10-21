@@ -2,6 +2,7 @@ package outlet
 
 import (
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -96,6 +97,7 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/session", s.login)
 	mux.HandleFunc("DELETE /api/v1/session", s.logout)
 	mux.HandleFunc("GET /api/v1/outlet", s.getOutlet)
+	mux.HandleFunc("POST /api/v1/outlet/domains/{domain}/check-dns", s.checkOutletDomainDNS)
 	mux.HandleFunc("PUT /api/v1/outlet", s.updateOutlet)
 	mux.HandleFunc("POST /api/v1/outlet/domains", s.addOutletDomain)
 	mux.HandleFunc("DELETE /api/v1/outlet/domains/{domain}", s.deleteOutletDomain)
@@ -492,6 +494,64 @@ func (s *Store) getOutlet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, 200, outlet)
+}
+
+type dnsRecordCheck struct {
+	Hostname  string   `json:"hostname"`
+	Addresses []string `json:"addresses"`
+	Error     string   `json:"error,omitempty"`
+}
+
+type domainDNSCheck struct {
+	CheckedAt time.Time        `json:"checked_at"`
+	Records   []dnsRecordCheck `json:"records"`
+}
+
+func (s *Store) checkOutletDomainDNS(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	outlet, err := s.control.Outlet(r.Context())
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	domain := r.PathValue("domain")
+	registered := false
+	for _, candidate := range outlet.Domains {
+		if candidate == domain {
+			registered = true
+			break
+		}
+	}
+	if !registered {
+		fail(w, r, 404, "domain_not_found")
+		return
+	}
+	// Query a fresh subdomain to test whether the wildcard record is active.
+	probeLabel := strings.ToLower(strings.NewReplacer("_", "a").Replace(Token()[:12]))
+	hostnames := []string{domain, "check-" + probeLabel + "." + domain}
+	result := domainDNSCheck{CheckedAt: time.Now().UTC(), Records: make([]dnsRecordCheck, 0, len(hostnames))}
+	resolver := net.DefaultResolver
+	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
+	defer cancel()
+	for _, hostname := range hostnames {
+		check := dnsRecordCheck{Hostname: hostname, Addresses: []string{}}
+		addresses, lookupErr := resolver.LookupIPAddr(ctx, hostname)
+		if lookupErr != nil {
+			check.Error = "dns_lookup_failed"
+		} else {
+			for _, address := range addresses {
+				check.Addresses = append(check.Addresses, address.IP.String())
+			}
+		}
+		result.Records = append(result.Records, check)
+	}
+	reply(w, http.StatusOK, result)
 }
 
 type outletRequest struct {

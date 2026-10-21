@@ -50,6 +50,17 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
   if (path === '/api/v1/session' && method === 'POST') return { admin: { email: input.email || 'dev@example.test' }, expires_at: now() };
   if (path === '/api/v1/session' && method === 'DELETE') return {};
   if (path === '/api/v1/outlet' && method === 'GET') return { ...state.outlet };
+  if (parts.length === 6 && parts[2] === 'outlet' && parts[3] === 'domains' && parts[5] === 'check-dns' && method === 'POST') {
+    const domain = parts[4];
+    if (!state.outlet.domains.includes(domain)) fail('domain_not_found');
+    return {
+      checked_at: now(),
+      records: [
+        { hostname: domain, addresses: ['203.0.113.10'] },
+        { hostname: `check-example.${domain}`, addresses: ['203.0.113.10'] },
+      ],
+    };
+  }
   if (path === '/api/v1/outlet' && method === 'PUT') {
     if (!input.domain) fail('invalid_domain');
     if (state.outlet.domain !== input.domain && state.routes.length) fail('domain_has_routes');

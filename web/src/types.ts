@@ -6,6 +6,11 @@ export interface Outlet {
   domains?: string[];
 }
 
+export interface DomainDNSCheck {
+  checked_at: string;
+  records: Array<{ hostname: string; addresses: string[]; error?: string }>;
+}
+
 export interface Connector {
   id: string;
   name: string;
