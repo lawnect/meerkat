@@ -122,7 +122,7 @@
                   <div><h3>용도</h3><p>{primary ? 'Outlet 관리 화면과 공개 주소에 사용하는 도메인입니다.' : '연결 서비스의 공개 주소에 사용하는 도메인입니다.'}</p></div>
                   <div><h3>DNS 설정</h3><p><code>*.{registeredDomain}</code>을 Outlet 서버 IP로 연결하세요.{#if primary} <code>{registeredDomain}</code>도 연결해야 합니다.{/if}</p></div>
                 </div>
-                <p class="dns-help">Cloudflare에서 DNS를 설정하고, 서버의 <code>compose.env</code>에 이 도메인 영역의 권한을 가진 <code>MEERKAT_CLOUDFLARE_API_TOKEN</code>을 넣은 뒤 Caddy를 시작하세요.</p>
+                <p class="dns-help">외부에서 80번(인증서 발급)과 443번(HTTPS 접속) 포트에 접근할 수 있어야 합니다. Cloudflare DNS를 쓴다면 프록시를 끈 ‘DNS 전용’을 권장합니다. 도메인과 연결된 공개 주소의 HTTPS 인증서는 자동으로 발급·갱신됩니다.</p>
                 <div class="dns-check">
                   <Button variant="secondary" size="sm" disabled={dnsBusy[registeredDomain]} onclick={() => checkDNS(registeredDomain)}>{dnsBusy[registeredDomain] ? '확인 중…' : 'DNS 연결 확인'}</Button>
                   {#if dnsErrors[registeredDomain]}<p class="error" role="alert">{dnsErrors[registeredDomain]}</p>{/if}
@@ -137,7 +137,7 @@
                         </div>
                       {/each}
                       <p>조회 시각: {new Date(check.checked_at).toLocaleString()}</p>
-                      <p>이 검사는 DNS 응답 여부를 확인합니다. Cloudflare 프록시가 켜져 있으면 표시 IP는 서버 IP가 아닌 Cloudflare IP일 수 있습니다. HTTPS 인증서와 실제 접속은 Caddy를 시작한 뒤 도메인으로 접속해 확인하세요.</p>
+                      <p>이 검사는 DNS 응답 여부를 확인합니다. Cloudflare 프록시가 켜져 있으면 표시 IP는 서버 IP가 아닌 Cloudflare IP일 수 있습니다. HTTPS 인증서와 실제 접속은 도메인 주소로 접속해 확인하세요.</p>
                     </div>
                   {/if}
                 </div>

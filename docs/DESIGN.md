@@ -25,12 +25,12 @@ Connector는 먼저 Outlet에 연결하므로 서버의 인바운드 포트와 �
 ### 2.1 Outlet 설치
 
 1. 운영자가 도메인 없이 Outlet을 초기화한다. 설치 도구는 로컬 HTTPS 인증서, 일회용 설정 코드와 터널 키를 서버에 생성한다.
-2. Outlet 관리 포트를 서버의 `127.0.0.1`에만 연결하고 Outlet과 터널 서버를 먼저 실행한다. Caddy는 아직 실행하지 않는다.
+2. Outlet 관리 포트를 서버의 `127.0.0.1`에만 연결하고 Outlet, 터널 서버, Caddy를 함께 실행한다. 도메인을 등록하기 전 Caddy는 공개 HTTPS 호스트를 설정하지 않는다.
 3. 운영자는 SSH 포트 포워딩으로 `https://localhost:18443`에 접속하고, 서버의 설정 코드로 관리자 계정을 만든다. 설정 코드는 관리자 생성 후 다시 사용할 수 없다.
-4. 관리 UI에서 대표 도메인을 등록한다. 운영자는 Cloudflare에 루트·와일드카드 DNS를 설정하고, 제한된 API token을 서버 배포 환경에 넣는다.
-5. TCP 80·443을 열고 Caddy를 실행한다. 인증서 발급 후 공개 HTTPS 관리 주소로 접속한다. 로컬 관리 포트는 복구 경로로 유지한다.
+4. 관리 UI에서 대표 도메인을 등록한다. 운영자는 DNS 제공자에 루트·와일드카드 DNS를 설정한다.
+5. TCP 80·443을 외부에 연다. Caddy가 새 도메인 설정을 읽고 인증서를 발급하면 공개 HTTPS 관리 주소로 접속한다. 로컬 관리 포트는 복구 경로로 유지한다.
 
-구체적인 명령과 파일 경로는 [README의 Outlet 초기 접속 절](../README.md#outlet-초기-접속)을 따른다. Cloudflare API token은 관리 DB나 브라우저에서 받지 않는다.
+구체적인 명령과 파일 경로는 [README의 Outlet 초기 접속 절](../README.md#outlet-초기-접속)을 따른다.
 
 ### 2.2 터널 설치와 서비스 등록
 
@@ -56,7 +56,7 @@ Connector는 먼저 Outlet에 연결하므로 서버의 인바운드 포트와 �
 3. Caddy 설정을 생성·검증·적용하고 ACME 인증서 발급을 시작한다.
 4. Caddy가 외부 HTTPS를 종료하고 rathole 터널을 통해 app:3000으로 요청을 전달한다.
 
-공개 Route는 Outlet 도메인의 와일드카드 인증서를 사용한다. Caddy가 Cloudflare DNS-01로 인증서를 발급·갱신하므로 대상 zone에 한정한 Cloudflare API token이 필요하다. DNS 챌린지에는 인바운드 80 포트가 필요하지 않지만, 공개 HTTP redirect와 HTTPS 서비스에는 TCP 80·443을 연다.
+공개 Route는 각 호스트 이름의 인증서를 사용한다. Caddy가 HTTP-01로 인증서를 발급·갱신한다. 루트·와일드카드 DNS는 공개 주소를 Outlet으로 보내기 위해 설정하고, 외부 TCP 80·443을 Caddy에 연결한다.
 
 ### 2.5 TCP 공개
 

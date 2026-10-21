@@ -17,6 +17,12 @@ type HTTPRoute struct {
 	Upstream string
 }
 
+const caddyHeader = "{\n\tmetrics {\n\t\tper_host\n\t}\n}\n\n:9090 {\n\tmetrics /metrics\n}\n\n"
+
+// EmptyCaddyfile starts Caddy without requesting a public certificate.
+// The Outlet replaces it after an administrator registers a domain.
+func EmptyCaddyfile() []byte { return []byte(caddyHeader) }
+
 func Caddyfile(domain string, routes []HTTPRoute) ([]byte, error) {
 	return CaddyfileDomains(domain, []string{domain}, routes)
 }
@@ -39,19 +45,16 @@ func CaddyfileDomains(primary string, domains []string, routes []HTTPRoute) ([]b
 	sort.Slice(copyRoutes, func(i, j int) bool { return copyRoutes[i].Hostname < copyRoutes[j].Hostname })
 	seen := map[string]bool{}
 	var b strings.Builder
-	b.WriteString("{\n\tmetrics {\n\t\tper_host\n\t}\n}\n\n:9090 {\n\tmetrics /metrics\n}\n\n")
+	b.WriteString(caddyHeader)
 	fmt.Fprintf(&b, "%s {\n", primary)
-	writeCloudflareTLS(&b)
+	writeHTTP01TLS(&b)
 	b.WriteString("\treverse_proxy https://outlet:8443 {\n\t\ttransport http {\n\t\t\ttls_trust_pool file /etc/caddy/root-ca.pem\n\t\t\ttls_server_name outlet\n\t\t}\n\t}\n}\n")
 	for _, domain := range domains {
 		if domain != primary {
 			fmt.Fprintf(&b, "\n%s {\n", domain)
-			writeCloudflareTLS(&b)
+			writeHTTP01TLS(&b)
 			b.WriteString("\trespond 404\n}\n")
 		}
-		fmt.Fprintf(&b, "\n*.%s {\n", domain)
-		writeCloudflareTLS(&b)
-		b.WriteString("\trespond 404\n}\n")
 	}
 	for _, route := range copyRoutes {
 		allowed := false
@@ -72,11 +75,13 @@ func CaddyfileDomains(primary string, domains []string, routes []HTTPRoute) ([]b
 			return nil, errors.New("route upstream must use the Outlet network alias")
 		}
 		seen[route.Hostname] = true
-		fmt.Fprintf(&b, "\n%s {\n\treverse_proxy http://%s\n}\n", route.Hostname, route.Upstream)
+		fmt.Fprintf(&b, "\n%s {\n", route.Hostname)
+		writeHTTP01TLS(&b)
+		fmt.Fprintf(&b, "\treverse_proxy http://%s\n}\n", route.Upstream)
 	}
 	return []byte(b.String()), nil
 }
 
-func writeCloudflareTLS(b *strings.Builder) {
-	b.WriteString("\ttls {\n\t\tdns cloudflare {$CLOUDFLARE_API_TOKEN}\n\t}\n")
+func writeHTTP01TLS(b *strings.Builder) {
+	b.WriteString("\ttls {\n\t\tissuer acme {\n\t\t\tdisable_tlsalpn_challenge\n\t\t}\n\t}\n")
 }

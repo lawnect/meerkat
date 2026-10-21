@@ -75,7 +75,7 @@
 ### Outlet과 Connector
 
 - [x] 도메인 없는 Outlet 초기화, 로컬 관리 포트 및 일회용 코드로 최초 관리자 생성
-- [ ] 빈 공개 서버에서 SSH 초기 접속부터 DNS·Cloudflare token·Caddy 공개까지 운영 검증
+- [ ] 빈 공개 서버에서 SSH 초기 접속부터 DNS·HTTP-01 인증·Caddy 공개까지 운영 검증
 - [ ] Connector 생성 및 일회성 등록 토큰 발급
 - [x] Docker Compose용 Connector 설정 예시 제공 — 로컬 PoC
 - [ ] Connector 최초 인증 및 자격 증명 회수

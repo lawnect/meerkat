@@ -222,8 +222,11 @@ func (s *Store) reconcileProxy(ctx context.Context) error {
 		return nil
 	}
 	outlet, err := s.control.Outlet(ctx)
-	if err != nil || outlet.Domain == "" {
+	if err != nil {
 		return err
+	}
+	if outlet.Domain == "" {
+		return securefs.Write(s.proxyPath, proxy.EmptyCaddyfile())
 	}
 	plans, err := s.control.HTTPRoutePlans(ctx)
 	if err != nil {

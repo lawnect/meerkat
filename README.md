@@ -80,7 +80,7 @@ docker run --rm \
 
 `outlet-init`은 `/opt/meerkat-outlet/configs/`에 내부 Outlet 인증서,
 일회성 관리자 설정 코드(`admin.token`)와 Noise 서버 키를 생성합니다. 도메인을
-등록하기 전에는 Caddyfile을 만들지 않습니다. 실행 중인 Outlet이 관리하는
+등록하기 전에는 공개 호스트가 없는 Caddyfile을 만듭니다. 실행 중인 Outlet이 관리하는
 `outlet-data/rathole/server.toml`과 `outlet-data/caddy/Caddyfile`은 직접 수정하지 않습니다.
 
 요청 진단 화면의 Outlet 지역은 위 `-region` 값으로 표시됩니다. 기존 설치에서는
@@ -104,11 +104,11 @@ chmod 600 /opt/meerkat-outlet/compose.env
 `MEERKAT_UID`와 `MEERKAT_GID`는 실제 `id -u`, `id -g` 결과로 바꿉니다.
 `MEERKAT_BIND_ADDRESS`에는 서버의 터널·공개 HTTP 수신 인터페이스를 지정합니다.
 모든 인터페이스에서 수신하려면 예시처럼 `0.0.0.0`을 사용합니다.
-`compose.env`는 서버 전용 파일이며 Git에 올리지 않습니다. 먼저 Outlet과 rathole만 시작합니다.
+`compose.env`는 서버 전용 파일이며 Git에 올리지 않습니다. 모든 서비스를 함께 시작합니다.
 
 ```sh
 docker compose --env-file /opt/meerkat-outlet/compose.env \
-  -f /opt/meerkat-outlet/compose.outlet.yaml up -d outlet rathole
+  -f /opt/meerkat-outlet/compose.outlet.yaml up -d
 ```
 
 Compose는 Outlet의 HTTPS 관리 포트 `8443`을 서버의 `127.0.0.1:18443`에만 연결합니다.
@@ -129,27 +129,22 @@ ssh -N -L 18443:127.0.0.1:18443 user@SERVER_IP
 
 ### 공개 도메인으로 전환
 
-1. 로컬 관리 화면의 **도메인 관리**에서 대표 도메인을 등록합니다. Outlet이 Caddyfile을 생성합니다.
+1. 로컬 관리 화면의 **도메인 관리**에서 대표 도메인을 등록합니다. Outlet이 실행 중인 Caddy의 설정을 갱신합니다.
 2. Cloudflare DNS에서 대표 도메인의 루트(`@`)와 와일드카드(`*`) A 레코드를 Outlet의 공인
    IPv4 주소로 지정하고 DNS-only로 둡니다. IPv6를 사용한다면 AAAA 레코드도 설정합니다.
-3. Cloudflare API token에 해당 zone의 `Zone:DNS:Edit`과 `Zone:Zone:Read` 권한을 줍니다.
-   서버의 `compose.env`에 `MEERKAT_CLOUDFLARE_API_TOKEN` 값을 설정합니다. 토큰은
-   대시보드 DB에 저장하지 않으며, 명령행 인자나 Git에 넣지 않습니다.
-4. TCP 80·443을 외부에 열고 Caddy를 시작합니다.
+3. TCP 80·443을 외부에 엽니다. HTTP-01 인증을 위해 80번 포트의 요청이
+   Caddy까지 도달해야 합니다.
 
-```sh
-docker compose --env-file /opt/meerkat-outlet/compose.env \
-  -f /opt/meerkat-outlet/compose.outlet.yaml up -d
-```
-
-Caddy는 Cloudflare DNS-01로 대표 도메인과 `*.대표도메인` 인증서를 발급·갱신합니다.
+Caddy는 HTTP-01로 대표 도메인의 인증서를 발급·갱신합니다. 공개 주소를 등록하면
+해당 호스트 이름의 인증서도 개별적으로 발급·갱신합니다. 와일드카드 DNS 레코드는
+공개 주소가 서버를 가리키게 하므로 계속 사용하지만 와일드카드 인증서는 발급하지 않습니다.
 인증서 발급 후 `https://대표도메인`에 접속해 다시 로그인합니다. SSH 터널은 DNS 또는
-인증서 장애 시 복구 경로로 유지합니다. 추가 도메인은 **도메인 관리**에서 등록하고,
-각 zone의 DNS 레코드와 Cloudflare token 권한도 같은 방식으로 설정합니다.
+인증서 장애 시 복구 경로로 유지합니다. 추가 도메인은 **도메인 관리**에서 등록하고
+각 도메인의 DNS 레코드를 같은 방식으로 설정합니다.
 
-기존 설치는 `outlet-init -domain` 방식을 계속 사용할 수 있습니다. 새 Compose 파일로
-업데이트할 때는 기존 Cloudflare token을 `compose.env`의
-`MEERKAT_CLOUDFLARE_API_TOKEN`으로 옮긴 후 위 Compose 명령으로 재실행합니다.
+기존 설치는 `outlet-init -domain` 방식을 계속 사용할 수 있습니다. 이전 DNS-01
+설치에서 전환할 때는 새 Outlet 이미지와 Compose 파일을 적용하고 서비스를 다시 시작합니다.
+`compose.env`에 남아 있는 `MEERKAT_CLOUDFLARE_API_TOKEN`은 삭제할 수 있습니다.
 
 구형 초기화 디렉터리에 도메인·터널 설정이 없다면 새 키를 만들지 말고 아래 업그레이드를
 한 번 실행합니다. 이미 업그레이드한 디렉터리에는 다시 실행하지 않습니다.

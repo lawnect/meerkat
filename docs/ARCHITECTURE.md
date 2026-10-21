@@ -151,9 +151,9 @@ Tunnel:     Connector가 실행하는 rathole client의 TLS 또는 Noise 연결
 
 MVP에서는 Caddy가 ACME 인증서를 발급·갱신한다. Outlet 관리 API는 도메인 설정, 인증서 상태와 실패 알림을 담당한다.
 
-빈 서버의 초기 실행에서는 도메인과 공개 인증서가 없다. Outlet 자체는 `localhost`를 포함한 로컬 HTTPS 인증서로 시작하고, Compose는 관리 포트를 호스트의 `127.0.0.1`에만 게시한다. 운영자는 SSH 포트 포워딩과 서버에 저장된 일회용 설정 코드로 첫 관리자를 만든다. 대표 도메인을 관리 UI에 등록하면 Outlet이 Caddy 설정을 생성한다. DNS와 Cloudflare token을 준비한 뒤 Caddy를 실행한다. 로컬 관리 포트는 공개 인증서·DNS 장애 시에도 사용할 수 있는 복구 경로다.
+빈 서버의 초기 실행에서는 도메인과 공개 인증서가 없다. Outlet 자체는 `localhost`를 포함한 로컬 HTTPS 인증서로 시작하고, Compose는 관리 포트를 호스트의 `127.0.0.1`에만 게시한다. Caddy는 공개 호스트가 없는 설정으로 함께 실행한다. 운영자는 SSH 포트 포워딩과 서버에 저장된 일회용 설정 코드로 첫 관리자를 만든다. 대표 도메인을 관리 UI에 등록하면 Outlet이 Caddy 설정을 갱신한다. DNS를 설정하고 TCP 80·443을 열면 인증서를 발급할 수 있다. 로컬 관리 포트는 공개 인증서·DNS 장애 시에도 사용할 수 있는 복구 경로다.
 
-HTTP Route는 Caddy가 관리하는 `*.도메인` 와일드카드 인증서를 사용한다. 인증서는 Cloudflare DNS-01로 발급·갱신하며, Outlet에는 대상 zone에 한정한 `Zone:DNS:Edit`과 `Zone:Zone:Read` 권한의 API token을 주입한다. DNS 챌린지는 인바운드 80 포트를 요구하지 않지만, 공개 HTTP redirect와 HTTPS 서비스에는 TCP 80·443 접근이 필요하다. SQLite에는 인증서·개인키 원문을 저장하지 않는다.
+HTTP Route는 Caddy가 해당 호스트 이름에 발급한 인증서를 사용한다. Caddy는 HTTP-01로 각 인증서를 발급·갱신하므로 외부 TCP 80이 Caddy까지 도달해야 한다. 공개 HTTPS 서비스에는 TCP 443도 필요하다. 와일드카드 DNS는 새 공개 주소를 Outlet으로 연결하지만 와일드카드 인증서는 사용하지 않는다. SQLite에는 인증서·개인키 원문을 저장하지 않는다.
 
 ### 6.4 Connector 터널
 

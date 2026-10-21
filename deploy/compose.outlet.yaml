@@ -38,10 +38,8 @@ services:
     depends_on: [outlet]
 
   caddy:
-    # Start only after the primary domain, DNS records and token are configured.
+    # Starts with an empty config; Outlet adds public hosts after domain setup.
     image: ${MEERKAT_CADDY_IMAGE:-ghcr.io/lawnect/meerkat-caddy:latest}
-    environment:
-      CLOUDFLARE_API_TOKEN: ${MEERKAT_CLOUDFLARE_API_TOKEN:-}
     read_only: true
     security_opt: [no-new-privileges:true]
     tmpfs: [/tmp]
@@ -56,4 +54,5 @@ services:
       - "${MEERKAT_BIND_ADDRESS:-0.0.0.0}:80:80"
       - "${MEERKAT_BIND_ADDRESS:-0.0.0.0}:443:443"
     depends_on: [outlet]
-    command: [caddy, run, --watch, --config, /runtime/caddy/Caddyfile, --adapter, caddyfile]
+    entrypoint: [/bin/sh, -c]
+    command: ["until test -f /runtime/caddy/Caddyfile; do sleep 1; done; exec caddy run --watch --config /runtime/caddy/Caddyfile --adapter caddyfile"]

@@ -147,6 +147,9 @@ func run() error {
 	if err := writeNew(filepath.Join(configDir, "admin.token"), []byte(admin+"\n")); err != nil {
 		return err
 	}
+	if err := writeNew(filepath.Join(*dir, "outlet-data", "caddy", "Caddyfile"), proxy.EmptyCaddyfile()); err != nil {
+		return err
+	}
 	if *domain != "" {
 		caddyfile, err := proxy.Caddyfile(*domain, nil)
 		if err != nil {

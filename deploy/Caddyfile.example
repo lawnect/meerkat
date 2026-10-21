@@ -1,6 +1,8 @@
 {$MEERKAT_DOMAIN} {
 	tls {
-		dns cloudflare {$CLOUDFLARE_API_TOKEN}
+		issuer acme {
+			disable_tlsalpn_challenge
+		}
 	}
 	reverse_proxy https://outlet:8443 {
 		transport http {
@@ -10,9 +12,12 @@
 	}
 }
 
-*.{$MEERKAT_DOMAIN} {
+# Add one site block for each registered public route, for example:
+app.{$MEERKAT_DOMAIN} {
 	tls {
-		dns cloudflare {$CLOUDFLARE_API_TOKEN}
+		issuer acme {
+			disable_tlsalpn_challenge
+		}
 	}
-	respond 404
+	reverse_proxy http://outlet:24000
 }
