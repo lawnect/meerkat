@@ -203,8 +203,17 @@ func TestExpiryAndFreshToken(t *testing.T) {
 		t.Fatal("active identity replaced")
 	}
 	f.store.now = func() time.Time { return now.Add(4 * time.Hour) }
+	if w := request(h, "GET", "/connector/v1/config", response.Credential, nil); w.Code != 200 {
+		t.Fatal("reusable tunnel token expired")
+	}
+	if w := request(h, "POST", "/connector/v1/enrollment", fresh.Token, enrollment("connector-a")); w.Code != 201 {
+		t.Fatal("reusable tunnel token could not reconnect")
+	}
+	if w := request(h, "POST", "/api/v1/connectors/connector_a/enrollment-tokens?reset=true", f.admin, nil); w.Code != 201 {
+		t.Fatal("tunnel token rotation failed")
+	}
 	if w := request(h, "GET", "/connector/v1/config", response.Credential, nil); w.Code != 401 {
-		t.Fatal("expired credential accepted")
+		t.Fatal("rotated token remained authorized")
 	}
 }
 

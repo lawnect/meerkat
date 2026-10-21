@@ -45,12 +45,14 @@
   let deleteError = $state('');
   let deleteName = $state('');
   let deleteTarget = $state<Connector | null>(null);
-  const automaticallyIssued = new Set<string>();
+  let resetTokenName = $state('');
+  let resetTokenTarget = $state<Connector | null>(null);
   let searchQuery = $state('');
   let connectionFilter = $state<'all' | 'connected' | 'pending' | 'problem'>('all');
   let createDialog: HTMLDialogElement;
   let serviceDialog: HTMLDialogElement;
   let deleteDialog: HTMLDialogElement;
+  let resetTokenDialog: HTMLDialogElement;
   const composeUpCommand = 'docker compose -f meerkat-tunnel.yaml up -d';
 
   const selected = $derived(data.connectors.find((connector) => connector.id === detailId));
@@ -63,7 +65,6 @@
     errors: total.errors + hour.error_responses,
   }), { requests: 0, requestBytes: 0, responseBytes: 0, errors: 0 }) || { requests: 0, requestBytes: 0, responseBytes: 0, errors: 0 });
   const usagePeriodLabel = $derived(usagePeriod === 24 ? '최근 24시간' : usagePeriod === 168 ? '최근 7일' : '최근 30일');
-  const invitationExpired = $derived(Boolean(connectorState.enrollment && now >= Date.parse(connectorState.enrollment.expires_at)));
   const filtersActive = $derived(Boolean(searchQuery.trim()) || connectionFilter !== 'all');
   const visibleConnectors = $derived.by(() => {
     const terms = searchQuery.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
@@ -148,12 +149,6 @@
   $effect(() => {
     const current = selected;
     if (!current) return;
-    if (current.status === 'connected' || current.status === 'connecting') {
-      forgetEnrollment(current.id);
-      connectorState.enrollment = null;
-      connectorState.enrollmentWasReset = false;
-      return;
-    }
     if (connectorState.enrollment) return;
     const saved = storedEnrollment(current.id);
     if (saved) {
@@ -161,9 +156,6 @@
       connectorState.enrollmentWasReset = saved.reset;
       return;
     }
-    if (current.status !== 'draft' || tokenBusy || automaticallyIssued.has(current.id)) return;
-    automaticallyIssued.add(current.id);
-    void issueToken(false, current.id);
   });
 
   function openDetailFromLink(event: MouseEvent, id: string): void {
@@ -216,6 +208,25 @@
     if (!deleteBusy) deleteDialog.close();
   }
 
+  function openResetTokenDialog(): void {
+    if (!selected || tokenBusy) return;
+    resetTokenTarget = selected;
+    resetTokenName = '';
+    tokenError = '';
+    copiedCode = '';
+    resetTokenDialog.showModal();
+  }
+
+  function closeResetTokenDialog(): void {
+    if (!tokenBusy) resetTokenDialog.close();
+  }
+
+  async function resetToken(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    if (!resetTokenTarget || resetTokenName !== resetTokenTarget.name || tokenBusy) return;
+    if (await issueToken(true, resetTokenTarget.id)) resetTokenDialog.close();
+  }
+
   async function createConnector(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     createError = '';
@@ -229,6 +240,7 @@
       clearFilters();
       createDialog.close();
       onOpenDetail(connector.id);
+      void issueToken(false, connector.id);
     } catch (cause) {
       createError = `터널을 만들지 못했습니다: ${tunnelError(cause)}`;
     } finally {
@@ -284,35 +296,28 @@
     }
   }
 
-  async function issueToken(reset = false, id = selected?.id) {
-    if (!id) return;
+  async function issueToken(reset = false, id = selected?.id): Promise<boolean> {
+    if (!id || tokenBusy) return false;
     tokenError = '';
     tokenBusy = true;
     try {
       const enrollment = await api<EnrollmentToken>(`/api/v1/connectors/${encodeURIComponent(id)}/enrollment-tokens${reset ? '?reset=true' : ''}`, { method: 'POST' });
-      const useResetVolume = reset || (connectorState.selectedId === id && connectorState.enrollmentWasReset);
-      rememberEnrollment(id, enrollment, useResetVolume);
+      const wasReset = reset || (connectorState.selectedId === id && connectorState.enrollmentWasReset);
+      rememberEnrollment(id, enrollment, wasReset);
       if (connectorState.selectedId === id) {
         connectorState.enrollment = enrollment;
-        connectorState.enrollmentWasReset = useResetVolume;
+        connectorState.enrollmentWasReset = wasReset;
         now = Date.now();
         installMethod = 'terminal';
       }
+      await onChanged();
+      return true;
     } catch (cause) {
       if (connectorState.selectedId === id) tokenError = `설치 안내를 준비하지 못했습니다: ${tunnelError(cause)}`;
+      return false;
     } finally {
       tokenBusy = false;
     }
-  }
-
-  function renewExpiredInvitation(): void {
-    if (!selected) return;
-    if (selected.status !== 'draft') {
-      if (!confirm('기존 터널 자격 증명을 무효화하고 설치 명령을 다시 만듭니다. 실행 중인 연결은 끊깁니다. 계속할까요?')) return;
-      void issueToken(true);
-      return;
-    }
-    void issueToken();
   }
 
   async function checkConnection(): Promise<void> {
@@ -362,10 +367,6 @@
     }
   }
 
-  function connectorVolume(): string {
-    return `meerkat-${selected?.name || 'connector'}-${connectorState.enrollmentWasReset ? 'data-reset' : 'data'}`;
-  }
-
   function invitation(): string {
     if (!selected || !connectorState.enrollment || !data.outlet.domain) return '';
     const payload = JSON.stringify({ v: 1, outlet: `https://${adminHostname(data.outlet.domain)}`, name: selected.name, token: connectorState.enrollment.token });
@@ -376,14 +377,13 @@
     if (!selected) return '';
     return [
       `docker run -d --restart unless-stopped --name meerkat-${selected.name}`,
-      `-v ${connectorVolume()}:/var/lib/meerkat`,
+      '--tmpfs /var/lib/meerkat:uid=65532,gid=65532,mode=0700',
       `ghcr.io/lawnect/meerkat:latest connect ${invitation()}`,
     ].join(' ' + String.fromCharCode(92) + '\n');
   }
 
   function composeFile(): string {
     if (!selected) return '';
-    const volume = connectorVolume();
     const lines = [
       'services:',
       '  connector:',
@@ -392,11 +392,8 @@
       '    restart: unless-stopped',
       '    init: true',
       `    command: ["connect", ${JSON.stringify(invitation())}]`,
-      '    volumes:',
-      `      - ${volume}:/var/lib/meerkat`,
-      '',
-      'volumes:',
-      `  ${volume}:`,
+      '    tmpfs:',
+      '      - /var/lib/meerkat:uid=65532,gid=65532,mode=0700',
     ];
     return lines.join('\n');
   }
@@ -410,14 +407,10 @@
       '    restart: unless-stopped',
       '    init: true',
       `    command: ["connect", ${JSON.stringify(invitation())}]`,
-      '    volumes:',
-      `      - ${connectorVolume()}:/var/lib/meerkat`,
+      '    tmpfs:',
+      '      - /var/lib/meerkat:uid=65532,gid=65532,mode=0700',
     ];
     return lines.join('\n');
-  }
-
-  function existingComposeVolume(): string {
-    return `  ${connectorVolume()}:`;
   }
 
   function onInstallTabKeydown(event: KeyboardEvent): void {
@@ -515,28 +508,19 @@
                     {#if !connectorState.enrollment && selected.status === 'draft'}
                       {#if tokenBusy}<p role="status">설치 명령을 준비하고 있습니다…</p>{:else}<Button variant="secondary" onclick={() => issueToken()}>설치 안내 다시 만들기</Button>{/if}
                     {/if}
-                    {#if !connectorState.enrollment && ['stale', 'disconnected', 'error'].includes(selected.status)}<Button variant="secondary" onclick={() => { if (confirm('기존 터널 자격 증명을 무효화하고 설치 명령을 다시 만듭니다. 실행 중인 연결은 끊깁니다. 계속할까요?')) issueToken(true); }} disabled={tokenBusy}>{tokenBusy ? '준비 중…' : '연결 초기화 후 설치 명령 만들기'}</Button>{/if}
-                    {#if tokenError}<p class="error" role="alert">{tokenError}</p>{/if}
+                    {#if !connectorState.enrollment && selected.status !== 'draft'}<p>실행 코드가 없으면 오른쪽의 터널 관리에서 토큰을 교체하세요.</p>{/if}
                     {#if tokenError.includes('already_enrolled') && selected.status === 'draft'}
-                      <Button variant="secondary" class="reset-token-button" onclick={() => { if (confirm('기존 터널 자격 증명을 무효화하고 설치 명령을 다시 만듭니다. 실행 중인 연결은 끊깁니다. 계속할까요?')) issueToken(true); }}>연결 초기화 후 설치 명령 만들기</Button>
+                      <Button variant="secondary" class="reset-token-button" onclick={openResetTokenDialog}>연결 초기화 후 설치 명령 만들기</Button>
                     {/if}
                     {#if connectorState.enrollment}
-                      {@const enrollment = connectorState.enrollment}
                       <div class="token-box">
-                        <div class:expired={invitationExpired} class="install-validity" role="status">
-                          <strong>{invitationExpired ? '설치 명령이 만료되었습니다' : '설치 명령 유효 시간'}</strong>
-                          <span>{new Date(enrollment.expires_at).toLocaleString('ko-KR', { dateStyle: 'medium', timeStyle: 'short' })}{invitationExpired ? '에 만료됨' : '까지'}</span>
-                        </div>
-                        {#if invitationExpired}
-                          <p>만료된 설치 명령은 사용할 수 없습니다. 새 명령을 발급받아 Docker 명령이나 Compose 파일의 초대 코드를 교체하세요.</p>
-                          <Button variant="secondary" disabled={tokenBusy} onclick={renewExpiredInvitation}>{tokenBusy ? '발급 중…' : '설치 명령 재발급'}</Button>
-                        {:else}
+                        <p>설치 코드에 터널 실행 토큰이 들어 있습니다. 재시작할 때도 같은 코드를 사용하며, 연결을 초기화하면 기존 코드는 무효가 됩니다.</p>
                         <div class="install-tabs" role="tablist" aria-label="터널 설치 방법">
                           <Button variant="plain" class={installMethod === 'terminal' ? 'install-tab active' : 'install-tab'} id={`install-terminal-tab-${selected.id}`} role="tab" aria-selected={installMethod === 'terminal'} aria-controls={`install-terminal-panel-${selected.id}`} tabindex={installMethod === 'terminal' ? 0 : -1} onclick={() => installMethod = 'terminal'} onkeydown={onInstallTabKeydown}>Docker 명령</Button>
                           <Button variant="plain" class={installMethod === 'compose' ? 'install-tab active' : 'install-tab'} id={`install-compose-tab-${selected.id}`} role="tab" aria-selected={installMethod === 'compose'} aria-controls={`install-compose-panel-${selected.id}`} tabindex={installMethod === 'compose' ? 0 : -1} onclick={() => installMethod = 'compose'} onkeydown={onInstallTabKeydown}>Docker Compose</Button>
                         </div>
                         <div class="install-panel" role="tabpanel" id={`install-terminal-panel-${selected.id}`} aria-labelledby={`install-terminal-tab-${selected.id}`} tabindex="0" hidden={installMethod !== 'terminal'}>
-                          <p>터널을 실행할 서버에서 아래 명령을 실행하세요. 인증 정보는 Docker 볼륨에 보관됩니다.</p>
+                          <p>터널을 실행할 서버에서 아래 명령을 실행하세요. 별도의 영구 볼륨은 필요하지 않습니다.</p>
                           {#if connectorState.enrollmentWasReset}<p>기존 터널 컨테이너를 중지·삭제한 뒤 새 명령을 실행하세요.</p>{/if}
                           <div class="command-heading"><strong class="ui-meta-label">실행 명령</strong></div>
                           <div class="code-block"><pre>{installCommand()}</pre><Button variant="plain" class={copiedCode === 'terminal' ? 'code-copy copied' : 'code-copy'} aria-label={copiedCode === 'terminal' ? '실행 명령 복사 완료' : '실행 명령 복사'} title={copiedCode === 'terminal' ? '복사 완료' : '실행 명령 복사'} onclick={() => copy(installCommand(), '실행 명령', 'terminal')}>{#if copiedCode === 'terminal'}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>{/if}</Button></div>
@@ -550,21 +534,18 @@
                           <p>기존 Compose 파일의 <code>services</code>에 터널 서비스를 추가합니다. 앱 네트워크는 연결 서비스를 등록할 때 설정할 수 있습니다.</p>
                           <div class="command-heading"><strong class="ui-meta-label">기존 파일의 services 아래에 추가</strong></div>
                           <div class="code-block"><pre>{existingComposeService()}</pre><Button variant="plain" class={copiedCode === 'existing-service' ? 'code-copy copied' : 'code-copy'} aria-label={copiedCode === 'existing-service' ? '터널 서비스 설정 복사 완료' : '터널 서비스 설정 복사'} title={copiedCode === 'existing-service' ? '복사 완료' : '터널 서비스 설정 복사'} onclick={() => copy(existingComposeService(), '터널 서비스 설정', 'existing-service')}>{#if copiedCode === 'existing-service'}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>{/if}</Button></div>
-                          <div class="command-heading"><strong class="ui-meta-label">기존 파일의 최상위 volumes 아래에 추가</strong></div>
-                          <div class="code-block"><pre>{existingComposeVolume()}</pre><Button variant="plain" class={copiedCode === 'existing-volume' ? 'code-copy copied' : 'code-copy'} aria-label={copiedCode === 'existing-volume' ? '볼륨 설정 복사 완료' : '볼륨 설정 복사'} title={copiedCode === 'existing-volume' ? '복사 완료' : '볼륨 설정 복사'} onclick={() => copy(existingComposeVolume(), '볼륨 설정', 'existing-volume')}>{#if copiedCode === 'existing-volume'}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>{/if}</Button></div>
-                          <p>이미 <code>connector</code> 서비스가 있다면 새로 추가하지 말고 해당 설정을 갱신하세요. <code>volumes:</code>가 없다면 최상위에 먼저 추가하세요. 등록 후에는 일회용 초대 코드가 들어간 command 줄을 삭제하세요.</p>
+                          <p>이미 <code>connector</code> 서비스가 있다면 새로 추가하지 말고 해당 설정을 갱신하세요. 실행 토큰이 포함된 <code>command</code> 줄은 유지해야 합니다.</p>
                           {:else}
                           <p>기존 Compose 파일을 수정하지 않고, 아래 내용을 터널 전용 <code>meerkat-tunnel.yaml</code> 파일로 저장하세요.</p>
                           <div class="command-heading"><strong class="ui-meta-label">meerkat-tunnel.yaml</strong></div>
                           <div class="code-block"><pre>{composeFile()}</pre><Button variant="plain" class={copiedCode === 'compose-file' ? 'code-copy copied' : 'code-copy'} aria-label={copiedCode === 'compose-file' ? 'Compose 파일 복사 완료' : 'Compose 파일 복사'} title={copiedCode === 'compose-file' ? '복사 완료' : 'Compose 파일 복사'} onclick={() => copy(composeFile(), 'Compose 파일', 'compose-file')}>{#if copiedCode === 'compose-file'}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>{/if}</Button></div>
                           <div class="command-heading"><strong class="ui-meta-label">실행</strong></div>
                           <div class="code-block"><pre>{composeUpCommand}</pre><Button variant="plain" class={copiedCode === 'compose-up' ? 'code-copy copied' : 'code-copy'} aria-label={copiedCode === 'compose-up' ? '실행 명령 복사 완료' : '실행 명령 복사'} title={copiedCode === 'compose-up' ? '복사 완료' : '실행 명령 복사'} onclick={() => copy(composeUpCommand, '실행 명령', 'compose-up')}>{#if copiedCode === 'compose-up'}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>{/if}</Button></div>
-                          <p>등록이 끝나면 파일에서 일회용 초대 코드가 들어간 <code>command</code> 줄을 삭제하고 터널 컨테이너를 다시 시작하세요. 인증 정보는 Docker 볼륨에 남습니다.</p>
+                          <p>실행 토큰이 포함된 <code>command</code> 줄을 유지하세요. 컨테이너를 새로 만들어도 같은 토큰으로 다시 연결합니다.</p>
                           {/if}
                         </div>
-                        <p>설치 명령의 초대 코드는 최초 등록에 한 번만 사용할 수 있습니다. 새 명령을 발급하면 이전 코드는 무효가 됩니다.</p>
+                        <p>실행 토큰이 포함된 설치 코드는 비밀로 보관하세요. 새 토큰을 발급하면 이전 토큰은 무효가 됩니다.</p>
                         {#if mockApiEnabled}<div class="mock-connect"><span>미리보기에서는 실제 터널이 연결되지 않습니다.</span><Button variant="secondary" size="sm" onclick={mockConnect}>연결 상태로 전환</Button></div>{/if}
-                        {/if}
                       </div>
                     {/if}
                   </section>
@@ -602,9 +583,22 @@
           </Card>
           <Card as="section" padding="none" class="management-card">
             <div class="ui-card-header"><h3 class="ui-card-title">터널 관리</h3></div>
-            <div class="sidebar-body">
-              <p>터널을 삭제하면 연결 서비스와 공개 주소도 함께 삭제됩니다.</p>
-              <Button variant="danger" size="sm" onclick={openDeleteDialog}>터널 삭제</Button>
+            <div class="sidebar-body management-actions">
+              <section class="management-row" aria-labelledby={`token-management-${selected.id}`}>
+                <div class="management-copy">
+                  <h4 id={`token-management-${selected.id}`}>실행 토큰</h4>
+                  <p>노출되거나 설치 코드를 잃어버렸다면 교체하세요. 이전 토큰은 즉시 무효가 됩니다.</p>
+                </div>
+                <Button variant="secondary" size="sm" disabled={tokenBusy} onclick={openResetTokenDialog}>{tokenBusy ? '교체 중…' : '토큰 교체'}</Button>
+                {#if tokenError}<p class="error management-error" role="alert">{tokenError}</p>{/if}
+              </section>
+              <section class="management-row" aria-labelledby={`delete-management-${selected.id}`}>
+                <div class="management-copy">
+                  <h4 id={`delete-management-${selected.id}`}>터널 삭제</h4>
+                  <p>연결 서비스와 공개 주소도 함께 삭제됩니다.</p>
+                </div>
+                <Button variant="danger" size="sm" onclick={openDeleteDialog}>터널 삭제</Button>
+              </section>
             </div>
           </Card>
         </aside>
@@ -704,6 +698,26 @@
   </form>
 </dialog>
 
+<dialog bind:this={resetTokenDialog} class="connector-dialog" aria-labelledby="reset-token-dialog-title" aria-describedby="reset-token-dialog-description reset-token-warning" oncancel={(event) => { if (tokenBusy) event.preventDefault(); }} onclose={() => { resetTokenName = ''; resetTokenTarget = null; tokenError = ''; copiedCode = ''; }}>
+  <form onsubmit={resetToken}>
+    <h2 id="reset-token-dialog-title">실행 토큰 교체</h2>
+    <p id="reset-token-dialog-description">현재 토큰을 무효화하고 새 토큰을 발급합니다.</p>
+    <div id="reset-token-warning" class="token-reset-warning" role="note">기존 토큰을 사용하는 모든 터널 인스턴스의 연결이 끊깁니다. 새 설치 코드를 각 인스턴스에 적용해야 다시 연결됩니다.</div>
+    <div class="field">
+      <div class="confirmation-name">
+        <label for="reset-token-connector-name">교체할 터널:</label>
+        <strong title={resetTokenTarget?.name}>{resetTokenTarget?.name}</strong>
+        <Button variant="plain" size="sm" class={copiedCode === 'reset-token-name' ? 'confirmation-copy copied' : 'confirmation-copy'} aria-label={copiedCode === 'reset-token-name' ? '터널 이름 복사 완료' : '터널 이름 복사'} title={copiedCode === 'reset-token-name' ? '복사 완료' : '터널 이름 복사'} disabled={tokenBusy} onclick={() => copy(resetTokenTarget?.name || '', '터널 이름', 'reset-token-name')}>
+          {#if copiedCode === 'reset-token-name'}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>{/if}
+        </Button>
+      </div>
+      <input class="input input-bordered" id="reset-token-connector-name" bind:value={resetTokenName} placeholder="토큰을 교체할 터널의 이름을 입력하세요" autocomplete="off" spellcheck="false" required />
+    </div>
+    {#if tokenError}<p class="error" role="alert">{tokenError}</p>{/if}
+    <div class="dialog-actions"><Button variant="secondary" onclick={closeResetTokenDialog} disabled={tokenBusy}>취소</Button><Button variant="danger" type="submit" disabled={tokenBusy || resetTokenName !== resetTokenTarget?.name}>{tokenBusy ? '교체 중…' : '실행 토큰 교체'}</Button></div>
+  </form>
+</dialog>
+
 <dialog bind:this={deleteDialog} class="connector-dialog" aria-labelledby="delete-dialog-title" aria-describedby="delete-dialog-description" oncancel={(event) => { if (deleteBusy) event.preventDefault(); }} onclose={() => { deleteName = ''; deleteError = ''; deleteTarget = null; }}>
   <form onsubmit={deleteConnector}>
     <h2 id="delete-dialog-title">터널 삭제</h2>
@@ -792,6 +806,7 @@
   .connector-dialog::backdrop { background: rgba(35, 30, 26, .38); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
   .connector-dialog h2 { margin: 0 0 4px; font-size: 20px; letter-spacing: -.025em; }
   .connector-dialog p:not(.error) { margin: 0 0 16px; color: var(--muted); font-size: 12px; }
+  .token-reset-warning { margin: 0 0 18px; padding: 12px 14px; border-radius: 8px; background: #fff8e7; color: #a65112; font-size: 12px; line-height: 1.6; }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
   .detail-section { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 15px; }
   .section-heading { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; }
@@ -809,9 +824,6 @@
   .token-box { display: grid; gap: 10px; margin-top: 4px; }
   .command-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
   .token-box p { margin: 2px 0 0 !important; color: var(--muted); font-size: 12px; }
-  .install-validity { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; color: var(--ink); font-size: 12px; }
-  .install-validity span { color: var(--muted); }
-  .install-validity.expired { border-color: var(--accent); color: var(--accent-dark); }
   .install-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; border-bottom: 1px solid var(--line); }
   .install-tabs :global(.install-tab) { border-bottom: 2px solid transparent; padding: 7px 12px; color: var(--muted); font-size: 12px; font-weight: 650; }
   .install-tabs :global(.install-tab:hover), .install-tabs :global(.install-tab.active) { color: var(--accent-dark); }
@@ -838,7 +850,19 @@
   .id-value :global(.id-copy) { display: grid; flex: none; place-items: center; width: 26px; height: 26px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); }
   .id-value :global(.id-copy svg) { width: 14px; height: 14px; }
   .id-value :global(.id-copy.copied) { border-color: var(--green); color: var(--green); }
-  .sidebar-body > p { margin: 0 0 12px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+  .management-actions { display: grid; }
+  .management-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 16px; min-width: 0; }
+  .management-row + .management-row { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 16px; }
+  .management-copy { flex: 1 1 170px; min-width: 0; }
+  .management-copy h4 { margin: 0 0 5px; font-size: 12px; font-weight: 700; }
+  .management-copy p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+  .management-error { flex-basis: 100%; margin: 0; }
+  .confirmation-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .confirmation-name label { flex: none; white-space: nowrap; }
+  .confirmation-name strong { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .confirmation-name :global(.confirmation-copy) { display: grid; flex: none; place-items: center; width: 28px; height: 28px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); }
+  .confirmation-name :global(.confirmation-copy svg) { width: 14px; height: 14px; }
+  .confirmation-name :global(.confirmation-copy.copied) { border-color: var(--green); color: var(--green); }
   @media (max-width: 1000px) { .detail-layout { grid-template-columns: 1fr; } .detail-sidebar { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   @media (max-width: 700px) { .connector-filters, .filter-summary { width: 100%; } }
   @media (max-width: 480px) { .service-fields { grid-template-columns: 1fr; } }

@@ -94,7 +94,7 @@ preparing / activating / verifying
 
 ## 8. 보안 주의사항
 
-- Connector 등록 토큰은 일회성·단기 만료로 만든다.
+- Connector 실행 토큰은 터널별로 분리하고, 교체·폐기 시 이전 토큰을 즉시 거부한다.
 - Connector별 자격 증명을 분리하고 폐기할 수 있어야 한다.
 - Connector가 연결할 수 있는 대상 host와 port를 allowlist로 제한한다.
 - 사용자 입력을 shell 명령이나 임의 프록시 설정으로 직접 삽입하지 않는다.

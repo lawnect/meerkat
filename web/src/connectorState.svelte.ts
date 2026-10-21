@@ -14,7 +14,7 @@ export function storedEnrollment(id: string): StoredEnrollment | null {
     const raw = sessionStorage.getItem(`${enrollmentStoragePrefix}${id}`);
     if (!raw) return null;
     const value = JSON.parse(raw) as StoredEnrollment;
-    if (typeof value.enrollment?.token === 'string' && value.enrollment.token && Number.isFinite(Date.parse(value.enrollment.expires_at))) return value;
+    if (typeof value.enrollment?.token === 'string' && value.enrollment.token && !('expires_at' in value.enrollment)) return value;
     sessionStorage.removeItem(`${enrollmentStoragePrefix}${id}`);
   } catch { /* Private browsing or disabled storage. */ }
   return null;

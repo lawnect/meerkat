@@ -52,7 +52,7 @@ type EnrollmentRequest struct {
 type EnrollmentResponse struct {
 	Configuration
 	Credential          string    `json:"credential"`
-	CredentialExpiresAt time.Time `json:"credential_expires_at"`
+	CredentialExpiresAt time.Time `json:"credential_expires_at,omitzero"`
 }
 
 type Heartbeat struct {

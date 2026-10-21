@@ -80,7 +80,6 @@ export interface ConnectorUsage {
 
 export interface EnrollmentToken {
   token: string;
-  expires_at: string;
 }
 
 export interface TraceSnapshot {

@@ -188,6 +188,21 @@ func (s *Store) enroll(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, record := range s.records {
+		if matches(bearer(r), record.RunTokenHash) {
+			if record.Name != req.Name {
+				fail(w, r, 403, "connector_mismatch")
+				return
+			}
+			if !record.Enrolled {
+				record.Enrolled, record.PublicKey = true, req.PublicKey
+				if err := s.save(id, record); err != nil {
+					fail(w, r, 503, "persistence_failed")
+					return
+				}
+			}
+			reply(w, 201, contract.EnrollmentResponse{Configuration: record.Configuration, Credential: bearer(r)})
+			return
+		}
 		if !matches(bearer(r), record.EnrollmentHash) {
 			continue
 		}
@@ -216,6 +231,21 @@ func (s *Store) enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for id, record := range s.managed {
+		if matches(bearer(r), record.RunTokenHash) {
+			if record.Name != req.Name {
+				fail(w, r, 403, "connector_mismatch")
+				return
+			}
+			if !record.Enrolled {
+				record.Enrolled, record.PublicKey = true, req.PublicKey
+				if err := s.saveManaged(id, record); err != nil {
+					fail(w, r, 503, "persistence_failed")
+					return
+				}
+			}
+			reply(w, 201, contract.EnrollmentResponse{Configuration: record.Configuration, Credential: bearer(r)})
+			return
+		}
 		if !matches(bearer(r), record.EnrollmentHash) {
 			continue
 		}
@@ -249,12 +279,12 @@ func (s *Store) enroll(w http.ResponseWriter, r *http.Request) {
 // Called only while the store lock is held.
 func (s *Store) authenticated(r *http.Request) (string, Record, bool, bool) {
 	for id, record := range s.records {
-		if record.Enrolled && s.now().Before(record.CredentialExpiresAt) && matches(bearer(r), record.CredentialHash) {
+		if record.Enrolled && (matches(bearer(r), record.RunTokenHash) || s.now().Before(record.CredentialExpiresAt) && matches(bearer(r), record.CredentialHash)) {
 			return id, record, false, true
 		}
 	}
 	for id, record := range s.managed {
-		if record.Enrolled && s.now().Before(record.CredentialExpiresAt) && matches(bearer(r), record.CredentialHash) {
+		if record.Enrolled && (matches(bearer(r), record.RunTokenHash) || s.now().Before(record.CredentialExpiresAt) && matches(bearer(r), record.CredentialHash)) {
 			return id, record, true, true
 		}
 	}
@@ -669,7 +699,7 @@ type Status struct {
 	TunnelStatus        string              `json:"tunnel_status"`
 	LastSeen            time.Time           `json:"last_seen"`
 	Heartbeat           *contract.Heartbeat `json:"heartbeat"`
-	CredentialExpiresAt time.Time           `json:"credential_expires_at"`
+	CredentialExpiresAt time.Time           `json:"credential_expires_at,omitzero"`
 }
 
 func (s *Store) list(w http.ResponseWriter, r *http.Request) {
@@ -774,22 +804,23 @@ func (s *Store) issueToken(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 404, "connector_not_found")
 		return
 	}
-	// A fresh token can recover an expired identity. Active credentials cannot be
-	// silently replaced. Tunnel-token revocation belongs to server config rollout.
-	if record.Enrolled && s.now().Before(record.CredentialExpiresAt) && r.URL.Query().Get("reset") != "true" {
+	// Active identities require an explicit reset before their run token changes.
+	if record.Enrolled && (record.RunTokenHash != "" || s.now().Before(record.CredentialExpiresAt)) && r.URL.Query().Get("reset") != "true" {
 		fail(w, r, 409, "already_enrolled")
 		return
 	}
 	token := Token()
 	record.Enrolled = false
 	record.PublicKey, record.CredentialHash = "", ""
+	record.RunTokenHash = Hash(token)
+	record.CredentialExpiresAt = time.Time{}
 	record.LastHeartbeat, record.LastSeen, record.TunnelStatus = nil, time.Time{}, "unknown"
-	record.EnrollmentHash, record.EnrollmentExpiresAt = Hash(token), s.now().Add(time.Duration(s.config.EnrollmentTTLSeconds)*time.Second)
+	record.EnrollmentHash, record.EnrollmentExpiresAt = "", time.Time{}
 	if err := s.save(id, record); err != nil {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	reply(w, 201, map[string]any{"token": token, "expires_at": record.EnrollmentExpiresAt})
+	reply(w, 201, map[string]any{"token": token})
 }
 
 func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
@@ -839,7 +870,7 @@ func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	record, exists := s.managed[id]
-	if exists && record.Enrolled && s.now().Before(record.CredentialExpiresAt) && r.URL.Query().Get("reset") != "true" {
+	if exists && record.Enrolled && (record.RunTokenHash != "" || s.now().Before(record.CredentialExpiresAt)) && r.URL.Query().Get("reset") != "true" {
 		s.mu.Unlock()
 		fail(w, r, 409, "already_enrolled")
 		return
@@ -872,8 +903,10 @@ func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
 	token := Token()
 	record.Enrolled = false
 	record.PublicKey, record.CredentialHash = "", ""
+	record.RunTokenHash = Hash(token)
+	record.CredentialExpiresAt = time.Time{}
 	record.LastHeartbeat, record.LastSeen, record.TunnelStatus, record.ServiceStatuses = nil, time.Time{}, "unknown", nil
-	record.EnrollmentHash, record.EnrollmentExpiresAt = Hash(token), s.now().Add(time.Duration(s.config.EnrollmentTTLSeconds)*time.Second)
+	record.EnrollmentHash, record.EnrollmentExpiresAt = "", time.Time{}
 	if err := s.saveManaged(id, record); err != nil {
 		s.mu.Unlock()
 		fail(w, r, 503, "persistence_failed")
@@ -884,7 +917,7 @@ func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "tunnel_reconcile_failed")
 		return
 	}
-	reply(w, 201, map[string]any{"token": token, "expires_at": record.EnrollmentExpiresAt, "services": services})
+	reply(w, 201, map[string]any{"token": token, "services": services})
 }
 
 func (s *Store) nextProbePort() int {

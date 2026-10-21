@@ -2,15 +2,15 @@
 
 이 문서는 터널별 Connector 모델의 API 방향이다. 구현된 경로와 정확한 필드는 [api/openapi.json](../api/openapi.json)에 정의한다. 일부 폐기·설정 적용·stream 경로는 아직 구현하지 않았다.
 
-Connector별 bearer credential을 사용하며, 기본 수명은 등록 토큰 1시간·API credential 30일이다. 두 값은 설정 가능하며 자동 갱신과 mTLS는 후속 범위다. 등록 응답은 201이다. 서비스 등록 전에는 `services`가 없거나 비어 있고 Connector는 설정을 주기적으로 조회한다. 서비스 등록 후에는 각 서비스의 `service_id`, `target`, `tunnel`을 담은 `services` 배열을 반환한다.
+새 관리형 Connector는 재사용 가능한 실행 토큰을 bearer credential로 사용한다. 이 토큰은 초기 등록과 컨테이너 재생성 후 재연결에 사용하며, 교체하거나 Connector를 삭제할 때까지 유효하다. 기존 PoC의 일회용 등록 토큰과 30일 API credential도 지원한다. 등록 응답은 201이다. 서비스 등록 전에는 `services`가 없거나 비어 있고 Connector는 설정을 주기적으로 조회한다. 서비스 등록 후에는 각 서비스의 `service_id`, `target`, `tunnel`을 담은 `services` 배열을 반환한다.
 
 ## 1. 채널과 인증
 
 | 경로 | 용도 | 인증 |
 | --- | --- | --- |
 | /api/v1/* | 관리자 UI/API | 관리자 세션 또는 관리자 API 토큰 |
-| /connector/v1/enrollment | Connector 최초 등록 | 짧은 수명의 일회성 등록 토큰 + HTTPS |
-| /connector/v1/* | heartbeat·설정·터널 제어 | Connector별 자격 증명 또는 mTLS |
+| /connector/v1/enrollment | Connector 등록·재연결 | 재사용 가능한 실행 토큰 + HTTPS |
+| /connector/v1/* | heartbeat·설정·터널 제어 | Connector별 실행 토큰 또는 기존 자격 증명 |
 
 Connector는 항상 연결을 먼저 시작한다. 공인 Outlet은 외부 HTTP/HTTPS와 등록 endpoint를 제외하고 Connector 관리 포트를 직접 공개하지 않는다.
 
@@ -109,9 +109,9 @@ Authorization: Bearer <one-time-token>
 }
 ~~~
 
-성공 응답은 Connector ID, 인증 자격 증명과 설정 revision을 반환한다. 서비스 등록 전에는 `services`가 비어 있다. 서비스 등록 후 설정 조회에서 각 대상과 터널 정보를 반환한다. 개인키와 등록 토큰 원문은 다시 반환하지 않는다. 응답에는 Cache-Control: no-store를 적용한다.
+성공 응답은 Connector ID, 인증 자격 증명과 설정 revision을 반환한다. 새 관리형 Connector의 인증 자격 증명은 요청에 사용한 실행 토큰과 같다. 서비스 등록 전에는 `services`가 비어 있다. 서비스 등록 후 설정 조회에서 각 대상과 터널 정보를 반환한다. 개인키는 반환하지 않는다. 응답에는 Cache-Control: no-store를 적용한다.
 
-토큰 만료·재사용은 401, 토큰과 Connector 불일치는 403, 이미 등록된 Connector는 409다.
+무효한 토큰은 401, 토큰과 Connector 이름 불일치는 403이다. 기존 일회용 등록 토큰의 재사용과 이미 등록된 Connector는 409 또는 401을 반환한다.
 
 ## 4. Connector API
 

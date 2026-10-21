@@ -254,8 +254,8 @@
     "/api/v1/connectors/{id}/enrollment-tokens": {
       "post": {
         "operationId": "issueEnrollmentToken",
-        "summary": "Replace a pending token or enroll an expired identity",
-        "description": "Active identities return 409. This endpoint does not revoke a rathole service token.",
+        "summary": "Issue or rotate a reusable tunnel run token",
+        "description": "The token remains valid until rotated or the connector is deleted. Active identities return 409 unless reset=true; resetting rotates service tokens and disconnects the old tunnel.",
         "security": [
           {
             "adminToken": []
@@ -273,23 +273,18 @@
         ],
         "responses": {
           "201": {
-            "description": "One-time secret; returned only now",
+            "description": "Reusable run secret; returned only when issued",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "additionalProperties": false,
                   "required": [
-                    "token",
-                    "expires_at"
+                    "token"
                   ],
                   "properties": {
                     "token": {
                       "$ref": "#/components/schemas/Secret"
-                    },
-                    "expires_at": {
-                      "type": "string",
-                      "format": "date-time"
                     }
                   }
                 }
@@ -554,8 +549,7 @@
           "service_id",
           "target",
           "tunnel",
-          "credential",
-          "credential_expires_at"
+          "credential"
         ],
         "properties": {
           "connector_id": {
@@ -583,7 +577,8 @@
           },
           "credential_expires_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "Only present for legacy expiring credentials; reusable run tokens have no expiry."
           }
         }
       },
@@ -659,8 +654,7 @@
           "status",
           "tunnel_status",
           "last_seen",
-          "heartbeat",
-          "credential_expires_at"
+          "heartbeat"
         ],
         "properties": {
           "id": {

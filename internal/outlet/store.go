@@ -52,6 +52,7 @@ type Record struct {
 	ServiceStatuses     map[string]string   `json:"service_statuses,omitempty"`
 	Enrolled            bool                `json:"enrolled"`
 	PublicKey           string              `json:"public_key,omitempty"`
+	RunTokenHash        string              `json:"run_token_hash,omitempty"`
 	CredentialHash      string              `json:"credential_hash,omitempty"`
 	CredentialExpiresAt time.Time           `json:"credential_expires_at,omitempty"`
 	LastHeartbeat       *contract.Heartbeat `json:"last_heartbeat,omitempty"`

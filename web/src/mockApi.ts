@@ -186,7 +186,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
       delete connector.last_seen;
     }
     const token = `mock_enrollment_${Math.random().toString(36).slice(2, 18)}`;
-    return { token, expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString() };
+    return { token };
   }
   if (parts.length === 5 && parts[2] === 'connectors' && parts[4] === 'mock-connect' && method === 'POST') {
     const connector = state.connectors.find((item) => item.id === parts[3]);

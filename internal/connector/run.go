@@ -29,6 +29,10 @@ type session struct {
 	Enrollment contract.EnrollmentResponse `json:"enrollment"`
 }
 
+func credentialCurrent(expires time.Time) bool {
+	return expires.IsZero() || time.Now().Before(expires)
+}
+
 func publicIdentity(dir string) (string, error) {
 	path := filepath.Join(dir, "identity.json")
 	var id identity
@@ -70,11 +74,40 @@ func enroll(ctx context.Context, cfg Config, api *transport.Client, token string
 	path := filepath.Join(cfg.DataDir, "session.json")
 	var saved session
 	err := securefs.ReadJSON(path, &saved)
-	if err == nil {
-		if saved.OutletURL != cfg.OutletURL || saved.Name != cfg.Name {
-			return contract.EnrollmentResponse{}, errors.New("saved identity belongs to another outlet or connector")
+	if err != nil && !os.IsNotExist(err) {
+		return contract.EnrollmentResponse{}, err
+	}
+	if err == nil && (saved.OutletURL != cfg.OutletURL || saved.Name != cfg.Name) {
+		return contract.EnrollmentResponse{}, errors.New("saved identity belongs to another outlet or connector")
+	}
+	if validation.Token(token) {
+		public, keyErr := publicIdentity(cfg.DataDir)
+		if keyErr != nil {
+			return contract.EnrollmentResponse{}, keyErr
 		}
-		if !time.Now().Before(saved.Enrollment.CredentialExpiresAt) {
+		response, enrollErr := api.Enroll(ctx, token, contract.EnrollmentRequest{Name: cfg.Name, Version: contract.Version, PublicKey: public})
+		if enrollErr == nil {
+			if len(response.ActiveServices()) != 0 {
+				if err := allowed(cfg, response.Configuration); err != nil {
+					return response, err
+				}
+			}
+			if !validation.Token(response.Credential) || !credentialCurrent(response.CredentialExpiresAt) {
+				return response, errors.New("invalid enrollment credential")
+			}
+			if err := securefs.WriteJSON(path, session{cfg.OutletURL, cfg.Name, response}); err != nil {
+				return response, err
+			}
+			return response, nil
+		}
+		if os.IsNotExist(err) || saved.Enrollment.CredentialExpiresAt.IsZero() {
+			return response, enrollErr
+		}
+		// Older installations may still have a consumed one-time token in the
+		// command. Their saved credential remains the recovery path.
+	}
+	if err == nil {
+		if !credentialCurrent(saved.Enrollment.CredentialExpiresAt) {
 			return contract.EnrollmentResponse{}, errors.New("connector credential expired; issue a new enrollment token and use a new data directory")
 		}
 		if !validation.Token(saved.Enrollment.Credential) {
@@ -98,32 +131,7 @@ func enroll(ctx context.Context, cfg Config, api *transport.Client, token string
 		}
 		return saved.Enrollment, nil
 	}
-	if !os.IsNotExist(err) {
-		return contract.EnrollmentResponse{}, err
-	}
-	if !validation.Token(token) {
-		return contract.EnrollmentResponse{}, errors.New("a valid one-time enrollment token is required")
-	}
-	public, err := publicIdentity(cfg.DataDir)
-	if err != nil {
-		return contract.EnrollmentResponse{}, err
-	}
-	response, err := api.Enroll(ctx, token, contract.EnrollmentRequest{Name: cfg.Name, Version: contract.Version, PublicKey: public})
-	if err != nil {
-		return response, err
-	}
-	if len(response.ActiveServices()) != 0 {
-		if err := allowed(cfg, response.Configuration); err != nil {
-			return response, err
-		}
-	}
-	if !validation.Token(response.Credential) || !time.Now().Before(response.CredentialExpiresAt) {
-		return response, errors.New("invalid enrollment credential")
-	}
-	if err := securefs.WriteJSON(path, session{cfg.OutletURL, cfg.Name, response}); err != nil {
-		return response, err
-	}
-	return response, nil
+	return contract.EnrollmentResponse{}, errors.New("a valid tunnel token is required")
 }
 
 // Wait only when no service can be reached. A missing new target must not keep
@@ -162,7 +170,7 @@ func waitForTargets(ctx context.Context, cfg Config, api *transport.Client, resp
 			return nil, nil
 		case <-timer.C:
 		}
-		if !time.Now().Before(response.CredentialExpiresAt) {
+		if !credentialCurrent(response.CredentialExpiresAt) {
 			return nil, errors.New("connector credential expired while waiting for local targets")
 		}
 		remote, err := api.Configuration(ctx, response.Credential)
@@ -252,7 +260,7 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 				return nil
 			case <-timer.C:
 			}
-			if !time.Now().Before(response.CredentialExpiresAt) {
+			if !credentialCurrent(response.CredentialExpiresAt) {
 				return errors.New("connector credential expired while waiting for a service")
 			}
 			remote, configErr := api.Configuration(ctx, response.Credential)
@@ -389,7 +397,7 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 			cancel()
 			return err
 		case <-ticker.C:
-			if !time.Now().Before(response.CredentialExpiresAt) {
+			if !credentialCurrent(response.CredentialExpiresAt) {
 				stopChild()
 				<-done
 				return errors.New("connector credential expired; tunnel stopped")
