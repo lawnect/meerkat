@@ -1,12 +1,12 @@
 # 설정 적용과 롤백
 
-이 문서는 하나의 Connector 터널에 여러 서비스를 연결하는 모델의 설정 변경에 적용한다. 현재 서비스 추가·수정·삭제는 Rathole의 서비스별 설정 갱신을 사용하고, 변경되지 않은 서비스의 공개 경로와 연결 상태를 유지한다. 아래의 준비·롤백 절차는 후속 구현 계획이다.
+이 문서는 하나의 Connector 터널에 여러 서비스를 연결하는 모델의 설정 변경에 적용한다. 현재 서비스 추가·수정·삭제는 Rathole의 서비스별 설정 갱신을 사용하고, 변경되지 않은 서비스의 공개 경로와 연결 상태를 유지한다. HTTP 공개 주소는 Outlet이 요청마다 조회하므로 추가·삭제 시 Caddy 설정을 다시 읽지 않는다. 아래의 준비·롤백 절차는 후속 구현 계획이다.
 
 ## 1. 원칙
 
 1. Outlet 하나에는 설정 적용 작업을 한 번에 하나만 실행한다.
 2. DB에 desired state와 revision을 먼저 기록한다.
-3. Caddy·HAProxy 설정은 후보 파일로 생성하고 문법 검사 후 적용한다.
+3. 공개 HTTP 경로는 고정된 Caddy 설정과 Outlet의 동적 조회로 적용한다. HAProxy 설정 변경은 후보 파일로 생성하고 문법 검사 후 적용한다.
 4. Connector에는 전체 설정이 아니라 해당 Connector가 허용받은 서비스 설정만 전달한다.
 5. 새 경로가 실제로 연결된 것을 확인하기 전에는 외부 Route를 활성화하지 않는다.
 6. 마지막 정상 revision과 후보 revision의 digest를 저장한다.
@@ -19,8 +19,8 @@
 3. Connector에 후보 대상 설정을 전달한다.
 4. Connector가 대상 서비스에 연결 가능한지 확인하고 prepared를 보고한다.
 5. Outlet이 Connector 장기 연결과 대상 health를 확인한다.
-6. Caddy 또는 HAProxy 후보 설정을 생성·검사한다.
-7. 프록시를 reload하고 실제 HTTP/TCP probe를 수행한다.
+6. HTTP Route는 Outlet 조회 결과를 갱신한다. TCP Route는 HAProxy 후보 설정을 생성·검사한다.
+7. 필요한 TCP 프록시만 reload하고 실제 HTTP/TCP probe를 수행한다.
 8. 성공하면 revision을 applied로 확정하고 이전 후보를 정리한다.
 
 Connector가 준비되지 않으면 외부 Route를 공개하지 않는다.
@@ -53,7 +53,7 @@ Connector가 준비되지 않으면 외부 Route를 공개하지 않는다.
 | Connector 등록 실패 | failed: enrollment | 토큰을 폐기하고 새 토큰 발급 |
 | Connector 설정 적용 실패 | failed: connector_apply | 기존 Route 유지, 후보 설정 정리 |
 | 대상 health 실패 | failed: health | Route 공개 금지 |
-| Caddy 설정 검사 실패 | failed: caddy_config | 기존 Caddy 설정 유지 |
+| 초기 Caddy 설정 적용 실패 | failed: caddy_config | 기존 Caddy 설정 유지 |
 | HAProxy reload 실패 | failed: haproxy_reload | 기존 HAProxy worker와 설정 유지 |
 | Probe 실패 | rolling_back | 후보 Route 차단 후 마지막 정상 revision 복원 |
 | Connector 연결 끊김 | degraded | 해당 Route만 실패 처리, 다른 Route 유지 |

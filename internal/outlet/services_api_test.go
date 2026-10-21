@@ -243,10 +243,8 @@ func TestTunnelHostsMultipleServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, hostname := range []string{"web.example.com", "api.example.com"} {
-		if !strings.Contains(string(proxyConfig), hostname) {
-			t.Fatalf("missing route %s", hostname)
-		}
+	if !strings.Contains(string(proxyConfig), "on_demand_tls") || strings.Contains(string(proxyConfig), "web.example.com") || strings.Contains(string(proxyConfig), "api.example.com") {
+		t.Fatalf("Caddy config must remain independent of routes: %q", proxyConfig)
 	}
 	probes[1].Close()
 	hb.ObservedAt = time.Now().UTC().Add(time.Millisecond)
@@ -258,8 +256,8 @@ func TestTunnelHostsMultipleServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(proxyConfig), "web.example.com") || strings.Contains(string(proxyConfig), "api.example.com") {
-		t.Fatal("healthy service route was lost or unhealthy route remained")
+	if !strings.Contains(string(proxyConfig), "on_demand_tls") || strings.Contains(string(proxyConfig), "web.example.com") || strings.Contains(string(proxyConfig), "api.example.com") {
+		t.Fatal("service health changed the Caddy config")
 	}
 	config, err := os.ReadFile(store.tunnelPath)
 	if err != nil {

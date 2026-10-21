@@ -155,6 +155,8 @@ MVP에서는 Caddy가 ACME 인증서를 발급·갱신한다. Outlet 관리 API�
 
 HTTP Route는 Caddy가 해당 호스트 이름에 발급한 인증서를 사용한다. Caddy는 HTTP-01로 각 인증서를 발급·갱신하므로 외부 TCP 80이 Caddy까지 도달해야 한다. 공개 HTTPS 서비스에는 TCP 443도 필요하다. 와일드카드 DNS는 새 공개 주소를 Outlet으로 연결하지만 와일드카드 인증서는 사용하지 않는다. SQLite에는 인증서·개인키 원문을 저장하지 않는다.
 
+첫 도메인 등록 뒤 Caddy는 호스트별 설정을 만들지 않는다. 새 TLS 연결에서 Caddy가 내부 Outlet 승인 엔드포인트에 호스트 등록 여부를 묻고, 승인된 호스트의 인증서를 필요할 때 발급한다. HTTPS 요청은 고정된 내부 Outlet 주소로 전달한다. Outlet이 호스트 이름과 서비스 상태를 조회해 해당 터널의 루프백 포트로 프록시한다. 서비스나 공개 주소의 변경은 Caddy 설정을 건드리지 않아 다른 호스트의 기존 WebSocket을 끊지 않는다.
+
 ### 6.4 Connector 터널
 
 Connector는 rathole client를 실행해 Outlet의 rathole server로 아웃바운드 연결을 만든다.

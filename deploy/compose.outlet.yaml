@@ -38,7 +38,7 @@ services:
     depends_on: [outlet]
 
   caddy:
-    # Starts with an empty config; Outlet adds public hosts after domain setup.
+    # Starts with an empty config; Outlet enables fixed public routing after domain setup.
     image: ${MEERKAT_CADDY_IMAGE:-ghcr.io/lawnect/meerkat-caddy:latest}
     read_only: true
     security_opt: [no-new-privileges:true]

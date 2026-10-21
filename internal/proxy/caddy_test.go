@@ -5,25 +5,19 @@ import (
 	"testing"
 )
 
-func TestCaddyfileRendersOnlyValidatedRoutes(t *testing.T) {
-	config, err := Caddyfile("saeoo.com", []HTTPRoute{{Hostname: "app.saeoo.com", Upstream: "outlet:24000"}})
-	if err != nil || !strings.Contains(string(config), "app.saeoo.com") || !strings.Contains(string(config), "outlet:24000") {
-		t.Fatalf("config = %q, %v", config, err)
-	}
-	if !strings.Contains(string(config), "metrics {\n\t\tper_host") || !strings.Contains(string(config), ":9090 {\n\tmetrics /metrics") {
+func TestCaddyfileUsesStableOnDemandRouting(t *testing.T) {
+	config := string(DynamicCaddyfile())
+	if !strings.Contains(config, "metrics {\n\t\tper_host") || !strings.Contains(config, ":9090 {\n\tmetrics /metrics") {
 		t.Fatalf("usage metrics endpoint missing from config: %q", config)
 	}
-	if strings.Contains(string(config), "*.saeoo.com") || strings.Contains(string(config), "dns cloudflare") {
-		t.Fatalf("wildcard certificate or DNS provider remains in config: %q", config)
+	if !strings.Contains(config, "on_demand_tls {") || !strings.Contains(config, "ask http://outlet:8080/.well-known/meerkat/cert-ask") || !strings.Contains(config, "reverse_proxy http://outlet:8080") {
+		t.Fatalf("dynamic certificate authorization or routing missing: %q", config)
 	}
-	if count := strings.Count(string(config), "disable_tlsalpn_challenge"); count != 3 {
-		t.Fatalf("expected HTTP-01 for the primary domain, management domain, and route, got %d: %q", count, config)
+	if strings.Contains(config, "*.saeoo.com") || strings.Contains(config, "dns cloudflare") || strings.Contains(config, "app.saeoo.com") {
+		t.Fatalf("route-specific or DNS-provider config remains: %q", config)
 	}
-	if _, err := Caddyfile("saeoo.com", []HTTPRoute{{Hostname: "outside.test", Upstream: "outlet:24000"}}); err == nil {
-		t.Fatal("outside hostname accepted")
-	}
-	if _, err := Caddyfile("saeoo.com", []HTTPRoute{{Hostname: "app.saeoo.com", Upstream: "127.0.0.1:24000"}}); err == nil {
-		t.Fatal("unsafe upstream accepted")
+	if count := strings.Count(config, "disable_tlsalpn_challenge"); count != 1 {
+		t.Fatalf("expected HTTP-01 for on-demand certificates, got %d: %q", count, config)
 	}
 }
 

@@ -8,13 +8,13 @@
 - 서비스 서버에는 Docker Compose로 앱과 service-connector를 함께 실행할 수 있다.
 - Connector는 터널마다 하나씩 실행되며, 하나의 rathole client 설정으로 여러 서비스를 전달한다.
 - 같은 터널에서는 앱 호스트와 포트의 조합을 서비스마다 고유하게 유지한다. 같은 앱을 여러 공개 주소로 노출할 때는 하나의 서비스에 주소를 여러 개 추가한다.
-- HTTP/HTTPS Route는 Caddy가, 공개 TCP Route는 HAProxy가 처리한다.
+- HTTP/HTTPS Route는 Caddy가 TLS를 종료한 뒤 Outlet이 호스트 이름으로 선택하고, 공개 TCP Route는 HAProxy가 처리한다.
 - Caddy가 공개 HTTP 도메인의 ACME 인증서 발급·갱신과 외부 TLS 종료를 담당한다.
 - Caddy에서 TLS를 종료하므로 Outlet과 서비스 사이에 애플리케이션 인증서는 필요하지 않다. 터널 자체는 rathole TLS 또는 Noise로 암호화한다.
 - 공개 UDP 프록시는 MVP 범위 밖이다.
 
 ~~~
-외부 웹 사용자 ─HTTPS─> Outlet/Caddy ─service tunnel─> Connector ─TCP─> app:3000
+외부 웹 사용자 ─HTTPS─> Caddy ─HTTP─> Outlet ─service tunnel─> Connector ─TCP─> app:3000
 외부 TCP 사용자 ─TCP───> Outlet/HAProxy ─service tunnel─> Connector ─TCP─> postgres:5432
 ~~~
 
@@ -53,10 +53,11 @@ Connector는 먼저 Outlet에 연결하므로 서버의 인바운드 포트와 �
 
 1. 관리자가 Service에 example.com Route를 연결한다.
 2. Outlet이 도메인 중복, Connector 상태, Route 설정을 검사한다.
-3. Caddy 설정을 생성·검증·적용하고 ACME 인증서 발급을 시작한다.
-4. Caddy가 외부 HTTPS를 종료하고 rathole 터널을 통해 app:3000으로 요청을 전달한다.
+3. Outlet이 등록된 호스트와 Connector의 서비스 연결 상태를 저장한다. Caddy 설정은 변경하지 않는다.
+4. 첫 HTTPS 요청에서 Caddy가 Outlet에 인증서 발급 허용 여부를 묻고, TLS 종료 후 Outlet으로 요청을 전달한다. Outlet이 호스트 이름에 맞는 rathole 전달 포트를 선택한다.
 
 공개 Route는 각 호스트 이름의 인증서를 사용한다. Caddy가 HTTP-01로 인증서를 발급·갱신한다. 루트·와일드카드 DNS는 공개 주소를 Outlet으로 보내기 위해 설정하고, 외부 TCP 80·443을 Caddy에 연결한다.
+Route 변경으로 Caddy를 다시 읽지 않으므로 다른 호스트의 기존 WebSocket 연결은 유지된다.
 
 ### 2.5 TCP 공개
 

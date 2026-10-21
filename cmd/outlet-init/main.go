@@ -151,11 +151,7 @@ func run() error {
 		return err
 	}
 	if *domain != "" {
-		caddyfile, err := proxy.Caddyfile(*domain, nil)
-		if err != nil {
-			return err
-		}
-		if err := writeNew(filepath.Join(configDir, "Caddyfile"), caddyfile); err != nil {
+		if err := writeNew(filepath.Join(configDir, "Caddyfile"), proxy.DynamicCaddyfile()); err != nil {
 			return err
 		}
 	}

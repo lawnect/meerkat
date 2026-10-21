@@ -1,42 +1,26 @@
-{$MEERKAT_DOMAIN} {
-	tls {
-		issuer acme {
-			disable_tlsalpn_challenge
-		}
+{
+	metrics {
+		per_host
 	}
-	handle /connector/v1/* {
-		reverse_proxy https://outlet:8443 {
-			transport http {
-				tls_trust_pool file /etc/caddy/root-ca.pem
-				tls_server_name outlet
-			}
-		}
-	}
-	handle {
-		respond 404
+	on_demand_tls {
+		ask http://outlet:8080/.well-known/meerkat/cert-ask
 	}
 }
 
-meerkat.{$MEERKAT_DOMAIN} {
-	tls {
-		issuer acme {
-			disable_tlsalpn_challenge
-		}
-	}
-	reverse_proxy https://outlet:8443 {
-		transport http {
-			tls_trust_pool file /etc/caddy/root-ca.pem
-			tls_server_name outlet
-		}
-	}
+:9090 {
+	metrics /metrics
 }
 
-# Add one site block for each registered public route, for example:
-app.{$MEERKAT_DOMAIN} {
+http:// {
+	redir https://{host}{uri} permanent
+}
+
+https:// {
 	tls {
+		on_demand
 		issuer acme {
 			disable_tlsalpn_challenge
 		}
 	}
-	reverse_proxy http://outlet:24000
+	reverse_proxy http://outlet:8080
 }

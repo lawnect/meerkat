@@ -48,20 +48,29 @@ func run() error {
 		return err
 	}
 	server := &http.Server{Addr: cfg.ListenAddress, Handler: store.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
+	publicServer := &http.Server{Addr: ":8080", Handler: store.PublicHandler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384}
 	// No request bodies, headers or child output go to logs.
 	server.ErrorLog = slog.NewLogLogger(slog.NewJSONHandler(os.Stderr, nil), slog.LevelWarn)
+	publicServer.ErrorLog = server.ErrorLog
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	go store.RunUsageCollector(ctx)
-	done := make(chan error, 1)
+	done := make(chan error, 2)
 	go func() { done <- server.ListenAndServeTLS(cfg.TLSCertificate, cfg.TLSKey) }()
+	go func() { done <- publicServer.ListenAndServe() }()
+	shutdown := func() {
+		shutdownCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		_ = server.Shutdown(shutdownCtx)
+		_ = publicServer.Shutdown(shutdownCtx)
+	}
 	select {
 	case err := <-done:
+		shutdown()
 		return err
 	case <-ctx.Done():
-		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return server.Shutdown(shutdown)
+		shutdown()
+		return nil
 	}
 }
 

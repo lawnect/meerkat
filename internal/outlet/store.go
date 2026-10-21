@@ -215,8 +215,8 @@ func (s *Store) reconcileTunnel() error {
 	return securefs.WriteReloadable(s.tunnelPath, config)
 }
 
-// reconcileProxy writes a full candidate Caddyfile atomically. Only a managed
-// Connector whose tunnel probe is connected can make a public Route appear.
+// reconcileProxy changes Caddy only when the first domain is registered.
+// Domain and route updates are looked up by the public request handler.
 func (s *Store) reconcileProxy(ctx context.Context) error {
 	if s.control == nil {
 		return nil
@@ -226,29 +226,9 @@ func (s *Store) reconcileProxy(ctx context.Context) error {
 		return err
 	}
 	if outlet.Domain == "" {
-		return securefs.Write(s.proxyPath, proxy.EmptyCaddyfile())
+		return securefs.WriteIfChanged(s.proxyPath, proxy.EmptyCaddyfile())
 	}
-	plans, err := s.control.HTTPRoutePlans(ctx)
-	if err != nil {
-		return err
-	}
-	s.mu.Lock()
-	routes := make([]proxy.HTTPRoute, 0, len(plans))
-	for _, plan := range plans {
-		record, ok := s.managed[plan.ConnectorID]
-		if plan.Enabled && ok && record.Enrolled && record.TunnelStatus == "connected" && record.ServiceStatuses[plan.ServiceID] == "connected" && record.probeFor(plan.ServiceID) != "" {
-			_, port, splitErr := net.SplitHostPort(record.probeFor(plan.ServiceID))
-			if splitErr == nil {
-				routes = append(routes, proxy.HTTPRoute{Hostname: plan.Hostname, Upstream: net.JoinHostPort("outlet", port)})
-			}
-		}
-	}
-	s.mu.Unlock()
-	config, err := proxy.CaddyfileDomains(outlet.Domain, outlet.Domains, routes)
-	if err != nil {
-		return err
-	}
-	return securefs.WriteIfChanged(s.proxyPath, config)
+	return securefs.WriteIfChanged(s.proxyPath, proxy.DynamicCaddyfile())
 }
 
 // Persist before publishing changes: a failed write must not consume a token.
