@@ -3,6 +3,7 @@
   import type { Outlet, ServiceRecord } from '../types';
   import Status from './Status.svelte';
   import Button from './ui/Button.svelte';
+  import ConfirmNameDialog from './ui/ConfirmNameDialog.svelte';
   import InfoTooltip from './ui/InfoTooltip.svelte';
   import LinkButton from './ui/LinkButton.svelte';
   import { pagePath } from '../navigation';
@@ -15,6 +16,8 @@
   let routeError = $state('');
   let busy = $state(false);
   let deletingRoute = $state('');
+  let deleteRouteTarget = $state<ServiceRecord['routes'][number] | null>(null);
+  let deleteRouteOpen = $state(false);
   let targetCopied = $state(false);
   let targetCopyTimer: ReturnType<typeof setTimeout> | undefined;
   let targetCopyError = $state('');
@@ -24,6 +27,7 @@
   let editBusy = $state(false);
   let editError = $state('');
   let deletingService = $state(false);
+  let deleteServiceOpen = $state(false);
   let serviceError = $state('');
   let routeDialog = $state<HTMLDialogElement>();
   const domains = $derived(outlet.domains?.length ? outlet.domains : outlet.domain ? [outlet.domain] : []);
@@ -76,13 +80,20 @@
     }
   }
 
+  function openDeleteService(): void {
+    if (deletingService || record.routes.length) return;
+    serviceError = '';
+    deleteServiceOpen = true;
+  }
+
   async function deleteService(): Promise<void> {
-    if (deletingService || record.routes.length || !confirm(`${record.service.name} 연결 서비스를 삭제할까요? 같은 터널의 다른 서비스도 잠시 다시 연결될 수 있습니다.`)) return;
+    if (deletingService || record.routes.length) return;
     deletingService = true;
     serviceError = '';
     try {
       await api(`/api/v1/connectors/${encodeURIComponent(record.connector.id)}/services/${encodeURIComponent(record.service.id)}`, { method: 'DELETE' });
       await onChanged();
+      deleteServiceOpen = false;
     } catch (cause) {
       serviceError = `연결 서비스를 삭제하지 못했습니다: ${errorMessage(cause)}`;
     } finally {
@@ -119,13 +130,22 @@
     }
   }
 
-  async function deleteRoute(route: ServiceRecord['routes'][number]): Promise<void> {
-    if (deletingRoute || !confirm(`${route.hostname} 공개 주소를 삭제할까요? 이 주소로의 접속이 중단됩니다.`)) return;
+  function openDeleteRoute(route: ServiceRecord['routes'][number]): void {
+    if (deletingRoute) return;
+    deleteRouteTarget = route;
+    routeError = '';
+    deleteRouteOpen = true;
+  }
+
+  async function deleteRoute(): Promise<void> {
+    if (deletingRoute || !deleteRouteTarget) return;
+    const route = deleteRouteTarget;
     routeError = '';
     deletingRoute = route.id;
     try {
       await api(`/api/v1/services/${encodeURIComponent(record.service.id)}/routes/${encodeURIComponent(route.id)}`, { method: 'DELETE' });
       await onChanged();
+      deleteRouteOpen = false;
     } catch (cause) {
       routeError = `공개 주소를 삭제하지 못했습니다: ${errorMessage(cause)}`;
     } finally {
@@ -155,7 +175,7 @@
         <div class="app-summary"><strong>{record.service.name}</strong><Status label={statusLabel(record.service.observed_status)} value={record.service.observed_status} /></div>
         <div class="target-row"><span class="ui-meta-label">연결 대상</span><code>{targetAddress}</code><Button variant="plain" size="sm" class={targetCopied ? 'target-copy copied' : 'target-copy'} aria-label={targetCopied ? '연결 대상 복사 완료' : '연결 대상 복사'} title={targetCopied ? '복사 완료' : '연결 대상 복사'} onclick={copyTarget}>
           {#if targetCopied}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>{/if}
-        </Button><Button variant="text" size="sm" onclick={startTargetEdit}>수정</Button><Button variant="text" size="sm" disabled={deletingService || record.routes.length > 0} title={record.routes.length ? '공개 주소를 먼저 삭제하세요' : '연결 서비스 삭제'} onclick={deleteService}>삭제</Button></div>
+        </Button><Button variant="text" size="sm" onclick={startTargetEdit}>수정</Button><Button variant="text" size="sm" disabled={deletingService || record.routes.length > 0} title={record.routes.length ? '공개 주소를 먼저 삭제하세요' : '연결 서비스 삭제'} onclick={openDeleteService}>삭제</Button></div>
         {#if record.service.observed_status === 'error'}<p class="target-health-note">앱 호스트·내부 포트·Docker 네트워크를 확인하세요.</p>{/if}
         {#if targetCopyError}<p class="error" role="alert">{targetCopyError}</p>{/if}
         {#if serviceError}<p class="error" role="alert">{serviceError}</p>{/if}
@@ -191,7 +211,7 @@
                   <span aria-hidden="true">–</span>
                 {/if}
               </span>
-              <Button variant="plain" size="sm" class="route-delete" aria-label={`${route.hostname} 주소 삭제`} title={`${route.hostname} 주소 삭제`} disabled={Boolean(deletingRoute)} onclick={() => deleteRoute(route)}>
+              <Button variant="plain" size="sm" class="route-delete" aria-label={`${route.hostname} 주소 삭제`} title={`${route.hostname} 주소 삭제`} disabled={Boolean(deletingRoute)} onclick={() => openDeleteRoute(route)}>
                 <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg>
               </Button>
             </li>
@@ -208,6 +228,9 @@
     {/if}
   </div>
 </article>
+
+<ConfirmNameDialog id={`delete-service-${view}-${record.service.id}`} open={deleteServiceOpen} title="연결 서비스 삭제" description="이 연결 서비스를 터널에서 삭제합니다." warning="삭제 후에는 되돌릴 수 없습니다. 같은 터널의 다른 서비스도 잠시 다시 연결될 수 있습니다. 실제 앱은 삭제되지 않습니다." targetLabel="삭제할 서비스" targetName={record.service.name} placeholder="삭제할 서비스의 이름을 입력하세요" submitLabel="서비스 삭제" busy={deletingService} error={serviceError} onConfirm={deleteService} onClose={() => { deleteServiceOpen = false; serviceError = ''; }} />
+<ConfirmNameDialog id={`delete-route-${view}-${record.service.id}`} open={deleteRouteOpen} title="공개 주소 삭제" description="이 공개 주소를 연결 서비스에서 삭제합니다." warning="삭제 후에는 되돌릴 수 없습니다. 이 주소로의 접속이 중단됩니다. 실제 서비스는 삭제되지 않습니다." targetLabel="삭제할 주소" targetName={deleteRouteTarget?.hostname || ''} placeholder="삭제할 공개 주소를 입력하세요" submitLabel="공개 주소 삭제" busy={Boolean(deletingRoute)} error={routeError} onConfirm={deleteRoute} onClose={() => { deleteRouteOpen = false; deleteRouteTarget = null; routeError = ''; }} />
 
 {#if baseDomain && view !== 'service'}
   <dialog bind:this={routeDialog} class="route-dialog" aria-labelledby="route-dialog-title-{record.service.id}" aria-describedby="route-dialog-description-{record.service.id}" oncancel={(event) => { if (busy) event.preventDefault(); }} onclose={() => { subdomain = ''; selectedDomain = ''; addError = ''; }}>

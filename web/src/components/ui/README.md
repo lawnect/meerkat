@@ -10,6 +10,7 @@
 | `LinkButton` | URL로 이동하는 링크 | `href` 필수; `variant`: `primary`, `secondary`, `text`; `size`: `sm`, `md` |
 | `Card` | 정보를 담는 표면 | `as`: `div`, `section`, `article`; `variant`: `soft`(기본), `glass`, `solid`; `padding`: `none`, `sm`, `md` |
 | `InfoTooltip` | 입력 항목 옆에서 짧은 도움말 표시 | `id`: 설명 요소의 고유 ID, `label`: 항목 이름, `description`: 도움말 내용 |
+| `ConfirmNameDialog` | 삭제·토큰 교체처럼 영향이 큰 작업을 대상 이름 입력으로 확인 | `id`, `open`, `title`, `description`, `warning`, `targetLabel`, `targetName`, `placeholder`, `submitLabel`, `busy`, `error`, `onConfirm`, `onClose` |
 
 `Button`은 기본적으로 `type="button"`입니다. 폼 제출에는 `type="submit"`을 지정하세요. `LinkButton`은 실제 `<a>` 요소이므로 외부 링크에 새 창을 사용할 때는 `target="_blank" rel="noopener noreferrer"`를 함께 지정하세요.
 

@@ -43,7 +43,8 @@
       {#each paths as path, index (path.route.id)}
         <div class="graph-node address-node" class:inactive={!path.route.enabled} style:top={`${nodeY(index, paths.length)}px`}>
           <LinkButton href={`https://${path.route.hostname}`} target="_blank" rel="noopener noreferrer" variant="text" size="sm" class="graph-address-link" aria-label={`${path.route.hostname} 공개 주소 열기, 연결 서비스 ${path.record.service.name}`}>
-            <span class="node-address"><strong>{path.route.hostname}</strong><small>→ {path.record.service.name}</small></span><span aria-hidden="true">↗</span>
+            <strong class="node-address">{path.route.hostname}</strong>
+            <svg class="external-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M9 7h8v8" /></svg>
           </LinkButton>
         </div>
       {/each}
@@ -77,16 +78,15 @@
   .graph-node { position: absolute; z-index: 1; box-sizing: border-box; display: flex; align-items: center; min-width: 0; height: 46px; transform: translateY(-50%); border: 1px solid #d9d3cc; border-radius: 24px; background: #fffdfa; box-shadow: 0 2px 6px rgba(55, 44, 34, .06); }
   .graph-node.inactive { opacity: .55; }
   .address-node { left: 3%; width: 28%; }
-  .address-node :global(.graph-address-link) { display: flex; justify-content: flex-start; gap: 8px; width: 100%; height: 100%; min-width: 0; overflow: hidden; padding: 0 14px; color: var(--accent-dark); font-size: 12px; font-weight: 650; }
-  .node-address { display: grid; flex: 1; min-width: 0; overflow: hidden; }
-  .node-address strong, .node-address small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .node-address strong { font-size: 12px; font-weight: 650; }
-  .node-address small { color: var(--muted); font-size: 10px; font-weight: 500; }
+  .address-node :global(.graph-address-link) { display: flex; justify-content: space-between; gap: 8px; width: 100%; height: 100%; min-width: 0; overflow: hidden; padding: 0 14px; color: var(--accent-dark); font-size: 12px; font-weight: 650; text-align: left; }
+  .address-node :global(.graph-address-link:hover) { text-decoration: none; }
+  .node-address { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .external-icon { flex: none; width: 16px; height: 16px; }
   .tunnel-node { left: 41%; width: 20%; gap: 8px; border-color: #d6beb0; padding: 0 14px; background: #fff9f4; }
   .tunnel-node strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
   .tunnel-icon { flex: none; width: 16px; height: 16px; color: var(--accent-dark); }
-  .service-node { left: 73%; width: 24%; display: grid; align-content: center; gap: 2px; padding: 0 14px; }
-  .service-node strong, .service-node code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .service-node { left: 73%; width: 24%; display: grid; align-content: center; justify-items: center; gap: 2px; padding: 0 14px; text-align: center; }
+  .service-node strong, .service-node code { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .service-node strong { font-size: 12px; }
   .service-node code { color: var(--muted); font-size: 11px; }
   .graph-empty-address { position: absolute; left: 3%; box-sizing: border-box; display: grid; width: 28%; height: 46px; place-items: center; transform: translateY(-50%); border: 1px dashed #d9d3cc; border-radius: 24px; background: #fffdfa; color: var(--muted); font-size: 12px; }

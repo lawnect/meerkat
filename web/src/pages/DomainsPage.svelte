@@ -2,6 +2,7 @@
   import { api, errorMessage } from '../api';
   import Button from '../components/ui/Button.svelte';
   import Card from '../components/ui/Card.svelte';
+  import ConfirmNameDialog from '../components/ui/ConfirmNameDialog.svelte';
   import { adminHostname } from '../domains';
   import type { DomainDNSCheck, Outlet } from '../types';
 
@@ -13,14 +14,13 @@
   let dialogError = $state('');
   let dialogBusy = $state(false);
   let deleteTarget = $state('');
-  let deleteInput = $state('');
+  let deleteOpen = $state(false);
   let deleteError = $state('');
   let deleteBusy = $state(false);
   let dnsChecks = $state<Record<string, DomainDNSCheck>>({});
   let dnsBusy = $state<Record<string, boolean>>({});
   let dnsErrors = $state<Record<string, string>>({});
   let domainDialog: HTMLDialogElement;
-  let deleteDialog: HTMLDialogElement;
 
   const domains = $derived.by(() => {
     const registered = outlet.domains?.length ? outlet.domains : outlet.domain ? [outlet.domain] : [];
@@ -81,21 +81,19 @@
 
   function openDeleteDialog(domain: string): void {
     deleteTarget = domain;
-    deleteInput = '';
     deleteError = '';
-    deleteDialog.showModal();
+    deleteOpen = true;
   }
 
-  async function removeDomain(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    if (!deleteTarget || deleteInput !== deleteTarget || deleteBusy) return;
+  async function removeDomain(): Promise<void> {
+    if (!deleteTarget || deleteBusy) return;
     deleteError = '';
     deleteBusy = true;
     try {
       await api<Outlet>(`/api/v1/outlet/domains/${encodeURIComponent(deleteTarget)}`, { method: 'DELETE' });
       await onSaved();
       selectedDomain = '';
-      deleteDialog.close();
+      deleteOpen = false;
     } catch (cause) {
       const code = errorMessage(cause);
       deleteError = code === 'domain_has_routes' ? '이 도메인을 사용하는 공개 주소가 있어 삭제할 수 없습니다.' : `도메인을 삭제하지 못했습니다: ${code}`;
@@ -166,15 +164,7 @@
   </form>
 </dialog>
 
-<dialog bind:this={deleteDialog} class="domain-dialog" aria-labelledby="delete-dialog-title" aria-describedby="delete-dialog-description" oncancel={(event) => { if (deleteBusy) event.preventDefault(); }} onclose={() => { deleteTarget = ''; deleteInput = ''; deleteError = ''; }}>
-  <form onsubmit={removeDomain}>
-    <h2 id="delete-dialog-title">도메인 삭제</h2>
-    <p id="delete-dialog-description">{deleteTarget} 도메인을 삭제합니다. 이 도메인을 사용하는 공개 주소가 있으면 삭제할 수 없습니다.</p>
-    <div class="field"><label for="delete-domain-input">삭제 확인: <strong>{deleteTarget}</strong> 입력</label><input class="input input-bordered" id="delete-domain-input" bind:value={deleteInput} autocomplete="off" spellcheck="false" required /></div>
-    {#if deleteError}<p class="error" role="alert">{deleteError}</p>{/if}
-    <div class="dialog-actions"><Button variant="secondary" disabled={deleteBusy} onclick={() => deleteDialog.close()}>취소</Button><Button variant="danger" type="submit" disabled={deleteBusy || deleteInput !== deleteTarget}>{deleteBusy ? '삭제 중…' : '도메인 삭제'}</Button></div>
-  </form>
-</dialog>
+<ConfirmNameDialog id="delete-domain" open={deleteOpen} title="도메인 삭제" description="등록된 도메인을 삭제합니다." warning="삭제 후에는 되돌릴 수 없습니다. 이 도메인을 사용하는 공개 주소가 있으면 삭제할 수 없습니다." targetLabel="삭제할 도메인" targetName={deleteTarget} placeholder="삭제할 도메인의 이름을 입력하세요" submitLabel="도메인 삭제" busy={deleteBusy} error={deleteError} onConfirm={removeDomain} onClose={() => { deleteOpen = false; deleteTarget = ''; deleteError = ''; }} />
 
 <style>
   .domain-page { min-width: 0; }
