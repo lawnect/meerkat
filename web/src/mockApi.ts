@@ -1,4 +1,5 @@
 import type { Connector, Route, Service, Target } from './types';
+import { adminHostname } from './domains';
 
 const now = (): string => new Date().toISOString();
 const id = (kind: string): string => `mock-${kind}-${Math.random().toString(36).slice(2, 9)}`;
@@ -58,6 +59,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
       records: [
         { hostname: domain, addresses: ['203.0.113.10'] },
         { hostname: `check-example.${domain}`, addresses: ['203.0.113.10'] },
+        ...(domain === state.outlet.domain ? [{ hostname: adminHostname(domain), addresses: ['203.0.113.10'] }] : []),
       ],
     };
   }
@@ -201,7 +203,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     }
     if (parts.length === 5 && method === 'POST') {
       const hostname = input.hostname?.trim().toLowerCase();
-      if (!hostname || !state.outlet.domains.some((domain) => hostname.endsWith(`.${domain}`))) fail('invalid_route');
+      if (!hostname || hostname === adminHostname(state.outlet.domain) || !state.outlet.domains.some((domain) => hostname.endsWith(`.${domain}`))) fail('invalid_route');
       if (state.routes.some((route) => route.hostname === hostname)) fail('hostname_taken');
       const route: Route = { id: id('route'), service_id: serviceId, kind: 'http', hostname, enabled: true, desired_revision: 1, applied_revision: 0, created_at: now(), updated_at: now() };
       state.routes.push(route);

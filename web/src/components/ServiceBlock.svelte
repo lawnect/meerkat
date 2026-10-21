@@ -6,6 +6,7 @@
   import InfoTooltip from './ui/InfoTooltip.svelte';
   import LinkButton from './ui/LinkButton.svelte';
   import { pagePath } from '../navigation';
+  import { adminHostname } from '../domains';
 
   let { record, outlet, onChanged, view = 'both' }: { record: ServiceRecord; outlet: Outlet; onChanged: () => Promise<void>; view?: 'both' | 'service' | 'routes' } = $props();
   let subdomain = $state('');
@@ -112,7 +113,7 @@
       routeDialog?.close();
     } catch (cause) {
       const code = errorMessage(cause);
-      addError = code === 'hostname_taken' ? '이미 사용 중인 주소입니다. 다른 서브도메인을 입력하세요.' : code === 'invalid_route' ? '서브도메인을 확인하세요. 영문자, 숫자, 하이픈만 사용할 수 있습니다.' : `공개 주소를 만들지 못했습니다: ${code}`;
+      addError = code === 'hostname_taken' ? '이미 사용 중인 주소입니다. 다른 서브도메인을 입력하세요.' : code === 'invalid_route' && outlet.domain && routeHostname === adminHostname(outlet.domain) ? '이 주소는 Outlet 관리 화면에 예약되어 있습니다.' : code === 'invalid_route' ? '서브도메인을 확인하세요. 영문자, 숫자, 하이픈만 사용할 수 있습니다.' : `공개 주소를 만들지 못했습니다: ${code}`;
     } finally {
       busy = false;
     }

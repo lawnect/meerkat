@@ -2,6 +2,7 @@
   import { api, errorMessage } from '../api';
   import Button from '../components/ui/Button.svelte';
   import Card from '../components/ui/Card.svelte';
+  import { adminHostname } from '../domains';
   import type { DomainDNSCheck, Outlet } from '../types';
 
   let { outlet, onSaved }: { outlet: Outlet; onSaved: () => Promise<void> } = $props();
@@ -119,8 +120,8 @@
             {#if selectedDomain === registeredDomain}
               <div class="domain-body" id={`domain-body-${registeredDomain}`}>
                 <div class="domain-details">
-                  <div><h3>용도</h3><p>{primary ? 'Outlet 관리 화면과 공개 주소에 사용하는 도메인입니다.' : '연결 서비스의 공개 주소에 사용하는 도메인입니다.'}</p></div>
-                  <div><h3>DNS 설정</h3><p><code>*.{registeredDomain}</code>을 Outlet 서버 IP로 연결하세요.{#if primary} <code>{registeredDomain}</code>도 연결해야 합니다.{/if}</p></div>
+                  <div><h3>용도</h3><p>{#if primary}관리 화면: <code>https://{adminHostname(registeredDomain)}</code><br />이 도메인의 하위 주소로 서비스도 공개할 수 있습니다.{:else}연결 서비스의 공개 주소에 사용하는 도메인입니다.{/if}</p></div>
+                  <div><h3>DNS 설정</h3><p><code>*.{registeredDomain}</code>을 Outlet 서버 IP로 연결하세요.{#if primary} 터널 연결을 위해 <code>{registeredDomain}</code>도 같은 IP로 연결해야 합니다.{/if}</p></div>
                 </div>
                 <p class="dns-help">외부에서 80번(인증서 발급)과 443번(HTTPS 접속) 포트에 접근할 수 있어야 합니다. Cloudflare DNS를 쓴다면 프록시를 끈 ‘DNS 전용’을 권장합니다. 도메인과 연결된 공개 주소의 HTTPS 인증서는 자동으로 발급·갱신됩니다.</p>
                 <div class="dns-check">
@@ -131,13 +132,13 @@
                     <div class="dns-results" aria-live="polite">
                       {#each check.records as record (record.hostname)}
                         <div class="dns-result">
-                          <code>{record.hostname === registeredDomain ? registeredDomain : `*.${registeredDomain}`}</code>
+                          <code>{record.hostname === registeredDomain || record.hostname === adminHostname(registeredDomain) ? record.hostname : `*.${registeredDomain}`}</code>
                           {#if record.addresses.length}<span class="dns-ok">DNS 응답: {record.addresses.join(', ')}</span>
                           {:else}<span class="dns-fail">DNS 응답 없음</span>{/if}
                         </div>
                       {/each}
                       <p>조회 시각: {new Date(check.checked_at).toLocaleString()}</p>
-                      <p>이 검사는 DNS 응답 여부를 확인합니다. Cloudflare 프록시가 켜져 있으면 표시 IP는 서버 IP가 아닌 Cloudflare IP일 수 있습니다. HTTPS 인증서와 실제 접속은 도메인 주소로 접속해 확인하세요.</p>
+                      <p>이 검사는 DNS 응답 여부를 확인합니다. Cloudflare 프록시가 켜져 있으면 표시 IP는 서버 IP가 아닌 Cloudflare IP일 수 있습니다. HTTPS 인증서와 실제 접속은 {primary ? `https://${adminHostname(registeredDomain)}` : '등록한 공개 주소'}로 확인하세요.</p>
                     </div>
                   {/if}
                 </div>
@@ -158,7 +159,7 @@
 <dialog bind:this={domainDialog} class="domain-dialog" aria-labelledby="domain-dialog-title" aria-describedby="domain-dialog-description" oncancel={(event) => { if (dialogBusy) event.preventDefault(); }} onclose={() => { domainInput = ''; dialogError = ''; }}>
   <form onsubmit={saveDomain}>
     <h2 id="domain-dialog-title">{domainDialogMode === 'primary' ? outlet.domain ? '대표 도메인 변경' : '대표 도메인 설정' : '새 도메인 추가'}</h2>
-    <p id="domain-dialog-description">{domainDialogMode === 'primary' ? '대표 도메인은 Outlet 관리 화면 주소입니다.' : '추가한 도메인의 하위 주소로 서비스를 공개할 수 있습니다.'}</p>
+    <p id="domain-dialog-description">{domainDialogMode === 'primary' ? '관리 화면은 대표 도메인의 meerkat 하위 주소에서 열립니다.' : '추가한 도메인의 하위 주소로 서비스를 공개할 수 있습니다.'}</p>
     <div class="field"><label for="domain-input">도메인</label><input class="input input-bordered" id="domain-input" bind:value={domainInput} placeholder="예: example.com" autocapitalize="none" spellcheck="false" required /></div>
     {#if dialogError}<p class="error" role="alert">{dialogError}</p>{/if}
     <div class="dialog-actions"><Button variant="secondary" disabled={dialogBusy} onclick={() => domainDialog.close()}>취소</Button><Button type="submit" disabled={dialogBusy}>{dialogBusy ? '저장 중…' : '저장'}</Button></div>

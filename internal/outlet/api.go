@@ -535,6 +535,9 @@ func (s *Store) checkOutletDomainDNS(w http.ResponseWriter, r *http.Request) {
 	// Query a fresh subdomain to test whether the wildcard record is active.
 	probeLabel := strings.ToLower(strings.NewReplacer("_", "a").Replace(Token()[:12]))
 	hostnames := []string{domain, "check-" + probeLabel + "." + domain}
+	if domain == outlet.Domain {
+		hostnames = append(hostnames, contract.AdminHostname(domain))
+	}
 	result := domainDNSCheck{CheckedAt: time.Now().UTC(), Records: make([]dnsRecordCheck, 0, len(hostnames))}
 	resolver := net.DefaultResolver
 	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)

@@ -16,8 +16,8 @@ func TestCaddyfileRendersOnlyValidatedRoutes(t *testing.T) {
 	if strings.Contains(string(config), "*.saeoo.com") || strings.Contains(string(config), "dns cloudflare") {
 		t.Fatalf("wildcard certificate or DNS provider remains in config: %q", config)
 	}
-	if count := strings.Count(string(config), "disable_tlsalpn_challenge"); count != 2 {
-		t.Fatalf("expected HTTP-01 for the primary domain and route, got %d: %q", count, config)
+	if count := strings.Count(string(config), "disable_tlsalpn_challenge"); count != 3 {
+		t.Fatalf("expected HTTP-01 for the primary domain, management domain, and route, got %d: %q", count, config)
 	}
 	if _, err := Caddyfile("saeoo.com", []HTTPRoute{{Hostname: "outside.test", Upstream: "outlet:24000"}}); err == nil {
 		t.Fatal("outside hostname accepted")

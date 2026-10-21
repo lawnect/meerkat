@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lawnect/meerkat/internal/contract"
 	"github.com/lawnect/meerkat/internal/validation"
 )
 
@@ -78,7 +79,7 @@ func (d *Database) CreateHTTPRoute(ctx context.Context, serviceID, hostname stri
 			break
 		}
 	}
-	if !allowed {
+	if !allowed || hostname == contract.AdminHostname(outlet.Domain) {
 		return Route{}, ErrInvalidRoute
 	}
 	var protocol string

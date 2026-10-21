@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { api, errorMessage, mockApiEnabled, statusLabel } from '../api';
   import { connectorState, forgetEnrollment, rememberEnrollment, storedEnrollment } from '../connectorState.svelte';
+  import { adminHostname } from '../domains';
   import ServiceBlock from '../components/ServiceBlock.svelte';
   import RouteGraph from '../components/RouteGraph.svelte';
   import UsageChart from '../components/UsageChart.svelte';
@@ -366,8 +367,8 @@
   }
 
   function invitation(): string {
-    if (!selected || !connectorState.enrollment) return '';
-    const payload = JSON.stringify({ v: 1, outlet: `https://${data.outlet.domain}`, name: selected.name, token: connectorState.enrollment.token });
+    if (!selected || !connectorState.enrollment || !data.outlet.domain) return '';
+    const payload = JSON.stringify({ v: 1, outlet: `https://${adminHostname(data.outlet.domain)}`, name: selected.name, token: connectorState.enrollment.token });
     return btoa(payload).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
   }
 

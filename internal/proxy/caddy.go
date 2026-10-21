@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/lawnect/meerkat/internal/contract"
 	"github.com/lawnect/meerkat/internal/validation"
 )
 
@@ -28,7 +29,7 @@ func Caddyfile(domain string, routes []HTTPRoute) ([]byte, error) {
 }
 
 func CaddyfileDomains(primary string, domains []string, routes []HTTPRoute) ([]byte, error) {
-	if !validation.Hostname(primary) || len(domains) == 0 || domains[0] != primary {
+	if !validation.Hostname(primary) || !validation.Hostname(contract.AdminHostname(primary)) || len(domains) == 0 || domains[0] != primary {
 		return nil, errors.New("invalid outlet domain")
 	}
 	for i, domain := range domains {
@@ -48,7 +49,13 @@ func CaddyfileDomains(primary string, domains []string, routes []HTTPRoute) ([]b
 	b.WriteString(caddyHeader)
 	fmt.Fprintf(&b, "%s {\n", primary)
 	writeHTTP01TLS(&b)
-	b.WriteString("\treverse_proxy https://outlet:8443 {\n\t\ttransport http {\n\t\t\ttls_trust_pool file /etc/caddy/root-ca.pem\n\t\t\ttls_server_name outlet\n\t\t}\n\t}\n}\n")
+	b.WriteString("\thandle /connector/v1/* {\n")
+	writeOutletProxy(&b, "\t\t")
+	b.WriteString("\t}\n\thandle {\n\t\trespond 404\n\t}\n}\n")
+	fmt.Fprintf(&b, "\n%s {\n", contract.AdminHostname(primary))
+	writeHTTP01TLS(&b)
+	writeOutletProxy(&b, "\t")
+	b.WriteString("}\n")
 	for _, domain := range domains {
 		if domain != primary {
 			fmt.Fprintf(&b, "\n%s {\n", domain)
@@ -64,7 +71,7 @@ func CaddyfileDomains(primary string, domains []string, routes []HTTPRoute) ([]b
 				break
 			}
 		}
-		if !validation.Hostname(route.Hostname) || !allowed || seen[route.Hostname] {
+		if !validation.Hostname(route.Hostname) || !allowed || seen[route.Hostname] || route.Hostname == contract.AdminHostname(primary) {
 			return nil, errors.New("invalid or duplicate route hostname")
 		}
 		if err := validation.Endpoint(route.Upstream); err != nil {
@@ -84,4 +91,8 @@ func CaddyfileDomains(primary string, domains []string, routes []HTTPRoute) ([]b
 
 func writeHTTP01TLS(b *strings.Builder) {
 	b.WriteString("\ttls {\n\t\tissuer acme {\n\t\t\tdisable_tlsalpn_challenge\n\t\t}\n\t}\n")
+}
+
+func writeOutletProxy(b *strings.Builder, indent string) {
+	fmt.Fprintf(b, "%sreverse_proxy https://outlet:8443 {\n%s\ttransport http {\n%s\t\ttls_trust_pool file /etc/caddy/root-ca.pem\n%s\t\ttls_server_name outlet\n%s\t}\n%s}\n", indent, indent, indent, indent, indent, indent)
 }

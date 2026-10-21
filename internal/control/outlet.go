@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lawnect/meerkat/internal/contract"
 	"github.com/lawnect/meerkat/internal/validation"
 )
 
@@ -110,7 +111,7 @@ func (d *Database) RemoveDomain(ctx context.Context, domain string) (Outlet, err
 }
 
 func (d *Database) SetDomain(ctx context.Context, domain string) (Outlet, error) {
-	if !validation.Hostname(domain) {
+	if !validation.Hostname(domain) || !validation.Hostname(contract.AdminHostname(domain)) {
 		return Outlet{}, ErrInvalidDomain
 	}
 	current, err := d.Outlet(ctx)
