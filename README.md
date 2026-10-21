@@ -244,7 +244,7 @@ Linux 서버의 앱이 `127.0.0.1:3000`에서만 수신한다면 터널 컨테�
 
 관리 API의 토큰과 등록 토큰은 Outlet 상태 파일에 SHA-256 해시로 저장합니다. Connector API 자격 증명도 Outlet에는 해시만 남깁니다. rathole service token과 서버 Noise 개인키는 rathole 설정에 필요한 별도의 비밀정보입니다. 파일은 0600, state directory는 0700으로 저장하며 `.local/`은 Git 및 Docker 빌드 컨텍스트에서 제외합니다. 같은 data directory를 두 프로세스가 동시에 사용하지 못하도록 잠급니다.
 
-수동 설정에서 `MEERKAT_TARGET`을 지정한 경우 Connector는 등록된 모든 서비스 대상이 해당 host/port와 일치하는지 확인합니다. 여러 서비스를 연결하려면 이 설정을 생략하고 관리 화면에서 각 서비스 대상을 등록하세요. 대상은 loopback 또는 명시한 Compose 서비스 이름만 허용하고, DNS 결과가 local/private IP인지 확인해 실제 rathole 대상 IP를 고정합니다. Compose 서비스가 재생성되어 IP가 바뀌면 Connector를 재시작해야 합니다. 사설 IP라는 사실만으로 네트워크 격리가 보장되지는 않으므로 실제 배포에도 필요한 Docker 네트워크만 터널에 연결해야 합니다.
+수동 설정에서 `MEERKAT_TARGET`을 지정한 경우 Connector는 등록된 모든 서비스 대상이 해당 host/port와 일치하는지 확인합니다. 여러 서비스를 연결하려면 이 설정을 생략하고 관리 화면에서 각 서비스 대상을 등록하세요. 대상은 loopback 또는 명시한 Compose 서비스 이름만 허용하고, DNS 결과가 local/private IP인지 확인해 실제 rathole 대상 IP를 고정합니다. 새 서비스의 이름을 아직 찾을 수 없어도 연결 가능한 기존 서비스는 터널을 시작하며, 새 대상이 확인되면 터널 구성을 갱신합니다. Compose 서비스가 재생성되어 기존 대상의 IP가 바뀌면 Connector를 재시작해야 합니다. 사설 IP라는 사실만으로 네트워크 격리가 보장되지는 않으므로 실제 배포에도 필요한 Docker 네트워크만 터널에 연결해야 합니다.
 
 ## 현재 경계와 다음 단계
 

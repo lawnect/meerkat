@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"time"
@@ -125,9 +126,9 @@ func enroll(ctx context.Context, cfg Config, api *transport.Client, token string
 	return response, nil
 }
 
-// Keep the authenticated control connection alive while an app name is not yet
-// available on the Connector's Docker network. Re-read configuration so an
-// operator can correct the target without recreating the tunnel container.
+// Wait only when no service can be reached. A missing new target must not keep
+// already reachable services from starting their tunnels. Re-read configuration
+// so an operator can correct an unavailable target without recreating the Connector.
 func waitForTargets(ctx context.Context, cfg Config, api *transport.Client, response *contract.EnrollmentResponse, log *slog.Logger) (map[string]string, error) {
 	for {
 		services := response.ActiveServices()
@@ -143,7 +144,7 @@ func waitForTargets(ctx context.Context, cfg Config, api *transport.Client, resp
 			addresses[service.ServiceID] = address
 			healths[service.ServiceID] = health.Check(ctx, service.Target)
 		}
-		if len(addresses) == len(services) {
+		if len(addresses) != 0 {
 			return addresses, nil
 		}
 		hb := contract.Heartbeat{ConnectorID: response.ConnectorID, Revision: response.Revision, Version: contract.Version, ProcessState: "not_started", ServiceHealth: "unknown", ServiceHealths: healths, ObservedAt: time.Now().UTC()}
@@ -287,7 +288,7 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 			break
 		}
 	}
-	log.Info("connector authenticated", "connector_id", response.ConnectorID, "service_count", len(response.ActiveServices()))
+	log.Info("connector authenticated", "connector_id", response.ConnectorID, "configured_service_count", len(response.ActiveServices()), "active_service_count", len(addresses))
 	config, err := rathole.ClientsAt(response.Configuration, addresses)
 	if err != nil {
 		return err
@@ -298,9 +299,10 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 	}
 	supervisor := rathole.NewSupervisor(cfg.RatholeBinary, path)
 	childCtx, stopChild := context.WithCancel(ctx)
-	defer stopChild()
 	done := make(chan error, 1)
-	go func() { done <- supervisor.Run(childCtx) }()
+	go func(s *rathole.Supervisor, runCtx context.Context, result chan<- error) {
+		result <- s.Run(runCtx)
+	}(supervisor, childCtx, done)
 	interval, _ := time.ParseDuration(cfg.HeartbeatInterval)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -350,6 +352,39 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 					return errors.New("outlet rejected connector authorization or revision; tunnel stopped")
 				}
 				log.Warn("heartbeat failed")
+			}
+			// Add targets that become reachable later without waiting for every
+			// configured service. Restart only the local rathole process to apply
+			// the expanded service list; the Connector identity stays intact.
+			nextAddresses := maps.Clone(addresses)
+			for _, service := range response.ActiveServices() {
+				if _, present := nextAddresses[service.ServiceID]; present {
+					continue
+				}
+				if address, err := health.Resolve(ctx, service.Target); err == nil {
+					nextAddresses[service.ServiceID] = address
+				}
+			}
+			if len(nextAddresses) > len(addresses) {
+				nextConfig, err := rathole.ClientsAt(response.Configuration, nextAddresses)
+				if err != nil {
+					stopChild()
+					<-done
+					return err
+				}
+				stopChild()
+				<-done
+				if err := securefs.Write(path, nextConfig); err != nil {
+					return err
+				}
+				addresses = nextAddresses
+				supervisor = rathole.NewSupervisor(cfg.RatholeBinary, path)
+				childCtx, stopChild = context.WithCancel(ctx)
+				done = make(chan error, 1)
+				go func(s *rathole.Supervisor, runCtx context.Context, result chan<- error) {
+					result <- s.Run(runCtx)
+				}(supervisor, childCtx, done)
+				log.Info("connector activated reachable service", "service_count", len(addresses))
 			}
 		}
 	}

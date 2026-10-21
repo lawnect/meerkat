@@ -50,7 +50,9 @@ local_addr = %s
 `, strconv.Quote(c.Tunnel.RemoteAddress), strconv.Quote(c.Tunnel.ServerPublicKey), c.Tunnel.ServiceName, strconv.Quote(c.Tunnel.ServiceToken), strconv.Quote(address))), nil
 }
 
-// ClientsAt places every service on one rathole client connection.
+// ClientsAt places reachable services on one rathole client connection.
+// Services without a resolved address remain configured on the Outlet, but
+// cannot hold up the tunnels for healthy services.
 func ClientsAt(c contract.Configuration, addresses map[string]string) ([]byte, error) {
 	if err := validation.Configuration(c); err != nil {
 		return nil, err
@@ -59,16 +61,27 @@ func ClientsAt(c contract.Configuration, addresses map[string]string) ([]byte, e
 	if len(services) == 0 {
 		return nil, errors.New("no services configured")
 	}
+	if len(addresses) == 0 {
+		return nil, errors.New("no resolved services")
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "[client]\nremote_addr = %s\nretry_interval = 1\n\n[client.transport]\ntype = \"noise\"\n\n[client.transport.noise]\npattern = \"Noise_NK_25519_ChaChaPoly_BLAKE2s\"\nremote_public_key = %s\n", strconv.Quote(services[0].Tunnel.RemoteAddress), strconv.Quote(services[0].Tunnel.ServerPublicKey))
+	included := 0
 	for _, service := range services {
-		address := addresses[service.ServiceID]
+		address, ok := addresses[service.ServiceID]
+		if !ok {
+			continue
+		}
 		host, port, err := net.SplitHostPort(address)
 		ip := net.ParseIP(host)
 		if err != nil || ip == nil || (!ip.IsLoopback() && !ip.IsPrivate()) || port != strconv.Itoa(service.Target.Port) {
 			return nil, errors.New("resolved target must be a local IP with the allowed port")
 		}
 		fmt.Fprintf(&b, "\n[client.services.%s]\ntype = \"tcp\"\ntoken = %s\nlocal_addr = %s\n", service.Tunnel.ServiceName, strconv.Quote(service.Tunnel.ServiceToken), strconv.Quote(address))
+		included++
+	}
+	if included == 0 {
+		return nil, errors.New("no configured services have resolved addresses")
 	}
 	return []byte(b.String()), nil
 }
