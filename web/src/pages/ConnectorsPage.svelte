@@ -201,6 +201,7 @@
     deleteTarget = selected;
     deleteName = '';
     deleteError = '';
+    copiedCode = '';
     deleteDialog.showModal();
   }
 
@@ -340,16 +341,18 @@
     await onChanged();
   }
 
-  async function copy(value: string, label: string, key: string): Promise<void> {
+  async function copy(value: string, label: string, key: string, errorTarget: 'token' | 'delete' = 'token'): Promise<void> {
     try {
       await navigator.clipboard.writeText(value);
-      tokenError = '';
+      if (errorTarget === 'delete') deleteError = '';
+      else tokenError = '';
       copiedCode = key;
       if (copyTimer) clearTimeout(copyTimer);
       copyTimer = setTimeout(() => { copiedCode = ''; }, 2500);
     } catch {
       copiedCode = '';
-      tokenError = `${label}을(를) 복사하지 못했습니다. 내용을 직접 선택해 복사하세요.`;
+      if (errorTarget === 'delete') deleteError = `${label}을(를) 복사하지 못했습니다. 내용을 직접 선택해 복사하세요.`;
+      else tokenError = `${label}을(를) 복사하지 못했습니다. 내용을 직접 선택해 복사하세요.`;
     }
   }
 
@@ -702,7 +705,7 @@
   <form onsubmit={resetToken}>
     <h2 id="reset-token-dialog-title">실행 토큰 교체</h2>
     <p id="reset-token-dialog-description">현재 토큰을 무효화하고 새 토큰을 발급합니다.</p>
-    <div id="reset-token-warning" class="token-reset-warning" role="note">기존 토큰을 사용하는 모든 터널 인스턴스의 연결이 끊깁니다. 새 설치 코드를 각 인스턴스에 적용해야 다시 연결됩니다.</div>
+    <div id="reset-token-warning" class="destructive-warning" role="note">기존 토큰을 사용하는 모든 터널 인스턴스의 연결이 끊깁니다. 새 설치 코드를 각 인스턴스에 적용해야 다시 연결됩니다.</div>
     <div class="field">
       <div class="confirmation-name">
         <label for="reset-token-connector-name">교체할 터널:</label>
@@ -718,11 +721,21 @@
   </form>
 </dialog>
 
-<dialog bind:this={deleteDialog} class="connector-dialog" aria-labelledby="delete-dialog-title" aria-describedby="delete-dialog-description" oncancel={(event) => { if (deleteBusy) event.preventDefault(); }} onclose={() => { deleteName = ''; deleteError = ''; deleteTarget = null; }}>
+<dialog bind:this={deleteDialog} class="connector-dialog" aria-labelledby="delete-dialog-title" aria-describedby="delete-dialog-description delete-dialog-warning" oncancel={(event) => { if (deleteBusy) event.preventDefault(); }} onclose={() => { deleteName = ''; deleteError = ''; deleteTarget = null; copiedCode = ''; }}>
   <form onsubmit={deleteConnector}>
     <h2 id="delete-dialog-title">터널 삭제</h2>
-    <p id="delete-dialog-description">연결 서비스의 등록 정보와 공개 주소가 삭제되고 실행 중인 연결이 끊깁니다. 실제 서비스는 삭제되지 않습니다.</p>
-    <div class="field"><label for="delete-connector-name">삭제 확인: <strong>{deleteTarget?.name}</strong> 입력</label><input class="input input-bordered" id="delete-connector-name" bind:value={deleteName} autocomplete="off" spellcheck="false" required /></div>
+    <p id="delete-dialog-description">터널과 연결 서비스의 등록 정보, 공개 주소가 함께 삭제됩니다.</p>
+    <div id="delete-dialog-warning" class="destructive-warning" role="note">삭제 후에는 되돌릴 수 없으며 실행 중인 터널 연결이 끊깁니다. 실제 서비스 자체는 삭제되지 않습니다.</div>
+    <div class="field">
+      <div class="confirmation-name">
+        <label for="delete-connector-name">삭제할 터널:</label>
+        <strong title={deleteTarget?.name}>{deleteTarget?.name}</strong>
+        <Button variant="plain" size="sm" class={copiedCode === 'delete-name' ? 'confirmation-copy copied' : 'confirmation-copy'} aria-label={copiedCode === 'delete-name' ? '터널 이름 복사 완료' : '터널 이름 복사'} title={copiedCode === 'delete-name' ? '복사 완료' : '터널 이름 복사'} disabled={deleteBusy} onclick={() => copy(deleteTarget?.name || '', '터널 이름', 'delete-name', 'delete')}>
+          {#if copiedCode === 'delete-name'}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>{/if}
+        </Button>
+      </div>
+      <input class="input input-bordered" id="delete-connector-name" bind:value={deleteName} placeholder="삭제할 터널의 이름을 입력하세요" autocomplete="off" spellcheck="false" required />
+    </div>
     {#if deleteError}<p class="error" role="alert">{deleteError}</p>{/if}
     <div class="dialog-actions"><Button variant="secondary" onclick={closeDeleteDialog} disabled={deleteBusy}>취소</Button><Button variant="danger" type="submit" disabled={deleteBusy || deleteName !== deleteTarget?.name}>{deleteBusy ? '삭제 중…' : '터널 삭제'}</Button></div>
   </form>
@@ -806,7 +819,7 @@
   .connector-dialog::backdrop { background: rgba(35, 30, 26, .38); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
   .connector-dialog h2 { margin: 0 0 4px; font-size: 20px; letter-spacing: -.025em; }
   .connector-dialog p:not(.error) { margin: 0 0 16px; color: var(--muted); font-size: 12px; }
-  .token-reset-warning { margin: 0 0 18px; padding: 12px 14px; border-radius: 8px; background: #fff8e7; color: #a65112; font-size: 12px; line-height: 1.6; }
+  .destructive-warning { margin: 0 0 18px; padding: 12px 14px; border-radius: 8px; background: #fff8e7; color: #a65112; font-size: 12px; line-height: 1.6; }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
   .detail-section { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 15px; }
   .section-heading { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; }
