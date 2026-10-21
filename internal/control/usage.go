@@ -119,9 +119,15 @@ func (d *Database) RecordUsage(ctx context.Context, samples map[string]UsageSamp
 }
 
 func (d *Database) ConnectorUsage(ctx context.Context, connectorID string, now time.Time) (ConnectorUsage, error) {
-	result := ConnectorUsage{PeriodHours: 24, Hours: []UsageHour{}, Services: []ServiceUsage{}}
-	start := now.UTC().Truncate(time.Hour).Add(-23 * time.Hour)
-	for i := 0; i < 24; i++ {
+	return d.ConnectorUsageFiltered(ctx, connectorID, now, 24, "")
+}
+
+// ConnectorUsageFiltered returns hourly buckets for a supported period. Service
+// totals remain available for the selector even when the series is filtered.
+func (d *Database) ConnectorUsageFiltered(ctx context.Context, connectorID string, now time.Time, hours int, serviceID string) (ConnectorUsage, error) {
+	result := ConnectorUsage{PeriodHours: hours, Hours: []UsageHour{}, Services: []ServiceUsage{}}
+	start := now.UTC().Truncate(time.Hour).Add(-time.Duration(hours-1) * time.Hour)
+	for i := 0; i < hours; i++ {
 		result.Hours = append(result.Hours, UsageHour{Hour: start.Add(time.Duration(i) * time.Hour).Format(time.RFC3339)})
 	}
 	if err := d.db.QueryRowContext(ctx, `SELECT value FROM outlet_settings WHERE key = 'usage_updated_at'`).Scan(&result.UpdatedAt); err != nil && err != sql.ErrNoRows {
@@ -129,7 +135,7 @@ func (d *Database) ConnectorUsage(ctx context.Context, connectorID string, now t
 	}
 	rows, err := d.db.QueryContext(ctx, `SELECT u.hour, COALESCE(SUM(u.requests), 0), COALESCE(SUM(u.request_bytes), 0), COALESCE(SUM(u.response_bytes), 0), COALESCE(SUM(u.error_responses), 0)
 		FROM usage_hourly u JOIN routes r ON r.id = u.route_id JOIN services s ON s.id = r.service_id
-		WHERE s.connector_id = ? AND u.hour >= ? GROUP BY u.hour`, connectorID, start.Format(time.RFC3339))
+		WHERE s.connector_id = ? AND u.hour >= ? AND (? = '' OR s.id = ?) GROUP BY u.hour`, connectorID, start.Format(time.RFC3339), serviceID, serviceID)
 	if err != nil {
 		return result, err
 	}

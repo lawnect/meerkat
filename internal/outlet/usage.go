@@ -172,7 +172,18 @@ func (s *Store) connectorUsage(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 404, "connector_not_found")
 		return
 	}
-	usage, err := s.control.ConnectorUsage(r.Context(), r.PathValue("id"), time.Now())
+	hours := 24
+	switch r.URL.Query().Get("hours") {
+	case "", "24":
+	case "168":
+		hours = 168
+	case "720":
+		hours = 720
+	default:
+		fail(w, r, 400, "invalid_usage_period")
+		return
+	}
+	usage, err := s.control.ConnectorUsageFiltered(r.Context(), r.PathValue("id"), time.Now(), hours, r.URL.Query().Get("service_id"))
 	if err != nil {
 		fail(w, r, 503, "persistence_failed")
 		return

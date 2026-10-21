@@ -8,6 +8,7 @@
     "check": "svelte-check --config web/svelte.config.ts"
   },
   "dependencies": {
+    "chart.js": "^4.5.1",
     "svelte": "^5.57.2"
   },
   "devDependencies": {

@@ -33,7 +33,7 @@ POST   /api/v1/connectors/:id/revoke
 
 Connector 폐기는 관련 Service·Route의 새 연결을 먼저 차단한 뒤 identity를 폐기한다.
 
-`GET /api/v1/connectors/:id/usage`는 해당 터널의 최근 24개 UTC 시간 구간에 대한 HTTP 요청 수, 추정 요청 바이트, 응답 본문 바이트, HTTP 5xx 응답 수와 서비스별 합계를 반환한다. Caddy의 호스트별 집계 메트릭을 Outlet이 15초마다 읽고 SQLite에 차이를 저장한다. 개별 요청의 URL, IP, 헤더는 저장하지 않는다. 집계는 기능 적용 이후의 공개 경로부터 시작하며, Caddy가 재시작되어 수집되지 못한 요청과 삭제된 공개 경로의 기록은 포함되지 않는다.
+`GET /api/v1/connectors/:id/usage`는 해당 터널의 시간별 HTTP 요청 수, 추정 요청 바이트, 응답 본문 바이트, HTTP 5xx 응답 수와 서비스별 합계를 반환한다. `hours` 쿼리는 `24`(기본), `168`, `720`을 지원한다. `service_id`를 지정하면 시간별 데이터만 해당 서비스로 필터링하고, 서비스별 합계 목록은 선택 메뉴를 위해 전체 서비스를 반환한다. Caddy의 호스트별 집계 메트릭을 Outlet이 15초마다 읽고 SQLite에 차이를 저장한다. 개별 요청의 URL, IP, 헤더는 저장하지 않는다. 집계는 기능 적용 이후의 공개 경로부터 시작하며, Caddy가 재시작되어 수집되지 못한 요청과 삭제된 공개 경로의 기록은 포함되지 않는다.
 
 ### Service와 Route
 

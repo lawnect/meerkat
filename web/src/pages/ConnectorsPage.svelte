@@ -4,6 +4,7 @@
   import { connectorState, forgetEnrollment, rememberEnrollment, storedEnrollment } from '../connectorState.svelte';
   import ServiceBlock from '../components/ServiceBlock.svelte';
   import RouteGraph from '../components/RouteGraph.svelte';
+  import UsageChart from '../components/UsageChart.svelte';
   import Status from '../components/Status.svelte';
   import Button from '../components/ui/Button.svelte';
   import Card from '../components/ui/Card.svelte';
@@ -20,6 +21,9 @@
   let serviceBusy = $state(false);
   let detailTab = $state<'overview' | 'routes'>('overview');
   let usage = $state<ConnectorUsage | null>(null);
+  let usageConnectorId = '';
+  let usagePeriod = $state<24 | 168 | 720>(24);
+  let usageServiceId = $state('');
   let usageError = $state('');
   let serviceError = $state('');
   let createError = $state('');
@@ -57,7 +61,7 @@
     responseBytes: total.responseBytes + hour.response_bytes,
     errors: total.errors + hour.error_responses,
   }), { requests: 0, requestBytes: 0, responseBytes: 0, errors: 0 }) || { requests: 0, requestBytes: 0, responseBytes: 0, errors: 0 });
-  const peakRequests = $derived(Math.max(1, ...(usage?.hours.map((hour) => hour.requests) || [])));
+  const usagePeriodLabel = $derived(usagePeriod === 24 ? '최근 24시간' : usagePeriod === 168 ? '최근 7일' : '최근 30일');
   const invitationExpired = $derived(Boolean(connectorState.enrollment && now >= Date.parse(connectorState.enrollment.expires_at)));
   const filtersActive = $derived(Boolean(searchQuery.trim()) || connectionFilter !== 'all');
   const visibleConnectors = $derived.by(() => {
@@ -79,13 +83,15 @@
 
   $effect(() => {
     const id = detailId;
-    usage = null;
+    const hours = usagePeriod;
+    const serviceId = usageServiceId;
+    if (usageConnectorId !== id) { usage = null; usageConnectorId = id || ''; usageServiceId = ''; }
     usageError = '';
     if (!id) return;
     let active = true;
     const refresh = async () => {
       try {
-        const next = await api<ConnectorUsage>(`/api/v1/connectors/${encodeURIComponent(id)}/usage`);
+        const next = await api<ConnectorUsage>(`/api/v1/connectors/${encodeURIComponent(id)}/usage?hours=${hours}&service_id=${encodeURIComponent(serviceId)}`);
         if (active) { usage = next; usageError = ''; }
       } catch {
         if (active) usageError = '사용량을 불러오지 못했습니다.';
@@ -473,9 +479,13 @@
               <div class="metric"><span class="ui-meta-label">최근 응답</span><strong class="metric-date">{selected.last_seen ? new Date(selected.last_seen).toLocaleString('ko-KR', { dateStyle: 'medium', timeStyle: 'short' }) : '기록 없음'}</strong></div>
             </div>
           </Card>
-          <Card as="section" padding="none" aria-label="최근 24시간 사용량">
-            <div class="ui-card-header usage-header"><h3 class="ui-card-title">사용량 <small>최근 24시간</small></h3><span class="usage-updated">{usage?.updated_at ? `${now - Date.parse(usage.updated_at) > 60000 ? '수집 지연 · ' : ''}마지막 집계 ${new Date(usage.updated_at).toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit' })}` : '집계 대기'}</span></div>
+          <Card as="section" padding="none" aria-label={`${usagePeriodLabel} 사용량`}>
+            <div class="ui-card-header usage-header"><h3 class="ui-card-title">사용량 <small>{usagePeriodLabel}</small></h3><span class="usage-updated">{usage?.updated_at ? `${now - Date.parse(usage.updated_at) > 60000 ? '수집 지연 · ' : ''}마지막 집계 ${new Date(usage.updated_at).toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit' })}` : '집계 대기'}</span></div>
             <div class="usage-body">
+              <div class="usage-filters">
+                <label>기간 <select bind:value={usagePeriod}><option value={24}>24시간</option><option value={168}>7일</option><option value={720}>30일</option></select></label>
+                <label>서비스 <select bind:value={usageServiceId}><option value="">전체 서비스</option>{#each usage?.services || [] as service (service.service_id)}<option value={service.service_id}>{service.name}</option>{/each}</select></label>
+              </div>
               {#if usageError}<p class="usage-error" role="status">{usageError}</p>{/if}
               {#if usage}
               <div class="usage-totals">
@@ -484,13 +494,8 @@
                 <div><span class="ui-meta-label">응답 본문</span><strong>{formatBytes(usageTotal.responseBytes)}</strong></div>
                 <div><span class="ui-meta-label">5xx 응답</span><strong>{usageTotal.errors.toLocaleString('ko-KR')}건</strong></div>
               </div>
-                <div class="usage-chart" role="img" aria-label={`최근 24시간 시간별 요청 수. 총 ${usageTotal.requests}건`}>
-                  {#each usage.hours as hour (hour.hour)}
-                    <div class="usage-bar" title={`${new Date(hour.hour).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: 'numeric' })}: 요청 ${hour.requests.toLocaleString('ko-KR')}건`}><span style={`height: ${hour.requests ? Math.max(3, hour.requests / peakRequests * 100) : 0}%`}></span></div>
-                  {/each}
-                </div>
-                <div class="usage-chart-axis"><span>24시간 전</span><span>현재</span></div>
-                {#if usage.services.length}
+                <UsageChart hours={usage.hours} periodHours={usagePeriod} />
+                {#if !usageServiceId && usage.services.length}
                   <div class="usage-service-list"><h4 class="ui-meta-label">서비스별 사용량</h4>
                     {#each usage.services as service (service.service_id)}
                       <div class="usage-service"><strong>{service.name}</strong><span>{service.requests.toLocaleString('ko-KR')}건</span><span>응답 {formatBytes(service.response_bytes)}</span></div>
@@ -754,13 +759,12 @@
   .usage-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
   .usage-header small, .usage-updated { color: var(--muted); font-size: 11px; font-weight: 500; }
   .usage-body { padding: 16px 18px; }
+  .usage-filters { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 18px; }
+  .usage-filters label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+  .usage-filters select { min-width: 130px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--text); background: var(--surface, #fff); font: inherit; }
   .usage-totals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
   .usage-totals > div { display: grid; gap: 5px; }
   .usage-totals strong { font-size: 17px; }
-  .usage-chart { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); align-items: end; gap: 3px; height: 100px; margin-top: 20px; border-bottom: 1px solid var(--line); }
-  .usage-bar { display: flex; align-items: end; height: 100%; }
-  .usage-bar span { display: block; width: 100%; background: var(--accent); border-radius: 3px 3px 0 0; opacity: .8; }
-  .usage-chart-axis { display: flex; justify-content: space-between; margin-top: 5px; color: var(--muted); font-size: 10px; }
   .usage-service-list { margin-top: 18px; border-top: 1px solid var(--line); }
   .usage-service-list h4 { margin: 14px 0 4px; }
   .usage-service { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; padding: 8px 0; font-size: 12px; }

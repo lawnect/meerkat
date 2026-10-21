@@ -75,16 +75,21 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
   if (path === '/api/v1/connectors' && method === 'GET') return { connectors: state.connectors.map((connector) => ({ ...connector })) };
   if (parts.length === 5 && parts[2] === 'connectors' && parts[4] === 'usage' && method === 'GET') {
     if (!state.connectors.some((connector) => connector.id === parts[3])) fail('connector_not_found');
+    const params = new URL(url, 'http://localhost').searchParams;
+    const periodHours = Number(params.get('hours') || 24);
+    const serviceId = params.get('service_id') || '';
+    if (![24, 168, 720].includes(periodHours)) fail('invalid_usage_period');
     const services = state.services.filter((service) => service.connector_id === parts[3]);
-    const hours = Array.from({ length: 24 }, (_, index) => ({
-      hour: new Date(Math.floor(Date.now() / 3600000) * 3600000 - (23 - index) * 3600000).toISOString(),
-      requests: services.length ? Math.max(0, Math.round(12 + 10 * Math.sin(index / 3) + index / 2)) : 0,
-      request_bytes: services.length ? 1200 + index * 120 : 0,
-      response_bytes: services.length ? 18000 + index * 2200 : 0,
-      error_responses: services.length && index === 16 ? 2 : 0,
+    const active = serviceId ? services.filter((service) => service.id === serviceId) : services;
+    const hours = Array.from({ length: periodHours }, (_, index) => ({
+      hour: new Date(Math.floor(Date.now() / 3600000) * 3600000 - (periodHours - 1 - index) * 3600000).toISOString(),
+      requests: active.length ? Math.max(0, Math.round(12 + 10 * Math.sin(index / 3) + index / 2)) : 0,
+      request_bytes: active.length ? 1200 + index * 120 : 0,
+      response_bytes: active.length ? 18000 + index * 2200 : 0,
+      error_responses: active.length && index === 16 ? 2 : 0,
     }));
     const share = (total: number, index: number): number => Math.floor(total / services.length) + (index < total % services.length ? 1 : 0);
-    return { period_hours: 24, updated_at: now(), hours, services: services.map((service, index) => ({
+    return { period_hours: periodHours, updated_at: now(), hours, services: services.map((service, index) => ({
       service_id: service.id, name: service.name,
       requests: share(hours.reduce((sum, hour) => sum + hour.requests, 0), index),
       request_bytes: share(hours.reduce((sum, hour) => sum + hour.request_bytes, 0), index),
