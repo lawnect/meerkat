@@ -15,7 +15,6 @@ COPY internal ./internal
 COPY --from=ui-build /src/web/dist ./internal/dashboard/assets/site
 RUN CGO_ENABLED=0 go build -trimpath -o /out/connector ./cmd/connector && \
     CGO_ENABLED=0 go build -trimpath -o /out/outlet ./cmd/outlet && \
-    CGO_ENABLED=0 go build -trimpath -o /out/rathole-watch ./cmd/rathole-watch && \
     CGO_ENABLED=0 go build -trimpath -o /out/outlet-init ./cmd/outlet-init && \
     CGO_ENABLED=0 go build -trimpath -o /out/demo-service ./cmd/demo-service && \
     CGO_ENABLED=0 go build -trimpath -o /out/poc-probe ./cmd/poc-probe
@@ -32,7 +31,8 @@ RUN case "$TARGETARCH" in \
     esac && \
     curl --fail --location --retry 3 -o /tmp/rathole.zip "https://github.com/rathole-org/rathole/releases/download/v0.5.0/rathole-${target}.zip" && \
     unzip /tmp/rathole.zip -d /out && chmod 0755 /out/rathole && \
-    /out/rathole --version
+    /out/rathole --version && \
+    /out/rathole --version | grep -q hot_reload
 RUN curl --fail --location --retry 3 -o /out/RATHOLE-LICENSE \
     https://raw.githubusercontent.com/rathole-org/rathole/v0.5.0/LICENSE
 

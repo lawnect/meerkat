@@ -30,8 +30,8 @@ services:
 
   rathole:
     <<: *runtime
-    entrypoint: [/usr/local/bin/rathole-watch]
-    command: [-config, /state/rathole/server.toml]
+    entrypoint: [/bin/sh, -c]
+    command: ["until test -f /state/rathole/server.toml; do sleep 1; done; exec /usr/local/bin/rathole --server /state/rathole/server.toml"]
     volumes:
       - "${MEERKAT_DEPLOY_DIR}/outlet-data:/state:ro"
     network_mode: service:outlet

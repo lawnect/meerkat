@@ -212,7 +212,7 @@ func (s *Store) reconcileTunnel() error {
 	if err != nil {
 		return err
 	}
-	return securefs.Write(s.tunnelPath, config)
+	return securefs.WriteReloadable(s.tunnelPath, config)
 }
 
 // reconcileProxy writes a full candidate Caddyfile atomically. Only a managed
@@ -248,7 +248,7 @@ func (s *Store) reconcileProxy(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return securefs.Write(s.proxyPath, config)
+	return securefs.WriteIfChanged(s.proxyPath, config)
 }
 
 // Persist before publishing changes: a failed write must not consume a token.

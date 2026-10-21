@@ -738,6 +738,9 @@ func managedServiceStatus(record Record, serviceID string, now time.Time) string
 	if !record.Enrolled || record.probeFor(serviceID) == "" || record.LastHeartbeat == nil {
 		return "unknown"
 	}
+	if _, observed := record.ServiceStatuses[serviceID]; !observed {
+		return "unknown"
+	}
 	status := managedConnectorStatus(record, now)
 	if status == "disconnected" || status == "stale" {
 		return status
@@ -1096,7 +1099,8 @@ func (s *Store) createService(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		record.ProbeAddresses[service.ID] = net.JoinHostPort("127.0.0.1", strconv.Itoa(s.nextProbePort()))
-		record.LastHeartbeat, record.ServiceStatuses, record.TunnelStatus = nil, nil, "unknown"
+		// The new service has no observation yet. Keep the existing services'
+		// heartbeat and probe status so their public routes stay available.
 		if err := s.saveManaged(r.PathValue("id"), record); err != nil {
 			s.mu.Unlock()
 			fail(w, r, 503, "persistence_failed")
@@ -1170,9 +1174,11 @@ func (s *Store) updateServiceTarget(w http.ResponseWriter, r *http.Request) {
 		record.Configuration.ServiceID, record.Configuration.Target, record.Configuration.Tunnel = "", contract.Target{}, contract.Tunnel{}
 		record.Configuration.Services = services
 		record.Configuration.Revision++
-		record.LastHeartbeat = nil
-		record.ServiceStatuses = nil
-		record.TunnelStatus = "unknown"
+		record.ServiceStatuses = maps.Clone(record.ServiceStatuses)
+		if record.ServiceStatuses == nil {
+			record.ServiceStatuses = map[string]string{}
+		}
+		record.ServiceStatuses[serviceID] = "disconnected"
 		if err := s.saveManaged(id, record); err != nil {
 			s.mu.Unlock()
 			fail(w, r, 503, "persistence_failed")
@@ -1217,9 +1223,8 @@ func (s *Store) deleteService(w http.ResponseWriter, r *http.Request) {
 			record.Configuration = contract.Configuration{ConnectorID: r.PathValue("id"), Revision: record.Configuration.Revision + 1, Services: remaining}
 			record.ProbeAddresses = maps.Clone(record.ProbeAddresses)
 			delete(record.ProbeAddresses, r.PathValue("service_id"))
-			record.LastHeartbeat = nil
-			record.ServiceStatuses = nil
-			record.TunnelStatus = "unknown"
+			record.ServiceStatuses = maps.Clone(record.ServiceStatuses)
+			delete(record.ServiceStatuses, r.PathValue("service_id"))
 			if err := s.saveManaged(r.PathValue("id"), record); err != nil {
 				s.mu.Unlock()
 				fail(w, r, 503, "persistence_failed")

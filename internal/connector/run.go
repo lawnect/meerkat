@@ -294,7 +294,7 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 		return err
 	}
 	path := filepath.Join(cfg.DataDir, "rathole-client.toml")
-	if err := securefs.Write(path, config); err != nil {
+	if err := securefs.WriteReloadable(path, config); err != nil {
 		return err
 	}
 	supervisor := rathole.NewSupervisor(cfg.RatholeBinary, path)
@@ -327,6 +327,56 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 	if err := report(ctx); err != nil {
 		log.Warn("heartbeat failed")
 	}
+	refresh := func(remote contract.Configuration) error {
+		if remote.ConnectorID != response.ConnectorID {
+			return errors.New("outlet returned a different connector")
+		}
+		if remote.Revision == response.Revision {
+			return nil
+		}
+		if remote.Revision < response.Revision {
+			return errors.New("outlet returned an older connector configuration")
+		}
+		if err := allowed(cfg, remote); err != nil {
+			return err
+		}
+		previous := make(map[string]contract.ServiceConfiguration)
+		for _, service := range response.ActiveServices() {
+			previous[service.ServiceID] = service
+		}
+		nextAddresses := make(map[string]string)
+		for _, service := range remote.ActiveServices() {
+			if old, ok := previous[service.ServiceID]; ok && old.Target == service.Target {
+				if address, ok := addresses[service.ServiceID]; ok {
+					nextAddresses[service.ServiceID] = address
+					continue
+				}
+			}
+			if address, err := health.Resolve(ctx, service.Target); err == nil {
+				nextAddresses[service.ServiceID] = address
+			} else {
+				log.Warn("connector waiting for local target", "service_id", service.ServiceID)
+			}
+		}
+		if len(nextAddresses) == 0 {
+			// No old service can safely remain after removal or target change.
+			return errors.New("no reachable services in updated configuration")
+		}
+		nextConfig, err := rathole.ClientsAt(remote, nextAddresses)
+		if err != nil {
+			return err
+		}
+		if err := securefs.WriteReloadable(path, nextConfig); err != nil {
+			return err
+		}
+		response.Configuration = remote
+		addresses = nextAddresses
+		if err := securefs.WriteJSON(filepath.Join(cfg.DataDir, "session.json"), session{cfg.OutletURL, cfg.Name, response}); err != nil {
+			return err
+		}
+		log.Info("connector configuration applied", "revision", response.Revision, "active_service_count", len(addresses))
+		return nil
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -346,16 +396,34 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 			}
 			if err := report(ctx); err != nil {
 				var httpErr *transport.HTTPError
-				if errors.As(err, &httpErr) && (httpErr.Status == 401 || httpErr.Status == 403 || httpErr.Status == 409) {
+				if errors.As(err, &httpErr) && (httpErr.Status == 401 || httpErr.Status == 403) {
 					stopChild()
 					<-done
-					return errors.New("outlet rejected connector authorization or revision; tunnel stopped")
+					return errors.New("outlet rejected connector authorization; tunnel stopped")
+				}
+				if errors.As(err, &httpErr) && httpErr.Status == 409 {
+					remote, err := api.Configuration(ctx, response.Credential)
+					if err != nil {
+						var configErr *transport.HTTPError
+						if errors.As(err, &configErr) && (configErr.Status == 401 || configErr.Status == 403) {
+							stopChild()
+							<-done
+							return errors.New("outlet rejected connector authorization; tunnel stopped")
+						}
+						log.Warn("cannot fetch updated connector configuration")
+						continue
+					}
+					if err := refresh(remote); err != nil {
+						stopChild()
+						<-done
+						return err
+					}
+					continue
 				}
 				log.Warn("heartbeat failed")
 			}
-			// Add targets that become reachable later without waiting for every
-			// configured service. Restart only the local rathole process to apply
-			// the expanded service list; the Connector identity stays intact.
+			// Rathole reloads only newly reachable services. Existing control
+			// channels keep running while the generated config is updated.
 			nextAddresses := maps.Clone(addresses)
 			for _, service := range response.ActiveServices() {
 				if _, present := nextAddresses[service.ServiceID]; present {
@@ -372,18 +440,10 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 					<-done
 					return err
 				}
-				stopChild()
-				<-done
-				if err := securefs.Write(path, nextConfig); err != nil {
+				if err := securefs.WriteReloadable(path, nextConfig); err != nil {
 					return err
 				}
 				addresses = nextAddresses
-				supervisor = rathole.NewSupervisor(cfg.RatholeBinary, path)
-				childCtx, stopChild = context.WithCancel(ctx)
-				done = make(chan error, 1)
-				go func(s *rathole.Supervisor, runCtx context.Context, result chan<- error) {
-					result <- s.Run(runCtx)
-				}(supervisor, childCtx, done)
 				log.Info("connector activated reachable service", "service_count", len(addresses))
 			}
 		}
