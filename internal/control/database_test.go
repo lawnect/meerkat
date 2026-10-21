@@ -14,7 +14,7 @@ func TestOpenMigratesAndPreservesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version, err := db.Version(ctx); err != nil || version != 2 {
+	if version, err := db.Version(ctx); err != nil || version != 4 {
 		t.Fatalf("version = %d, %v", version, err)
 	}
 	if _, err := db.SQL().ExecContext(ctx, "INSERT INTO outlet_settings(key, value, updated_at) VALUES ('domain', 'example.com', 'now')"); err != nil {
@@ -61,5 +61,38 @@ func TestRouteConstraints(t *testing.T) {
 	}
 	if err == sql.ErrNoRows {
 		t.Fatal("unexpected no rows error")
+	}
+}
+
+func TestUsageMigrationAfterAbandonedVersionThree(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "control.db")
+	db, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		"DROP TABLE usage_counters",
+		"DROP TABLE usage_hourly",
+		"UPDATE schema_migrations SET version = 3 WHERE version = 4",
+	} {
+		if _, err := db.SQL().ExecContext(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var count int
+	if err := db.SQL().QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('usage_counters', 'usage_hourly')").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("usage tables = %d", count)
 	}
 }

@@ -58,6 +58,8 @@ type migration struct {
 	sql     string
 }
 
+// Version 3 was used by a rolled-back rate-limit preview. Keep it reserved so
+// databases that briefly ran that preview still receive the usage migration.
 var migrations = []migration{{version: 1, sql: `
 CREATE TABLE outlet_settings (
   key TEXT PRIMARY KEY,
@@ -145,6 +147,23 @@ CREATE TABLE outlet_domains (
   domain TEXT PRIMARY KEY,
   created_at TEXT NOT NULL
 );
+`}, {version: 4, sql: `
+CREATE TABLE usage_counters (
+  route_id TEXT NOT NULL,
+  metric TEXT NOT NULL,
+  value INTEGER NOT NULL,
+  PRIMARY KEY(route_id, metric)
+);
+CREATE TABLE usage_hourly (
+  route_id TEXT NOT NULL,
+  hour TEXT NOT NULL,
+  requests INTEGER NOT NULL DEFAULT 0,
+  request_bytes INTEGER NOT NULL DEFAULT 0,
+  response_bytes INTEGER NOT NULL DEFAULT 0,
+  error_responses INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(route_id, hour)
+);
+CREATE INDEX usage_hourly_by_hour ON usage_hourly(hour);
 `}}
 
 func migrate(ctx context.Context, db *sql.DB) error {

@@ -58,6 +58,21 @@ export interface DashboardData {
   outlet: Outlet;
 }
 
+export interface UsageHour {
+  hour: string;
+  requests: number;
+  request_bytes: number;
+  response_bytes: number;
+  error_responses: number;
+}
+
+export interface ConnectorUsage {
+  period_hours: number;
+  updated_at?: string;
+  hours: UsageHour[];
+  services: { service_id: string; name: string; requests: number; request_bytes: number; response_bytes: number; error_responses: number }[];
+}
+
 export interface EnrollmentToken {
   token: string;
   expires_at: string;

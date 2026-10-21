@@ -1,0 +1,181 @@
+package outlet
+
+import (
+	"bufio"
+	"context"
+	"io"
+	"log/slog"
+	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/lawnect/meerkat/internal/control"
+)
+
+var (
+	usageHost = regexp.MustCompile(`(?:\{|,)host="([a-z0-9.-]+)"`)
+	usageCode = regexp.MustCompile(`(?:\{|,)code="([0-9]{3})"`)
+)
+
+// CollectUsage reads only aggregate metrics from Caddy. It never stores paths,
+// client addresses, headers, or individual requests.
+func (s *Store) CollectUsage(ctx context.Context) error {
+	if s.control == nil {
+		return nil
+	}
+	plans, err := s.control.HTTPRoutePlans(ctx)
+	if err != nil {
+		return err
+	}
+	hosts := make(map[string]string, len(plans))
+	for _, plan := range plans {
+		if plan.Enabled {
+			hosts[plan.Hostname] = plan.ID
+		}
+	}
+	if len(hosts) == 0 {
+		return s.control.RecordUsage(ctx, nil, time.Now(), "")
+	}
+	client := &http.Client{Timeout: 4 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://caddy:9090/metrics", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return io.ErrUnexpectedEOF
+	}
+	samples, generation, err := parseUsageMetrics(resp.Body, hosts)
+	if err != nil {
+		return err
+	}
+	return s.control.RecordUsage(ctx, samples, time.Now(), generation)
+}
+
+func parseUsageMetrics(body io.Reader, hosts map[string]string) (map[string]control.UsageSample, string, error) {
+	samples := map[string]control.UsageSample{}
+	byHandler := map[string]map[string]control.UsageSample{}
+	generation := ""
+	limited := &io.LimitedReader{R: body, N: (16 << 20) + 1}
+	scan := bufio.NewScanner(limited)
+	scan.Buffer(make([]byte, 64<<10), 1<<20)
+	for scan.Scan() {
+		line := scan.Text()
+		if strings.HasPrefix(line, "process_start_time_seconds ") {
+			generation = strings.TrimSpace(strings.TrimPrefix(line, "process_start_time_seconds "))
+			continue
+		}
+		handler := ""
+		switch {
+		case strings.Contains(line, `handler="subroute"`):
+			handler = "subroute"
+		case strings.Contains(line, `handler="reverse_proxy"`):
+			handler = "reverse_proxy"
+		default:
+			continue
+		}
+		hostMatch := usageHost.FindStringSubmatch(line)
+		if len(hostMatch) != 2 || hosts[hostMatch[1]] == "" {
+			continue
+		}
+		name, _, ok := strings.Cut(line, "{")
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		value, err := strconv.ParseFloat(fields[len(fields)-1], 64)
+		if err != nil || value < 0 {
+			continue
+		}
+		count := int64(value + 0.5)
+		routeID := hosts[hostMatch[1]]
+		if byHandler[handler] == nil {
+			byHandler[handler] = map[string]control.UsageSample{}
+		}
+		item := byHandler[handler][routeID]
+		switch name {
+		case "caddy_http_requests_total":
+			item.Requests += count
+		case "caddy_http_request_size_bytes_sum":
+			item.RequestBytes += count
+		case "caddy_http_response_size_bytes_sum":
+			item.ResponseBytes += count
+		case "caddy_http_response_size_bytes_count":
+			code := usageCode.FindStringSubmatch(line)
+			if len(code) == 2 && code[1][0] == '5' {
+				item.ErrorResponses += count
+			}
+		default:
+			continue
+		}
+		byHandler[handler][routeID] = item
+	}
+	if err := scan.Err(); err != nil {
+		return nil, "", err
+	}
+	if limited.N == 0 {
+		return nil, "", io.ErrUnexpectedEOF
+	}
+	for routeID, sample := range byHandler["reverse_proxy"] {
+		samples[routeID] = sample
+	}
+	for routeID, sample := range byHandler["subroute"] {
+		samples[routeID] = sample
+	}
+	return samples, generation, nil
+}
+
+func (s *Store) RunUsageCollector(ctx context.Context) {
+	collect := func() {
+		call, cancel := context.WithTimeout(ctx, 8*time.Second)
+		defer cancel()
+		if err := s.CollectUsage(call); err != nil && ctx.Err() == nil {
+			slog.Warn("usage collection failed", "error", err)
+		}
+	}
+	collect()
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			collect()
+		}
+	}
+}
+
+func (s *Store) connectorUsage(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "persistence_unavailable")
+		return
+	}
+	exists, err := s.control.ConnectorExists(r.Context(), r.PathValue("id"))
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	if !exists {
+		fail(w, r, 404, "connector_not_found")
+		return
+	}
+	usage, err := s.control.ConnectorUsage(r.Context(), r.PathValue("id"), time.Now())
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	reply(w, 200, usage)
+}

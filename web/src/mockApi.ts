@@ -73,6 +73,25 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     return { ...state.outlet, domains: [...state.outlet.domains] };
   }
   if (path === '/api/v1/connectors' && method === 'GET') return { connectors: state.connectors.map((connector) => ({ ...connector })) };
+  if (parts.length === 5 && parts[2] === 'connectors' && parts[4] === 'usage' && method === 'GET') {
+    if (!state.connectors.some((connector) => connector.id === parts[3])) fail('connector_not_found');
+    const services = state.services.filter((service) => service.connector_id === parts[3]);
+    const hours = Array.from({ length: 24 }, (_, index) => ({
+      hour: new Date(Math.floor(Date.now() / 3600000) * 3600000 - (23 - index) * 3600000).toISOString(),
+      requests: services.length ? Math.max(0, Math.round(12 + 10 * Math.sin(index / 3) + index / 2)) : 0,
+      request_bytes: services.length ? 1200 + index * 120 : 0,
+      response_bytes: services.length ? 18000 + index * 2200 : 0,
+      error_responses: services.length && index === 16 ? 2 : 0,
+    }));
+    const share = (total: number, index: number): number => Math.floor(total / services.length) + (index < total % services.length ? 1 : 0);
+    return { period_hours: 24, updated_at: now(), hours, services: services.map((service, index) => ({
+      service_id: service.id, name: service.name,
+      requests: share(hours.reduce((sum, hour) => sum + hour.requests, 0), index),
+      request_bytes: share(hours.reduce((sum, hour) => sum + hour.request_bytes, 0), index),
+      response_bytes: share(hours.reduce((sum, hour) => sum + hour.response_bytes, 0), index),
+      error_responses: share(hours.reduce((sum, hour) => sum + hour.error_responses, 0), index),
+    })) };
+  }
   if (path === '/api/v1/connectors' && method === 'POST') {
     const name = input.name?.trim();
     if (!name) fail('invalid_connector');

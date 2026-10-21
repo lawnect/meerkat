@@ -22,6 +22,7 @@ Connector는 항상 연결을 먼저 시작한다. 공인 Outlet은 외부 HTTP/
 GET    /api/v1/outlet
 GET    /api/v1/diagnostics/trace
 GET    /api/v1/connectors
+GET    /api/v1/connectors/:id/usage
 POST   /api/v1/connectors
 GET    /api/v1/connectors/:id
 POST   /api/v1/connectors/:id/enrollment-tokens
@@ -31,6 +32,8 @@ POST   /api/v1/connectors/:id/revoke
 `GET /api/v1/diagnostics/trace`는 관리자 세션 인증이 필요하다. Outlet 호스트명과 설정된 `region`, 요청 peer 주소, 전달 헤더, `CF-Ray` 및 colo 접미사를 반환한다. `region`은 자동 위치 판정이 아니라 `outlet.json`에 설정한 설명용 값이다. 전달 헤더와 `CF-Ray`는 직접 연결에서 위조될 수 있으므로 접근 제어나 인증 판단에 사용하지 않는다.
 
 Connector 폐기는 관련 Service·Route의 새 연결을 먼저 차단한 뒤 identity를 폐기한다.
+
+`GET /api/v1/connectors/:id/usage`는 해당 터널의 최근 24개 UTC 시간 구간에 대한 HTTP 요청 수, 추정 요청 바이트, 응답 본문 바이트, HTTP 5xx 응답 수와 서비스별 합계를 반환한다. Caddy의 호스트별 집계 메트릭을 Outlet이 15초마다 읽고 SQLite에 차이를 저장한다. 개별 요청의 URL, IP, 헤더는 저장하지 않는다. 집계는 기능 적용 이후의 공개 경로부터 시작하며, Caddy가 재시작되어 수집되지 못한 요청과 삭제된 공개 경로의 기록은 포함되지 않는다.
 
 ### Service와 Route
 

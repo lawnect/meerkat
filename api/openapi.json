@@ -212,6 +212,45 @@
         }
       }
     },
+    "/api/v1/connectors/{id}/usage": {
+      "get": {
+        "operationId": "getConnectorUsage",
+        "summary": "Recent hourly HTTP usage for a tunnel and its services",
+        "security": [{ "adminToken": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Label" } }],
+        "responses": {
+          "200": {
+            "description": "Last 24 UTC hourly buckets of requests, estimated incoming bytes, response body bytes, and HTTP 5xx responses",
+            "content": { "application/json": { "schema": {
+              "type": "object",
+              "required": ["period_hours", "hours", "services"],
+              "properties": {
+                "period_hours": { "type": "integer", "example": 24 },
+                "updated_at": { "type": "string", "format": "date-time" },
+                "hours": { "type": "array", "items": { "type": "object", "properties": {
+                  "hour": { "type": "string", "format": "date-time" },
+                  "requests": { "type": "integer", "format": "int64" },
+                  "request_bytes": { "type": "integer", "format": "int64" },
+                  "response_bytes": { "type": "integer", "format": "int64" },
+                  "error_responses": { "type": "integer", "format": "int64" }
+                } } },
+                "services": { "type": "array", "items": { "type": "object", "properties": {
+                  "service_id": { "type": "string" },
+                  "name": { "type": "string" },
+                  "requests": { "type": "integer", "format": "int64" },
+                  "request_bytes": { "type": "integer", "format": "int64" },
+                  "response_bytes": { "type": "integer", "format": "int64" },
+                  "error_responses": { "type": "integer", "format": "int64" }
+                } } }
+              }
+            } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "503": { "$ref": "#/components/responses/PersistenceFailure" }
+        }
+      }
+    },
     "/api/v1/connectors/{id}/enrollment-tokens": {
       "post": {
         "operationId": "issueEnrollmentToken",

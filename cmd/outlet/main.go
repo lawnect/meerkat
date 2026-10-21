@@ -52,6 +52,7 @@ func run() error {
 	server.ErrorLog = slog.NewLogLogger(slog.NewJSONHandler(os.Stderr, nil), slog.LevelWarn)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	go store.RunUsageCollector(ctx)
 	done := make(chan error, 1)
 	go func() { done <- server.ListenAndServeTLS(cfg.TLSCertificate, cfg.TLSKey) }()
 	select {

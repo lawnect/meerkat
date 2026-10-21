@@ -101,6 +101,7 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/outlet/domains/{domain}", s.deleteOutletDomain)
 	mux.HandleFunc("GET /api/v1/diagnostics/trace", s.trace)
 	mux.HandleFunc("GET /api/v1/connectors", s.list)
+	mux.HandleFunc("GET /api/v1/connectors/{id}/usage", s.connectorUsage)
 	mux.HandleFunc("POST /api/v1/connectors", s.createConnector)
 	mux.HandleFunc("DELETE /api/v1/connectors/{id}", s.deleteConnector)
 	mux.HandleFunc("GET /api/v1/connectors/{id}/services", s.listServices)

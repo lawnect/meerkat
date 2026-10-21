@@ -39,6 +39,7 @@ func CaddyfileDomains(primary string, domains []string, routes []HTTPRoute) ([]b
 	sort.Slice(copyRoutes, func(i, j int) bool { return copyRoutes[i].Hostname < copyRoutes[j].Hostname })
 	seen := map[string]bool{}
 	var b strings.Builder
+	b.WriteString("{\n\tmetrics {\n\t\tper_host\n\t}\n}\n\n:9090 {\n\tmetrics /metrics\n}\n\n")
 	fmt.Fprintf(&b, "%s {\n", primary)
 	writeCloudflareTLS(&b)
 	b.WriteString("\treverse_proxy https://outlet:8443 {\n\t\ttransport http {\n\t\t\ttls_trust_pool file /etc/caddy/root-ca.pem\n\t\t\ttls_server_name outlet\n\t\t}\n\t}\n}\n")
