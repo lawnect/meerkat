@@ -141,6 +141,8 @@ Caddy는 각 호스트에 첫 HTTPS 연결이 들어올 때 Outlet에 등록 여
 인증서 장애 시 복구 경로로 유지합니다. 추가 도메인은 **도메인 관리**에서 등록하고
 각 도메인의 DNS 레코드를 같은 방식으로 설정합니다.
 
+공개 요청은 Caddy에서 HTTPS를 종료한 뒤 Outlet과 터널을 통해 내부 앱에 HTTP로 전달됩니다. 내부 앱에는 원래 공개 `Host`와 `X-Forwarded-Host`, `X-Forwarded-Proto: https`, `X-Forwarded-Port: 443`, `X-Forwarded-For`가 전달됩니다. 앱이 HTTPS 여부를 판단할 때는 프록시 헤더를 신뢰하도록 해당 앱의 프록시 설정을 켜야 합니다. 앱이 내부 연결 자체에도 TLS를 요구한다면 현재 HTTP 연결 대상과는 맞지 않습니다.
+
 기존 설치는 `outlet-init -domain` 방식을 계속 사용할 수 있습니다. 이전 DNS-01
 설치에서 전환할 때는 새 Outlet 이미지와 Compose 파일을 적용하고 서비스를 다시 시작합니다.
 `compose.env`에 남아 있는 `MEERKAT_CLOUDFLARE_API_TOKEN`은 삭제할 수 있습니다.

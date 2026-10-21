@@ -2,6 +2,7 @@ package outlet
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -111,10 +112,31 @@ func (s *Store) PublicHandler() http.Handler {
 			return
 		}
 		upstream := &url.URL{Scheme: "http", Host: address}
-		proxy := httputil.NewSingleHostReverseProxy(upstream)
-		proxy.Transport = transport
-		proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, _ error) {
-			http.Error(w, "upstream unavailable", http.StatusBadGateway)
+		proxy := &httputil.ReverseProxy{
+			Transport: transport,
+			Rewrite: func(pr *httputil.ProxyRequest) {
+				pr.SetURL(upstream)
+				pr.Out.Host = pr.In.Host
+				pr.Out.Header.Set("X-Forwarded-Host", host)
+				pr.Out.Header.Set("X-Forwarded-Proto", "https")
+				pr.Out.Header.Set("X-Forwarded-Port", "443")
+				pr.Out.Header.Del("X-Real-Ip")
+				pr.Out.Header.Del("X-Forwarded-Ssl")
+				pr.Out.Header.Del("X-Url-Scheme")
+				forwardedFor := pr.In.Header.Get("X-Forwarded-For")
+				if peer, _, err := net.SplitHostPort(pr.In.RemoteAddr); err == nil {
+					if forwardedFor != "" {
+						forwardedFor += ", "
+					}
+					forwardedFor += peer
+				}
+				if forwardedFor != "" {
+					pr.Out.Header.Set("X-Forwarded-For", forwardedFor)
+				}
+			},
+			ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
+				http.Error(w, "upstream unavailable", http.StatusBadGateway)
+			},
 		}
 		proxy.ServeHTTP(w, r)
 	})

@@ -157,6 +157,8 @@ HTTP Route는 Caddy가 해당 호스트 이름에 발급한 인증서를 사용�
 
 첫 도메인 등록 뒤 Caddy는 호스트별 설정을 만들지 않는다. 새 TLS 연결에서 Caddy가 내부 Outlet 승인 엔드포인트에 호스트 등록 여부를 묻고, 승인된 호스트의 인증서를 필요할 때 발급한다. HTTPS 요청은 고정된 내부 Outlet 주소로 전달한다. Outlet이 호스트 이름과 서비스 상태를 조회해 해당 터널의 루프백 포트로 프록시한다. 서비스나 공개 주소의 변경은 Caddy 설정을 건드리지 않아 다른 호스트의 기존 WebSocket을 끊지 않는다.
 
+Outlet은 공개 앱으로 프록시할 때 원래 `Host`를 유지하고 `X-Forwarded-Host`, `X-Forwarded-Proto: https`, `X-Forwarded-Port: 443`, `X-Forwarded-For`를 명시한다. 클라이언트가 보낸 표준 `Forwarded` 헤더는 전달하지 않는다. 내부 앱은 HTTP 연결을 받으므로 외부 HTTPS 여부를 이 헤더로 판단하려면 신뢰할 프록시 설정이 필요하다.
+
 ### 6.4 Connector 터널
 
 Connector는 rathole client를 실행해 Outlet의 rathole server로 아웃바운드 연결을 만든다.
