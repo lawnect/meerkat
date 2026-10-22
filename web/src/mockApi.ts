@@ -1,10 +1,11 @@
-import type { Connector, Route, Service, Target } from './types';
+import type { Connector, Outlet, Route, Service, Target } from './types';
 import { adminHostname } from './domains';
 
 const now = (): string => new Date().toISOString();
 const id = (kind: string): string => `mock-${kind}-${Math.random().toString(36).slice(2, 9)}`;
 
 interface MockInput {
+  address?: string;
   domain?: string;
   email?: string;
   hostname?: string;
@@ -15,11 +16,13 @@ interface MockInput {
 
 const state: {
   outlet: { domain: string; domains: string[] };
+  tunnelAddress: string;
   connectors: Connector[];
   services: Service[];
   routes: Route[];
 } = {
   outlet: { domain: 'example.test', domains: ['example.test'] },
+  tunnelAddress: '',
   connectors: [{ id: 'mock-connector-home', name: 'home-server', status: 'connected', created_at: now(), last_seen: now() }],
   services: [{
     id: 'mock-service-whoami', connector_id: 'mock-connector-home', name: 'whoami', protocol: 'http',
@@ -33,6 +36,23 @@ const state: {
 
 function fail(code: string): never {
   throw new Error(code);
+}
+
+function outletResponse(): Outlet {
+  const defaultAddress = state.outlet.domain ? `${state.outlet.domain}:2333` : '';
+  return {
+    ...state.outlet,
+    domains: [...state.outlet.domains],
+    tunnel: { address: state.tunnelAddress || defaultAddress, default_address: defaultAddress, custom: Boolean(state.tunnelAddress) },
+  };
+}
+
+function tunnelAddressOf(raw = ''): string {
+  const value = raw.trim().toLowerCase();
+  if (!value) return '';
+  const address = /:\d+$/.test(value) ? value : `${value}:2333`;
+  if (!/^[a-z0-9.-]+:\d{1,5}$/.test(address) || /^(127\.|localhost:)/.test(address)) fail('invalid_tunnel_address');
+  return address;
 }
 
 function bodyOf(body: BodyInit | null | undefined): MockInput {
@@ -50,7 +70,26 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
   if (path === '/api/v1/setup/admin' && method === 'POST') return { status: 'created' };
   if (path === '/api/v1/session' && method === 'POST') return { admin: { email: input.email || 'dev@example.test' }, expires_at: now() };
   if (path === '/api/v1/session' && method === 'DELETE') return {};
-  if (path === '/api/v1/outlet' && method === 'GET') return { ...state.outlet };
+  if (path === '/api/v1/outlet' && method === 'GET') return outletResponse();
+  if (path === '/api/v1/outlet/tunnel' && method === 'PUT') {
+    const address = tunnelAddressOf(input.address);
+    if (!address && !state.outlet.domain) fail('tunnel_default_unavailable');
+    state.tunnelAddress = address;
+    return outletResponse();
+  }
+  if (path === '/api/v1/outlet/tunnel/check' && method === 'POST') {
+    const address = tunnelAddressOf(input.address) || outletResponse().tunnel?.address;
+    if (!address) fail('tunnel_address_unset');
+    // The bare primary domain demonstrates a root record that points elsewhere.
+    const reachable = !address.startsWith(`${state.outlet.domain}:`);
+    const port = address.slice(address.lastIndexOf(':') + 1);
+    return {
+      checked_at: now(),
+      address,
+      reachable,
+      results: [reachable ? { address: `203.0.113.10:${port}`, reachable, latency_ms: 12 } : { address: `198.51.100.20:${port}`, reachable, error: 'timeout' }],
+    };
+  }
   if (parts.length === 6 && parts[2] === 'outlet' && parts[3] === 'domains' && parts[5] === 'check-dns' && method === 'POST') {
     const domain = parts[4];
     if (!state.outlet.domains.includes(domain)) fail('domain_not_found');
@@ -68,14 +107,14 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     if (state.outlet.domain !== input.domain && state.routes.length) fail('domain_has_routes');
     state.outlet.domains[0] = input.domain;
     state.outlet.domain = input.domain;
-    return { ...state.outlet };
+    return outletResponse();
   }
   if (path === '/api/v1/outlet/domains' && method === 'POST') {
     const domain = input.domain?.trim().toLowerCase();
     if (!domain || !/^[a-z0-9.-]+$/.test(domain) || !domain.includes('.')) fail('invalid_domain');
     if (state.outlet.domains.some((current) => current === domain || current.endsWith(`.${domain}`) || domain.endsWith(`.${current}`))) fail('domain_exists');
     state.outlet.domains.push(domain);
-    return { ...state.outlet, domains: [...state.outlet.domains] };
+    return outletResponse();
   }
   if (parts.length === 5 && parts[2] === 'outlet' && parts[3] === 'domains' && method === 'DELETE') {
     const domain = parts[4];
@@ -83,7 +122,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     if (!state.outlet.domains.includes(domain)) fail('domain_not_found');
     if (state.routes.some((route) => route.hostname.endsWith(`.${domain}`))) fail('domain_has_routes');
     state.outlet.domains = state.outlet.domains.filter((item) => item !== domain);
-    return { ...state.outlet, domains: [...state.outlet.domains] };
+    return outletResponse();
   }
   if (path === '/api/v1/connectors' && method === 'GET') return { connectors: state.connectors.map((connector) => ({ ...connector })) };
   if (parts.length === 5 && parts[2] === 'connectors' && parts[4] === 'usage' && method === 'GET') {

@@ -11,13 +11,17 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/lawnect/meerkat/internal/contract"
 	"github.com/lawnect/meerkat/internal/control"
 	"github.com/lawnect/meerkat/internal/dashboard"
+	"github.com/lawnect/meerkat/internal/securefs"
 	"github.com/lawnect/meerkat/internal/validation"
 )
 
@@ -101,6 +105,8 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/outlet", s.updateOutlet)
 	mux.HandleFunc("POST /api/v1/outlet/domains", s.addOutletDomain)
 	mux.HandleFunc("DELETE /api/v1/outlet/domains/{domain}", s.deleteOutletDomain)
+	mux.HandleFunc("PUT /api/v1/outlet/tunnel", s.updateTunnel)
+	mux.HandleFunc("POST /api/v1/outlet/tunnel/check", s.checkTunnel)
 	mux.HandleFunc("GET /api/v1/diagnostics/trace", s.trace)
 	mux.HandleFunc("GET /api/v1/connectors", s.list)
 	mux.HandleFunc("GET /api/v1/connectors/{id}/usage", s.connectorUsage)
@@ -523,7 +529,47 @@ func (s *Store) getOutlet(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	reply(w, 200, outlet)
+	s.replyOutlet(w, r, 200, outlet)
+}
+
+type outletTunnel struct {
+	Address        string `json:"address"`
+	DefaultAddress string `json:"default_address"`
+	Custom         bool   `json:"custom"`
+}
+
+type outletResponse struct {
+	control.Outlet
+	Tunnel outletTunnel `json:"tunnel"`
+}
+
+// tunnel resolves the endpoint Connectors dial: the administrator's setting,
+// then outlet.json, then the primary domain on the rathole listen port.
+func (s *Store) tunnel(ctx context.Context, domain string) (outletTunnel, error) {
+	tunnel := outletTunnel{DefaultAddress: s.config.TunnelRemoteAddress}
+	if tunnel.DefaultAddress == "" && domain != "" {
+		if _, port, err := net.SplitHostPort(s.config.TunnelListenAddress); err == nil {
+			tunnel.DefaultAddress = net.JoinHostPort(domain, port)
+		}
+	}
+	custom, err := s.control.TunnelAddress(ctx)
+	if err != nil {
+		return outletTunnel{}, err
+	}
+	tunnel.Address, tunnel.Custom = tunnel.DefaultAddress, custom != ""
+	if tunnel.Custom {
+		tunnel.Address = custom
+	}
+	return tunnel, nil
+}
+
+func (s *Store) replyOutlet(w http.ResponseWriter, r *http.Request, status int, outlet control.Outlet) {
+	tunnel, err := s.tunnel(r.Context(), outlet.Domain)
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	reply(w, status, outletResponse{outlet, tunnel})
 }
 
 type dnsRecordCheck struct {
@@ -624,7 +670,18 @@ func (s *Store) updateOutlet(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "proxy_reconcile_failed")
 		return
 	}
-	reply(w, 200, outlet)
+	// A default tunnel address follows the primary domain.
+	s.mu.Lock()
+	tunnel, err := s.tunnel(r.Context(), outlet.Domain)
+	if err == nil {
+		err = s.retargetTunnels(tunnel.Address)
+	}
+	s.mu.Unlock()
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	reply(w, 200, outletResponse{outlet, tunnel})
 }
 
 func (s *Store) addOutletDomain(w http.ResponseWriter, r *http.Request) {
@@ -656,7 +713,7 @@ func (s *Store) addOutletDomain(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "proxy_reconcile_failed")
 		return
 	}
-	reply(w, 201, outlet)
+	s.replyOutlet(w, r, 201, outlet)
 }
 
 func (s *Store) deleteOutletDomain(w http.ResponseWriter, r *http.Request) {
@@ -688,7 +745,251 @@ func (s *Store) deleteOutletDomain(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "proxy_reconcile_failed")
 		return
 	}
-	reply(w, 200, outlet)
+	s.replyOutlet(w, r, 200, outlet)
+}
+
+type tunnelRequest struct {
+	Address string `json:"address"`
+}
+
+// normalizeTunnelAddress accepts host or host:port. A bare host uses the
+// rathole listen port, which Compose publishes on the same port by default.
+func (s *Store) normalizeTunnelAddress(raw string) (string, bool) {
+	address := strings.ToLower(strings.TrimSpace(raw))
+	if address == "" {
+		return "", true
+	}
+	if _, _, err := net.SplitHostPort(address); err != nil {
+		_, port, listenErr := net.SplitHostPort(s.config.TunnelListenAddress)
+		if listenErr != nil {
+			return "", false
+		}
+		address = net.JoinHostPort(strings.Trim(address, "[]"), port)
+	}
+	return address, validation.TunnelAddress(address)
+}
+
+// retargeted points every service of config at address; services on one
+// Connector must share a tunnel endpoint. It keeps the single-service shape,
+// whose heartbeats still name the service.
+func retargeted(config contract.Configuration, address string) (contract.Configuration, bool) {
+	changed := false
+	if len(config.Services) == 0 {
+		if config.ServiceID != "" && config.Tunnel.RemoteAddress != address {
+			config.Tunnel.RemoteAddress, changed = address, true
+		}
+		return config, changed
+	}
+	config.Services = slices.Clone(config.Services)
+	for i := range config.Services {
+		if config.Services[i].Tunnel.RemoteAddress != address {
+			config.Services[i].Tunnel.RemoteAddress, changed = address, true
+		}
+	}
+	return config, changed
+}
+
+// retargetTunnels points every managed Connector at address in one write.
+// The new revision makes each Connector fetch its configuration on the next
+// heartbeat. The caller holds s.mu.
+func (s *Store) retargetTunnels(address string) error {
+	if address == "" {
+		return nil
+	}
+	next, changed := make(map[string]Record, len(s.managed)), false
+	for id, record := range s.managed {
+		if config, ok := retargeted(record.Configuration, address); ok {
+			config.Revision++
+			record.Configuration, changed = config, true
+		}
+		next[id] = record
+	}
+	if !changed {
+		return nil
+	}
+	if err := securefs.WriteJSON(s.managedPath, next); err != nil {
+		return err
+	}
+	s.managed = next
+	return nil
+}
+
+func (s *Store) updateTunnel(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	var req tunnelRequest
+	if !decode(w, r, &req, "address") {
+		return
+	}
+	address, ok := s.normalizeTunnelAddress(req.Address)
+	if !ok {
+		fail(w, r, 400, "invalid_tunnel_address")
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	outlet, err := s.control.Outlet(r.Context())
+	var current outletTunnel
+	if err == nil {
+		current, err = s.tunnel(r.Context(), outlet.Domain)
+	}
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	// Without a default, clearing would leave Connectors on the old address.
+	if address == "" && current.DefaultAddress == "" {
+		fail(w, r, 409, "tunnel_default_unavailable")
+		return
+	}
+	if err := s.control.SetTunnelAddress(r.Context(), address); err != nil {
+		if errors.Is(err, control.ErrInvalidTunnelAddress) {
+			fail(w, r, 400, "invalid_tunnel_address")
+		} else {
+			fail(w, r, 503, "persistence_failed")
+		}
+		return
+	}
+	tunnel, err := s.tunnel(r.Context(), outlet.Domain)
+	if err == nil {
+		err = s.retargetTunnels(tunnel.Address)
+	}
+	if err != nil {
+		// Keep the stored setting in line with what Connectors dial.
+		previous := ""
+		if current.Custom {
+			previous = current.Address
+		}
+		_ = s.control.SetTunnelAddress(context.WithoutCancel(r.Context()), previous)
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	reply(w, 200, outletResponse{outlet, tunnel})
+}
+
+type tunnelDial struct {
+	Address   string `json:"address"`
+	Reachable bool   `json:"reachable"`
+	LatencyMS int64  `json:"latency_ms"`
+	Error     string `json:"error,omitempty"`
+}
+
+type tunnelCheck struct {
+	CheckedAt time.Time    `json:"checked_at"`
+	Address   string       `json:"address"`
+	Reachable bool         `json:"reachable"`
+	Error     string       `json:"error,omitempty"`
+	Results   []tunnelDial `json:"results"`
+}
+
+func (s *Store) checkTunnel(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	var req tunnelRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	address, ok := s.normalizeTunnelAddress(req.Address)
+	if !ok {
+		fail(w, r, 400, "invalid_tunnel_address")
+		return
+	}
+	if address == "" {
+		outlet, err := s.control.Outlet(r.Context())
+		var tunnel outletTunnel
+		if err == nil {
+			tunnel, err = s.tunnel(r.Context(), outlet.Domain)
+		}
+		if err != nil {
+			fail(w, r, 503, "persistence_failed")
+			return
+		}
+		address = tunnel.Address
+	}
+	if address == "" {
+		fail(w, r, 409, "tunnel_address_unset")
+		return
+	}
+	reply(w, 200, s.probeTunnel(r.Context(), address))
+}
+
+// probeTunnel resolves the tunnel host and opens a TCP connection to each
+// address. It runs on the Outlet, so it shows DNS and the published port, but
+// not the Connector network's egress rules or that the listener is this Outlet.
+func (s *Store) probeTunnel(ctx context.Context, address string) tunnelCheck {
+	lookupIP, dialTCP := s.lookupIP, s.dialTCP
+	if lookupIP == nil {
+		lookupIP = net.DefaultResolver.LookupIPAddr
+	}
+	if dialTCP == nil {
+		var dialer net.Dialer
+		dialTCP = func(ctx context.Context, address string) (net.Conn, error) {
+			return dialer.DialContext(ctx, "tcp", address)
+		}
+	}
+	check := tunnelCheck{CheckedAt: time.Now().UTC(), Address: address, Results: []tunnelDial{}}
+	host, port, _ := net.SplitHostPort(address)
+	ips := []string{host}
+	if net.ParseIP(host) == nil {
+		lookup, cancel := context.WithTimeout(ctx, 3*time.Second)
+		resolved, err := lookupIP(lookup, host)
+		cancel()
+		if err != nil || len(resolved) == 0 {
+			check.Error = "dns_lookup_failed"
+			return check
+		}
+		ips = ips[:0]
+		for _, ip := range resolved[:min(len(resolved), 8)] {
+			ips = append(ips, ip.IP.String())
+		}
+	}
+	check.Results = make([]tunnelDial, len(ips))
+	var wg sync.WaitGroup
+	for i, ip := range ips {
+		wg.Go(func() {
+			result := tunnelDial{Address: net.JoinHostPort(ip, port)}
+			dial, cancel := context.WithTimeout(ctx, 4*time.Second)
+			defer cancel()
+			started := time.Now()
+			conn, err := dialTCP(dial, result.Address)
+			if err != nil {
+				result.Error = dialError(err)
+			} else {
+				conn.Close()
+				result.Reachable, result.LatencyMS = true, time.Since(started).Milliseconds()
+			}
+			check.Results[i] = result
+		})
+	}
+	wg.Wait()
+	for _, result := range check.Results {
+		check.Reachable = check.Reachable || result.Reachable
+	}
+	return check
+}
+
+func dialError(err error) string {
+	var netErr net.Error
+	switch {
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "connection_refused"
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
+		return "timeout"
+	case errors.Is(err, syscall.EHOSTUNREACH), errors.Is(err, syscall.ENETUNREACH):
+		return "unreachable"
+	default:
+		return "connection_failed"
+	}
 }
 
 type Status struct {
@@ -824,24 +1125,6 @@ func (s *Store) issueToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
-	remoteAddress := s.config.TunnelRemoteAddress
-	if remoteAddress == "" {
-		outlet, err := s.control.Outlet(r.Context())
-		if err != nil {
-			fail(w, r, 503, "persistence_failed")
-			return
-		}
-		if outlet.Domain != "" {
-			_, port, err := net.SplitHostPort(s.config.TunnelListenAddress)
-			if err == nil {
-				remoteAddress = net.JoinHostPort(outlet.Domain, port)
-			}
-		}
-	}
-	if remoteAddress == "" || !validation.PublicKey(s.config.TunnelServerPublicKey) || validation.Endpoint(remoteAddress) != nil {
-		fail(w, r, 503, "tunnel_runtime_unconfigured")
-		return
-	}
 	id := r.PathValue("id")
 	services, err := s.control.ListServices(r.Context(), id)
 	if errors.Is(err, control.ErrConnectorNotFound) {
@@ -869,6 +1152,23 @@ func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
+	// Resolve under the lock so a concurrent tunnel address change is not lost.
+	outlet, err := s.control.Outlet(r.Context())
+	var tunnel outletTunnel
+	if err == nil {
+		tunnel, err = s.tunnel(r.Context(), outlet.Domain)
+	}
+	if err != nil {
+		s.mu.Unlock()
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	remoteAddress := tunnel.Address
+	if remoteAddress == "" || !validation.PublicKey(s.config.TunnelServerPublicKey) || validation.Endpoint(remoteAddress) != nil {
+		s.mu.Unlock()
+		fail(w, r, 503, "tunnel_runtime_unconfigured")
+		return
+	}
 	record, exists := s.managed[id]
 	if exists && record.Enrolled && (record.RunTokenHash != "" || s.now().Before(record.CredentialExpiresAt)) && r.URL.Query().Get("reset") != "true" {
 		s.mu.Unlock()
@@ -1111,17 +1411,26 @@ func (s *Store) createService(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	if record, ok := s.managed[r.PathValue("id")]; ok {
-		remoteAddress := s.config.TunnelRemoteAddress
-		if remoteAddress == "" {
-			outlet, outletErr := s.control.Outlet(r.Context())
-			_, port, splitErr := net.SplitHostPort(s.config.TunnelListenAddress)
-			if outletErr == nil && splitErr == nil {
-				remoteAddress = net.JoinHostPort(outlet.Domain, port)
+		prior := record.Configuration.ActiveServices()
+		remoteAddress := ""
+		if outlet, outletErr := s.control.Outlet(r.Context()); outletErr == nil {
+			if tunnel, tunnelErr := s.tunnel(r.Context(), outlet.Domain); tunnelErr == nil {
+				remoteAddress = tunnel.Address
 			}
 		}
-		prior := record.Configuration.ActiveServices()
-		record.Configuration = contract.Configuration{ConnectorID: r.PathValue("id"), Revision: record.Configuration.Revision + 1, Services: append([]contract.ServiceConfiguration(nil), prior...)}
-		record.Configuration.Services = append(record.Configuration.Services, contract.ServiceConfiguration{ServiceID: service.ID, Target: service.Target, Tunnel: contract.Tunnel{RemoteAddress: remoteAddress, ServerPublicKey: s.config.TunnelServerPublicKey, ServiceName: service.ID, ServiceToken: Token()}})
+		if remoteAddress == "" && len(prior) != 0 {
+			remoteAddress = prior[0].Tunnel.RemoteAddress
+		}
+		config := contract.Configuration{ConnectorID: r.PathValue("id"), Revision: record.Configuration.Revision + 1, Services: append([]contract.ServiceConfiguration(nil), prior...)}
+		config.Services = append(config.Services, contract.ServiceConfiguration{ServiceID: service.ID, Target: service.Target, Tunnel: contract.Tunnel{RemoteAddress: remoteAddress, ServerPublicKey: s.config.TunnelServerPublicKey, ServiceName: service.ID, ServiceToken: Token()}})
+		config, _ = retargeted(config, remoteAddress)
+		// An invalid configuration would stop the Connector and the next Outlet start.
+		if validation.Configuration(config) != nil {
+			s.mu.Unlock()
+			fail(w, r, 503, "tunnel_runtime_unconfigured")
+			return
+		}
+		record.Configuration = config
 		record.ProbeAddresses = maps.Clone(record.ProbeAddresses)
 		if record.ProbeAddresses == nil {
 			record.ProbeAddresses = map[string]string{}

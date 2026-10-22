@@ -63,6 +63,20 @@ func Endpoint(s string) error {
 	return nil
 }
 
+// TunnelAddress permits the host:port a Connector dials for the data tunnel:
+// a lowercase DNS name, a single-label Compose service name or an IP literal.
+// Loopback is rejected: it names the Connector's own host, never the Outlet.
+func TunnelAddress(s string) bool {
+	if Endpoint(s) != nil {
+		return false
+	}
+	host, _, _ := net.SplitHostPort(s)
+	if ip := net.ParseIP(host); ip != nil {
+		return !ip.IsUnspecified() && !ip.IsLoopback()
+	}
+	return host != "localhost" && (Hostname(host) || hostnameLabel.MatchString(host))
+}
+
 func PublicKey(s string) bool {
 	b, err := base64.StdEncoding.DecodeString(s)
 	return err == nil && len(b) == 32

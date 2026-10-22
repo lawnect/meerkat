@@ -28,3 +28,16 @@ func TestTargetsAndHTTPS(t *testing.T) {
 		t.Fatal("HTTPS rejected")
 	}
 }
+
+func TestTunnelAddress(t *testing.T) {
+	for _, address := range []string{"meerkat.example.com:2333", "outlet:2333", "203.0.113.10:2333", "[2001:db8::1]:2333"} {
+		if !TunnelAddress(address) {
+			t.Errorf("tunnel address %q rejected", address)
+		}
+	}
+	for _, address := range []string{"meerkat.example.com", "Meerkat.example.com:2333", "0.0.0.0:2333", "bad host:2333", "example.com:0", "example.com:65536", "a_b.example.com:2333", ":2333", "127.0.0.1:2333", "[::1]:2333", "localhost:2333"} {
+		if TunnelAddress(address) {
+			t.Errorf("invalid tunnel address %q accepted", address)
+		}
+	}
+}

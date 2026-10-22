@@ -41,3 +41,32 @@ func TestOutletDomainAndRouteBoundary(t *testing.T) {
 		t.Fatalf("domain change error = %v", err)
 	}
 }
+
+func TestTunnelAddressSetting(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if address, err := db.TunnelAddress(ctx); err != nil || address != "" {
+		t.Fatalf("unset address = %q, %v", address, err)
+	}
+	if err := db.SetTunnelAddress(ctx, "meerkat.example.com"); !errors.Is(err, ErrInvalidTunnelAddress) {
+		t.Fatalf("address without port error = %v", err)
+	}
+	for _, want := range []string{"meerkat.example.com:2333", "tunnel.example.com:2444"} {
+		if err := db.SetTunnelAddress(ctx, want); err != nil {
+			t.Fatal(err)
+		}
+		if address, err := db.TunnelAddress(ctx); err != nil || address != want {
+			t.Fatalf("address = %q, %v; want %q", address, err, want)
+		}
+	}
+	if err := db.SetTunnelAddress(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if address, err := db.TunnelAddress(ctx); err != nil || address != "" {
+		t.Fatalf("reset address = %q, %v", address, err)
+	}
+}

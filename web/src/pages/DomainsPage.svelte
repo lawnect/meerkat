@@ -4,7 +4,9 @@
   import Card from '../components/ui/Card.svelte';
   import ConfirmNameDialog from '../components/ui/ConfirmNameDialog.svelte';
   import { adminHostname } from '../domains';
-  import type { DomainDNSCheck, Outlet } from '../types';
+  import type { DomainDNSCheck, Outlet, TunnelCheck } from '../types';
+
+  type TunnelCheckKey = 'current' | 'draft';
 
   let { outlet, onSaved }: { outlet: Outlet; onSaved: () => Promise<void> } = $props();
   let selectedDomain = $state('');
@@ -20,7 +22,31 @@
   let dnsChecks = $state<Record<string, DomainDNSCheck>>({});
   let dnsBusy = $state<Record<string, boolean>>({});
   let dnsErrors = $state<Record<string, string>>({});
+  let tunnelInput = $state('');
+  let tunnelDialogError = $state('');
+  let tunnelDialogBusy = $state(false);
+  let tunnelChecks = $state<Partial<Record<TunnelCheckKey, TunnelCheck>>>({});
+  let tunnelCheckBusy = $state<Partial<Record<TunnelCheckKey, boolean>>>({});
+  let tunnelCheckErrors = $state<Partial<Record<TunnelCheckKey, string>>>({});
   let domainDialog: HTMLDialogElement;
+  let tunnelDialog: HTMLDialogElement;
+  let tunnelDialogSession = 0;
+
+  const tunnel = $derived(outlet.tunnel);
+  const tunnelHost = $derived(tunnel?.address ? hostOf(tunnel.address) : '');
+  const dialErrors: Record<string, string> = {
+    connection_refused: '연결 거부 · 포트가 닫혀 있음',
+    timeout: '시간 초과 · 방화벽 차단 가능성',
+    unreachable: '네트워크 경로 없음',
+  };
+
+  function hostOf(address: string): string {
+    return address.replace(/:\d+$/, '').replace(/^\[(.*)\]$/, '$1');
+  }
+
+  function portOf(address: string): string {
+    return address.match(/:(\d+)$/)?.[1] ?? '';
+  }
 
   const domains = $derived.by(() => {
     const registered = outlet.domains?.length ? outlet.domains : outlet.domain ? [outlet.domain] : [];
@@ -79,6 +105,54 @@
     }
   }
 
+  function tunnelError(prefix: string, cause: unknown): string {
+    const code = errorMessage(cause);
+    return code === 'invalid_tunnel_address' ? '주소 형식을 확인하세요. 예: tunnel.example.com:2333 (127.0.0.1, localhost는 사용할 수 없습니다)' : code === 'tunnel_address_unset' ? '터널 주소가 없습니다. 대표 도메인을 등록하거나 주소를 지정하세요.' : code === 'tunnel_default_unavailable' ? '대표 도메인이 없어 기본값이 없으므로 주소를 비울 수 없습니다.' : `${prefix}: ${code}`;
+  }
+
+  async function checkTunnel(key: TunnelCheckKey, address = ''): Promise<void> {
+    if (tunnelCheckBusy[key]) return;
+    const session = tunnelDialogSession;
+    // A draft result from a closed dialog must not appear when it opens again.
+    const stale = () => key === 'draft' && session !== tunnelDialogSession;
+    tunnelCheckBusy[key] = true;
+    tunnelCheckErrors[key] = '';
+    try {
+      const result = await api<TunnelCheck>('/api/v1/outlet/tunnel/check', { method: 'POST', body: JSON.stringify({ address }) });
+      if (!stale()) tunnelChecks[key] = result;
+    } catch (cause) {
+      if (!stale()) tunnelCheckErrors[key] = tunnelError('접속을 확인하지 못했습니다', cause);
+    } finally {
+      tunnelCheckBusy[key] = false;
+    }
+  }
+
+  function openTunnelDialog(): void {
+    tunnelDialogSession += 1;
+    tunnelInput = tunnel?.custom ? tunnel.address : '';
+    tunnelDialogError = '';
+    tunnelChecks.draft = undefined;
+    tunnelCheckErrors.draft = '';
+    tunnelDialog.showModal();
+  }
+
+  async function saveTunnel(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    if (tunnelDialogBusy) return;
+    tunnelDialogError = '';
+    tunnelDialogBusy = true;
+    try {
+      await api<Outlet>('/api/v1/outlet/tunnel', { method: 'PUT', body: JSON.stringify({ address: tunnelInput.trim() }) });
+      await onSaved();
+      tunnelChecks.current = undefined;
+      tunnelDialog.close();
+    } catch (cause) {
+      tunnelDialogError = tunnelError('터널 주소를 저장하지 못했습니다', cause);
+    } finally {
+      tunnelDialogBusy = false;
+    }
+  }
+
   function openDeleteDialog(domain: string): void {
     deleteTarget = domain;
     deleteError = '';
@@ -119,7 +193,7 @@
               <div class="domain-body" id={`domain-body-${registeredDomain}`}>
                 <div class="domain-details">
                   <div><h3>용도</h3><p>{#if primary}관리 화면: <code>https://{adminHostname(registeredDomain)}</code><br />이 도메인의 하위 주소로 서비스도 공개할 수 있습니다.{:else}연결 서비스의 공개 주소에 사용하는 도메인입니다.{/if}</p></div>
-                  <div><h3>DNS 설정</h3><p><code>*.{registeredDomain}</code>을 Outlet 서버 IP로 연결하세요.{#if primary} 터널 연결을 위해 <code>{registeredDomain}</code>도 같은 IP로 연결해야 합니다.{/if}</p></div>
+                  <div><h3>DNS 설정</h3><p><code>*.{registeredDomain}</code>을 Outlet 서버 IP로 연결하세요. {#if primary && tunnelHost === registeredDomain}터널 연결을 위해 <code>{registeredDomain}</code>도 같은 IP로 연결해야 합니다. 루트 주소를 다른 서버에 쓰고 있다면 아래 터널 주소를 바꾸세요.{/if}</p></div>
                 </div>
                 <p class="dns-help">외부에서 80번(인증서 발급)과 443번(HTTPS 접속) 포트에 접근할 수 있어야 합니다. Cloudflare DNS를 쓴다면 프록시를 끈 ‘DNS 전용’을 권장합니다. 도메인과 연결된 공개 주소의 HTTPS 인증서는 자동으로 발급·갱신됩니다.</p>
                 <div class="dns-check">
@@ -152,7 +226,41 @@
   {:else}
     <p class="list-empty">아직 도메인이 없습니다. 도메인을 추가해 시작하세요.</p>
   {/if}
+
+  <Card as="section" padding="none" class="tunnel-card" aria-labelledby="tunnel-title">
+    <div class="ui-card-header tunnel-header"><h3 class="ui-card-title" id="tunnel-title">터널 주소</h3><span class="tunnel-source">{tunnel?.custom ? '직접 지정' : '기본값'}</span></div>
+    <div class="tunnel-body">
+      {#if tunnel?.address}<p class="tunnel-address"><code>{tunnel.address}</code></p>
+      {:else}<p class="tunnel-address tunnel-unset">설정되지 않음</p>{/if}
+      <p class="dns-help">앱 서버의 터널 컨테이너가 Outlet에 TCP로 접속하는 주소로, 관리 화면 주소와 따로 지정할 수 있습니다. {#if tunnel?.address}이 호스트가 DNS 전용으로 Outlet 서버 IP를 가리키고, TCP {portOf(tunnel.address)} 포트가 외부에 열려 있어야 합니다.{:else}대표 도메인을 등록하거나 주소를 직접 지정하세요.{/if}</p>
+      <div class="dns-check">
+        <div class="tunnel-actions">
+          <Button variant="secondary" size="sm" disabled={!tunnel?.address || tunnelCheckBusy.current} onclick={() => checkTunnel('current')}>{tunnelCheckBusy.current ? '확인 중…' : '접속 테스트'}</Button>
+          <Button variant="secondary" size="sm" onclick={openTunnelDialog}>주소 변경</Button>
+        </div>
+        {#if tunnelCheckErrors.current}<p class="error" role="alert">{tunnelCheckErrors.current}</p>{/if}
+        {#if tunnelChecks.current}{@render tunnelResult(tunnelChecks.current)}{/if}
+      </div>
+    </div>
+  </Card>
 </div>
+
+{#snippet tunnelResult(check: TunnelCheck)}
+  {@const failed = check.results.filter((result) => !result.reachable).length}
+  <div class="dns-results" aria-live="polite">
+    <p><strong class={check.reachable ? 'dns-ok' : 'dns-fail'}>{check.error === 'dns_lookup_failed' ? `DNS 응답 없음: ${hostOf(check.address)}` : !check.reachable ? '접속 실패' : failed ? '일부 주소만 접속 가능' : '접속 가능'}</strong></p>
+    {#each check.results as result (result.address)}
+      <div class="dns-result">
+        <code>{result.address}</code>
+        {#if result.reachable}<span class="dns-ok">접속 성공 · {result.latency_ms ?? 0}ms</span>
+        {:else}<span class="dns-fail">{dialErrors[result.error ?? ''] ?? '접속 실패'}</span>{/if}
+      </div>
+    {/each}
+    {#if check.reachable && failed}<p>터널 컨테이너가 실패한 주소를 먼저 시도하면 연결이 늦어지거나 실패할 수 있습니다. 해당 DNS 레코드를 확인하세요. IPv6 주소만 실패했다면 Outlet 서버의 Docker에 IPv6 경로가 없어서일 수도 있습니다.</p>{/if}
+    <p>조회 시각: {new Date(check.checked_at).toLocaleString()}</p>
+    <p>Outlet 서버에서 <code>{check.address}</code>로 TCP 연결만 시험한 결과입니다. 응답한 서버가 이 Outlet인지, 터널을 실행하는 서버의 방화벽이 허용하는지는 확인하지 않습니다. 그 서버에서도 <code>nc -vz {hostOf(check.address)} {portOf(check.address)}</code>로 확인하세요.</p>
+  </div>
+{/snippet}
 
 <dialog bind:this={domainDialog} class="domain-dialog" aria-labelledby="domain-dialog-title" aria-describedby="domain-dialog-description" oncancel={(event) => { if (dialogBusy) event.preventDefault(); }} onclose={() => { domainInput = ''; dialogError = ''; }}>
   <form onsubmit={saveDomain}>
@@ -161,6 +269,26 @@
     <div class="field"><label for="domain-input">도메인</label><input class="input input-bordered" id="domain-input" bind:value={domainInput} placeholder="예: example.com" autocapitalize="none" spellcheck="false" required /></div>
     {#if dialogError}<p class="error" role="alert">{dialogError}</p>{/if}
     <div class="dialog-actions"><Button variant="secondary" disabled={dialogBusy} onclick={() => domainDialog.close()}>취소</Button><Button type="submit" disabled={dialogBusy}>{dialogBusy ? '저장 중…' : '저장'}</Button></div>
+  </form>
+</dialog>
+
+<dialog bind:this={tunnelDialog} class="domain-dialog" aria-labelledby="tunnel-dialog-title" aria-describedby="tunnel-dialog-description" oncancel={(event) => { if (tunnelDialogBusy) event.preventDefault(); }} onclose={() => { tunnelInput = ''; tunnelDialogError = ''; }}>
+  <form onsubmit={saveTunnel}>
+    <h2 id="tunnel-dialog-title">터널 주소 변경</h2>
+    <p id="tunnel-dialog-description">앱 서버의 터널 컨테이너가 Outlet에 접속하는 주소입니다. 대표 도메인 루트를 다른 서버에 쓰고 있다면 Outlet 서버를 가리키는 호스트를 지정하세요.</p>
+    <div class="field">
+      <label for="tunnel-input">터널 주소</label>
+      <input class="input input-bordered" id="tunnel-input" bind:value={tunnelInput} placeholder={tunnel?.default_address || 'tunnel.example.com:2333'} autocapitalize="none" spellcheck="false" aria-describedby="tunnel-input-help" />
+      <small id="tunnel-input-help">호스트:포트 형식입니다. 포트를 생략하면 Outlet 컨테이너의 터널 포트(기본 2333)를 붙이므로, 서버에서 공개 포트(<code>MEERKAT_TUNNEL_PORT</code>)를 바꿨다면 포트까지 입력하세요. 비워 두면 기본값{tunnel?.default_address ? `(${tunnel.default_address})` : ''}을 사용합니다.</small>
+    </div>
+    <div class="dns-check">
+      <Button variant="secondary" size="sm" disabled={tunnelCheckBusy.draft || !(tunnelInput.trim() || tunnel?.default_address)} onclick={() => checkTunnel('draft', tunnelInput.trim() || tunnel?.default_address)}>{tunnelCheckBusy.draft ? '확인 중…' : '저장 전 접속 테스트'}</Button>
+      {#if tunnelCheckErrors.draft}<p class="error" role="alert">{tunnelCheckErrors.draft}</p>{/if}
+      {#if tunnelChecks.draft}{@render tunnelResult(tunnelChecks.draft)}{/if}
+    </div>
+    <p>저장하면 실행 중인 터널이 다음 상태 보고(약 5초) 때 새 설정을 받아 새 주소로 다시 연결합니다.</p>
+    {#if tunnelDialogError}<p class="error" role="alert">{tunnelDialogError}</p>{/if}
+    <div class="dialog-actions"><Button variant="secondary" disabled={tunnelDialogBusy} onclick={() => tunnelDialog.close()}>취소</Button><Button type="submit" disabled={tunnelDialogBusy}>{tunnelDialogBusy ? '저장 중…' : '저장'}</Button></div>
   </form>
 </dialog>
 
@@ -196,11 +324,21 @@
   .dns-check :global(.error) { margin: 0; }
   .domain-footer { display: flex; justify-content: flex-end; margin-top: 16px; border-top: 1px solid var(--line); padding-top: 10px; }
   .list-empty { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+  .domain-page :global(.tunnel-card) { margin-top: 18px; overflow: visible; }
+  .tunnel-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .tunnel-source { color: var(--muted); font-size: 12px; }
+  .tunnel-body { padding: 14px 18px; }
+  .tunnel-address { margin: 0; overflow-wrap: anywhere; font-size: 15px; font-weight: 650; }
+  .tunnel-address code { color: var(--accent-dark); }
+  .tunnel-unset { color: var(--muted); font-weight: 500; }
+  .tunnel-actions { display: flex; flex-wrap: wrap; gap: 8px; }
   .domain-dialog { width: min(440px, calc(100vw - 32px)); max-width: none; margin: auto; border: 1px solid var(--line); border-radius: 10px; padding: 22px; background: var(--panel); color: var(--ink); box-shadow: 0 22px 70px rgba(48, 36, 28, .18); }
   .domain-dialog::backdrop { background: rgba(35, 30, 26, .38); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
   .domain-dialog h2 { margin: 0 0 4px; font-size: 20px; letter-spacing: -.025em; }
   .domain-dialog p:not(.error) { margin: 0 0 16px; color: var(--muted); font-size: 12px; }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  .domain-dialog .dns-check { margin: 12px 0 16px; }
+  .domain-dialog .dns-results p { margin: 0; font-size: 11px; }
   @media (max-width: 700px) {
     .domain-details { grid-template-columns: 1fr; gap: 14px; }
     .domain-details > div + div { border-top: 1px solid var(--line); border-left: 0; padding-top: 12px; padding-left: 0; }

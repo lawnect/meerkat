@@ -81,6 +81,9 @@ type Store struct {
 	config      Config
 	control     *control.Database
 	now         func() time.Time
+	// Tunnel checks resolve and dial through these when set (tests).
+	lookupIP func(context.Context, string) ([]net.IPAddr, error)
+	dialTCP  func(context.Context, string) (net.Conn, error)
 }
 
 func Hash(s string) string { b := sha256.Sum256([]byte(s)); return hex.EncodeToString(b[:]) }
@@ -163,6 +166,21 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 			return nil, err
 		}
 		if err := securefs.WriteJSON(s.managedPath, s.managed); err != nil {
+			return nil, err
+		}
+	}
+	// Point Connectors at the current tunnel address, e.g. after
+	// tunnel_remote_address changed in outlet.json.
+	if controlDB != nil {
+		outlet, err := controlDB.Outlet(context.Background())
+		var tunnel outletTunnel
+		if err == nil {
+			tunnel, err = s.tunnel(context.Background(), outlet.Domain)
+		}
+		if err == nil {
+			err = s.retargetTunnels(tunnel.Address)
+		}
+		if err != nil {
 			return nil, err
 		}
 	}

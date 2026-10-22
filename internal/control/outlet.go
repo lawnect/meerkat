@@ -17,6 +17,8 @@ var (
 	ErrDomainExists    = errors.New("domain already registered")
 	ErrDomainNotFound  = errors.New("domain not found")
 	ErrPrimaryDomain   = errors.New("cannot remove primary domain")
+
+	ErrInvalidTunnelAddress = errors.New("invalid tunnel address")
 )
 
 type Outlet struct {
@@ -108,6 +110,31 @@ func (d *Database) RemoveDomain(ctx context.Context, domain string) (Outlet, err
 		return Outlet{}, err
 	}
 	return d.Outlet(ctx)
+}
+
+// TunnelAddress returns the administrator's tunnel endpoint, or "" when the
+// Outlet derives it from outlet.json or the primary domain.
+func (d *Database) TunnelAddress(ctx context.Context) (string, error) {
+	var address string
+	err := d.db.QueryRowContext(ctx, "SELECT value FROM outlet_settings WHERE key = 'tunnel_address'").Scan(&address)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return address, err
+}
+
+// SetTunnelAddress stores a host:port endpoint. An empty address restores the default.
+func (d *Database) SetTunnelAddress(ctx context.Context, address string) error {
+	if address == "" {
+		_, err := d.db.ExecContext(ctx, "DELETE FROM outlet_settings WHERE key = 'tunnel_address'")
+		return err
+	}
+	if !validation.TunnelAddress(address) {
+		return ErrInvalidTunnelAddress
+	}
+	_, err := d.db.ExecContext(ctx, `INSERT INTO outlet_settings(key, value, updated_at) VALUES ('tunnel_address', ?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, address, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
 }
 
 func (d *Database) SetDomain(ctx context.Context, domain string) (Outlet, error) {

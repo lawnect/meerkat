@@ -20,6 +20,8 @@ Connector는 항상 연결을 먼저 시작한다. 공인 Outlet은 외부 HTTP/
 
 ~~~
 GET    /api/v1/outlet
+PUT    /api/v1/outlet/tunnel
+POST   /api/v1/outlet/tunnel/check
 GET    /api/v1/diagnostics/trace
 GET    /api/v1/connectors
 GET    /api/v1/connectors/:id/usage
@@ -30,6 +32,10 @@ POST   /api/v1/connectors/:id/revoke
 ~~~
 
 `GET /api/v1/diagnostics/trace`는 관리자 세션 인증이 필요하다. Outlet 호스트명과 설정된 `region`, 요청 peer 주소, 전달 헤더, `CF-Ray` 및 colo 접미사를 반환한다. `region`은 자동 위치 판정이 아니라 `outlet.json`에 설정한 설명용 값이다. 전달 헤더와 `CF-Ray`는 직접 연결에서 위조될 수 있으므로 접근 제어나 인증 판단에 사용하지 않는다.
+
+Outlet 응답의 `tunnel`은 Connector가 데이터 터널에 접속하는 `address`, 직접 지정하지 않았을 때의 `default_address`, 직접 지정 여부 `custom`을 담는다. 주소는 관리 화면 설정, `outlet.json`의 `tunnel_remote_address`, `대표도메인:터널수신포트` 순서로 정한다. `PUT /api/v1/outlet/tunnel`에 `{"address":"meerkat.example.com:2333"}`을 보내 지정하고, 빈 문자열을 보내면 기본값으로 되돌린다. 기본값이 없으면(대표 도메인과 `tunnel_remote_address`가 모두 없음) 비울 수 없으며 `409 tunnel_default_unavailable`을 반환한다. 포트를 생략하면 터널 수신 포트를 붙이며 형식이 잘못되었거나 루프백 주소이면 `400 invalid_tunnel_address`를 반환한다. 주소가 바뀌면 관리형 Connector의 모든 서비스 설정에 반영하고 revision을 올린다. 대표 도메인을 바꿔 기본 주소가 바뀔 때와 Outlet이 시작할 때도 같다. 한 Connector의 서비스는 항상 같은 터널 주소를 쓰므로 서비스를 추가할 때도 기존 서비스를 현재 주소로 맞춘다.
+
+`POST /api/v1/outlet/tunnel/check`는 `{"address":"..."}`의 주소를, 비어 있으면 현재 터널 주소를 Outlet에서 DNS 조회한 뒤 조회된 IP마다(최대 8개) TCP 연결을 시도해 `reachable`과 IP별 `results`(`latency_ms`, `error`: `connection_refused`, `timeout`, `unreachable`, `connection_failed`)를 반환한다. DNS 조회 실패는 `error: dns_lookup_failed`로 표시한다. 응답한 서버가 이 Outlet인지와 Connector 쪽 방화벽은 확인하지 않는다. 터널 주소가 없으면 `409 tunnel_address_unset`을 반환한다.
 
 Connector 폐기는 관련 Service·Route의 새 연결을 먼저 차단한 뒤 identity를 폐기한다.
 

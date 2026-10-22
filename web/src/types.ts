@@ -1,9 +1,24 @@
 export type PageKey = 'overview' | 'connectors' | 'domains' | 'diagnostics';
 export type AuthMode = 'loading' | 'setup' | 'login' | 'unavailable' | 'dashboard';
 
+export interface OutletTunnel {
+  address: string;
+  default_address: string;
+  custom: boolean;
+}
+
 export interface Outlet {
   domain?: string;
   domains?: string[];
+  tunnel?: OutletTunnel;
+}
+
+export interface TunnelCheck {
+  checked_at: string;
+  address: string;
+  reachable: boolean;
+  error?: string;
+  results: Array<{ address: string; reachable: boolean; latency_ms?: number; error?: string }>;
 }
 
 export interface DomainDNSCheck {
