@@ -18,6 +18,7 @@ services:
     <<: *runtime
     entrypoint: [/usr/local/bin/outlet]
     command: [-config, /config/outlet.json, -data-dir, /state]
+    networks: [control]
     volumes:
       - "${MEERKAT_DEPLOY_DIR:?set MEERKAT_DEPLOY_DIR}/configs/outlet.json:/config/outlet.json:ro"
       - "${MEERKAT_DEPLOY_DIR}/configs/api-cert.pem:/config/api-cert.pem:ro"
@@ -45,6 +46,9 @@ services:
     tmpfs: [/tmp]
     init: true
     restart: unless-stopped
+    networks:
+      control:
+        aliases: [caddy]
     volumes:
       - "${MEERKAT_DEPLOY_DIR}/outlet-data:/runtime:ro"
       - "${MEERKAT_DEPLOY_DIR}/configs/root-ca.pem:/etc/caddy/root-ca.pem:ro"
@@ -56,3 +60,6 @@ services:
     depends_on: [outlet]
     entrypoint: [/bin/sh, -c]
     command: ["until test -f /runtime/caddy/Caddyfile; do sleep 1; done; exec caddy run --watch --config /runtime/caddy/Caddyfile --adapter caddyfile"]
+
+networks:
+  control: {}
