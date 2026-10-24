@@ -28,6 +28,18 @@ services:
       # SSH-only bootstrap and recovery path; never bind the admin port publicly.
       - "127.0.0.1:${MEERKAT_ADMIN_PORT:-18443}:8443"
       - "${MEERKAT_BIND_ADDRESS}:${MEERKAT_TUNNEL_PORT:-2333}:2333"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -s /config/outlet.json &&
+          test -d /state &&
+          grep -q ':20FB ' /proc/net/tcp &&
+          grep -q ':1F90 ' /proc/net/tcp
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
 
   rathole:
     <<: *runtime
@@ -36,7 +48,9 @@ services:
     volumes:
       - "${MEERKAT_DEPLOY_DIR}/outlet-data:/state:ro"
     network_mode: service:outlet
-    depends_on: [outlet]
+    depends_on:
+      outlet:
+        condition: service_healthy
 
   caddy:
     # Starts with an empty config; Outlet enables fixed public routing after domain setup.
@@ -57,7 +71,9 @@ services:
     ports:
       - "${MEERKAT_BIND_ADDRESS:-0.0.0.0}:80:80"
       - "${MEERKAT_BIND_ADDRESS:-0.0.0.0}:443:443"
-    depends_on: [outlet]
+    depends_on:
+      outlet:
+        condition: service_healthy
     entrypoint: [/bin/sh, -c]
     command: ["until test -f /runtime/caddy/Caddyfile; do sleep 1; done; exec caddy run --watch --config /runtime/caddy/Caddyfile --adapter caddyfile"]
 
