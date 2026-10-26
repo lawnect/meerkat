@@ -43,9 +43,9 @@ func run() error {
 		return err
 	}
 	defer controlDB.Close()
-	defaults, err := environmentDefaults(os.Getenv)
-	if err != nil {
-		return err
+	defaults, warnings := environmentDefaults(os.Getenv)
+	for _, warning := range warnings {
+		slog.Warn(warning)
 	}
 	controlDB.SetDefaults(defaults)
 	slog.Info("settings from the environment", "sso", defaults.SSO != nil, "telegram", defaults.Telegram != nil)

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -19,9 +18,12 @@ import (
 //	MEERKAT_PASSWORD_LOGIN                        false: public addresses use SSO only
 //	MEERKAT_TELEGRAM_BOT_TOKEN, MEERKAT_TELEGRAM_CHAT_ID, MEERKAT_TELEGRAM_ENABLED
 //
-// Lists are separated by commas or spaces.
-func environmentDefaults(getenv func(string) string) (control.Defaults, error) {
+// Lists are separated by commas or spaces. A missing or invalid value never
+// stops the Outlet, which keeps tunnels running: that setting is left out
+// and a warning names the variable.
+func environmentDefaults(getenv func(string) string) (control.Defaults, []string) {
 	var defaults control.Defaults
+	var warnings []string
 	value := func(name string) string { return strings.TrimSpace(getenv(name)) }
 	list := func(name string) []string {
 		return strings.FieldsFunc(getenv(name), func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
@@ -42,14 +44,12 @@ func environmentDefaults(getenv func(string) string) (control.Defaults, error) {
 	if issuer == "" {
 		for _, name := range []string{"MEERKAT_OIDC_CLIENT_ID", "MEERKAT_OIDC_CLIENT_SECRET", "MEERKAT_ADMIN_EMAILS", "MEERKAT_ADMIN_GROUPS"} {
 			if value(name) != "" {
-				return defaults, fmt.Errorf("%s needs MEERKAT_OIDC_ISSUER", name)
+				warnings = append(warnings, name+" is ignored until MEERKAT_OIDC_ISSUER is set")
 			}
 		}
+	} else if passwordLogin, err := boolean("MEERKAT_PASSWORD_LOGIN", true); err != nil {
+		warnings = append(warnings, "single sign-on from the environment is off: "+err.Error())
 	} else {
-		passwordLogin, err := boolean("MEERKAT_PASSWORD_LOGIN", true)
-		if err != nil {
-			return defaults, err
-		}
 		scopes := list("MEERKAT_OIDC_SCOPES")
 		if len(scopes) == 0 {
 			scopes = control.DefaultSSO().Scopes
@@ -61,23 +61,26 @@ func environmentDefaults(getenv func(string) string) (control.Defaults, error) {
 			AllowedUsers: list("MEERKAT_ADMIN_EMAILS"), AllowedGroups: list("MEERKAT_ADMIN_GROUPS"),
 			PasswordLogin: passwordLogin,
 		}.Normalize()
-		if !ok {
-			return defaults, errors.New("single sign-on from the environment needs an https MEERKAT_OIDC_ISSUER, MEERKAT_OIDC_CLIENT_ID, and valid MEERKAT_ADMIN_EMAILS (emails or @domain) or MEERKAT_ADMIN_GROUPS")
+		if ok {
+			defaults.SSO = &sso
+		} else {
+			warnings = append(warnings, "single sign-on from the environment is off: it needs an https MEERKAT_OIDC_ISSUER, MEERKAT_OIDC_CLIENT_ID, and valid MEERKAT_ADMIN_EMAILS (emails or @domain) or MEERKAT_ADMIN_GROUPS")
 		}
-		defaults.SSO = &sso
 	}
 
 	token, chat := value("MEERKAT_TELEGRAM_BOT_TOKEN"), value("MEERKAT_TELEGRAM_CHAT_ID")
 	if token != "" || chat != "" {
 		enabled, err := boolean("MEERKAT_TELEGRAM_ENABLED", true)
 		if err != nil {
-			return defaults, err
+			warnings = append(warnings, "Telegram from the environment is off: "+err.Error())
+			return defaults, warnings
 		}
 		telegram, err := control.NewTelegram(token, chat, enabled)
 		if err != nil {
-			return defaults, errors.New("MEERKAT_TELEGRAM_BOT_TOKEN and MEERKAT_TELEGRAM_CHAT_ID must both be set and valid")
+			warnings = append(warnings, "Telegram from the environment is off: MEERKAT_TELEGRAM_BOT_TOKEN and MEERKAT_TELEGRAM_CHAT_ID must both be set and valid")
+			return defaults, warnings
 		}
 		defaults.Telegram = &telegram
 	}
-	return defaults, nil
+	return defaults, warnings
 }

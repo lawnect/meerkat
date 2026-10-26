@@ -11,11 +11,11 @@ func env(values map[string]string) func(string) string {
 }
 
 func TestEnvironmentDefaults(t *testing.T) {
-	defaults, err := environmentDefaults(env(nil))
-	if err != nil || defaults.SSO != nil || defaults.Telegram != nil {
-		t.Fatalf("empty environment: %+v, %v", defaults, err)
+	defaults, warnings := environmentDefaults(env(nil))
+	if len(warnings) != 0 || defaults.SSO != nil || defaults.Telegram != nil {
+		t.Fatalf("empty environment: %+v, %v", defaults, warnings)
 	}
-	defaults, err = environmentDefaults(env(map[string]string{
+	defaults, warnings = environmentDefaults(env(map[string]string{
 		"MEERKAT_OIDC_ISSUER":        "https://idp.example.com/realms/inside/",
 		"MEERKAT_OIDC_CLIENT_ID":     "meerkat",
 		"MEERKAT_OIDC_CLIENT_SECRET": "secret-value-1234",
@@ -26,8 +26,8 @@ func TestEnvironmentDefaults(t *testing.T) {
 		"MEERKAT_TELEGRAM_BOT_TOKEN": "123456789:AAEhBOweik6ad9r_QXMENQjcrGbqCr4K-ab",
 		"MEERKAT_TELEGRAM_CHAT_ID":   "-1001234567890",
 	}))
-	if err != nil {
-		t.Fatal(err)
+	if len(warnings) != 0 {
+		t.Fatal(warnings)
 	}
 	sso := defaults.SSO
 	if sso == nil || !sso.Enabled || sso.Issuer != "https://idp.example.com/realms/inside" || sso.Label != "Keycloak" || sso.PasswordLogin ||
@@ -47,8 +47,11 @@ func TestEnvironmentDefaults(t *testing.T) {
 		"telegram token only":     {"MEERKAT_TELEGRAM_BOT_TOKEN": "123456789:AAEhBOweik6ad9r_QXMENQjcrGbqCr4K-ab"},
 		"telegram malformed chat": {"MEERKAT_TELEGRAM_BOT_TOKEN": "123456789:AAEhBOweik6ad9r_QXMENQjcrGbqCr4K-ab", "MEERKAT_TELEGRAM_CHAT_ID": "chat 1"},
 	} {
-		if _, err := environmentDefaults(env(values)); err == nil || !strings.Contains(err.Error(), "MEERKAT_") {
-			t.Errorf("%s: err = %v", name, err)
+		// The setting is left out with a warning naming the variable; the
+		// Outlet still starts.
+		defaults, warnings := environmentDefaults(env(values))
+		if defaults.SSO != nil || defaults.Telegram != nil || len(warnings) == 0 || !strings.Contains(warnings[0], "MEERKAT_") {
+			t.Errorf("%s: %+v %v", name, defaults, warnings)
 		}
 	}
 }

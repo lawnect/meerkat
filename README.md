@@ -329,7 +329,7 @@ The Outlet also reads these settings from its environment, so a deployment can s
 | `MEERKAT_PASSWORD_LOGIN` | `false` allows only single sign-on on public addresses (the local admin port over SSH still takes passwords). |
 | `MEERKAT_TELEGRAM_BOT_TOKEN`, `MEERKAT_TELEGRAM_CHAT_ID`, `MEERKAT_TELEGRAM_ENABLED` | Telegram alerts (enabled unless `false`). |
 
-Lists are separated by commas. With single sign-on from the environment, the console needs no initial setup: the first listed administrator to sign in gets an account. The Outlet refuses to start if a value is invalid, naming the variable.
+Lists are separated by commas. With single sign-on from the environment, the console needs no initial setup: the first listed administrator to sign in gets an account. A missing or invalid value never stops the Outlet, so tunnels keep running: that setting is left out and the log names the variable.
 
 ### Block rules
 
