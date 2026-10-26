@@ -42,7 +42,7 @@ func (s *Store) CollectUsage(ctx context.Context) error {
 		return s.control.RecordUsage(ctx, nil, time.Now(), "")
 	}
 	client := &http.Client{Timeout: 4 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://caddy:9090/metrics", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+s.config.CaddyMetrics+"/metrics", nil)
 	if err != nil {
 		return err
 	}

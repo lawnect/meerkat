@@ -28,6 +28,10 @@ const caddyHeader = "{\n" + caddyGlobal + "}\n\n:9090 {\n\tmetrics /metrics\n}\n
 // differently passes its own host:port to DynamicCaddyfile.
 const DefaultUpstream = "outlet:8080"
 
+// DefaultMetrics is where the Outlet reads Caddy's metrics: the :9090 site
+// of the caddy service.
+const DefaultMetrics = "caddy:9090"
+
 // EmptyCaddyfile starts Caddy without requesting a public certificate.
 // The Outlet replaces it once an administrator registers the first domain.
 func EmptyCaddyfile() []byte { return []byte(caddyHeader) }

@@ -48,12 +48,12 @@ func run() error {
 		slog.Warn(warning)
 	}
 	controlDB.SetDefaults(defaults)
-	upstream, warning := caddyUpstream(os.Getenv)
-	if warning != "" {
+	upstream, metrics, caddyWarnings := caddyAddresses(os.Getenv)
+	for _, warning := range caddyWarnings {
 		slog.Warn(warning)
 	}
-	cfg.CaddyUpstream = upstream
-	slog.Info("settings from the environment", "sso", defaults.SSO != nil, "telegram", defaults.Telegram != nil, "caddy_upstream", upstream)
+	cfg.CaddyUpstream, cfg.CaddyMetrics = upstream, metrics
+	slog.Info("settings from the environment", "sso", defaults.SSO != nil, "telegram", defaults.Telegram != nil, "caddy_upstream", upstream, "caddy_metrics", metrics)
 	store, err := outlet.OpenWithControl(cfg, *dir, controlDB)
 	if err != nil {
 		return err

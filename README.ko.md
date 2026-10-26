@@ -327,7 +327,7 @@ SSH 터널로 여는 **로컬 관리 포트**(`https://localhost:18443`)에서�
 | `MEERKAT_ADMIN_EMAILS`, `MEERKAT_ADMIN_GROUPS` | 관리자로 로그인할 사람: 이메일이나 `@도메인`, 그룹. 둘 다 쓰면 둘 다 맞아야 합니다. |
 | `MEERKAT_PASSWORD_LOGIN` | `false`면 공개 주소에서는 SSO로만 로그인합니다(SSH로 연결한 로컬 관리 포트는 예외). |
 | `MEERKAT_TELEGRAM_BOT_TOKEN`, `MEERKAT_TELEGRAM_CHAT_ID`, `MEERKAT_TELEGRAM_ENABLED` | 텔레그램 알림(`false`가 아니면 켜짐). |
-| `MEERKAT_CADDY_UPSTREAM` | Caddy가 Outlet에 연결하는 주소(기본 `outlet:8080`). outlet 서비스 이름을 `outlet-k3x9`처럼 바꾼 경우 `outlet-k3x9:8080`으로 지정합니다. 공유 네트워크(Coolify 등)에서 다른 Compose 스택과 이름이 충돌하지 않게 합니다. 관리 화면에는 표시되지 않습니다. |
+| `MEERKAT_CADDY_UPSTREAM`, `MEERKAT_CADDY_METRICS` | Caddy가 Outlet에 연결하는 주소(기본 `outlet:8080`)와 Outlet이 Caddy 지표를 읽는 주소(기본 `caddy:9090`). 서비스 이름을 바꾼 경우 `outlet-k3x9:8080`, `caddy-k3x9:9090`처럼 지정합니다. 공유 네트워크(Coolify 등)에서 다른 Compose 스택과 이름이 충돌하지 않게 합니다. 관리 화면에는 표시되지 않습니다. |
 
 목록은 쉼표로 구분합니다. 환경 변수로 SSO를 켜면 초기 설정이 필요 없고, 목록에 있는 관리자가 처음 로그인할 때 계정이 만들어집니다. 값이 빠졌거나 잘못돼도 Outlet은 멈추지 않아 터널은 계속 동작합니다. 그 설정만 적용하지 않고 어느 변수인지 로그에 남깁니다.
 

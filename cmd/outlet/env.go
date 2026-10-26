@@ -87,17 +87,24 @@ func environmentDefaults(getenv func(string) string) (control.Defaults, []string
 	return defaults, warnings
 }
 
-// caddyUpstream reads MEERKAT_CADDY_UPSTREAM, the host:port Caddy uses to
-// reach the Outlet's public listener, for deployments whose outlet service
-// isn't called outlet. Empty or invalid gives proxy.DefaultUpstream; an
-// invalid value also gives a warning.
-func caddyUpstream(getenv func(string) string) (string, string) {
-	raw := strings.ToLower(strings.TrimSpace(getenv("MEERKAT_CADDY_UPSTREAM")))
-	if raw == "" {
-		return proxy.DefaultUpstream, ""
+// caddyAddresses reads where Caddy and the Outlet reach each other, for
+// deployments whose services aren't called outlet and caddy:
+//
+//	MEERKAT_CADDY_UPSTREAM  host:port Caddy uses for the Outlet (outlet:8080)
+//	MEERKAT_CADDY_METRICS   host:port of Caddy's metrics (caddy:9090)
+//
+// Empty or invalid values give the default; an invalid one also a warning.
+func caddyAddresses(getenv func(string) string) (upstream, metrics string, warnings []string) {
+	address := func(name, fallback string) string {
+		raw := strings.ToLower(strings.TrimSpace(getenv(name)))
+		if raw == "" {
+			return fallback
+		}
+		if !validation.TunnelAddress(raw) {
+			warnings = append(warnings, name+" must be host:port, such as "+fallback+"; using "+fallback)
+			return fallback
+		}
+		return raw
 	}
-	if !validation.TunnelAddress(raw) {
-		return proxy.DefaultUpstream, "MEERKAT_CADDY_UPSTREAM must be host:port, such as outlet:8080; using " + proxy.DefaultUpstream
-	}
-	return raw, ""
+	return address("MEERKAT_CADDY_UPSTREAM", proxy.DefaultUpstream), address("MEERKAT_CADDY_METRICS", proxy.DefaultMetrics), warnings
 }

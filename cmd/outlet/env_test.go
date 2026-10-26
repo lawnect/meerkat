@@ -56,15 +56,18 @@ func TestEnvironmentDefaults(t *testing.T) {
 	}
 }
 
-func TestCaddyUpstream(t *testing.T) {
-	for raw, want := range map[string]string{"": "outlet:8080", " Outlet-K3X9:8080 ": "outlet-k3x9:8080", "10.0.0.5:8080": "10.0.0.5:8080"} {
-		if got, warning := caddyUpstream(env(map[string]string{"MEERKAT_CADDY_UPSTREAM": raw})); got != want || warning != "" {
-			t.Fatalf("%q: %q, %q", raw, got, warning)
-		}
+func TestCaddyAddresses(t *testing.T) {
+	if upstream, metrics, warnings := caddyAddresses(env(nil)); upstream != "outlet:8080" || metrics != "caddy:9090" || len(warnings) != 0 {
+		t.Fatalf("defaults: %q, %q, %v", upstream, metrics, warnings)
+	}
+	upstream, metrics, warnings := caddyAddresses(env(map[string]string{"MEERKAT_CADDY_UPSTREAM": " Outlet-K3X9:8080 ", "MEERKAT_CADDY_METRICS": "10.0.0.5:9090"}))
+	if upstream != "outlet-k3x9:8080" || metrics != "10.0.0.5:9090" || len(warnings) != 0 {
+		t.Fatalf("set: %q, %q, %v", upstream, metrics, warnings)
 	}
 	for _, raw := range []string{"outlet", "outlet:8080 {", "outlet:8080\nimport x", "outlet:0", "127.0.0.1:8080", "a b:8080"} {
-		if got, warning := caddyUpstream(env(map[string]string{"MEERKAT_CADDY_UPSTREAM": raw})); got != "outlet:8080" || warning == "" {
-			t.Fatalf("%q accepted: %q", raw, got)
+		upstream, metrics, warnings := caddyAddresses(env(map[string]string{"MEERKAT_CADDY_UPSTREAM": raw, "MEERKAT_CADDY_METRICS": raw}))
+		if upstream != "outlet:8080" || metrics != "caddy:9090" || len(warnings) != 2 {
+			t.Fatalf("%q accepted: %q, %q, %v", raw, upstream, metrics, warnings)
 		}
 	}
 }

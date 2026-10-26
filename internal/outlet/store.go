@@ -53,6 +53,10 @@ type Config struct {
 	// Host of Caddy's certificate check. It comes from the environment;
 	// empty means proxy.DefaultUpstream.
 	CaddyUpstream string `json:"-"`
+	// CaddyMetrics is the host:port of Caddy's metrics site, read for
+	// traffic usage. It comes from the environment; empty means
+	// proxy.DefaultMetrics.
+	CaddyMetrics string `json:"-"`
 }
 
 type Record struct {
@@ -145,10 +149,13 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 	if config.CaddyUpstream == "" {
 		config.CaddyUpstream = proxy.DefaultUpstream
 	}
+	if config.CaddyMetrics == "" {
+		config.CaddyMetrics = proxy.DefaultMetrics
+	}
 	// The same rules as a tunnel address: a DNS name, Compose service name
 	// or IP literal with a port, so nothing else reaches the Caddyfile.
-	if !validation.TunnelAddress(config.CaddyUpstream) {
-		return nil, errors.New("invalid Caddy upstream")
+	if !validation.TunnelAddress(config.CaddyUpstream) || !validation.TunnelAddress(config.CaddyMetrics) {
+		return nil, errors.New("invalid Caddy address")
 	}
 	records := make(map[string]Record)
 	services, ports := map[string]bool{}, map[string]bool{}
