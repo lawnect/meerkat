@@ -115,6 +115,9 @@ type Store struct {
 	served sync.Map
 	// balance counts the requests of each balanced address, to take turns.
 	balance sync.Map
+	// suspect maps a service ID to when a request to it last failed before
+	// any answer, to pass it over for a while (see liveBackends).
+	suspect sync.Map
 	// background tracks login notifications still being sent.
 	background sync.WaitGroup
 	journal    *auditJournal

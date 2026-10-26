@@ -899,7 +899,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
       const savedOrder = [...sharing].sort((a, b) => a.priority - b.priority).map((route) => route.id);
       if (saved.mode !== body.current.mode || saved.sticky !== body.current.sticky || savedOrder.join() !== body.current.order.join()) fail('address_changed');
     }
-    if ((body.mode !== 'failover' && body.mode !== 'balance') || order.length !== sharing.length || !sharing.every((route) => order.includes(route.id))) fail('invalid_address_policy');
+    if ((body.mode !== 'failover' && body.mode !== 'balance') || order.length !== sharing.length || new Set(order).size !== order.length || !sharing.every((route) => order.includes(route.id))) fail('invalid_address_policy');
     order.forEach((routeId, priority) => { const route = state.routes.find((item) => item.id === routeId); if (route) route.priority = priority; });
     state.policies[hostname] = { mode: body.mode as AddressMode, sticky: body.mode === 'balance' && Boolean(body.sticky) };
     return {};

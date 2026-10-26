@@ -58,6 +58,8 @@ func newProxyFixture(tb testing.TB, upstreams ...http.Handler) proxyFixture {
 		tb.Fatal(err)
 	}
 	record := Record{Seed: Seed{Name: "edge", Configuration: contract.Configuration{ConnectorID: f.connector.ID}}, ProbeAddresses: map[string]string{}, ServiceStatuses: map[string]string{}, Enrolled: true,
+		// The Connector reports its services healthy, as a running one does.
+		LastHeartbeat: &contract.Heartbeat{ServiceHealth: "healthy"},
 		// In the future, so the Connector stays connected for the whole test.
 		LastSeen: time.Now().Add(24 * time.Hour)}
 	for i, h := range upstreams {

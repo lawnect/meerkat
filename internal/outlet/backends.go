@@ -3,12 +3,11 @@ package outlet
 import (
 	"cmp"
 	"context"
-	"errors"
 	"hash/fnv"
-	"net"
 	"net/http"
 	"slices"
 	"sync/atomic"
+	"time"
 
 	"github.com/lawnect/meerkat/internal/control"
 )
@@ -20,22 +19,49 @@ type backend struct {
 	address   string
 }
 
+// suspectFor is how long a service that just failed a request is passed
+// over while another service of the address is live: its tunnel can keep
+// accepting connections for a while after its Connector is gone.
+const suspectFor = 10 * time.Second
+
 // liveBackends keeps the services of plans that can take a request, in the
-// plans' failover order.
+// plans' failover order. A service of a shared address must also be healthy
+// by its Connector's own check, as the console shows it, and is passed over
+// for a while after a failed request when another one is live.
 func (s *Store) liveBackends(plans []control.HTTPRoutePlan) []backend {
 	now := s.now()
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	live := make([]backend, 0, len(plans))
 	for _, plan := range plans {
 		record, ok := s.managed[plan.ConnectorID]
 		address := record.probeFor(plan.ServiceID)
-		if ok && record.Enrolled && managedConnectorStatus(record, now) == "connected" && record.ServiceStatuses[plan.ServiceID] == "connected" && isLoopbackAddress(address) {
-			live = append(live, backend{serviceID: plan.ServiceID, address: address})
+		if !ok || !record.Enrolled || managedConnectorStatus(record, now) != "connected" || record.ServiceStatuses[plan.ServiceID] != "connected" || !isLoopbackAddress(address) {
+			continue
+		}
+		if len(plans) > 1 && managedServiceStatus(record, plan.ServiceID, now) != "connected" {
+			continue
+		}
+		live = append(live, backend{serviceID: plan.ServiceID, address: address})
+	}
+	s.mu.RUnlock()
+	if len(live) < 2 {
+		return live
+	}
+	trusted := live[:0:0]
+	for _, b := range live {
+		if since, ok := s.suspect.Load(b.serviceID); !ok || now.Sub(since.(time.Time)) >= suspectFor {
+			trusted = append(trusted, b)
 		}
 	}
-	return live
+	if len(trusted) == 0 {
+		return live
+	}
+	return trusted
 }
+
+// failed and answered keep the passive health of a service up to date.
+func (s *Store) failed(serviceID string)   { s.suspect.Store(serviceID, s.now()) }
+func (s *Store) answered(serviceID string) { s.suspect.Delete(serviceID) }
 
 // orderBackends puts the service to try first at the front; the rest are
 // where a request that can't reach it goes next. Failover keeps priority
@@ -73,18 +99,14 @@ func (s *Store) orderBackends(host, client string, live []backend, policy contro
 // retryable reports whether a request that failed to reach one service can
 // go to the next. It must have no body, which the failed attempt may have
 // consumed. A request never written to a connection reached nobody, so any
-// method goes on; once written, only methods safe to repeat do, and never
-// after a timeout, which means the service had the request.
+// method goes on; once written, only methods safe to repeat do, a timeout
+// included: the service may have had the request, but repeating it is safe.
 func retryable(r *http.Request, err error, wrote bool) bool {
 	if r.ContentLength != 0 || len(r.TransferEncoding) != 0 || r.Context().Err() != nil {
 		return false
 	}
 	if !wrote {
 		return true
-	}
-	var timeout net.Error
-	if errors.As(err, &timeout) && timeout.Timeout() {
-		return false
 	}
 	switch r.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:

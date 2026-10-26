@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lawnect/meerkat/internal/contract"
 	"github.com/lawnect/meerkat/internal/control"
 )
 
@@ -137,9 +138,11 @@ func TestSharedAddressRetriesTheNextService(t *testing.T) {
 	if code, body := f.get("app.example.com"); code != 200 || !strings.HasPrefix(body, "b ") {
 		t.Fatalf("GET: %d %q", code, body)
 	}
+	f.trustAll()
 	if code, body := f.from("DELETE", "app.example.com", "", ""); code != 200 || !strings.HasPrefix(body, "b ") {
 		t.Fatalf("DELETE without a body after a refused connection: %d %q", code, body)
 	}
+	f.trustAll()
 	if code, _ := f.from("POST", "app.example.com", "", "payload"); code != 502 {
 		t.Fatalf("POST with a body: %d", code)
 	}
@@ -163,15 +166,18 @@ func TestSharedAddressRetriesOnlySafeMethodsAfterAConnection(t *testing.T) {
 	f.route(t, 0, "app.example.com")
 	f.share(t, 1, "app.example.com")
 	for _, method := range []string{"GET", "HEAD", "OPTIONS"} {
+		f.trustAll()
 		if code, _ := f.from(method, "app.example.com", "", ""); code != 200 {
 			t.Fatalf("%s: %d", method, code)
 		}
 	}
 	for _, method := range []string{"POST", "PUT", "DELETE", "PATCH"} {
+		f.trustAll()
 		if code, _ := f.from(method, "app.example.com", "", ""); code != 502 {
 			t.Fatalf("%s after a dropped connection: %d", method, code)
 		}
 	}
+	f.trustAll()
 	server := httptest.NewServer(f.handler)
 	defer server.Close()
 	conn, reader := dial(t, strings.TrimPrefix(server.URL, "http://"))
@@ -338,7 +344,9 @@ func TestRetryableNeedsAnUnsentOrSafeRequest(t *testing.T) {
 		{"POST", "", io.EOF, true, false},
 		{"GET", "", io.EOF, true, true},
 		{"HEAD", "", io.EOF, true, true},
-		{"GET", "", timeout, true, false},
+		// Safe to repeat even when the service may have had it.
+		{"GET", "", timeout, true, true},
+		{"DELETE", "", timeout, true, false},
 		{"GET", "", timeout, false, true},
 		{"GET", "x", refused, false, false},
 	} {
@@ -399,5 +407,71 @@ func TestRetryRechecksTheRouting(t *testing.T) {
 	f.share(t, 2, "app.example.com")
 	if code, body := f.get("app.example.com"); code != 200 || !strings.HasPrefix(body, "c ") {
 		t.Fatalf("after b's route went: %d %q", code, body)
+	}
+}
+
+// trustAll forgets which services failed lately.
+func (f proxyFixture) trustAll() {
+	f.store.suspect.Range(func(key, _ any) bool {
+		f.store.suspect.Delete(key)
+		return true
+	})
+}
+
+// A service that just failed a request is passed over while another one is
+// live, and comes back after a while or as soon as it answers.
+func TestFailedServicesArePassedOverForAWhile(t *testing.T) {
+	var aHits atomic.Int32
+	down := atomic.Bool{}
+	down.Store(true)
+	flaky := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		aHits.Add(1)
+		if down.Load() {
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				conn.Close()
+			}
+			return
+		}
+		_, _ = io.WriteString(w, "a")
+	})
+	f := newProxyFixture(t, flaky, echo("b"))
+	f.route(t, 0, "app.example.com")
+	f.share(t, 1, "app.example.com")
+	if code, body := f.get("app.example.com"); code != 200 || !strings.HasPrefix(body, "b ") {
+		t.Fatalf("first request: %d %q", code, body)
+	}
+	for range 5 {
+		if _, body := f.get("app.example.com"); !strings.HasPrefix(body, "b ") {
+			t.Fatalf("while a is passed over: %q", body)
+		}
+	}
+	if aHits.Load() != 1 {
+		t.Fatalf("a got %d requests while passed over", aHits.Load())
+	}
+	down.Store(false)
+	now := time.Now()
+	f.store.now = func() time.Time { return now.Add(suspectFor + time.Second) }
+	if _, body := f.get("app.example.com"); body != "a" {
+		t.Fatalf("after the pause: %q", body)
+	}
+	f.store.now = time.Now
+}
+
+// A shared address leaves out a service its Connector reports unhealthy,
+// as the console shows it, even while the tunnel port answers.
+func TestSharedAddressFollowsTheConnectorHealth(t *testing.T) {
+	f := newProxyFixture(t, echo("a"), echo("b"))
+	f.route(t, 0, "app.example.com")
+	f.share(t, 1, "app.example.com")
+	f.store.mu.Lock()
+	record := f.store.managed[f.connector.ID]
+	record.Configuration.Services = []contract.ServiceConfiguration{{ServiceID: f.services[0].ID}, {ServiceID: f.services[1].ID}}
+	record.LastHeartbeat = &contract.Heartbeat{ServiceHealths: map[string]string{f.services[0].ID: "unhealthy", f.services[1].ID: "healthy"}}
+	f.store.managed[f.connector.ID] = record
+	f.store.mu.Unlock()
+	for range 3 {
+		if code, body := f.get("app.example.com"); code != 200 || !strings.HasPrefix(body, "b ") {
+			t.Fatalf("with a unhealthy: %d %q", code, body)
+		}
 	}
 }

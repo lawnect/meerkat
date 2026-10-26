@@ -276,12 +276,16 @@ func (s *Store) PublicHandler() http.Handler {
 				},
 				ModifyResponse: func(res *http.Response) error {
 					responded.Store(true)
+					s.answered(target.serviceID)
 					if res.StatusCode < 500 {
 						s.noteServed(target.serviceID)
 					}
 					return nil
 				},
 				ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+					if !responded.Load() && r.Context().Err() == nil {
+						s.failed(target.serviceID)
+					}
 					// After an answer the response is under way, or an
 					// upgraded connection taken over: never another try.
 					if !responded.Load() && retryable(r, err, wrote.Load()) {
