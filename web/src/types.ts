@@ -297,3 +297,36 @@ export interface SsoSettings {
   source: SettingSource;
   environment: boolean; // 환경 변수에 SSO 설정이 있는지. 있으면 source도 environment이고 관리 화면에서 바꿀 수 없습니다
 }
+
+// 접근 보호용 OpenID Connect 공급자(GET/PUT /api/v1/security/access-provider). 관리자 SSO와 별개이며, 클라이언트 시크릿은 응답에 없고 PUT에서 비우거나 생략하면 저장된 값을 유지합니다.
+export interface AccessProviderView {
+  enabled: boolean;
+  label: string; // 32자 이하
+  issuer: string; // https URL, 끝에 / 없음
+  client_id: string;
+  client_secret_set: boolean;
+  client_secret_hint: string; // 끝 4자. 짧거나 없으면 ''
+  scopes: string[]; // 항상 'openid' 포함
+  groups_claim: string; // 기본 'groups'
+  session_hours: number; // 1–720. 보호된 주소에서 로그인이 유지되는 시간
+  redirect_uri: string; // 공급자에 등록할 주소(https://<관리자 호스트>/api/v1/access/callback)
+  available: boolean; // 도메인(관리자 호스트)이 생기기 전에는 false(redirect_uri는 '')
+}
+
+// 접근 정책(GET/PUT /api/v1/security/access-policies). 활성화된 정책에 일치하는 요청은 접근 보호 SSO 로그인이 필요하고, 요청에 적용되는 모든 정책을 충족해야 합니다.
+export interface AccessPolicy {
+  id: string; // 새 정책은 '', 서버가 부여합니다
+  name: string; // 1–64자
+  enabled: boolean;
+  hosts: string[]; // 호스트 이름 또는 '*.도메인', 1개 이상
+  all_paths: boolean; // true이면 호스트의 모든 경로, false이면 conditions가 일치하는 경로만
+  conditions: BlockCondition[]; // all_paths가 false일 때 1–50개. 하나라도 맞으면 보호합니다
+  allowed_users: string[]; // 이메일 또는 '@도메인', 소문자
+  allowed_groups: string[]; // 사용자와 그룹을 모두 지정하면 둘 다 맞아야 합니다
+  allow_admins: boolean; // Meerkat 관리자의 이메일도 허용. 사용자·그룹·관리자 허용 중 하나는 필요합니다
+}
+
+export interface AccessPoliciesView {
+  policies: AccessPolicy[];
+  addresses: string[]; // 정책을 한정할 수 있는 공개 주소(호스트 이름), 정렬됨
+}

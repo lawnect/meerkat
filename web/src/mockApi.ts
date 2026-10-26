@@ -1,4 +1,4 @@
-import type { AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, Outlet, Route, Service, SsoSettings, Target, UsageBucket, UsageSeries, UsageUnit } from './types';
+import type { AccessPoliciesView, AccessPolicy, AccessProviderView, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, Outlet, Route, Service, SsoSettings, Target, UsageBucket, UsageSeries, UsageUnit } from './types';
 
 const now = (): string => new Date().toISOString();
 const ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
@@ -224,12 +224,29 @@ let blockRules: BlockRule[] = [
   },
 ];
 let blockHits: Record<string, number> = { 'hidden-files': 1284 };
-// 규칙을 한정할 수 있는 공개 주소: 지금 있는 경로의 호스트 이름입니다.
+// 규칙·정책을 한정할 수 있는 공개 주소: 지금 있는 경로의 호스트 이름입니다.
+const publicAddresses = (): string[] => [...new Set(state.routes.map((route) => route.hostname))].sort();
 const blockRulesResponse = (): BlockRulesView => structuredClone({
   rules: blockRules,
   hits: blockHits,
-  addresses: [...new Set(state.routes.map((route) => route.hostname))].sort(),
+  addresses: publicAddresses(),
 });
+// 접근 보호 데모 상태. 공급자는 꺼져 있고, 정책 하나가 vault 주소 전체를 보호합니다.
+let accessProvider: Omit<AccessProviderView, 'redirect_uri' | 'available'> = {
+  enabled: false,
+  label: '',
+  issuer: '',
+  client_id: '',
+  client_secret_set: false,
+  client_secret_hint: '',
+  scopes: ['openid', 'email', 'profile'],
+  groups_claim: 'groups',
+  session_hours: 24,
+};
+let accessPolicies: AccessPolicy[] = [
+  { id: 'vault', name: 'Vault members', enabled: true, hosts: ['vault.example.test'], all_paths: true, conditions: [], allowed_users: ['@example.test'], allowed_groups: [], allow_admins: true },
+];
+const accessPoliciesResponse = (): AccessPoliciesView => structuredClone({ policies: accessPolicies, addresses: publicAddresses() });
 
 // 감사 로그 데모: 최근 며칠 동안의 관리 작업을 만들어 둡니다.
 const AUDIT_SAMPLES: Array<[string, string, string, string]> = [
@@ -268,6 +285,12 @@ const ssoResponse = (): SsoSettings => {
   return structuredClone({ ...sso, redirect_uri: domain ? `https://${adminHostname(domain)}/api/v1/session/sso/callback` : '', post_logout_redirect_uri: domain ? `https://${adminHostname(domain)}/` : '', available: Boolean(domain) });
 };
 
+// 도메인을 모두 지우면 관리자 호스트가 없어 콜백 주소도 만들 수 없습니다.
+const accessProviderResponse = (): AccessProviderView => {
+  const domain = state.outlet.domain;
+  return structuredClone({ ...accessProvider, redirect_uri: domain ? `https://${adminHostname(domain)}/api/v1/access/callback` : '', available: Boolean(domain) });
+};
+
 function fail(code: string): never {
   throw new Error(code);
 }
@@ -282,6 +305,33 @@ function issuerOf(value: unknown): string | null {
   } catch {
     return null;
   }
+}
+
+// 차단 규칙과 접근 정책이 함께 쓰는 검사: 호스트 이름(`*.도메인` 포함)과 경로 조건.
+const validHostname = (host: string): boolean => host.length <= 253 && host.split('.').every((label) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
+const validBlockHost = (host: string): boolean => validHostname(host.startsWith('*.') ? host.slice(2) : host);
+const BLOCK_OPERATORS: readonly string[] = ['equals', 'starts_with', 'ends_with', 'contains', 'matches'];
+function validRegex(value: string): boolean {
+  if (/\(\?(?:=|!|<=|<!)/.test(value) || /\\[1-9]/.test(value)) return false;
+  try {
+    new RegExp(value, 'i');
+    return true;
+  } catch {
+    return false;
+  }
+}
+// 서버처럼 값을 정리해 돌려주고, 올바르지 않으면 null입니다.
+function normalizeCondition(raw: unknown): BlockCondition | null {
+  const entry = (raw ?? {}) as Partial<BlockCondition>;
+  if (typeof entry.operator !== 'string' || !BLOCK_OPERATORS.includes(entry.operator) || typeof entry.value !== 'string') return null;
+  const operator = entry.operator as BlockOperator;
+  let value = entry.value.trim();
+  if (operator !== 'matches') value = value.toLowerCase();
+  if (operator === 'equals') value = value.replace(/\/{2,}/g, '/').replace(/(.)\/$/, '$1');
+  if (!value || new TextEncoder().encode(value).length > 512 || /[\u0000-\u001f\u007f]/.test(value)) return null;
+  if ((operator === 'equals' || operator === 'starts_with') && !value.startsWith('/')) return null;
+  if (operator === 'matches' && !validRegex(value)) return null;
+  return { operator, value };
 }
 
 // 실제 Outlet은 대표 도메인을 처음 등록할 때 8글자 이름을 만듭니다.
@@ -626,36 +676,14 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     // 실제 서버처럼 rules만 받고, 값은 공백 제거·소문자 변환(정규식 제외)·정리 후 검사합니다.
     const body = input as { rules?: unknown };
     if (Object.keys(body).some((key) => key !== 'rules') || !Array.isArray(body.rules) || body.rules.length > 50) fail('invalid_block_rules');
-    const operators = ['equals', 'starts_with', 'ends_with', 'contains', 'matches'];
-    const hostnameOk = (host: string) => host.length <= 253 && host.split('.').every((label) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
-    const regexOk = (value: string) => {
-      if (/\(\?(?:=|!|<=|<!)/.test(value) || /\\[1-9]/.test(value)) return false;
-      try {
-        new RegExp(value, 'i');
-        return true;
-      } catch {
-        return false;
-      }
-    };
-    const condition = (raw: unknown): BlockCondition => {
-      const entry = (raw ?? {}) as Partial<BlockCondition>;
-      if (typeof entry.operator !== 'string' || !operators.includes(entry.operator) || typeof entry.value !== 'string') fail('invalid_block_rules');
-      const operator = entry.operator as BlockOperator;
-      let value = entry.value.trim();
-      if (operator !== 'matches') value = value.toLowerCase();
-      if (operator === 'equals') value = value.replace(/\/{2,}/g, '/').replace(/(.)\/$/, '$1');
-      if (!value || new TextEncoder().encode(value).length > 512 || /[\u0000-\u001f\u007f]/.test(value)) fail('invalid_block_rules');
-      if ((operator === 'equals' || operator === 'starts_with') && !value.startsWith('/')) fail('invalid_block_rules');
-      if (operator === 'matches' && !regexOk(value)) fail('invalid_block_rules');
-      return { operator, value };
-    };
+    const condition = (raw: unknown): BlockCondition => normalizeCondition(raw) ?? fail('invalid_block_rules');
     const rules = (body.rules as unknown[]).map((raw): BlockRule => {
       const rule = (raw ?? {}) as Partial<BlockRule>;
       const name = typeof rule.name === 'string' ? rule.name.trim() : '';
       if (!name || name.length > 64 || typeof rule.enabled !== 'boolean' || typeof rule.id !== 'string') fail('invalid_block_rules');
       if (!Array.isArray(rule.hosts) || !Array.isArray(rule.conditions) || rule.conditions.length < 1 || rule.conditions.length > 50) fail('invalid_block_rules');
       const hosts = [...new Set(rule.hosts.map((host) => (typeof host === 'string' ? host.trim().toLowerCase() : '')))];
-      if (hosts.some((host) => !hostnameOk(host.startsWith('*.') ? host.slice(2) : host))) fail('invalid_block_rules');
+      if (hosts.some((host) => !validBlockHost(host))) fail('invalid_block_rules');
       const seen = new Set<string>();
       const conditions = rule.conditions.map(condition).filter((entry) => {
         const key = `${entry.operator}\0${entry.value}`;
@@ -671,6 +699,84 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     blockHits = Object.fromEntries(Object.entries(blockHits).filter(([id]) => rules.some((rule) => rule.id === id)));
     blockRules = rules;
     return blockRulesResponse();
+  }
+  if (path === '/api/v1/security/access-provider' && method === 'GET') return accessProviderResponse();
+  if (path === '/api/v1/security/access-provider' && method === 'PUT') {
+    // 실제 서버처럼 값을 정리한 뒤 검사합니다. 시크릿은 비우거나 생략하면 저장된 값을 유지합니다.
+    const body = input as unknown as Partial<Record<keyof AccessProviderView | 'client_secret', unknown>>;
+    const strings = (value: unknown): string[] | null => (Array.isArray(value) && value.every((item) => typeof item === 'string') ? value as string[] : null);
+    const scopes = strings(body.scopes)?.map((scope) => scope.trim()).filter(Boolean);
+    const label = typeof body.label === 'string' ? body.label.trim() : null;
+    const clientId = typeof body.client_id === 'string' ? body.client_id.trim() : null;
+    const claim = typeof body.groups_claim === 'string' ? body.groups_claim.trim() : null;
+    const secret = typeof body.client_secret === 'string' ? body.client_secret.trim() : body.client_secret === undefined ? '' : null;
+    const rawIssuer = typeof body.issuer === 'string' ? body.issuer.trim() : null;
+    const issuer = rawIssuer === '' ? '' : issuerOf(rawIssuer);
+    // 0 또는 생략은 기본값(24시간)입니다.
+    const hours = body.session_hours === undefined || body.session_hours === 0 ? 24 : body.session_hours;
+    if (typeof body.enabled !== 'boolean' || !scopes || scopes.length > 200 || scopes.some((scope) => scope.length > 64) || label === null || label.length > 32 || clientId === null || clientId.length > 200 || claim === null || claim.length > 64 || secret === null || secret.length > 1024 || issuer === null || typeof hours !== 'number' || !Number.isInteger(hours) || hours < 1 || hours > 720) fail('invalid_access_provider');
+    if (body.enabled && (!issuer || !clientId)) fail('invalid_access_provider');
+    accessProvider = {
+      enabled: body.enabled,
+      label,
+      issuer,
+      client_id: clientId,
+      client_secret_set: secret ? true : accessProvider.client_secret_set,
+      client_secret_hint: secret ? (secret.length >= 8 ? secret.slice(-4) : '') : accessProvider.client_secret_hint,
+      scopes: ['openid', ...new Set(scopes.filter((scope) => scope !== 'openid'))],
+      groups_claim: claim || 'groups',
+      session_hours: hours,
+    };
+    return accessProviderResponse();
+  }
+  if (path === '/api/v1/security/access-provider/test' && method === 'POST') {
+    const issuer = issuerOf((input as { issuer?: unknown }).issuer);
+    if (!issuer) fail('invalid_issuer');
+    if (new URL(issuer).hostname.endsWith('.invalid')) fail('provider_unreachable');
+    return { authorization_endpoint: `${issuer}/authorize` };
+  }
+  if (path === '/api/v1/security/access/sessions/revoke' && method === 'POST') return {};
+  if (path === '/api/v1/security/access-policies' && method === 'GET') return accessPoliciesResponse();
+  if (path === '/api/v1/security/access-policies' && method === 'PUT') {
+    // 실제 서버처럼 policies만 받고, 값은 공백 제거·소문자 변환(정규식 제외)·중복 제거 후 검사합니다.
+    const body = input as { policies?: unknown };
+    if (Object.keys(body).some((key) => key !== 'policies') || !Array.isArray(body.policies) || body.policies.length > 100) fail('invalid_access_policies');
+    const entries = (value: unknown, fold: boolean, valid: (entry: string) => boolean): string[] => {
+      if (!Array.isArray(value) || value.length > 200) fail('invalid_access_policies');
+      const cleaned = value.map((item) => (typeof item === 'string' ? (fold ? item.trim().toLowerCase() : item.trim()) : ''));
+      if (cleaned.some((item) => !item || item.length > 200 || !valid(item))) fail('invalid_access_policies');
+      return [...new Set(cleaned)];
+    };
+    const policies = (body.policies as unknown[]).map((raw): AccessPolicy => {
+      const policy = (raw ?? {}) as Partial<AccessPolicy>;
+      const name = typeof policy.name === 'string' ? policy.name.trim() : '';
+      if (!name || name.length > 64 || /[\u0000-\u001f\u007f]/.test(name) || typeof policy.id !== 'string' || typeof policy.enabled !== 'boolean' || typeof policy.all_paths !== 'boolean' || typeof policy.allow_admins !== 'boolean') fail('invalid_access_policies');
+      if (!Array.isArray(policy.hosts) || policy.hosts.length < 1 || policy.hosts.length > 100) fail('invalid_access_policies');
+      const hosts = [...new Set(policy.hosts.map((host) => (typeof host === 'string' ? host.trim().toLowerCase() : '')))];
+      if (hosts.some((host) => !validBlockHost(host))) fail('invalid_access_policies');
+      // 모든 경로를 보호할 때는 조건을 버리고, 선택한 경로는 조건이 1개 이상 있어야 합니다.
+      let conditions: BlockCondition[] = [];
+      if (!policy.all_paths) {
+        if (!Array.isArray(policy.conditions) || policy.conditions.length < 1 || policy.conditions.length > 50) fail('invalid_access_policies');
+        const seen = new Set<string>();
+        conditions = policy.conditions.map((raw) => normalizeCondition(raw) ?? fail('invalid_access_policies')).filter((entry) => {
+          const key = `${entry.operator}\0${entry.value}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      }
+      const allowedUsers = entries(policy.allowed_users, true, (entry) => /^[^\s@]+@[^\s@]+$/.test(entry) || /^@[^\s@]+$/.test(entry));
+      const allowedGroups = entries(policy.allowed_groups, false, (entry) => !/[\u0000-\u001f\u007f]/.test(entry));
+      // 아무도 허용하지 않는 정책은 주소를 모두에게 닫아 버립니다.
+      if (allowedUsers.length + allowedGroups.length === 0 && !policy.allow_admins) fail('invalid_access_policies');
+      return { id: policy.id, name, enabled: policy.enabled, hosts, all_paths: policy.all_paths, conditions, allowed_users: allowedUsers, allowed_groups: allowedGroups, allow_admins: policy.allow_admins };
+    });
+    const ids = policies.map((policy) => policy.id).filter(Boolean);
+    if (new Set(ids).size !== ids.length) fail('invalid_access_policies');
+    for (const policy of policies) if (!policy.id) policy.id = `p${Math.random().toString(36).slice(2, 10)}`;
+    accessPolicies = policies;
+    return accessPoliciesResponse();
   }
   if (path === '/api/v1/security/second-factor' && method === 'PUT') {
     const enabled = Boolean((input as { enabled?: boolean }).enabled);

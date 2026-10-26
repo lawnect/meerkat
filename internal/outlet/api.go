@@ -149,6 +149,14 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/services/{id}/routes", s.createHTTPRoute)
 	mux.HandleFunc("DELETE /api/v1/services/{id}/routes/{route_id}", s.deleteHTTPRoute)
 	mux.HandleFunc("PUT /api/v1/addresses/{hostname}", s.updateAddress)
+	mux.HandleFunc("GET "+accessStartPath, s.accessStart)
+	mux.HandleFunc("GET "+accessCallbackPath, s.accessCallback)
+	mux.HandleFunc("GET /api/v1/security/access-provider", s.getAccessProvider)
+	mux.HandleFunc("PUT /api/v1/security/access-provider", s.putAccessProvider)
+	mux.HandleFunc("POST /api/v1/security/access-provider/test", s.testAccessProvider)
+	mux.HandleFunc("POST /api/v1/security/access/sessions/revoke", s.revokeAccessSessions)
+	mux.HandleFunc("GET /api/v1/security/access-policies", s.getAccessPolicies)
+	mux.HandleFunc("PUT /api/v1/security/access-policies", s.putAccessPolicies)
 	mux.HandleFunc("POST /api/v1/connectors/{id}/enrollment-tokens", s.issueToken)
 	// Every public route is same-site with the management host, so
 	// SameSite=Strict still lets a tunneled app post a form to the admin API

@@ -49,34 +49,8 @@ func (s *Store) applyBlockRules(rules control.BlockRules) {
 			continue
 		}
 		hits, _ := s.blocks.hits.LoadOrStore(rule.ID, new(atomic.Int64))
-		b := blockRule{id: rule.ID, equals: map[string]bool{}, hits: hits.(*atomic.Int64)}
-		if len(rule.Hosts) != 0 {
-			b.hosts = map[string]bool{}
-			for _, host := range rule.Hosts {
-				if suffix, ok := strings.CutPrefix(host, "*"); ok {
-					b.wildcard = append(b.wildcard, suffix)
-				} else {
-					b.hosts[host] = true
-				}
-			}
-		}
-		for _, c := range rule.Conditions {
-			switch c.Operator {
-			case control.BlockEquals:
-				b.equals[c.Value] = true
-			case control.BlockStartsWith:
-				b.prefixes = append(b.prefixes, c.Value)
-			case control.BlockEndsWith:
-				b.suffixes = append(b.suffixes, c.Value)
-			case control.BlockContains:
-				b.contains = append(b.contains, c.Value)
-			case control.BlockMatches:
-				// Stored patterns were compiled when they were saved.
-				if pattern, err := control.CompileBlockPattern(c.Value); err == nil {
-					b.patterns = append(b.patterns, pattern)
-				}
-			}
-		}
+		b := compileBlockRule(rule.Hosts, rule.Conditions)
+		b.id, b.hits = rule.ID, hits.(*atomic.Int64)
 		compiled.rules = append(compiled.rules, b)
 	}
 	s.blocks.hits.Range(func(id, _ any) bool {
@@ -86,6 +60,60 @@ func (s *Store) applyBlockRules(rules control.BlockRules) {
 		return true
 	})
 	s.blocks.config.Store(compiled)
+}
+
+// compileBlockRule compiles hosts and path conditions for matching. No hosts
+// means every public address.
+func compileBlockRule(hosts []string, conditions []control.BlockCondition) blockRule {
+	b := blockRule{equals: map[string]bool{}}
+	if len(hosts) != 0 {
+		b.hosts = map[string]bool{}
+		for _, host := range hosts {
+			if suffix, ok := strings.CutPrefix(host, "*"); ok {
+				b.wildcard = append(b.wildcard, suffix)
+			} else {
+				b.hosts[host] = true
+			}
+		}
+	}
+	for _, c := range conditions {
+		switch c.Operator {
+		case control.BlockEquals:
+			b.equals[c.Value] = true
+		case control.BlockStartsWith:
+			b.prefixes = append(b.prefixes, c.Value)
+		case control.BlockEndsWith:
+			b.suffixes = append(b.suffixes, c.Value)
+		case control.BlockContains:
+			b.contains = append(b.contains, c.Value)
+		case control.BlockMatches:
+			// Stored patterns were compiled when they were saved.
+			if pattern, err := control.CompileBlockPattern(c.Value); err == nil {
+				b.patterns = append(b.patterns, pattern)
+			}
+		}
+	}
+	return b
+}
+
+// rulePath is a request path in the form rules compare: normalized, with
+// trailing dots and spaces dropped from every segment as some servers do
+// ("/admin./x" is "/admin/x" to them), and with a trailing slash so that
+// "/cgi-bin/" matches "/cgi-bin" as well.
+func rulePath(requestPath string) (p, slashed string) {
+	segments := strings.Split(control.NormalizeBlockPath(requestPath), "/")
+	for i, segment := range segments {
+		segments[i] = strings.TrimRight(segment, ". ")
+	}
+	p = strings.TrimRight(strings.Join(segments, "/"), "/")
+	if p == "" {
+		p = "/"
+	}
+	slashed = p
+	if p != "/" {
+		slashed += "/"
+	}
+	return p, slashed
 }
 
 func (s *Store) reloadBlockRules(ctx context.Context) error {
@@ -110,17 +138,9 @@ func (s *Store) blockedBy(host, requestPath string) *blockRule {
 	if config == nil || len(config.rules) == 0 {
 		return nil
 	}
-	p := strings.TrimRight(control.NormalizeBlockPath(requestPath), ". ")
-	if p == "" {
-		p = "/"
-	}
+	p, slashed := rulePath(requestPath)
 	if p == "/.well-known" || strings.HasPrefix(p, "/.well-known/") {
 		return nil
-	}
-	// A trailing slash lets "/cgi-bin/" match "/cgi-bin" as well.
-	slashed := p
-	if p != "/" {
-		slashed += "/"
 	}
 	for i := range config.rules {
 		if rule := &config.rules[i]; rule.covers(host) && rule.matches(p, slashed) {

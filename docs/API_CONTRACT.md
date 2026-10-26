@@ -290,6 +290,49 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 - 계정 복구: 로컬 관리 포트의 `POST /api/v1/setup/recover`는 `Authorization: Bearer <admin.token>`과 `{"email", "password"}`(12자 이상)를 받아 그 이메일의 관리자 비밀번호를 설정하고, 관리자가 없으면 만든다. SSO로 생성되어 비밀번호가 없는 관리자가 공급자 장애 시 접속하는 경로다. 공급자 계정 연결은 유지한다. 성공하면 `200 {"status": "recovered"}`와 `setup.admin_recover` 감사 기록, 토큰·이메일·비밀번호가 맞지 않으면 `401 invalid_setup_credential`, 주소당 분당 10회를 넘으면 `429 rate_limited`다. 공개 주소에서는 `404`다.
 - 터널 서비스 포트는 Outlet 컨테이너의 루프백(`127.0.0.1`)에서만 수신한다. 로컬 관리 포트(8443)는 컨테이너의 모든 인터페이스에서 수신하므로, Outlet을 다른 스택과 공유하는 Docker 네트워크에 연결하지 않는다.
 
+### 접근 보호
+
+공개 주소나 그 아래 경로에 로그인을 요구한다. 관리자 SSO와 별개의 OpenID Connect 클라이언트("접근 보호 SSO")로 로그인하며, 관리자가 아닌 사람도 허용할 수 있다.
+
+~~~
+GET    /api/v1/security/access-provider
+PUT    /api/v1/security/access-provider
+POST   /api/v1/security/access-provider/test
+POST   /api/v1/security/access/sessions/revoke
+GET    /api/v1/security/access-policies
+PUT    /api/v1/security/access-policies
+GET    /api/v1/access/start?host=<주소>&return=<경로>
+GET    /api/v1/access/callback
+GET    https://<보호 주소>/.meerkat/access/finish?ticket=<티켓>
+GET    https://<보호 주소>/.meerkat/access/logout
+~~~
+
+**공급자 설정**
+- `GET`은 `{"enabled", "issuer", "client_id", "client_secret_set", "client_secret_hint", "scopes", "groups_claim", "session_hours", "redirect_uri", "available"}`를 반환한다. `redirect_uri`는 `https://<관리 호스트>/api/v1/access/callback` 하나이며, 모든 보호 대상 주소가 이 URI를 쓴다.
+- `PUT`은 `client_secret`을 비우면 저장된 값을 유지한다. 켜려면 https 발급자와 클라이언트 ID가 필요하다. `session_hours`는 1~720(기본 24)이다. 맞지 않으면 `400 invalid_access_provider`이다.
+- `test`는 discovery 문서를 확인한다(`400 invalid_issuer`, `502 provider_unreachable`).
+- `sessions/revoke`는 세션 서명 키를 바꿔 모든 보호 주소의 세션을 끝낸다(`204`, `security.access_sessions_revoke`).
+
+**정책**
+- `GET`/`PUT /api/v1/security/access-policies`는 `{"policies": [...], "addresses": [공개 주소]}`이다. 정책은 `{"id", "name", "enabled", "hosts", "all_paths", "conditions", "allowed_users", "allowed_groups", "allow_admins"}`이다.
+- `hosts`는 하나 이상의 주소 또는 `*.도메인`이다.
+- `all_paths`가 `false`이면 `conditions`가 필요하다. 조건은 차단 규칙과 같은 연산자와 경로 정규화를 쓰며, 경로의 각 조각 끝의 점과 공백도 지운다.
+- 허용 판단: 사용자(이메일 또는 `@도메인`)와 그룹은 둘 다 지정하면 둘 다 맞아야 한다. `allow_admins`는 Meerkat 관리자 이메일을 추가로 허용한다. 아무도 허용하지 않는 정책은 `400 invalid_access_policies`이다.
+- 저장하면 바로 적용하고 `security.access_policies`를 남긴다.
+
+**요청 처리**
+- 공개 요청이 활성화된 정책에 걸리면, 걸린 정책을 모두 충족하는 세션이 있어야 앱으로 전달한다.
+- 세션 쿠키는 `__Host-meerkat_access`(HttpOnly, Secure, SameSite=Lax)이다. 이메일, 정책에 쓰인 그룹, 주소, 만료를 Outlet 키로 HMAC 서명하며, 발급된 주소에서만 유효하다.
+- 세션이 없을 때 브라우저 탐색(GET/HEAD, `Sec-Fetch-Mode: navigate` 또는 HTML 요청)은 `302`로 관리 호스트의 `access/start`로 보낸다. 그 밖의 요청은 `401`이다.
+- 세션은 있지만 정책이 허용하지 않으면 `403`이다. 공급자가 꺼져 있으면 시작이 `503`이어서 보호 주소는 닫힌 채로 남는다.
+- 앱에는 `X-Meerkat-Access-Email`로 이메일을 전달한다. 클라이언트가 보낸 같은 헤더와 세션 쿠키는 지운다.
+
+**로그인 흐름**
+- `start`는 공개 관리 호스트에서, 정책이 보호하는 주소에 대해서만 동작한다(그 밖은 `404`). state(Lax 쿠키 `__Host-meerkat_access_state`), nonce, PKCE로 공급자에 보낸다. 진행 중 로그인 수 제한은 관리자 SSO와 같다.
+- `callback`은 ID 토큰을 검증한다. `email_verified`가 `true`이고 ASCII 이메일이어야 한다. 그 주소의 정책 중 하나라도 허용해야 1분짜리 일회용 티켓을 발급하고, 보호 주소의 `/.meerkat/access/finish`로 보낸다(`access.login`, 실패는 `access.login_failed`).
+- `finish`는 그 주소에 발급된 티켓만 받아 세션 쿠키로 바꾸고 원래 경로로 보낸다.
+- `/.meerkat/access/` 아래 경로는 Outlet이 처리하며, 기본 차단 규칙보다 먼저 확인한다.
+
 ### Outlet 사용량
 
 ~~~

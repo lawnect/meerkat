@@ -118,6 +118,9 @@ type Store struct {
 	// suspect maps a service ID to when a request to it last failed before
 	// any answer, to pass it over for a while (see liveBackends).
 	suspect sync.Map
+	// access is access protection: compiled policies, the session key, and
+	// sign-ins and tickets in flight.
+	access accessState
 	// background tracks login notifications still being sent.
 	background sync.WaitGroup
 	journal    *auditJournal
@@ -268,6 +271,9 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 		return nil, err
 	}
 	if err := s.reloadBlockRules(context.Background()); err != nil {
+		return nil, err
+	}
+	if err := s.reloadAccess(context.Background()); err != nil {
 		return nil, err
 	}
 	if controlDB != nil {

@@ -18,6 +18,8 @@
   import { intlLocale, translations } from '../i18n.svelte';
   import { Alert12, Alert20, ArrowUndo, Clock12, Delete, Key, NumberSymbol, Save, Send, Shield12, Warning } from '../icons';
   import type { AlertRules, AlertSettings } from '../types';
+  import AccessPolicySettings from '../components/AccessPolicySettings.svelte';
+  import AccessProviderSettings from '../components/AccessProviderSettings.svelte';
   import AuditLog from '../components/AuditLog.svelte';
   import BlockRuleSettings from '../components/BlockRuleSettings.svelte';
   import ConnectionLimitSettings from '../components/ConnectionLimitSettings.svelte';
@@ -186,6 +188,8 @@
 
   let settings = $state<AlertSettings | null>(null);
   let loadError = $state('');
+  // 접근 보호 SSO가 켜져 있는지(불러오기 전에는 null). 접근 정책 카드가 정책이 적용되지 않는다고 안내하는 데 씁니다.
+  let accessEnabled = $state<boolean | null>(null);
 
   // 카드마다 바꾼 값은 저장을 누를 때까지 초안으로만 둡니다.
   let botToken = $state('');
@@ -491,9 +495,11 @@
         </Card.Root>
 
       <SsoSettings />
+      <AccessProviderSettings bind:enabled={accessEnabled} />
       <RateLimitSettings />
       <ConnectionLimitSettings />
       <BlockRuleSettings />
+      <AccessPolicySettings providerEnabled={accessEnabled} />
     </Tabs.Content>
     <Tabs.Content value="audit" class="grid min-w-0 gap-4">
       <AuditLog />

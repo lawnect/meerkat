@@ -196,6 +196,13 @@ func (s *Store) PublicHandler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
+		// Access protection first: its own paths start with "/.", which the
+		// default block rules refuse.
+		next, pass := s.guardAccess(w, r, host, outlet.AdminHostname)
+		if !pass {
+			return
+		}
+		r = next
 		if rule := s.blockedBy(host, r.URL.Path); rule != nil {
 			rule.hits.Add(1)
 			blocked(w)
@@ -262,6 +269,13 @@ func (s *Store) PublicHandler() http.Handler {
 					if client := forwardedClient(pr.In); client != "" {
 						pr.Out.Header.Set("X-Real-Ip", client)
 					}
+					// The person access protection let in, never a value the client
+					// sent; the session cookie stays with the Outlet.
+					pr.Out.Header.Del(accessEmailHeader)
+					if email, _ := pr.In.Context().Value(accessIdentityKey{}).(string); email != "" {
+						pr.Out.Header.Set(accessEmailHeader, email)
+					}
+					stripAccessCookie(pr.Out.Header)
 					forwardedFor := pr.In.Header.Get("X-Forwarded-For")
 					if peer, _, err := net.SplitHostPort(pr.In.RemoteAddr); err == nil {
 						if forwardedFor != "" {

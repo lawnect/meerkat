@@ -44,6 +44,7 @@ const (
 // ssoPending is a sign-in sent to the provider and not yet returned.
 type ssoPending struct {
 	nonce, verifier, returnTo string
+	host                      string // the protected address an access sign-in returns to
 	client                    string // clientKey of the address that started it
 	expires                   time.Time
 }
@@ -129,13 +130,19 @@ func (s *Store) oidcContext(ctx context.Context) context.Context {
 	return oidc.ClientContext(ctx, client)
 }
 
-// discover returns the provider for issuer, fetching its configuration when
-// the issuer changed or the cached one is old.
+// discover returns the administrators' provider for issuer, fetching its
+// configuration when the issuer changed or the cached one is old.
 func (s *Store) discover(ctx context.Context, issuer string) (*oidc.Provider, error) {
+	return s.discoverWith(&s.sso, issuer)
+}
+
+// discoverWith is discover with the cache of one sign-in flow: the
+// administrators' or access protection's.
+func (s *Store) discoverWith(st *ssoState, issuer string) (*oidc.Provider, error) {
 	cached := func() *oidc.Provider {
-		s.sso.mu.Lock()
-		defer s.sso.mu.Unlock()
-		if p := s.sso.provider; p != nil && p.issuer == issuer && s.now().Sub(p.fetched) < ssoProviderTTL {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		if p := st.provider; p != nil && p.issuer == issuer && s.now().Sub(p.fetched) < ssoProviderTTL {
 			return p.provider
 		}
 		return nil
@@ -143,26 +150,26 @@ func (s *Store) discover(ctx context.Context, issuer string) (*oidc.Provider, er
 	if provider := cached(); provider != nil {
 		return provider, nil
 	}
-	s.sso.discovering.Lock()
-	defer s.sso.discovering.Unlock()
+	st.discovering.Lock()
+	defer st.discovering.Unlock()
 	// Another request may have fetched it while this one waited.
 	if provider := cached(); provider != nil {
 		return provider, nil
 	}
-	if s.sso.failure != nil && s.now().Sub(s.sso.failedAt) < ssoDiscoveryRetry {
-		return nil, s.sso.failure
+	if st.failure != nil && s.now().Sub(st.failedAt) < ssoDiscoveryRetry {
+		return nil, st.failure
 	}
 	// The provider keeps this context for fetching keys later, so it must
 	// not be the request's.
 	provider, err := oidc.NewProvider(s.oidcContext(context.Background()), issuer)
 	if err != nil {
-		s.sso.failure, s.sso.failedAt = err, s.now()
+		st.failure, st.failedAt = err, s.now()
 		return nil, err
 	}
-	s.sso.failure = nil
-	s.sso.mu.Lock()
-	s.sso.provider = &ssoProvider{issuer: issuer, provider: provider, fetched: s.now()}
-	s.sso.mu.Unlock()
+	st.failure = nil
+	st.mu.Lock()
+	st.provider = &ssoProvider{issuer: issuer, provider: provider, fetched: s.now()}
+	st.mu.Unlock()
 	return provider, nil
 }
 

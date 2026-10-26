@@ -335,6 +335,21 @@ The Outlet also reads these settings from its environment, so a deployment can s
 
 Lists are separated by commas. With single sign-on from the environment, the public console needs no initial setup: the first listed administrator to sign in gets an account. Until an administrator exists, the local admin port over SSH still offers setup with `admin.token`. A missing or invalid value never stops the Outlet, so tunnels keep running: that setting is left out and the log names the variable.
 
+### Access protection
+
+Like Cloudflare Access, public addresses or paths under them can require a sign-in, and the people let in don't have to be Meerkat administrators. Under Settings → Security, set up **Access SSO**. It is an OpenID Connect client of its own, separate from the administrators' SSO. Register the redirect URI shown there (`https://<admin address>/api/v1/access/callback`) with the provider; that one URI serves every protected address.
+
+Then add **access policies**. Each one names three things:
+- the addresses it protects, including `*.domain`;
+- whether it covers all paths or only paths matching conditions (the same operators as block rules);
+- who may pass: email addresses or `@domain`, groups from the ID token, or both (a person must match both), and optionally Meerkat administrators.
+
+A request must satisfy every enabled policy that covers it. A browser without a session goes to the provider and comes back to the page it asked for; other requests get `401`. The provider must mark the email as verified.
+
+A session lasts the configured hours (24 by default), only on the address it was issued for. **Sign everyone out** ends all of them. A group added to a policy counts from a person's next sign-in.
+
+The app receives the person's email in `X-Meerkat-Access-Email`; a value a client sends is removed, and the session cookie never reaches the app. Paths under `/.meerkat/access/` belong to the Outlet. While Access SSO is off, protected addresses stay closed.
+
 ### Block rules
 
 Like Cloudflare's custom rules, block rules answer `403` to requests for public addresses whose path matches, before they reach a tunnel. Each rule has conditions on the path (equals, starts with, ends with, contains, or matches an RE2 regular expression) and applies to all public addresses or only the ones you list, including wildcards such as `*.example.com`. Paths are decoded, cleaned, and lowercased before matching, so `//.env`, `/a/../.ENV`, or `/x.php;jsessionid=1` don't slip past, and nothing under `/.well-known/` is ever blocked. Out of the box, only hidden files at the root (`/.env`, `/.git/…`) are blocked. A list of common vulnerability-scanner paths (`.php`, `/wp-`, `/phpmyadmin`, …) is included but off, because some apps (Nextcloud, WordPress) use those paths; turn it on for the addresses that don't. Matching is done in memory and adds well under a microsecond per request. Rules don't apply to the admin host or the Connector API.
