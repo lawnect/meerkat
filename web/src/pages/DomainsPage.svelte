@@ -19,10 +19,12 @@
   import SortHeader from '../components/data-table/SortHeader.svelte';
   import { features } from '../components/data-table/features';
   import * as ToggleGroup from '$lib/components/ui/toggle-group/index.js';
+  import * as Tabs from '$lib/components/ui/tabs/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
-  import { Add, ArrowReset20, ArrowSync, ArrowUndo, ChevronRight, Delete, Edit, Globe, Globe20, PlugConnected, Save, Search, Search20, Warning } from '../icons';
+  import { Add, ArrowReset20, ArrowSync, ArrowUndo, ChevronRight, Delete, Edit, Flow, Globe, Globe12, Globe20, PlugConnected, Save, Search, Search20, Warning } from '../icons';
   import { api, connectorLabel, errorMessage } from '../api';
   import ConfirmNameDialog from '../components/ConfirmNameDialog.svelte';
+  import DomainRouteGraph from '../components/DomainRouteGraph.svelte';
   import CopyText from '../components/CopyText.svelte';
   import IconButton from '../components/IconButton.svelte';
   import InfoTooltip from '../components/InfoTooltip.svelte';
@@ -30,6 +32,7 @@
   import Status from '../components/Status.svelte';
   import { intlLocale, translations } from '../i18n.svelte';
   import { urlTableState } from '../components/data-table/urlTable.svelte';
+  import { oneOf, param, setParams } from '../urlState.svelte';
   import { connectorDetailPath, domainDetailPath, pageHref } from '../navigation';
   import type { DomainDNSCheck, DomainMode, Outlet, ServiceRecord, TunnelCheck } from '../types';
 
@@ -37,6 +40,11 @@
 
   const t = translations({
     domains: 'Domains',
+    tabsAria: 'Domain sections',
+    tabDomains: 'Domains',
+    tabRouting: 'Routing',
+    routingDomain: 'Domain',
+    noRoutingTitle: 'No public addresses on this domain',
     addDomain: 'Add domain',
     domainLabel: (domain: string) => `${domain} domain`,
     primaryDomain: 'Primary domain',
@@ -136,6 +144,11 @@
     deleteWarning: 'This can\'t be undone. You can\'t delete a domain that still has public addresses.',
   }, {
     domains: '도메인',
+    tabsAria: '도메인 관리 항목',
+    tabDomains: '도메인 목록',
+    tabRouting: '라우팅 경로',
+    routingDomain: '도메인',
+    noRoutingTitle: '이 도메인의 공개 주소가 없습니다',
     addDomain: '도메인 추가',
     domainLabel: (domain: string) => `${domain} 도메인`,
     primaryDomain: '대표 도메인',
@@ -244,6 +257,10 @@
     onBack: () => void;
   } = $props();
   const routes = $derived(records.flatMap((record) => record.routes.map((route) => ({ ...route, connector: record.connector, service: record.service }))));
+  // 목록 화면의 탭(도메인 목록 / 라우팅 경로)과 라우팅 경로에서 볼 도메인은 주소(?tab=routing&domain=)에 둡니다.
+  type ListTab = 'domains' | 'routing';
+  const listTab = $derived(oneOf<ListTab>('tab', ['domains', 'routing'], 'domains'));
+  const setListTab = (next: ListTab): void => setParams({ tab: next }, { tab: 'domains' });
   let domainInput = $state('');
   let modeInput = $state<DomainMode>('wildcard');
   let modeBusy = $state<Record<string, boolean>>({});
@@ -307,6 +324,11 @@
   const domains = $derived.by(() => {
     const registered = outlet.domains?.length ? outlet.domains : outlet.domain ? [outlet.domain] : [];
     return outlet.domain ? [outlet.domain, ...registered.filter((domain) => domain !== outlet.domain)] : registered;
+  });
+
+  const routingDomain = $derived.by(() => {
+    const chosen = param('domain');
+    return chosen && domains.includes(chosen) ? chosen : domains[0] ?? '';
   });
 
   const modeOf = (domain: string): DomainMode => outlet.modes?.[domain] ?? 'wildcard';
@@ -686,6 +708,39 @@
   {/if}
 {:else}
   <PageHead title={t().domains} action={domains.length ? listAction : undefined} />
+  <Tabs.Root class="min-w-0 gap-4" bind:value={() => listTab, (next) => { setListTab(next as ListTab); }}>
+  <Tabs.List aria-label={t().tabsAria}>
+    <Tabs.Trigger value="domains"><Globe12 class="size-3" aria-hidden="true" />{t().tabDomains}</Tabs.Trigger>
+    <Tabs.Trigger value="routing"><Flow class="size-3" aria-hidden="true" />{t().tabRouting}</Tabs.Trigger>
+  </Tabs.List>
+  <Tabs.Content value="routing" class="grid min-w-0 gap-4">
+    {#if domains.length}
+      <NativeSelect.Root class="w-full sm:w-72" aria-label={t().routingDomain} bind:value={() => routingDomain, (next) => { setParams({ domain: next }, { domain: domains[0] ?? '' }); }}>
+        {#each domains as domain (domain)}
+          <NativeSelect.Option value={domain}>{domain}</NativeSelect.Option>
+        {/each}
+      </NativeSelect.Root>
+      {#if routes.some((route) => route.hostname.endsWith(`.${routingDomain}`))}
+        <DomainRouteGraph domain={routingDomain} {records} />
+      {:else}
+        <Empty.Root class="border border-dashed bg-card">
+          <Empty.Header>
+            <Empty.Media variant="icon"><Globe20 class="size-5" aria-hidden="true" /></Empty.Media>
+            <Empty.Title>{t().noRoutingTitle}</Empty.Title>
+          </Empty.Header>
+        </Empty.Root>
+      {/if}
+    {:else}
+      <Empty.Root class="border border-dashed bg-card">
+        <Empty.Header>
+          <Empty.Media variant="icon"><Globe20 class="size-5" aria-hidden="true" /></Empty.Media>
+          <Empty.Title>{t().noDomainsTitle}</Empty.Title>
+          <Empty.Description>{t().noDomainsBody}</Empty.Description>
+        </Empty.Header>
+      </Empty.Root>
+    {/if}
+  </Tabs.Content>
+  <Tabs.Content value="domains" class="grid min-w-0 gap-4">
   <div class="grid min-w-0 gap-4">
     {#if domains.length}
       <div class="flex flex-wrap items-center gap-2" role="search" aria-label={t().search}>
@@ -768,6 +823,8 @@
     </Card.Content>
   </Card.Root>
   </div>
+  </Tabs.Content>
+  </Tabs.Root>
 {/if}
 
 {#snippet dnsResult(domain: string, check: DomainDNSCheck)}
