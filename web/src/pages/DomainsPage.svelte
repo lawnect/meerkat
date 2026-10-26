@@ -329,7 +329,8 @@
     domain,
     primary: domain === outlet.domain,
     mode: modeOf(domain),
-    addresses: routes.filter((route) => route.hostname.endsWith(`.${domain}`)).length,
+    // 여러 서비스가 함께 쓰는 주소는 한 번만 셉니다.
+    addresses: new Set(routes.filter((route) => route.hostname.endsWith(`.${domain}`)).map((route) => route.hostname)).size,
   })));
   // 검색·방식 필터, 정렬, 페이지는 주소(?q=&mode=&sort=&page=)가 단일 출처입니다.
   const urlTable = urlTableState({

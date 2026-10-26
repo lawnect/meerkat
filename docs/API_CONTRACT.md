@@ -58,12 +58,24 @@ PATCH  /api/v1/connectors/:id/services/:service_id
 POST   /api/v1/services/:id/revoke
 GET    /api/v1/services/:id/routes
 POST   /api/v1/services/:id/routes
+DELETE /api/v1/services/:id/routes/:route_id
+PUT    /api/v1/addresses/:hostname
 PATCH  /api/v1/routes/:id
 POST   /api/v1/routes/:id/disable
 ~~~
 
 Service 생성은 외부 공개를 뜻하지 않는다. Route를 활성화해야 외부 endpoint가 생긴다.
 서비스의 앱 호스트와 포트는 `PATCH /api/v1/connectors/:id/services/:service_id`에 `{"target":{"host":"app","port":3000}}`을 보내 수정한다. 한 터널에 여러 서비스를 등록할 수 있지만, 같은 터널 안에서 대상 호스트(대소문자 구분 없음)와 포트의 조합은 고유해야 한다. 생성·수정 시 중복이면 `409 service_target_taken`을 반환한다. 같은 앱의 공개 주소가 여러 개 필요하면 하나의 서비스에 Route를 여러 개 추가한다. 서비스 추가·수정·삭제 시 설정 revision을 올린다. Connector는 새 설정을 받아 Rathole에 반영하고, Outlet은 변경된 서비스의 probe 결과가 확인될 때까지 그 공개 경로만 보류한다. 변경되지 않은 서비스의 상태와 공개 경로는 유지한다.
+
+**공유 주소.** 같은 hostname을 여러 서비스(다른 터널 포함)가 함께 쓸 수 있다.
+
+- 등록: `POST /api/v1/services/:id/routes`는 다른 서비스가 쓰는 hostname이면 `409 hostname_taken`이다. `{"hostname": "…", "shared": true}`로 보내면 그 주소의 마지막 대상으로 추가한다. 한 서비스는 한 주소에 한 번만 등록된다.
+- Route 응답: `priority`(장애 조치 순서, 작을수록 먼저), `address_mode`(`failover`, `balance`), `address_sticky`, `address_backends`(그 주소를 쓰는 서비스 수)가 들어 있다.
+- 정책: `PUT /api/v1/addresses/:hostname`에 `{"mode": "failover"|"balance", "sticky": bool, "order": ["<route id>", …]}`를 보낸다. `order`는 그 주소의 Route를 모두 한 번씩 담아야 한다. 성공하면 `204`와 `address.update` 감사 기록이고, 값이 맞지 않으면 `400 invalid_address_policy`, 주소가 없으면 `404 address_not_found`다. `sticky`는 `balance`에서만 의미가 있다.
+- 선택: 공개 요청은 터널이 연결되고 서비스가 probe에 응답하는 대상만 받는다. `failover`는 그중 순서가 가장 앞선 대상을 고른다. `balance`는 차례대로 고르고, `sticky`이면 클라이언트 IP별 rendezvous hashing으로 대상을 고정한다. 정상 대상이 없으면 `404`다.
+- 재시도: 대상에 닿지 못하면 본문 없는 요청에 한해 다음 대상으로 재시도한다. 연결 자체가 실패했으면 모든 메서드를, 연결 후 응답 전에 끊겼으면 GET, HEAD, OPTIONS만 재시도한다. 시간 초과는 재시도하지 않는다.
+- 사용량: Caddy는 호스트 단위로 집계하므로 공유 주소의 사용량은 순서가 가장 앞선 Route에 기록한다.
+- 삭제: 마지막 Route를 지우면 주소 정책도 지운다.
 
 ### 예시: Service 생성
 

@@ -86,7 +86,14 @@ export interface Route {
   last_error?: string;
   created_at: string;
   updated_at: string;
+  // 같은 공개 주소를 여러 서비스가 함께 쓸 때의 순서(장애 조치 우선순위, 작을수록 먼저)와 주소의 분산 방식.
+  priority: number;
+  address_mode: AddressMode;
+  address_sticky: boolean;
+  address_backends: number;
 }
+
+export type AddressMode = 'failover' | 'balance';
 
 export interface ServiceRecord {
   connector: Connector;

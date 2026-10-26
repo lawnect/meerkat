@@ -22,6 +22,19 @@ var (
 	usageCode = regexp.MustCompile(`(?:\{|,)code="([0-9]{3})"`)
 )
 
+// usageHosts maps each enabled hostname to the route its usage is stored
+// on. Caddy counts per host, so an address several services share is
+// counted on the first of them in failover order.
+func usageHosts(plans []control.HTTPRoutePlan) map[string]string {
+	hosts := make(map[string]string, len(plans))
+	for _, plan := range plans {
+		if _, seen := hosts[plan.Hostname]; plan.Enabled && !seen {
+			hosts[plan.Hostname] = plan.ID
+		}
+	}
+	return hosts
+}
+
 // CollectUsage reads only aggregate metrics from Caddy. It never stores paths,
 // client addresses, headers, or individual requests.
 func (s *Store) CollectUsage(ctx context.Context) error {
@@ -32,12 +45,7 @@ func (s *Store) CollectUsage(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	hosts := make(map[string]string, len(plans))
-	for _, plan := range plans {
-		if plan.Enabled {
-			hosts[plan.Hostname] = plan.ID
-		}
-	}
+	hosts := usageHosts(plans)
 	if len(hosts) == 0 {
 		return s.control.RecordUsage(ctx, nil, time.Now(), "")
 	}

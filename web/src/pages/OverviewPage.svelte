@@ -196,7 +196,7 @@
   <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
     <StatCard label={t().tunnels} hint={t().tunnelsHint} hintId="stat-tunnels-hint" value={String(data.connectors.length)} sub={data.connectors.length ? t().tunnelsConnected(connected) : t().noTunnelsYet} />
     <StatCard label={t().services} hint={t().servicesHint} hintId="stat-services-hint" value={String(data.services.length)} sub={t().servicesAcross(serviceTunnels)} />
-    <StatCard label={t().publicAddresses} hint={t().publicAddressesHint} hintId="stat-addresses-hint" value={String(data.routes.length)} sub={domainCount ? t().domainCount(domainCount) : t().noDomain} />
+    <StatCard label={t().publicAddresses} hint={t().publicAddressesHint} hintId="stat-addresses-hint" value={String(new Set(data.routes.map((route) => route.hostname)).size)} sub={domainCount ? t().domainCount(domainCount) : t().noDomain} />
     <StatCard label={t().attention} hint={t().attentionHint} hintId="stat-attention-hint" value={String(connectionIssues.length)} sub={connectionIssues.length ? t().attentionCount(connectionIssues.length) : t().allHealthy} />
   </div>
 

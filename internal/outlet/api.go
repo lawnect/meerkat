@@ -148,6 +148,7 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/services/{id}/routes", s.listRoutes)
 	mux.HandleFunc("POST /api/v1/services/{id}/routes", s.createHTTPRoute)
 	mux.HandleFunc("DELETE /api/v1/services/{id}/routes/{route_id}", s.deleteHTTPRoute)
+	mux.HandleFunc("PUT /api/v1/addresses/{hostname}", s.updateAddress)
 	mux.HandleFunc("POST /api/v1/connectors/{id}/enrollment-tokens", s.issueToken)
 	// Every public route is same-site with the management host, so
 	// SameSite=Strict still lets a tunneled app post a form to the admin API
@@ -1943,6 +1944,8 @@ func (s *Store) deleteService(w http.ResponseWriter, r *http.Request) {
 
 type routeRequest struct {
 	Hostname string `json:"hostname"`
+	// Shared joins an address another service already uses.
+	Shared bool `json:"shared"`
 }
 
 func (s *Store) listRoutes(w http.ResponseWriter, r *http.Request) {
@@ -1977,7 +1980,7 @@ func (s *Store) createHTTPRoute(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req, "hostname") {
 		return
 	}
-	route, err := s.control.CreateHTTPRoute(r.Context(), r.PathValue("id"), req.Hostname)
+	route, err := s.control.CreateHTTPRoute(r.Context(), r.PathValue("id"), req.Hostname, req.Shared)
 	if errors.Is(err, control.ErrServiceNotFound) {
 		fail(w, r, 404, "service_not_found")
 		return
@@ -1994,12 +1997,54 @@ func (s *Store) createHTTPRoute(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	s.audited(r, "route.create", "route", route.ID, map[string]any{"service_id": r.PathValue("id"), "hostname": route.Hostname})
+	detail := map[string]any{"service_id": r.PathValue("id"), "hostname": route.Hostname}
+	if route.AddressBackends > 1 {
+		detail["shared"] = true
+	}
+	s.audited(r, "route.create", "route", route.ID, detail)
 	if err := s.reconcileProxy(r.Context()); err != nil {
 		fail(w, r, 503, "proxy_reconcile_failed")
 		return
 	}
 	reply(w, 201, route)
+}
+
+type addressRequest struct {
+	Mode   string   `json:"mode"`
+	Sticky bool     `json:"sticky"`
+	Order  []string `json:"order"`
+}
+
+// updateAddress sets how requests for a public address are spread over the
+// services sharing it, and their failover order.
+func (s *Store) updateAddress(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	var req addressRequest
+	if !decode(w, r, &req, "mode", "order") {
+		return
+	}
+	hostname := r.PathValue("hostname")
+	err := s.control.SetAddressPolicy(r.Context(), hostname, control.AddressPolicy{Mode: req.Mode, Sticky: req.Sticky}, req.Order)
+	if errors.Is(err, control.ErrAddressNotFound) {
+		fail(w, r, 404, "address_not_found")
+		return
+	}
+	if errors.Is(err, control.ErrInvalidAddress) {
+		fail(w, r, 400, "invalid_address_policy")
+		return
+	}
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	s.audited(r, "address.update", "address", hostname, map[string]any{"mode": req.Mode, "sticky": req.Mode == control.AddressBalance && req.Sticky, "order": req.Order})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Store) deleteHTTPRoute(w http.ResponseWriter, r *http.Request) {

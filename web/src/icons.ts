@@ -107,6 +107,7 @@ export { default as Open12 } from '~icons/fluent/open-12-regular';
 export { default as ChevronLeft } from '~icons/fluent/chevron-left-16-regular';
 export { default as ChevronRight } from '~icons/fluent/chevron-right-16-regular';
 export { default as ArrowDown } from '~icons/fluent/arrow-down-16-regular';
+export { default as ArrowUp } from '~icons/fluent/arrow-up-16-regular';
 
 // shadcn-svelte 컴포넌트 내부 아이콘
 export { default as CheckmarkCircle } from '~icons/fluent/checkmark-circle-16-regular';

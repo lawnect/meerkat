@@ -23,11 +23,11 @@ func newPublicBench(tb testing.TB, routes int) publicBench {
 		_, _ = w.Write([]byte("ok\n"))
 	}))
 	ctx := context.Background()
-	if _, err := f.db.CreateHTTPRoute(ctx, f.services[0].ID, "app.example.com"); err != nil {
+	if _, err := f.db.CreateHTTPRoute(ctx, f.services[0].ID, "app.example.com", false); err != nil {
 		tb.Fatal(err)
 	}
 	for i := 0; i < routes; i++ {
-		if _, err := f.db.CreateHTTPRoute(ctx, f.services[0].ID, "r"+strconv.Itoa(i)+".example.com"); err != nil {
+		if _, err := f.db.CreateHTTPRoute(ctx, f.services[0].ID, "r"+strconv.Itoa(i)+".example.com", false); err != nil {
 			tb.Fatal(err)
 		}
 	}

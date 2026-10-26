@@ -92,17 +92,17 @@ func TestRoutingFollowsEveryChange(t *testing.T) {
 	service, err := db.CreateService(ctx, connector.ID, "web", "http", contract.Target{Host: "app", Port: 3000})
 	must("service", err)
 	fresh(t, db, "service")
-	route, err := db.CreateHTTPRoute(ctx, service.ID, "app.example.com")
+	route, err := db.CreateHTTPRoute(ctx, service.ID, "app.example.com", false)
 	must("route", err)
 	if plan, ok := fresh(t, db, "route").Route("app.example.com"); !ok || plan.ServiceID != service.ID || plan.ConnectorID != connector.ID {
 		t.Fatalf("plan = %+v, %v", plan, ok)
 	}
-	other, err := db.CreateHTTPRoute(ctx, service.ID, "app.example.org")
+	other, err := db.CreateHTTPRoute(ctx, service.ID, "app.example.org", false)
 	must("second route", err)
 	if _, ok := fresh(t, db, "second route").Route("app.example.org"); !ok {
 		t.Fatal("second route missing")
 	}
-	if _, err := db.CreateHTTPRoute(ctx, service.ID, "app.example.org"); !errors.Is(err, ErrRouteExists) {
+	if _, err := db.CreateHTTPRoute(ctx, service.ID, "app.example.org", false); !errors.Is(err, ErrRouteExists) {
 		t.Fatalf("duplicate = %v", err)
 	}
 	fresh(t, db, "failed route")
@@ -145,7 +145,7 @@ func TestRoutingFollowsEveryChange(t *testing.T) {
 	}
 	service, err = db.CreateService(ctx, connector.ID, "web", "http", contract.Target{Host: "app", Port: 3000})
 	must("service again", err)
-	_, err = db.CreateHTTPRoute(ctx, service.ID, "app.example.com")
+	_, err = db.CreateHTTPRoute(ctx, service.ID, "app.example.com", false)
 	must("route again", err)
 	fresh(t, db, "route again")
 	must("delete connector", db.DeleteConnector(ctx, connector.ID))
@@ -219,7 +219,7 @@ func TestRoutingIsNeverStaleAfterAChangeReturns(t *testing.T) {
 	}()
 	for i := range 50 {
 		host := fmt.Sprintf("h%d.example.com", i)
-		route, err := db.CreateHTTPRoute(ctx, service.ID, host)
+		route, err := db.CreateHTTPRoute(ctx, service.ID, host, false)
 		if err != nil {
 			t.Fatal(err)
 		}

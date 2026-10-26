@@ -27,14 +27,14 @@ func TestCreateAndListHTTPRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	route, err := db.CreateHTTPRoute(ctx, service.ID, "app.example.com")
+	route, err := db.CreateHTTPRoute(ctx, service.ID, "app.example.com", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !route.Enabled || route.Kind != "http" || route.Hostname != "app.example.com" {
 		t.Fatalf("route = %#v", route)
 	}
-	if _, err := db.CreateHTTPRoute(ctx, service.ID, "app.example.com"); !errors.Is(err, ErrRouteExists) {
+	if _, err := db.CreateHTTPRoute(ctx, service.ID, "app.example.com", false); !errors.Is(err, ErrRouteExists) {
 		t.Fatalf("duplicate error = %v", err)
 	}
 	routes, err := db.ListRoutes(ctx, service.ID)
@@ -62,7 +62,7 @@ func TestCreateHTTPRouteRejectsUnsafeHostname(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, hostname := range []string{"*.example.com", "example.com.", "Example.com", "127.0.0.1", "example"} {
-		if _, err := db.CreateHTTPRoute(ctx, service.ID, hostname); !errors.Is(err, ErrInvalidRoute) {
+		if _, err := db.CreateHTTPRoute(ctx, service.ID, hostname, false); !errors.Is(err, ErrInvalidRoute) {
 			t.Fatalf("hostname %q error = %v", hostname, err)
 		}
 	}

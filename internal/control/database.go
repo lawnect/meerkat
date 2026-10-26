@@ -237,6 +237,37 @@ ALTER TABLE connectors ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE admins ADD COLUMN sso_issuer TEXT;
 ALTER TABLE admins ADD COLUMN sso_subject TEXT;
 CREATE UNIQUE INDEX admins_sso_identity ON admins(sso_issuer, sso_subject) WHERE sso_subject IS NOT NULL;
+`}, {version: 13, sql: `
+-- A public address may now lead to several services, each once, ordered by
+-- priority; its policy says how requests are spread over them.
+CREATE TABLE routes_shared (
+  id TEXT PRIMARY KEY,
+  service_id TEXT NOT NULL REFERENCES services(id) ON DELETE RESTRICT,
+  kind TEXT NOT NULL,
+  hostname TEXT COLLATE NOCASE,
+  listen_port INTEGER UNIQUE,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  desired_revision INTEGER NOT NULL DEFAULT 0,
+  applied_revision INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(hostname, service_id),
+  CHECK ((kind = 'http' AND hostname IS NOT NULL AND listen_port IS NULL) OR
+         (kind = 'tcp' AND hostname IS NULL AND listen_port IS NOT NULL))
+);
+INSERT INTO routes_shared(id, service_id, kind, hostname, listen_port, enabled, desired_revision, applied_revision, last_error, created_at, updated_at)
+  SELECT id, service_id, kind, hostname, listen_port, enabled, desired_revision, applied_revision, last_error, created_at, updated_at FROM routes;
+DROP TABLE routes;
+ALTER TABLE routes_shared RENAME TO routes;
+CREATE INDEX routes_hostname ON routes(hostname);
+CREATE TABLE address_policies (
+  hostname TEXT PRIMARY KEY COLLATE NOCASE,
+  mode TEXT NOT NULL CHECK (mode IN ('failover', 'balance')),
+  sticky INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
 `}}
 
 func migrate(ctx context.Context, db *sql.DB) error {

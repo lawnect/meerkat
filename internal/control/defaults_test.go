@@ -148,7 +148,7 @@ func TestEnvironmentAdminHostnameChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.CreateHTTPRoute(ctx, service.ID, "app.example.com"); err != nil {
+	if _, err := db.CreateHTTPRoute(ctx, service.ID, "app.example.com", false); err != nil {
 		t.Fatal(err)
 	}
 	db.SetDefaults(Defaults{Domain: "example.com", AdminLabel: "app"})
@@ -209,7 +209,7 @@ func TestPendingEnvironmentDomain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.CreateHTTPRoute(ctx, service.ID, "app.old.com"); err != nil {
+	if _, err := db.CreateHTTPRoute(ctx, service.ID, "app.old.com", false); err != nil {
 		t.Fatal(err)
 	}
 	db.SetDefaults(Defaults{Domain: "new.com"})

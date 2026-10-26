@@ -190,8 +190,8 @@ func (s *Store) PublicHandler() http.Handler {
 			}
 			return
 		}
-		plan, found := routing.Route(host)
-		if !found {
+		plans, policy := routing.Routes(host)
+		if len(plans) == 0 {
 			http.NotFound(w, r)
 			return
 		}
@@ -200,12 +200,9 @@ func (s *Store) PublicHandler() http.Handler {
 			blocked(w)
 			return
 		}
-		s.mu.RLock()
-		record, ok := s.managed[plan.ConnectorID]
-		address := record.probeFor(plan.ServiceID)
-		connected := ok && record.Enrolled && managedConnectorStatus(record, s.now()) == "connected" && record.ServiceStatuses[plan.ServiceID] == "connected" && isLoopbackAddress(address)
-		s.mu.RUnlock()
-		if !connected {
+		origin, _ := requestOrigin(r)
+		backends := s.orderBackends(host, origin, s.liveBackends(plans), policy)
+		if len(backends) == 0 {
 			http.NotFound(w, r)
 			return
 		}
@@ -231,78 +228,89 @@ func (s *Store) PublicHandler() http.Handler {
 		if held {
 			defer s.connections.inflight.total.Add(-1)
 		}
-		upstream := &url.URL{Scheme: "http", Host: address}
-		proxy := &httputil.ReverseProxy{
-			Transport:  transport,
-			BufferPool: proxyBuffers,
-			Rewrite: func(pr *httputil.ProxyRequest) {
-				pr.SetURL(upstream)
-				pr.Out.Host = pr.In.Host
-				pr.Out.Header.Set("X-Forwarded-Host", host)
-				pr.Out.Header.Set("X-Forwarded-Proto", "https")
-				pr.Out.Header.Set("X-Forwarded-Port", "443")
-				pr.Out.Header.Del("X-Forwarded-Ssl")
-				pr.Out.Header.Del("X-Url-Scheme")
-				// Apps get one client address they can trust: X-Real-IP is
-				// the address Caddy saw, never a value the client sent.
-				// Headers a CDN would set, which an app moved off one might
-				// still trust, are dropped since a client could forge them.
-				for _, name := range spoofableClientHeaders {
-					pr.Out.Header.Del(name)
-				}
-				if client := forwardedClient(pr.In); client != "" {
-					pr.Out.Header.Set("X-Real-Ip", client)
-				}
-				forwardedFor := pr.In.Header.Get("X-Forwarded-For")
-				if peer, _, err := net.SplitHostPort(pr.In.RemoteAddr); err == nil {
-					if forwardedFor != "" {
-						forwardedFor += ", "
+		// A request that can't reach one service goes on to the next, when
+		// it can be sent again (see retryable).
+		var serve func(attempt int)
+		serve = func(attempt int) {
+			target := backends[attempt]
+			upstream := &url.URL{Scheme: "http", Host: target.address}
+			proxy := &httputil.ReverseProxy{
+				Transport:  transport,
+				BufferPool: proxyBuffers,
+				Rewrite: func(pr *httputil.ProxyRequest) {
+					pr.SetURL(upstream)
+					pr.Out.Host = pr.In.Host
+					pr.Out.Header.Set("X-Forwarded-Host", host)
+					pr.Out.Header.Set("X-Forwarded-Proto", "https")
+					pr.Out.Header.Set("X-Forwarded-Port", "443")
+					pr.Out.Header.Del("X-Forwarded-Ssl")
+					pr.Out.Header.Del("X-Url-Scheme")
+					// Apps get one client address they can trust: X-Real-IP is
+					// the address Caddy saw, never a value the client sent.
+					// Headers a CDN would set, which an app moved off one might
+					// still trust, are dropped since a client could forge them.
+					for _, name := range spoofableClientHeaders {
+						pr.Out.Header.Del(name)
 					}
-					forwardedFor += peer
-				}
-				if forwardedFor != "" {
-					pr.Out.Header.Set("X-Forwarded-For", forwardedFor)
-				}
-			},
-			ModifyResponse: func(res *http.Response) error {
-				if res.StatusCode < 500 {
-					s.noteServed(plan.ServiceID)
-				}
-				return nil
-			},
-			ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
-				// A malformed, abandoned, stalled or oversized upload is the
-				// client's error, and must not count as an upstream failure in
-				// error alerts. A failed read of the client's connection
-				// cancels the request before the body records why, so a
-				// cancelled request with its upload unfinished is the client's
-				// too.
-				clientGone := r.Context().Err() != nil
-				switch {
-				case body != nil && body.tooLarge.Load():
-					w.Header().Set("Connection", "close")
-					http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-					return
-				case body != nil && (body.timedOut.Load() || clientGone && !body.complete.Load()):
-					w.Header().Set("Connection", "close")
-					http.Error(w, "request body timed out", http.StatusRequestTimeout)
-					return
-				case body != nil && body.failed.Load():
-					http.Error(w, "invalid request body", http.StatusBadRequest)
-					return
-				case clientGone:
-					// nginx's "client closed request"; nobody reads it.
-					w.WriteHeader(499)
-					return
-				}
-				var timeout net.Error
-				if errors.As(err, &timeout) && timeout.Timeout() {
-					http.Error(w, "upstream timed out", http.StatusGatewayTimeout)
-					return
-				}
-				http.Error(w, "upstream unavailable", http.StatusBadGateway)
-			},
+					if client := forwardedClient(pr.In); client != "" {
+						pr.Out.Header.Set("X-Real-Ip", client)
+					}
+					forwardedFor := pr.In.Header.Get("X-Forwarded-For")
+					if peer, _, err := net.SplitHostPort(pr.In.RemoteAddr); err == nil {
+						if forwardedFor != "" {
+							forwardedFor += ", "
+						}
+						forwardedFor += peer
+					}
+					if forwardedFor != "" {
+						pr.Out.Header.Set("X-Forwarded-For", forwardedFor)
+					}
+				},
+				ModifyResponse: func(res *http.Response) error {
+					if res.StatusCode < 500 {
+						s.noteServed(target.serviceID)
+					}
+					return nil
+				},
+				ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+					if attempt+1 < len(backends) && retryable(r, err) {
+						serve(attempt + 1)
+						return
+					}
+					// A malformed, abandoned, stalled or oversized upload is the
+					// client's error, and must not count as an upstream failure in
+					// error alerts. A failed read of the client's connection
+					// cancels the request before the body records why, so a
+					// cancelled request with its upload unfinished is the client's
+					// too.
+					clientGone := r.Context().Err() != nil
+					switch {
+					case body != nil && body.tooLarge.Load():
+						w.Header().Set("Connection", "close")
+						http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+						return
+					case body != nil && (body.timedOut.Load() || clientGone && !body.complete.Load()):
+						w.Header().Set("Connection", "close")
+						http.Error(w, "request body timed out", http.StatusRequestTimeout)
+						return
+					case body != nil && body.failed.Load():
+						http.Error(w, "invalid request body", http.StatusBadRequest)
+						return
+					case clientGone:
+						// nginx's "client closed request"; nobody reads it.
+						w.WriteHeader(499)
+						return
+					}
+					var timeout net.Error
+					if errors.As(err, &timeout) && timeout.Timeout() {
+						http.Error(w, "upstream timed out", http.StatusGatewayTimeout)
+						return
+					}
+					http.Error(w, "upstream unavailable", http.StatusBadGateway)
+				},
+			}
+			proxy.ServeHTTP(w, r)
 		}
-		proxy.ServeHTTP(w, r)
+		serve(0)
 	})
 }

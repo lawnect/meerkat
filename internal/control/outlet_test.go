@@ -32,10 +32,10 @@ func TestOutletDomainAndRouteBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.CreateHTTPRoute(ctx, service.ID, "outside.test"); !errors.Is(err, ErrInvalidRoute) {
+	if _, err := db.CreateHTTPRoute(ctx, service.ID, "outside.test", false); !errors.Is(err, ErrInvalidRoute) {
 		t.Fatalf("outside route error = %v", err)
 	}
-	if _, err := db.CreateHTTPRoute(ctx, service.ID, "app.example.com"); err != nil {
+	if _, err := db.CreateHTTPRoute(ctx, service.ID, "app.example.com", false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.SetDomain(ctx, "another.example", ""); !errors.Is(err, ErrDomainHasRoutes) {
@@ -119,11 +119,11 @@ func TestAdminLabelAndDomainModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.CreateHTTPRoute(ctx, service.ID, outlet.AdminHostname); !errors.Is(err, ErrInvalidRoute) {
+	if _, err := db.CreateHTTPRoute(ctx, service.ID, outlet.AdminHostname, false); !errors.Is(err, ErrInvalidRoute) {
 		t.Fatalf("admin hostname route error = %v", err)
 	}
 	for _, hostname := range []string{"b.example.net", "a.example.net", "app.example.org"} {
-		if _, err := db.CreateHTTPRoute(ctx, service.ID, hostname); err != nil {
+		if _, err := db.CreateHTTPRoute(ctx, service.ID, hostname, false); err != nil {
 			t.Fatal(err)
 		}
 	}

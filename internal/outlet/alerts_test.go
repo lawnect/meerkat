@@ -256,7 +256,7 @@ func TestRouteErrorAlert(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	route, err := a.db.CreateHTTPRoute(ctx, service.ID, "app.example.com")
+	route, err := a.db.CreateHTTPRoute(ctx, service.ID, "app.example.com", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +419,7 @@ func TestDNSFailureHostsModeNamesRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.db.CreateHTTPRoute(ctx, service.ID, "app.example.com"); err != nil {
+	if _, err := a.db.CreateHTTPRoute(ctx, service.ID, "app.example.com", false); err != nil {
 		t.Fatal(err)
 	}
 	// Only the route's name fails; the management host resolves.

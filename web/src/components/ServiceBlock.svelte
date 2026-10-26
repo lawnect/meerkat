@@ -11,9 +11,10 @@
   import * as NativeSelect from '$lib/components/ui/native-select/index.js';
   import { Spinner } from '$lib/components/ui/spinner/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
-  import { Add, ArrowRight, ArrowRight12, Cube, Delete, Edit, Globe, Globe20, NumberSymbol, Open, Open12, Save, Storage, Warning } from '../icons';
+  import { Add, ArrowRight, ArrowRight12, Cube, Delete, Edit, Globe, Globe20, Info, NumberSymbol, Open, Open12, Save, Storage, Warning } from '../icons';
   import { api, errorMessage, statusLabel } from '../api';
   import type { Outlet, ServiceRecord } from '../types';
+  import AddressPolicyDialog from './AddressPolicyDialog.svelte';
   import ConfirmNameDialog from './ConfirmNameDialog.svelte';
   import CopyText from './CopyText.svelte';
   import IconButton from './IconButton.svelte';
@@ -23,7 +24,8 @@
   import { translations } from '../i18n.svelte';
   import { pageHref } from '../navigation';
 
-  let { record, outlet, onChanged, view, onViewRoutes }: { record: ServiceRecord; outlet: Outlet; onChanged: () => Promise<void>; view: 'service' | 'routes'; onViewRoutes?: () => void } = $props();
+  // records는 모든 터널의 서비스입니다. 여러 서비스가 함께 쓰는 공개 주소의 대상을 보여줄 때 씁니다.
+  let { record, records = [record], outlet, onChanged, view, onViewRoutes }: { record: ServiceRecord; records?: ServiceRecord[]; outlet: Outlet; onChanged: () => Promise<void>; view: 'service' | 'routes'; onViewRoutes?: () => void } = $props();
 
   const t = translations({
     viewRoutes: (n: number) => `${n} public ${n === 1 ? 'address' : 'addresses'}`,
@@ -42,7 +44,12 @@
     saveFailed: (code: string) => `Couldn't save the target: ${code}`,
     deleteServiceFailed: (code: string) => `Couldn't delete the service: ${code}`,
     deleteRouteFailed: (code: string) => `Couldn't delete the public address: ${code}`,
-    hostnameTaken: 'That address is already in use. Enter a different subdomain.',
+    hostnameTaken: 'This service already uses that address.',
+    sharePrompt: 'Another service already uses this address. Add this service as another target to split requests by failover or load balancing.',
+    shareSubmit: 'Add as target',
+    sharedBadge: (mode: string, n: number) => `${mode === 'balance' ? 'Load balancing' : 'Failover'} · ${n}`,
+    sharedSettings: (hostname: string) => `Shared address settings for ${hostname}`,
+    deleteSharedRouteWarning: 'This removes only this service from the address; the other targets keep receiving requests.',
     reservedHostname: 'This address is reserved for the Outlet admin.',
     invalidSubdomain: 'Check the subdomain. Only letters, numbers, and hyphens are allowed.',
     addRouteFailed: (code: string) => `Couldn't create the public address: ${code}`,
@@ -84,56 +91,61 @@
     viewRoutes: (n: number) => `공개 주소 ${n}개`,
     editTarget: '연결 대상 수정',
     editDesc: (name: string) => `${name}의 내부 주소를 수정합니다.`,
-    deleteRoutesFirst: '공개 주소를 먼저 삭제하세요',
-    healthNote: '앱 호스트·내부 포트·Docker 네트워크를 확인하세요.',
+    deleteRoutesFirst: '공개 주소 삭제 후 삭제 가능',
+    healthNote: '앱 호스트, 내부 포트, Docker 네트워크를 확인하십시오.',
     appHost: '앱 호스트',
     internalPort: '내부 포트',
-    editNote: 'Compose 앱이라면 앱 호스트는 services: 아래 이름, 내부 포트는 컨테이너에서 듣는 포트입니다. 터널과 앱이 같은 Docker 네트워크에 있어야 합니다.',
+    editNote: 'Compose 앱의 경우 앱 호스트는 services: 하위의 서비스 이름, 내부 포트는 컨테이너의 수신 포트입니다. 터널과 앱은 동일한 Docker 네트워크에 있어야 합니다.',
     cancel: '취소',
     save: '저장',
     saving: '저장 중…',
-    invalidService: '앱 호스트와 내부 포트를 확인하세요.',
-    serviceTargetTaken: '같은 터널의 다른 서비스가 이 앱 호스트와 포트를 사용 중입니다.',
-    saveFailed: (code: string) => `연결 대상을 저장하지 못했습니다: ${code}`,
-    deleteServiceFailed: (code: string) => `서비스를 삭제하지 못했습니다: ${code}`,
-    deleteRouteFailed: (code: string) => `공개 주소를 삭제하지 못했습니다: ${code}`,
-    hostnameTaken: '이미 사용 중인 주소입니다. 다른 하위 도메인을 입력하세요.',
-    reservedHostname: '이 주소는 Outlet 관리 화면에 예약되어 있습니다.',
-    invalidSubdomain: '하위 도메인을 확인하세요. 영문자, 숫자, 하이픈만 사용할 수 있습니다.',
-    addRouteFailed: (code: string) => `공개 주소를 만들지 못했습니다: ${code}`,
-    routeDisabled: '사용 안 함',
+    invalidService: '앱 호스트 또는 내부 포트가 올바르지 않습니다.',
+    serviceTargetTaken: '동일 터널의 다른 서비스가 이 앱 호스트와 포트를 사용 중입니다.',
+    saveFailed: (code: string) => `연결 대상 저장 중 오류가 발생했습니다: ${code}`,
+    deleteServiceFailed: (code: string) => `서비스 삭제 중 오류가 발생했습니다: ${code}`,
+    deleteRouteFailed: (code: string) => `공개 주소 삭제 중 오류가 발생했습니다: ${code}`,
+    hostnameTaken: '이 서비스에 이미 등록된 주소입니다.',
+    sharePrompt: '다른 서비스에서 사용 중인 주소입니다. 이 서비스를 동일 주소의 대상으로 추가하면 장애 조치 또는 부하 분산으로 요청을 분배합니다.',
+    shareSubmit: '대상으로 추가',
+    sharedBadge: (mode: string, n: number) => `${mode === 'balance' ? '부하 분산' : '장애 조치'} · ${n}`,
+    sharedSettings: (hostname: string) => `${hostname} 주소 공유 설정`,
+    deleteSharedRouteWarning: '이 서비스만 주소에서 제외되며, 다른 대상은 계속 요청을 받습니다.',
+    reservedHostname: '관리 콘솔용으로 예약된 주소입니다.',
+    invalidSubdomain: '하위 도메인 형식이 올바르지 않습니다. 영문자, 숫자, 하이픈만 사용할 수 있습니다.',
+    addRouteFailed: (code: string) => `공개 주소 생성 중 오류가 발생했습니다: ${code}`,
+    routeDisabled: '비활성화됨',
     routeConfigError: '설정 오류',
     routeApplying: '반영 중',
-    routeServiceDisabled: '서비스 사용 안 함',
+    routeServiceDisabled: '서비스 비활성화됨',
     routeWaitingTunnel: '터널 연결 대기',
     routeWaitingService: '서비스 응답 대기',
     routeLive: '공개 중',
-    routeDisabledTip: '이 주소는 꺼져 있습니다.',
-    routeConfigErrorTip: 'Outlet이 이 주소를 반영하지 못했습니다.',
-    routeApplyingTip: 'Outlet이 이 주소를 아직 반영하는 중입니다.',
-    routeServiceDisabledTip: '서비스가 꺼져 있어 이 주소로 요청을 전달하지 않습니다.',
+    routeDisabledTip: '비활성화된 주소입니다.',
+    routeConfigErrorTip: '이 주소를 반영하는 중 오류가 발생했습니다.',
+    routeApplyingTip: '이 주소를 반영하는 중입니다.',
+    routeServiceDisabledTip: '서비스가 비활성화되어 이 주소로 요청을 전달하지 않습니다.',
     routeWaitingTunnelTip: '터널이 아직 연결되지 않았습니다. 연결되면 이 주소가 공개됩니다.',
-    routeWaitingServiceTip: '터널은 연결됐지만 연결 대상에서 앱이 응답하지 않습니다.',
+    routeWaitingServiceTip: '터널은 연결되었으나 연결 대상 앱이 응답하지 않습니다.',
     routeLiveTip: '이 주소로 들어온 요청이 서비스에 전달됩니다.',
     addAddress: '주소 추가',
     openInNewTab: (hostname: string) => `https://${hostname} 새 탭에서 열기`,
     deleteAddress: (hostname: string) => `${hostname} 주소 삭제`,
-    noRoutes: '아직 공개 주소가 없습니다',
+    noRoutes: '등록된 공개 주소가 없습니다',
     noDomain: '도메인 미설정',
-    needDomain: '도메인을 추가하면 공개 주소를 만들 수 있습니다.',
+    needDomain: '도메인 추가 후 공개 주소를 생성할 수 있습니다.',
     domains: '도메인 관리',
     addTitle: '공개 주소 추가',
-    addDesc: '도메인을 선택하고 하위 도메인을 입력하세요.',
+    addDesc: '도메인을 선택하고 하위 도메인을 입력하십시오.',
     domain: '도메인',
     subdomain: '하위 도메인',
     preview: '생성될 주소:',
     adding: '추가 중…',
     addSubmit: '주소 추가',
     deleteServiceTitle: '서비스 삭제',
-    deleteServiceWarning: '삭제 후에는 되돌릴 수 없습니다. 같은 터널의 다른 서비스도 잠시 다시 연결될 수 있습니다. 실제 앱은 삭제되지 않습니다.',
+    deleteServiceWarning: '삭제한 서비스는 복원할 수 없습니다. 동일 터널의 다른 서비스가 일시적으로 재연결될 수 있으며, 실제 앱은 삭제되지 않습니다.',
     deleteServiceSubmit: '서비스 삭제',
     deleteRouteTitle: '공개 주소 삭제',
-    deleteRouteWarning: '삭제 후에는 되돌릴 수 없습니다. 이 주소로의 접속이 중단됩니다. 실제 서비스는 삭제되지 않습니다.',
+    deleteRouteWarning: '삭제한 공개 주소는 복원할 수 없습니다. 이 주소로의 접속이 중단되며, 실제 서비스는 삭제되지 않습니다.',
     deleteRouteSubmit: '공개 주소 삭제',
   });
 
@@ -154,6 +166,10 @@
   let deleteServiceOpen = $state(false);
   let serviceError = $state('');
   let routeOpen = $state(false);
+  // 다른 서비스가 쓰는 주소를 입력하면, 이 서비스를 그 주소의 대상으로 추가할지 묻습니다.
+  let sharePrompt = $state(false);
+  let policyHostname = $state('');
+  let policyOpen = $state(false);
   const domains = $derived(outlet.domains?.length ? outlet.domains : outlet.domain ? [outlet.domain] : []);
   const baseDomain = $derived(domains.includes(selectedDomain) ? selectedDomain : domains[0] || '');
   const routeHostname = $derived(subdomain.trim().toLowerCase() && baseDomain ? `${subdomain.trim().toLowerCase()}.${baseDomain}` : '');
@@ -226,7 +242,13 @@
     subdomain = '';
     selectedDomain = '';
     addError = '';
+    sharePrompt = false;
     routeOpen = true;
+  }
+
+  function openPolicy(hostname: string): void {
+    policyHostname = hostname;
+    policyOpen = true;
   }
 
   async function addRoute(event: SubmitEvent): Promise<void> {
@@ -237,12 +259,18 @@
     try {
       await api(`/api/v1/services/${encodeURIComponent(record.service.id)}/routes`, {
         method: 'POST',
-        body: JSON.stringify({ hostname: routeHostname }),
+        body: JSON.stringify({ hostname: routeHostname, ...(sharePrompt ? { shared: true } : {}) }),
       });
       await onChanged();
       routeOpen = false;
     } catch (cause) {
       const code = errorMessage(cause);
+      // 다른 서비스가 쓰는 주소면 공유를 제안하고, 이 서비스가 이미 쓰는 주소면 오류로 알립니다.
+      const elsewhere = code === 'hostname_taken' && !sharePrompt && !record.routes.some((route) => route.hostname === routeHostname);
+      if (elsewhere) {
+        sharePrompt = true;
+        return;
+      }
       addError = code === 'hostname_taken' ? t().hostnameTaken : code === 'invalid_route' && outlet.admin_hostname && routeHostname === outlet.admin_hostname ? t().reservedHostname : code === 'invalid_route' ? t().invalidSubdomain : t().addRouteFailed(code);
     } finally {
       busy = false;
@@ -373,6 +401,9 @@
                 </Item.Title>
               </Item.Content>
               <Item.Actions class="ms-auto gap-1">
+                {#if route.address_backends > 1}
+                  <Button variant="outline" size="xs" aria-label={t().sharedSettings(route.hostname)} onclick={() => openPolicy(route.hostname)}>{t().sharedBadge(route.address_mode, route.address_backends)}</Button>
+                {/if}
                 {@render routeBadge(route)}
                 <IconButton icon={Delete} label={t().deleteAddress(route.hostname)} disabled={Boolean(deletingRoute)} onclick={() => openDeleteRoute(route)} />
               </Item.Actions>
@@ -402,7 +433,7 @@
 {/if}
 
 <ConfirmNameDialog id={`delete-service-${view}-${record.service.id}`} open={deleteServiceOpen} title={t().deleteServiceTitle} warning={t().deleteServiceWarning} targetName={record.service.name} submitLabel={t().deleteServiceSubmit} busy={deletingService} error={serviceError} onConfirm={deleteService} onClose={() => { deleteServiceOpen = false; serviceError = ''; }} />
-<ConfirmNameDialog id={`delete-route-${view}-${record.service.id}`} open={deleteRouteOpen} title={t().deleteRouteTitle} warning={t().deleteRouteWarning} targetName={deleteRouteTarget?.hostname || ''} submitLabel={t().deleteRouteSubmit} busy={Boolean(deletingRoute)} error={routeError} onConfirm={deleteRoute} onClose={() => { deleteRouteOpen = false; deleteRouteTarget = null; routeError = ''; }} />
+<ConfirmNameDialog id={`delete-route-${view}-${record.service.id}`} open={deleteRouteOpen} title={t().deleteRouteTitle} warning={deleteRouteTarget && deleteRouteTarget.address_backends > 1 ? t().deleteSharedRouteWarning : t().deleteRouteWarning} targetName={deleteRouteTarget?.hostname || ''} submitLabel={t().deleteRouteSubmit} busy={Boolean(deletingRoute)} error={routeError} onConfirm={deleteRoute} onClose={() => { deleteRouteOpen = false; deleteRouteTarget = null; routeError = ''; }} />
 
 {#if view === 'service'}
   <Dialog.Root bind:open={() => editingTarget, setEditOpen}>
@@ -452,7 +483,7 @@
         <Field.Group>
           <Field.Field>
             <Field.Label for={`domain-${record.service.id}`}>{t().domain}</Field.Label>
-            <NativeSelect.Root id={`domain-${record.service.id}`} class="w-full" bind:value={() => baseDomain, (next) => { selectedDomain = next; }}>
+            <NativeSelect.Root id={`domain-${record.service.id}`} class="w-full" bind:value={() => baseDomain, (next) => { selectedDomain = next; sharePrompt = false; }}>
               {#each domains as domain (domain)}
                 <NativeSelect.Option value={domain}>{domain}</NativeSelect.Option>
               {/each}
@@ -462,7 +493,7 @@
             <Field.Label for={`route-${record.service.id}`}>{t().subdomain}</Field.Label>
             <InputGroup.Root>
               <InputGroup.Addon><Globe aria-hidden="true" /></InputGroup.Addon>
-              <InputGroup.Input id={`route-${record.service.id}`} aria-describedby={`domain-suffix-${record.service.id}`} bind:value={subdomain} placeholder="app" pattern={'[a-zA-Z0-9](?:[a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?'} maxlength={63} autocapitalize="none" spellcheck={false} required />
+              <InputGroup.Input id={`route-${record.service.id}`} aria-describedby={`domain-suffix-${record.service.id}`} bind:value={subdomain} oninput={() => { sharePrompt = false; addError = ''; }} placeholder="app" pattern={'[a-zA-Z0-9](?:[a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?'} maxlength={63} autocapitalize="none" spellcheck={false} required />
               <InputGroup.Addon align="inline-end"><InputGroup.Text id={`domain-suffix-${record.service.id}`}>.{baseDomain}</InputGroup.Text></InputGroup.Addon>
             </InputGroup.Root>
             {#if routeHostname}
@@ -470,12 +501,17 @@
             {/if}
           </Field.Field>
         </Field.Group>
+        {#if sharePrompt}<Alert.Root><Info aria-hidden="true" /><Alert.Description class="break-keep">{t().sharePrompt}</Alert.Description></Alert.Root>{/if}
         {#if addError}<Alert.Root variant="destructive"><Warning aria-hidden="true" /><Alert.Description>{addError}</Alert.Description></Alert.Root>{/if}
         <Dialog.Footer>
           <Button variant="outline" disabled={busy} onclick={() => setRouteOpen(false)}>{t().cancel}</Button>
-          <Button type="submit" disabled={busy}>{#if busy}<Spinner />{t().adding}{:else}{t().addSubmit}{/if}</Button>
+          <Button type="submit" disabled={busy}>{#if busy}<Spinner />{t().adding}{:else}{sharePrompt ? t().shareSubmit : t().addSubmit}{/if}</Button>
         </Dialog.Footer>
       </form>
     </Dialog.Content>
   </Dialog.Root>
+{/if}
+
+{#if view === 'routes'}
+  <AddressPolicyDialog bind:open={policyOpen} hostname={policyHostname} {records} {onChanged} />
 {/if}

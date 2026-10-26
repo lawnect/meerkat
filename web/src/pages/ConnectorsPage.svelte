@@ -1290,7 +1290,7 @@
               </Card.Content>
             </Card.Root>
             {#each selectedRecords as record (record.service.id)}
-              <div class="min-w-0 outline-none focus-visible:ring-3 focus-visible:ring-ring/50" id={`service-routes-${record.service.id}`} tabindex="-1"><ServiceBlock {record} outlet={data.outlet} {onChanged} view="routes" /></div>
+              <div class="min-w-0 outline-none focus-visible:ring-3 focus-visible:ring-ring/50" id={`service-routes-${record.service.id}`} tabindex="-1"><ServiceBlock {record} records={data.records} outlet={data.outlet} {onChanged} view="routes" /></div>
             {/each}
           {:else}
             <Empty.Root class="border border-dashed bg-card">

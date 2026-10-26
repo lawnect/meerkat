@@ -1,4 +1,4 @@
-import type { AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, Outlet, Route, Service, SsoSettings, Target, UsageBucket, UsageSeries, UsageUnit } from './types';
+import type { AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, Outlet, Route, Service, SsoSettings, Target, UsageBucket, UsageSeries, UsageUnit } from './types';
 
 const now = (): string => new Date().toISOString();
 const ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
@@ -59,6 +59,8 @@ const SEED_TUNNELS: Array<[string, string, Array<[string, string, number, string
   ['minecraft', 'disconnected', []],
   ['shop-frontend', 'connected', [['web', 'web', 3000, ['shop.example.com', 'www.example.com']]]],
   ['shop-backend', 'connected', [['api', 'api', 8000, ['api.example.com']]]],
+  // shop.example.com을 shop-frontend와 함께 쓰는 두 번째 대상(주소 공유 데모).
+  ['shop-frontend-b', 'connected', [['web', 'web', 3000, ['shop.example.com']]]],
   ['analytics', 'connected', [['plausible', 'plausible', 8000, ['stats.example.net']]]],
   ['vaultwarden', 'connected', [['vault', 'vaultwarden', 80, ['vault.example.test']]]],
   ['uptime-kuma', 'connected', [['status', 'uptime-kuma', 3001, ['status.demo.test']]]],
@@ -78,6 +80,11 @@ const SEED_TUNNELS: Array<[string, string, Array<[string, string, number, string
   ['sandbox', 'draft', []],
 ];
 
+// 공개 주소 공유 필드는 읽을 때 routeView가 채웁니다.
+function newRoute(fields: Omit<Route, 'priority' | 'address_mode' | 'address_sticky' | 'address_backends'> & { priority?: number }): Route {
+  return { priority: 0, address_mode: 'failover', address_sticky: false, address_backends: 1, ...fields };
+}
+
 function seed() {
   const day = 86400000;
   const connectors: Connector[] = [{ id: seedId('connector-home'), name: 'home-server', description: '집 서버 · whoami 테스트 앱', status: 'connected', created_at: now(), last_seen: now() }];
@@ -85,10 +92,10 @@ function seed() {
     id: seedId('service-whoami'), connector_id: seedId('connector-home'), name: 'whoami', protocol: 'http',
     target: { host: 'app', port: 80 }, enabled: true, observed_status: 'connected', created_at: now(), updated_at: now(),
   }];
-  const routes: Route[] = [{
+  const routes: Route[] = [newRoute({
     id: seedId('route-whoami'), service_id: seedId('service-whoami'), kind: 'http', hostname: 'whoami.example.test',
     enabled: true, desired_revision: 1, applied_revision: 1, created_at: now(), updated_at: now(),
-  }];
+  })];
   SEED_TUNNELS.forEach(([name, status, items], index) => {
     const created = new Date(Date.now() - (index + 2) * 3.7 * day).toISOString();
     const seen = status === 'draft' ? undefined : new Date(Date.now() - (status === 'connected' ? (index % 4) * 20000 : (index + 1) * 5 * 3600000)).toISOString();
@@ -100,10 +107,11 @@ function seed() {
         id: serviceId, connector_id: connectorId, name: serviceName, protocol: 'http', target: { host, port }, enabled: true,
         observed_status: status === 'connected' ? 'connected' : 'disconnected', created_at: created, updated_at: created,
       });
-      hostnames.forEach((hostname, routeIndex) => routes.push({
+      hostnames.forEach((hostname, routeIndex) => routes.push(newRoute({
         id: seedId(`route-${name}-${serviceName}-${routeIndex}`), service_id: serviceId, kind: 'http', hostname, enabled: true,
         desired_revision: 1, applied_revision: status === 'connected' ? 1 : 0, created_at: created, updated_at: created,
-      }));
+        priority: routes.filter((route) => route.hostname === hostname).length,
+      })));
     }
   });
   return { connectors, services, routes };
@@ -115,11 +123,18 @@ const state: {
   connectors: Connector[];
   services: Service[];
   routes: Route[];
+  policies: Record<string, { mode: AddressMode; sticky: boolean }>;
 } = {
   outlet: { domain: DOMAINS[0][0], domains: DOMAINS.map(([domain]) => domain), modes: Object.fromEntries(DOMAINS) },
   tunnelAddress: '',
   ...seed(),
+  policies: { 'shop.example.com': { mode: 'balance', sticky: true } },
 };
+
+function routeView(route: Route): Route {
+  const policy = state.policies[route.hostname] ?? { mode: 'failover', sticky: false };
+  return { ...route, address_mode: policy.mode, address_sticky: policy.sticky, address_backends: state.routes.filter((other) => other.hostname === route.hostname).length };
+}
 
 // 알림·2단계 인증 데모 상태. 2단계 인증을 켜면 로그인 코드는 항상 123456입니다.
 const hoursAgo = (hours: number): string => new Date(Date.now() - hours * 3600000).toISOString();
@@ -854,22 +869,35 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     const serviceId = parts[3];
     if (!state.services.some((service) => service.id === serviceId)) fail('service_not_found');
     if (parts.length === 5 && method === 'GET') {
-      return { routes: state.routes.filter((route) => route.service_id === serviceId).map((route) => ({ ...route })) };
+      return { routes: state.routes.filter((route) => route.service_id === serviceId).map(routeView) };
     }
     if (parts.length === 5 && method === 'POST') {
       const hostname = input.hostname?.trim().toLowerCase();
       if (!hostname || hostname === adminHostname(state.outlet.domain) || !state.outlet.domains.some((domain) => hostname.endsWith(`.${domain}`))) fail('invalid_route');
-      if (state.routes.some((route) => route.hostname === hostname)) fail('hostname_taken');
-      const route: Route = { id: id(), service_id: serviceId, kind: 'http', hostname, enabled: true, desired_revision: 1, applied_revision: 0, created_at: now(), updated_at: now() };
+      const sharing = state.routes.filter((route) => route.hostname === hostname);
+      if (sharing.some((route) => route.service_id === serviceId) || (sharing.length && !(input as { shared?: boolean }).shared)) fail('hostname_taken');
+      const route = newRoute({ id: id(), service_id: serviceId, kind: 'http', hostname, enabled: true, desired_revision: 1, applied_revision: 0, created_at: now(), updated_at: now(), priority: sharing.length ? Math.max(...sharing.map((other) => other.priority)) + 1 : 0 });
       state.routes.push(route);
-      return { ...route };
+      return routeView(route);
     }
     if (parts.length === 6 && method === 'DELETE') {
       const index = state.routes.findIndex((route) => route.id === parts[5] && route.service_id === serviceId);
       if (index < 0) fail('route_not_found');
-      state.routes.splice(index, 1);
+      const [removed] = state.routes.splice(index, 1);
+      if (!state.routes.some((route) => route.hostname === removed.hostname)) delete state.policies[removed.hostname];
       return {};
     }
+  }
+  if (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'addresses' && parts.length === 4 && method === 'PUT') {
+    const hostname = decodeURIComponent(parts[3]);
+    const sharing = state.routes.filter((route) => route.hostname === hostname);
+    if (!sharing.length) fail('address_not_found');
+    const body = input as { mode?: string; sticky?: boolean; order?: string[] };
+    const order = body.order ?? [];
+    if ((body.mode !== 'failover' && body.mode !== 'balance') || order.length !== sharing.length || !sharing.every((route) => order.includes(route.id))) fail('invalid_address_policy');
+    order.forEach((routeId, priority) => { const route = state.routes.find((item) => item.id === routeId); if (route) route.priority = priority; });
+    state.policies[hostname] = { mode: body.mode as AddressMode, sticky: body.mode === 'balance' && Boolean(body.sticky) };
+    return {};
   }
   fail('mock_endpoint_not_implemented');
 }

@@ -45,7 +45,7 @@ func TestDomainModesAndDNSHostnames(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, hostname := range []string{"app.example.com", "api.example.com", "www.example.net"} {
-		if _, err := db.CreateHTTPRoute(ctx, service.ID, hostname); err != nil {
+		if _, err := db.CreateHTTPRoute(ctx, service.ID, hostname, false); err != nil {
 			t.Fatal(err)
 		}
 	}

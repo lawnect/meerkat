@@ -113,6 +113,8 @@ type Store struct {
 	// served maps a service ID to an *atomic.Int64: when, in Unix
 	// nanoseconds, it last answered proxied traffic below 500.
 	served sync.Map
+	// balance counts the requests of each balanced address, to take turns.
+	balance sync.Map
 	// background tracks login notifications still being sent.
 	background sync.WaitGroup
 	journal    *auditJournal

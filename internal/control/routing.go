@@ -14,13 +14,29 @@ import (
 type Routing struct {
 	Outlet        Outlet
 	tunnelAddress string
-	routes        map[string]HTTPRoutePlan
+	// routes holds each hostname's enabled routes in failover order.
+	routes   map[string][]HTTPRoutePlan
+	policies map[string]AddressPolicy
 }
 
-// Route returns the enabled HTTP route for an exact hostname.
+// Routes returns the enabled HTTP routes for an exact hostname, in failover
+// order, and how requests are spread over them. The slice is shared: don't
+// change it.
+func (r *Routing) Routes(hostname string) ([]HTTPRoutePlan, AddressPolicy) {
+	policy, ok := r.policies[hostname]
+	if !ok {
+		policy = AddressPolicy{Mode: AddressFailover}
+	}
+	return r.routes[hostname], policy
+}
+
+// Route returns the first enabled HTTP route for an exact hostname.
 func (r *Routing) Route(hostname string) (HTTPRoutePlan, bool) {
-	plan, ok := r.routes[hostname]
-	return plan, ok
+	plans := r.routes[hostname]
+	if len(plans) == 0 {
+		return HTTPRoutePlan{}, false
+	}
+	return plans[0], true
 }
 
 // Hostnames lists the hostnames of the enabled HTTP routes, sorted.
@@ -107,24 +123,44 @@ func (d *Database) loadRouting(ctx context.Context) (*Routing, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := d.db.QueryContext(ctx, `SELECT r.hostname, r.service_id, s.connector_id FROM routes r
+	rows, err := d.db.QueryContext(ctx, `SELECT r.id, r.hostname, r.service_id, s.connector_id, r.priority FROM routes r
 		JOIN services s ON s.id = r.service_id
-		WHERE r.kind = 'http' AND r.enabled = 1 AND s.enabled = 1`)
+		WHERE r.kind = 'http' AND r.enabled = 1 AND s.enabled = 1
+		ORDER BY r.hostname, r.priority, r.created_at`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	routes := map[string]HTTPRoutePlan{}
+	routes := map[string][]HTTPRoutePlan{}
 	for rows.Next() {
 		var plan HTTPRoutePlan
-		if err := rows.Scan(&plan.Hostname, &plan.ServiceID, &plan.ConnectorID); err != nil {
+		if err := rows.Scan(&plan.ID, &plan.Hostname, &plan.ServiceID, &plan.ConnectorID, &plan.Priority); err != nil {
 			return nil, err
 		}
 		plan.Kind, plan.Enabled = "http", true
-		routes[plan.Hostname] = plan
+		routes[plan.Hostname] = append(routes[plan.Hostname], plan)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return &Routing{Outlet: outlet, tunnelAddress: tunnel, routes: routes}, nil
+	policies := map[string]AddressPolicy{}
+	rows, err = d.db.QueryContext(ctx, "SELECT hostname, mode, sticky FROM address_policies")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var hostname string
+		var policy AddressPolicy
+		var sticky int
+		if err := rows.Scan(&hostname, &policy.Mode, &sticky); err != nil {
+			return nil, err
+		}
+		policy.Sticky = sticky != 0
+		policies[hostname] = policy
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return &Routing{Outlet: outlet, tunnelAddress: tunnel, routes: routes, policies: policies}, nil
 }

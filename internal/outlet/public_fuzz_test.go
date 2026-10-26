@@ -33,7 +33,7 @@ func FuzzPublicHandler(f *testing.F) {
 		f.Add(seed)
 	}
 	p := newProxyFixture(f, echo("A"))
-	if _, err := p.db.CreateHTTPRoute(context.Background(), p.services[0].ID, "app.example.com"); err != nil {
+	if _, err := p.db.CreateHTTPRoute(context.Background(), p.services[0].ID, "app.example.com", false); err != nil {
 		f.Fatal(err)
 	}
 	f.Fuzz(func(t *testing.T, raw string) {
