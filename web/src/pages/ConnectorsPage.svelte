@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Add, ArrowReset20, ArrowRight, ArrowSync, ArrowTrending12, Box, BranchRequestClosed20, Checkmark, Code, Copy, Cube20, Delete, Globe12, Grid, Home12, Info, Key, NumberSymbol, PlugConnected20, Search, Search20, Storage, Tag, TextBulletListLtr, Warning } from '../icons';
+  import { Add, ArrowReset20, ArrowRight, ArrowSync, ArrowTrending12, Box, Checkmark, Code, Copy, Cube20, Delete, Globe12, Grid, Home12, Info, Key, NumberSymbol, PlugConnected20, Search, Search20, Storage, Tag, TextBulletListLtr, Warning } from '../icons';
   import { onMount } from 'svelte';
   import { type FilterFn, createColumnHelper, createTable, renderComponent, renderSnippet } from '@tanstack/svelte-table';
   import DataTable from '../components/data-table/DataTable.svelte';
@@ -151,7 +151,7 @@
     mockConnect: 'Switch to connected',
 
     servicesAria: 'Services',
-    servicesHelp: 'The internal address of an app this tunnel forwards requests to. One tunnel can connect several services.',
+    servicesHelp: 'The internal address of an app this tunnel forwards requests to. One tunnel can connect several services, and they can be added before the tunnel connects.',
     addService: 'Add service',
     noServicesYet: 'No services yet',
 
@@ -176,10 +176,7 @@
     deleteTunnel: 'Delete tunnel',
     deleteNote: 'Its services and public addresses are deleted too.',
 
-    routesStart: 'Connect the tunnel to add public addresses.',
-    viewInstall: 'View install instructions',
     requestPaths: 'Request paths',
-    noRoutesYet: 'No routes yet',
     addServiceFromOverview: 'Add a service',
     missingTitle: 'Tunnel not found',
     missing: 'It may have been deleted, or the address is wrong.',
@@ -325,9 +322,9 @@
     mockConnect: '연결 상태로 전환',
 
     servicesAria: '서비스',
-    servicesHelp: '이 터널이 요청을 전달할 앱의 내부 주소입니다. 한 터널에 여러 서비스를 연결할 수 있습니다.',
+    servicesHelp: '이 터널이 요청을 전달할 앱의 내부 주소입니다. 한 터널에 여러 서비스를 연결할 수 있으며, 터널 연결 전에 미리 등록할 수 있습니다.',
     addService: '서비스 추가',
-    noServicesYet: '아직 서비스가 없습니다',
+    noServicesYet: '등록된 서비스가 없습니다',
 
     name: '이름',
     runName: '실행 이름',
@@ -350,10 +347,7 @@
     deleteTunnel: '터널 삭제',
     deleteNote: '서비스와 공개 주소도 함께 삭제됩니다.',
 
-    routesStart: '터널을 연결하면 공개 주소를 추가할 수 있습니다.',
-    viewInstall: '설치 안내 보기',
     requestPaths: '요청 경로',
-    noRoutesYet: '아직 경로가 없습니다',
     addServiceFromOverview: '서비스 추가',
     missingTitle: '터널을 찾을 수 없습니다',
     missing: '삭제되었거나 주소가 잘못되었습니다.',
@@ -596,7 +590,9 @@
   const filteredCount = $derived(table.getFilteredRowModel().rows.length);
 
   // 설치 안내의 진행 단계: 만들기 → 설치 → 연결 → 서비스 추가
-  const installStepsDone = $derived(!selected ? 0 : selected.status === 'connected' ? (selectedRecords.length ? 4 : 3) : selected.status === 'draft' ? 1 : 2);
+  // 서비스와 공개 주소는 연결 전에도 미리 등록할 수 있어, 단계마다 따로 완료를 판단합니다.
+  const installStepDone = $derived(!selected ? [] : [true, selected.status !== 'draft', selected.status === 'connected', selectedRecords.length > 0]);
+  const installStepCurrent = $derived(installStepDone.indexOf(false));
   const installSteps = $derived([t().stepCreate, t().stepInstall, t().stepConnect, t().stepService]);
 
   // 설치 안내 카드 아래 버튼은 필요한 것만 오른쪽 아래에 모아 보여줍니다.
@@ -741,7 +737,7 @@
   }
 
   function openServiceDialog(): void {
-    if (!selected || selected.status === 'draft') return;
+    if (!selected) return;
     clearServiceForm();
     serviceOpen = true;
   }
@@ -861,7 +857,7 @@
 
   async function createService(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-    if (!selected || selected.status === 'draft' || serviceBusy) return;
+    if (!selected || serviceBusy) return;
     serviceError = '';
     serviceBusy = true;
     try {
@@ -1124,8 +1120,8 @@
               <Card.Content class="grid min-w-0 gap-4">
                 <ol class="flex flex-wrap items-center gap-x-3 gap-y-2" aria-label={t().stepsAria}>
                   {#each installSteps as label, index (index)}
-                    {@const done = index < installStepsDone}
-                    {@const current = index === installStepsDone}
+                    {@const done = installStepDone[index]}
+                    {@const current = index === installStepCurrent}
                     <li class="flex items-center gap-2" aria-current={current ? 'step' : undefined}>
                       <span class={['flex size-6 shrink-0 items-center justify-center text-xs font-medium tabular-nums', done ? 'bg-foreground text-background' : current ? 'bg-muted text-foreground ring-1 ring-foreground/40' : 'bg-muted text-muted-foreground']} aria-hidden="true">{#if done}<Checkmark />{:else}{index + 1}{/if}</span>
                       <span class={done || current ? 'font-medium' : 'text-muted-foreground'}>{label}</span>
@@ -1206,30 +1202,28 @@
             <StatCard label={t().publicAddresses} value={selectedPaths.length.toLocaleString(intlLocale())} />
           </div>
 
-          {#if selected.status !== 'draft'}
-            <Card.Root size="sm" role="region" aria-label={t().servicesAria}>
-              <Card.Header>
-                <Card.Title class="flex items-center gap-1">{t().services}<InfoTooltip id={`connector-service-help-${selected.id}`} label={t().services} description={t().servicesHelp} /></Card.Title>
-                <Card.Action><Button variant="outline" onclick={openServiceDialog}><Add aria-hidden="true" />{t().addService}</Button></Card.Action>
-              </Card.Header>
-              <Card.Content>
-                {#if selectedRecords.length}
-                  <Item.Group class="gap-2">
-                    {#each selectedRecords as record (record.service.id)}
-                      <ServiceBlock {record} outlet={data.outlet} {onChanged} view="service" onViewRoutes={() => openServiceRoutes(record.service.id)} />
-                    {/each}
-                  </Item.Group>
-                {:else}
-                  <Empty.Root class="border border-dashed">
-                    <Empty.Header>
-                      <Empty.Media variant="icon"><Cube20 class="size-5" aria-hidden="true" /></Empty.Media>
-                      <Empty.Title>{t().noServicesYet}</Empty.Title>
-                    </Empty.Header>
-                  </Empty.Root>
-                {/if}
-              </Card.Content>
-            </Card.Root>
-          {/if}
+          <Card.Root size="sm" role="region" aria-label={t().servicesAria}>
+            <Card.Header>
+              <Card.Title class="flex items-center gap-1">{t().services}<InfoTooltip id={`connector-service-help-${selected.id}`} label={t().services} description={t().servicesHelp} /></Card.Title>
+              <Card.Action><Button variant="outline" onclick={openServiceDialog}><Add aria-hidden="true" />{t().addService}</Button></Card.Action>
+            </Card.Header>
+            <Card.Content>
+              {#if selectedRecords.length}
+                <Item.Group class="gap-2">
+                  {#each selectedRecords as record (record.service.id)}
+                    <ServiceBlock {record} outlet={data.outlet} {onChanged} view="service" onViewRoutes={() => openServiceRoutes(record.service.id)} />
+                  {/each}
+                </Item.Group>
+              {:else}
+                <Empty.Root class="border border-dashed">
+                  <Empty.Header>
+                    <Empty.Media variant="icon"><Cube20 class="size-5" aria-hidden="true" /></Empty.Media>
+                    <Empty.Title>{t().noServicesYet}</Empty.Title>
+                  </Empty.Header>
+                </Empty.Root>
+              {/if}
+            </Card.Content>
+          </Card.Root>
           <Card.Root size="sm" role="region" aria-label={t().infoTitle}>
             <Card.Header>
               <Card.Title>{t().infoTitle}</Card.Title>
@@ -1286,37 +1280,26 @@
         </Tabs.Content>
 
         <Tabs.Content value="routes" class="grid min-w-0 gap-4">
-          {#if selected.status === 'draft'}
+          {#if selectedRecords.length}
+            <Card.Root size="sm" role="region" aria-label={t().requestPaths}>
+              <Card.Header>
+                <Card.Title>{t().requestPaths}</Card.Title>
+              </Card.Header>
+              <Card.Content class="min-w-0">
+                <RouteGraph tunnelName={connectorLabel(selected)} records={selectedRecords} />
+              </Card.Content>
+            </Card.Root>
+            {#each selectedRecords as record (record.service.id)}
+              <div class="min-w-0 outline-none focus-visible:ring-3 focus-visible:ring-ring/50" id={`service-routes-${record.service.id}`} tabindex="-1"><ServiceBlock {record} outlet={data.outlet} {onChanged} view="routes" /></div>
+            {/each}
+          {:else}
             <Empty.Root class="border border-dashed bg-card">
               <Empty.Header>
-                <Empty.Media variant="icon"><BranchRequestClosed20 class="size-5" aria-hidden="true" /></Empty.Media>
-                <Empty.Title>{t().noRoutesYet}</Empty.Title>
-                <Empty.Description>{t().routesStart}</Empty.Description>
+                <Empty.Media variant="icon"><Cube20 class="size-5" aria-hidden="true" /></Empty.Media>
+                <Empty.Title>{t().noServicesYet}</Empty.Title>
               </Empty.Header>
-              <Empty.Content><Button variant="outline" onclick={() => setDetailTab('overview')}>{t().viewInstall}</Button></Empty.Content>
+              <Empty.Content><Button variant="outline" onclick={() => setDetailTab('overview')}>{t().addServiceFromOverview}<ArrowRight aria-hidden="true" /></Button></Empty.Content>
             </Empty.Root>
-          {:else}
-            {#if selectedRecords.length}
-              <Card.Root size="sm" role="region" aria-label={t().requestPaths}>
-                <Card.Header>
-                  <Card.Title>{t().requestPaths}</Card.Title>
-                </Card.Header>
-                <Card.Content class="min-w-0">
-                  <RouteGraph tunnelName={connectorLabel(selected)} records={selectedRecords} />
-                </Card.Content>
-              </Card.Root>
-              {#each selectedRecords as record (record.service.id)}
-                <div class="min-w-0 outline-none focus-visible:ring-3 focus-visible:ring-ring/50" id={`service-routes-${record.service.id}`} tabindex="-1"><ServiceBlock {record} outlet={data.outlet} {onChanged} view="routes" /></div>
-              {/each}
-            {:else}
-              <Empty.Root class="border border-dashed bg-card">
-                <Empty.Header>
-                  <Empty.Media variant="icon"><Cube20 class="size-5" aria-hidden="true" /></Empty.Media>
-                  <Empty.Title>{t().noServicesYet}</Empty.Title>
-                </Empty.Header>
-                <Empty.Content><Button variant="outline" onclick={() => setDetailTab('overview')}>{t().addServiceFromOverview}<ArrowRight aria-hidden="true" /></Button></Empty.Content>
-              </Empty.Root>
-            {/if}
           {/if}
         </Tabs.Content>
 

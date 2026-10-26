@@ -300,3 +300,46 @@ func TestTunnelCheckResolvesAndDialsEachAddress(t *testing.T) {
 		t.Fatalf("unauthenticated check: %d", w.Code)
 	}
 }
+
+// A service and its public address can be added after the install code is
+// issued and before the Connector first connects: the enrollment answer
+// already carries the service.
+func TestServicesCanBeAddedBeforeTheConnectorConnects(t *testing.T) {
+	f := setup(t)
+	f.cfg.TunnelListenAddress = "0.0.0.0:2333"
+	f.cfg.TunnelServerPrivateKey = base64.StdEncoding.EncodeToString(make([]byte, 32))
+	store, _ := controlStore(t, f)
+	h := store.Handler()
+	if w := request(h, "PUT", "/api/v1/outlet", f.admin, map[string]any{"domain": "example.com"}); w.Code != 200 {
+		t.Fatalf("domain: %d %s", w.Code, w.Body.String())
+	}
+	w := request(h, "POST", "/api/v1/connectors", f.admin, map[string]any{"name": "edge-a"})
+	var connector control.Connector
+	if err := json.Unmarshal(w.Body.Bytes(), &connector); err != nil || w.Code != 201 {
+		t.Fatalf("connector: %d %s", w.Code, w.Body.String())
+	}
+	w = request(h, "POST", "/api/v1/connectors/"+connector.ID+"/enrollment-tokens", f.admin, nil)
+	var token struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &token); err != nil || w.Code != 201 {
+		t.Fatalf("token: %d %s", w.Code, w.Body.String())
+	}
+	w = request(h, "POST", "/api/v1/connectors/"+connector.ID+"/services", f.admin, map[string]any{"name": "web", "protocol": "http", "target": map[string]any{"host": "app", "port": 3000}})
+	var service control.Service
+	if err := json.Unmarshal(w.Body.Bytes(), &service); err != nil || w.Code != 201 {
+		t.Fatalf("service: %d %s", w.Code, w.Body.String())
+	}
+	if w := request(h, "POST", "/api/v1/services/"+service.ID+"/routes", f.admin, map[string]any{"hostname": "app.example.com"}); w.Code != 201 {
+		t.Fatalf("route: %d %s", w.Code, w.Body.String())
+	}
+	w = request(h, "POST", "/connector/v1/enrollment", token.Token, enrollment("edge-a"))
+	var enrolled contract.EnrollmentResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &enrolled); err != nil || w.Code != 201 {
+		t.Fatalf("enroll: %d %s", w.Code, w.Body.String())
+	}
+	services := enrolled.Configuration.ActiveServices()
+	if len(services) != 1 || services[0].ServiceID != service.ID || services[0].Target.Host != "app" || validation.Configuration(enrolled.Configuration) != nil {
+		t.Fatalf("configuration: %+v", enrolled.Configuration)
+	}
+}
