@@ -87,7 +87,8 @@ func TestAdminLabelAndDomainModes(t *testing.T) {
 	if len(label) != 8 || label == contract.LegacyAdminLabel || label[0] < 'a' || label[0] > 'z' {
 		t.Fatalf("admin hostname = %q", outlet.AdminHostname)
 	}
-	if outlet.Modes["example.com"] != DomainWildcard {
+	// A first domain uses per-host records until a wildcard is chosen.
+	if outlet.Modes["example.com"] != DomainHosts {
 		t.Fatalf("default mode = %#v", outlet.Modes)
 	}
 	// The label stays the same when the primary domain changes.

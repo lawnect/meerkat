@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -82,5 +83,47 @@ func TestEnvironmentSettingsYieldToSavedOnes(t *testing.T) {
 	}
 	if tg, _ := db.Telegram(ctx); tg.Source != SourceEnvironment || !tg.Enabled {
 		t.Fatalf("telegram after reset = %+v", tg)
+	}
+}
+
+// The environment owns the primary domain and the management host: the
+// console can add domains and switch this one's DNS mode, not replace it.
+func TestEnvironmentOwnsThePrimaryDomain(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetDefaults(Defaults{Domain: "example.com", AdminLabel: "cjfqbg92t6wkdp9gqctoimeue9fij7ia"})
+	outlet, err := db.ApplyEnvironmentDomain(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outlet.Domain != "example.com" || outlet.AdminHostname != "cjfqbg92t6wkdp9gqctoimeue9fij7ia.example.com" || outlet.Modes["example.com"] != DomainHosts || outlet.DomainSource != SourceEnvironment {
+		t.Fatalf("outlet = %+v", outlet)
+	}
+	if _, err := db.SetDomain(ctx, "other.com", ""); !errors.Is(err, ErrDomainFromEnvironment) {
+		t.Fatalf("replacing the domain: %v", err)
+	}
+	if outlet, err = db.SetDomainMode(ctx, "example.com", DomainWildcard); err != nil || outlet.Modes["example.com"] != DomainWildcard {
+		t.Fatalf("mode: %+v %v", outlet, err)
+	}
+	if outlet, err = db.AddDomain(ctx, "other.com", ""); err != nil || len(outlet.Domains) != 2 {
+		t.Fatalf("adding a domain: %+v %v", outlet, err)
+	}
+	// Starting again changes nothing, and keeps the chosen mode.
+	if outlet, err = db.ApplyEnvironmentDomain(ctx); err != nil || outlet.Modes["example.com"] != DomainWildcard || outlet.AdminHostname != "cjfqbg92t6wkdp9gqctoimeue9fij7ia.example.com" {
+		t.Fatalf("again: %+v %v", outlet, err)
+	}
+	// A new management host from the environment replaces the old one.
+	db.SetDefaults(Defaults{Domain: "example.com", AdminLabel: "console"})
+	if outlet, err = db.ApplyEnvironmentDomain(ctx); err != nil || outlet.AdminHostname != "console.example.com" {
+		t.Fatalf("new host: %+v %v", outlet, err)
+	}
+	// Without the environment, the console owns the domain again.
+	db.SetDefaults(Defaults{})
+	if outlet, err = db.Outlet(ctx); err != nil || outlet.DomainSource != SourceDatabase {
+		t.Fatalf("source: %+v %v", outlet, err)
 	}
 }

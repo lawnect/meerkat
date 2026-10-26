@@ -13,12 +13,15 @@ import (
 )
 
 var (
-	ErrInvalidDomain     = errors.New("invalid outlet domain")
-	ErrDomainHasRoutes   = errors.New("cannot change domain while routes exist")
-	ErrDomainExists      = errors.New("domain already registered")
-	ErrDomainNotFound    = errors.New("domain not found")
-	ErrPrimaryDomain     = errors.New("cannot remove primary domain")
-	ErrInvalidDomainMode = errors.New("invalid domain mode")
+	ErrInvalidDomain   = errors.New("invalid outlet domain")
+	ErrDomainHasRoutes = errors.New("cannot change domain while routes exist")
+	ErrDomainExists    = errors.New("domain already registered")
+	ErrDomainNotFound  = errors.New("domain not found")
+	ErrPrimaryDomain   = errors.New("cannot remove primary domain")
+	// ErrDomainFromEnvironment refuses to replace a primary domain the
+	// environment sets.
+	ErrDomainFromEnvironment = errors.New("primary domain is set by the environment")
+	ErrInvalidDomainMode     = errors.New("invalid domain mode")
 
 	ErrInvalidTunnelAddress = errors.New("invalid tunnel address")
 )
@@ -39,6 +42,10 @@ type Outlet struct {
 	// AdminHostname serves the dashboard and the Connector API. Its label is
 	// generated once, so the management endpoint is not guessable from the domain.
 	AdminHostname string `json:"admin_hostname,omitempty"`
+	// DomainSource is SourceEnvironment when the environment sets the primary
+	// domain, which the console then can't replace, and SourceDatabase when
+	// the console did.
+	DomainSource string `json:"domain_source,omitempty"`
 }
 
 func validMode(mode string) bool { return mode == DomainWildcard || mode == DomainHosts }
@@ -64,7 +71,20 @@ func (d *Database) Outlet(ctx context.Context) (Outlet, error) {
 	if err != nil {
 		return Outlet{}, err
 	}
-	return routing.Outlet.clone(), nil
+	outlet := routing.Outlet.clone()
+	outlet.DomainSource = d.domainSource(outlet.Domain)
+	return outlet, nil
+}
+
+func (d *Database) domainSource(domain string) string {
+	switch {
+	case domain == "":
+		return ""
+	case domain == d.environment().Domain:
+		return SourceEnvironment
+	default:
+		return SourceDatabase
+	}
 }
 
 func (d *Database) loadOutlet(ctx context.Context) (Outlet, error) {
@@ -81,6 +101,7 @@ func (d *Database) loadOutlet(ctx context.Context) (Outlet, error) {
 		return Outlet{}, err
 	}
 	outlet.AdminHostname = contract.AdminHostname(label, outlet.Domain)
+	outlet.DomainSource = d.domainSource(outlet.Domain)
 	outlet.Domains = []string{outlet.Domain}
 	rows, err := d.db.QueryContext(ctx, "SELECT domain FROM outlet_domains ORDER BY domain")
 	if err != nil {
@@ -275,6 +296,33 @@ func (d *Database) SetTunnelAddress(ctx context.Context, address string) error {
 // SetDomain sets the primary domain. An empty mode keeps the current one.
 // The management label is generated the first time a domain is set.
 func (d *Database) SetDomain(ctx context.Context, domain, mode string) (Outlet, error) {
+	if env := d.environment(); env.Domain != "" && domain != env.Domain {
+		return Outlet{}, ErrDomainFromEnvironment
+	}
+	return d.setDomain(ctx, domain, mode, "")
+}
+
+// ApplyEnvironmentDomain makes the primary domain and management host the
+// ones the environment names, when it names them. The Outlet calls it as it
+// starts; a domain change is refused like the console's while public
+// addresses exist.
+func (d *Database) ApplyEnvironmentDomain(ctx context.Context) (Outlet, error) {
+	env := d.environment()
+	current, err := d.Outlet(ctx)
+	if err != nil || env.Domain == "" {
+		return current, err
+	}
+	if current.Domain == env.Domain && (env.AdminLabel == "" || current.AdminHostname == contract.AdminHostname(env.AdminLabel, env.Domain)) {
+		return current, nil
+	}
+	return d.setDomain(ctx, env.Domain, "", env.AdminLabel)
+}
+
+// setDomain sets the primary domain. An empty label keeps the management
+// label, or generates one for the first domain. A first domain without a
+// mode uses per-host records, so the root and other names under it can stay
+// elsewhere until an administrator chooses a wildcard.
+func (d *Database) setDomain(ctx context.Context, domain, mode, label string) (Outlet, error) {
 	if mode != "" && !validMode(mode) {
 		return Outlet{}, ErrInvalidDomainMode
 	}
@@ -282,8 +330,9 @@ func (d *Database) SetDomain(ctx context.Context, domain, mode string) (Outlet, 
 	if err != nil {
 		return Outlet{}, err
 	}
-	label := ""
-	if current.AdminHostname != "" {
+	if label != "" {
+		// Given by the environment.
+	} else if current.AdminHostname != "" {
 		label = strings.TrimSuffix(current.AdminHostname, "."+current.Domain)
 	} else if label, err = randomLabel(); err != nil {
 		return Outlet{}, err
@@ -294,7 +343,7 @@ func (d *Database) SetDomain(ctx context.Context, domain, mode string) (Outlet, 
 	if mode == "" {
 		mode = current.Modes[current.Domain]
 		if mode == "" {
-			mode = DomainWildcard
+			mode = DomainHosts
 		}
 	}
 	if current.Domain != "" && current.Domain != domain {

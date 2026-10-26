@@ -24,6 +24,8 @@ export interface Outlet {
   modes?: Record<string, DomainMode>;
   // 관리 화면과 Connector API 주소. 대표 도메인을 처음 등록할 때 정한 8글자 이름을 씁니다.
   admin_hostname?: string;
+  // environment: 환경 변수(MEERKAT_DOMAIN)로 정한 대표 도메인이라 화면에서 바꿀 수 없음.
+  domain_source?: 'environment' | 'database';
   // Outlet 프로그램 버전.
   version?: string;
   tunnel?: OutletTunnel;

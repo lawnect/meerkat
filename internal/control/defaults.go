@@ -18,6 +18,12 @@ const (
 type Defaults struct {
 	SSO      *SSO
 	Telegram *Telegram
+	// Domain and AdminLabel name the primary domain and the management host
+	// under it. Unlike the other settings, the environment owns them: the
+	// console can add domains and change this one's DNS mode, but can't
+	// replace it. An empty AdminLabel keeps a generated one.
+	Domain     string
+	AdminLabel string
 }
 
 // SetDefaults installs the environment's settings. Call it once, before the

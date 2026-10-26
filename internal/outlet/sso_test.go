@@ -593,3 +593,21 @@ func TestProviderRedirectsStayOnHTTPS(t *testing.T) {
 		t.Fatal("refused an https redirect")
 	}
 }
+
+// The console can't replace a primary domain the environment sets.
+func TestEnvironmentDomainCannotBeReplaced(t *testing.T) {
+	a := newAlertFixture(t)
+	a.db.SetDefaults(control.Defaults{Domain: "example.com"})
+	// Before setup the bootstrap token signs admin requests.
+	token := a.admin
+	if w := request(a.store.Handler(), "PUT", "/api/v1/outlet", token, map[string]any{"domain": "other.com"}); w.Code != 409 || errorCode(t, w) != "domain_from_environment" {
+		t.Fatalf("replace: %d %s", w.Code, w.Body.String())
+	}
+	w := request(a.store.Handler(), "GET", "/api/v1/outlet", token, nil)
+	var outlet struct {
+		DomainSource string `json:"domain_source"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &outlet); err != nil || outlet.DomainSource != "environment" {
+		t.Fatalf("outlet: %s", w.Body.String())
+	}
+}

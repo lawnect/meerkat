@@ -257,7 +257,7 @@ func TestCachedViewsAreCopies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outlet.Domains[0], outlet.Modes["example.com"] = "evil.example", DomainHosts
+	outlet.Domains[0], outlet.Modes["example.com"] = "evil.example", DomainWildcard
 	outlet.Domains = append(outlet.Domains, "more.example")
 	connectors, err := db.ListConnectors(ctx)
 	if err != nil {
@@ -265,7 +265,7 @@ func TestCachedViewsAreCopies(t *testing.T) {
 	}
 	connectors[0].Name = "renamed"
 	again := fresh(t, db, "after caller edits")
-	if again.Outlet.Domains[0] != "example.com" || len(again.Outlet.Domains) != 1 || again.Outlet.Modes["example.com"] != DomainWildcard {
+	if again.Outlet.Domains[0] != "example.com" || len(again.Outlet.Domains) != 1 || again.Outlet.Modes["example.com"] != DomainHosts {
 		t.Fatalf("cache changed through a copy: %+v", again.Outlet)
 	}
 	if listed, _ := db.ListConnectors(ctx); listed[0].Name != "edge" {

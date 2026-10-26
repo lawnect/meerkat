@@ -48,10 +48,19 @@ func run() error {
 		slog.Warn(warning)
 	}
 	controlDB.SetDefaults(defaults)
-	if domain, warning := environmentDomain(os.Getenv); warning != "" {
-		slog.Warn(warning)
-	} else if domain != "" {
-		cfg.Domain = domain
+	// The environment's domain and management host apply before the Outlet
+	// writes Caddy's and the tunnel's configuration. A refused change (public
+	// addresses still use the old domain) keeps the Outlet running.
+	if before, err := controlDB.Outlet(context.Background()); err == nil {
+		if after, err := controlDB.ApplyEnvironmentDomain(context.Background()); err != nil {
+			slog.Warn("the domain from MEERKAT_DOMAIN or MEERKAT_ADMIN_HOSTNAME isn't applied", "error", err.Error())
+		} else if before.AdminHostname != "" && before.AdminHostname != after.AdminHostname {
+			// Saved limits follow the management host, as when the console changes it.
+			if err := controlDB.RenameRateLimitHost(context.Background(), before.AdminHostname, after.AdminHostname, time.Now()); err != nil {
+				return err
+			}
+			slog.Warn("management host changed; Connectors set up with the old address need a new enrollment", "from", before.AdminHostname, "to", after.AdminHostname)
+		}
 	}
 	upstream, metrics, caddyWarnings := caddyAddresses(os.Getenv)
 	for _, warning := range caddyWarnings {

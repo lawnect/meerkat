@@ -73,14 +73,29 @@ func TestCaddyAddresses(t *testing.T) {
 }
 
 func TestEnvironmentDomain(t *testing.T) {
-	for raw, want := range map[string]string{"": "", " Example.COM. ": "example.com", "tunnel.example.com": "tunnel.example.com"} {
-		if got, warning := environmentDomain(env(map[string]string{"MEERKAT_DOMAIN": raw})); got != want || warning != "" {
-			t.Fatalf("%q: %q, %q", raw, got, warning)
+	for _, c := range []struct{ domain, admin, wantDomain, wantLabel string }{
+		{"", "", "", ""},
+		{" Example.COM. ", "", "example.com", ""},
+		{"", "Console.Example.com", "example.com", "console"},
+		{"example.com", "cjfqbg92t6wkdp9gqctoimeue9fij7ia.example.com", "example.com", "cjfqbg92t6wkdp9gqctoimeue9fij7ia"},
+		{"tunnel.example.com", "admin.tunnel.example.com", "tunnel.example.com", "admin"},
+	} {
+		defaults, warnings := environmentDefaults(env(map[string]string{"MEERKAT_DOMAIN": c.domain, "MEERKAT_ADMIN_HOSTNAME": c.admin}))
+		if len(warnings) != 0 || defaults.Domain != c.wantDomain || defaults.AdminLabel != c.wantLabel {
+			t.Fatalf("%+v: %q %q %v", c, defaults.Domain, defaults.AdminLabel, warnings)
 		}
 	}
-	for _, raw := range []string{"https://example.com", "example.com/x", "exa mple.com", "*.example.com"} {
-		if got, warning := environmentDomain(env(map[string]string{"MEERKAT_DOMAIN": raw})); got != "" || warning == "" {
-			t.Fatalf("%q accepted: %q", raw, got)
+	for _, c := range []struct{ domain, admin, wantDomain string }{
+		{"https://example.com", "", ""},
+		{"*.example.com", "", ""},
+		{"example.com", "console.other.com", "example.com"},
+		{"example.com", "a.b.example.com", "example.com"},
+		{"", "example", ""},
+		{"", "con sole.example.com", ""},
+	} {
+		defaults, warnings := environmentDefaults(env(map[string]string{"MEERKAT_DOMAIN": c.domain, "MEERKAT_ADMIN_HOSTNAME": c.admin}))
+		if len(warnings) != 1 || defaults.Domain != c.wantDomain || defaults.AdminLabel != "" {
+			t.Fatalf("%+v accepted: %q %q %v", c, defaults.Domain, defaults.AdminLabel, warnings)
 		}
 	}
 }

@@ -822,6 +822,10 @@ func (s *Store) updateOutlet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	outlet, err := s.control.SetDomain(r.Context(), req.Domain, req.Mode)
+	if errors.Is(err, control.ErrDomainFromEnvironment) {
+		fail(w, r, 409, "domain_from_environment")
+		return
+	}
 	if errors.Is(err, control.ErrInvalidDomain) {
 		fail(w, r, 400, "invalid_domain")
 		return

@@ -322,7 +322,7 @@ SSH 터널로 여는 **로컬 관리 포트**(`https://localhost:18443`)에서�
 
 | 변수 | 설정 |
 |---|---|
-| `MEERKAT_DOMAIN` | 도메인이 없는 Outlet이 시작할 때 등록할 도메인(예: `example.com`). Caddy는 도메인이 있어야 80/443을 엽니다. 이 값을 지정하고 `*.example.com`을 서버로 연결하면 로컬 관리 포트 없이 관리 화면에 접속할 수 있습니다. 관리 화면 주소는 로그에 출력됩니다. 관리 화면에서 지정한 도메인이 있으면 그 값을 유지합니다. |
+| `MEERKAT_DOMAIN`, `MEERKAT_ADMIN_HOSTNAME` | 대표 도메인(예: `example.com`)과 그 바로 아래의 관리 주소(예: `console.example.com`, 지정하지 않으면 무작위 8자). Outlet 시작 시 적용되며 관리 화면에서 변경할 수 없습니다. 도메인 추가와 이 도메인의 DNS 레코드 방식 변경은 관리 화면에서 합니다. 대표 도메인은 개별 호스트 방식으로 시작합니다. 관리 주소(443: 관리 콘솔, 2333: 터널 접속)와 공개 주소마다 DNS 레코드를 서버로 지정하거나, 와일드카드 방식으로 변경하십시오. Caddy는 도메인이 있어야 80/443을 엽니다. 관리 화면 주소는 로그에 출력됩니다. |
 | `MEERKAT_OIDC_ISSUER`, `MEERKAT_OIDC_CLIENT_ID`, `MEERKAT_OIDC_CLIENT_SECRET` | OpenID Connect 공급자. 발급자 URL을 넣으면 SSO가 켜집니다. |
 | `MEERKAT_OIDC_LABEL`, `MEERKAT_OIDC_SCOPES`, `MEERKAT_OIDC_GROUPS_CLAIM` | 버튼 이름, 범위(기본 `openid email profile`), 그룹 클레임(기본 `groups`). |
 | `MEERKAT_ADMIN_EMAILS`, `MEERKAT_ADMIN_GROUPS` | 관리자로 로그인할 사람: 이메일이나 `@도메인`, 그룹. 둘 다 쓰면 둘 다 맞아야 합니다. |

@@ -45,12 +45,16 @@
     dnsMode: 'DNS record mode',
     modes: { wildcard: 'Wildcard', hosts: 'Individual hosts' } as Record<DomainMode, string>,
     modeHints: {
-      wildcard: 'One * record sends every subdomain to the Outlet.',
-      hosts: 'One record per address. Use this when the root or other subdomains run on another server.',
+      wildcard: 'One * record routes every subdomain to the Outlet.',
+      hosts: 'One record each for the admin address and every public address. Use this when the root or other subdomains run on another server.',
     } as Record<DomainMode, string>,
     modeSaveFailed: (code: string) => `Couldn't change the DNS records mode: ${code}`,
     noRecordsYet: 'Records appear here when you add public addresses.',
     adminAddress: 'Admin address',
+    adminPorts: (tunnelPort: string) => tunnelPort ? `HTTPS 443: admin console · TCP ${tunnelPort}: tunnel connections` : 'HTTPS 443: admin console',
+    fromEnvironment: 'Set by environment',
+    fromEnvironmentTip: 'Set by MEERKAT_DOMAIN and MEERKAT_ADMIN_HOSTNAME. Change them in the deployment\'s environment variables.',
+    domainFromEnvironment: 'The primary domain is set by the environment (MEERKAT_DOMAIN) and can\'t be changed here.',
     publicAddresses: 'Public addresses',
     publicAddress: 'Public address',
     tunnel: 'Tunnel',
@@ -88,7 +92,7 @@
     customAddress: 'Custom',
     defaultAddress: 'Default',
     notConfigured: 'Not set',
-    tunnelHelp: 'The address the tunnel container on your app server uses to reach the Outlet over TCP. It can be set separately from the admin console address.',
+    tunnelHelp: 'The address the tunnel container on your app server uses to reach the Outlet over TCP. Defaults to the admin address on the tunnel port, such as admin address:2333; it can be set separately.',
     tunnelHelpSet: (port: string) => `This host must point to the Outlet server IP as DNS only, and TCP port ${port} must be open to the outside.`,
     tunnelHelpUnset: 'Register a primary domain or set an address manually.',
     testConnection: 'Test connection',
@@ -127,7 +131,7 @@
     save: 'Save',
     saving: 'Saving…',
     changeTunnel: 'Change tunnel address',
-    tunnelInputTip: 'Format: host:port. Leave it blank to use the default address. If the primary domain root is used by another server, specify a host that points to the Outlet server. If you omit the port, the Outlet container\'s tunnel port (default 2333) is used, so if you changed the public port on the server (MEERKAT_TUNNEL_PORT), include the port.',
+    tunnelInputTip: 'Format: host:port. Leave it blank to use the default, the admin address on the tunnel port. Without a port, the Outlet container\'s tunnel port (default 2333) is used; if you changed the public port on the server (MEERKAT_TUNNEL_PORT), include it.',
     tunnelSaveNote: 'The running tunnel reconnects to the new address within about 5 seconds.',
     deleteWarning: 'This can\'t be undone. You can\'t delete a domain that still has public addresses.',
   }, {
@@ -137,15 +141,19 @@
     primaryDomain: '대표 도메인',
     additionalDomain: '추가 도메인',
     dnsSettings: 'DNS 설정',
-    dnsMode: 'DNS 방식',
+    dnsMode: 'DNS 레코드 방식',
     modes: { wildcard: '와일드카드', hosts: '개별 호스트' },
     modeHints: {
-      wildcard: '* 레코드 하나로 모든 하위 도메인을 Outlet으로 보냅니다.',
-      hosts: '주소마다 레코드를 만듭니다. 루트나 다른 하위 도메인을 다른 서버에서 사용할 때 선택하세요.',
+      wildcard: '* 레코드 하나로 모든 하위 도메인을 Outlet으로 연결합니다.',
+      hosts: '관리 주소와 공개 주소별로 레코드를 등록합니다. 루트 도메인 또는 다른 하위 도메인을 별도 서버에서 운영하는 경우 선택합니다.',
     },
-    modeSaveFailed: (code: string) => `DNS 방식을 바꾸지 못했습니다: ${code}`,
-    noRecordsYet: '공개 주소를 추가하면 여기에 레코드가 표시됩니다.',
+    modeSaveFailed: (code: string) => `DNS 레코드 방식 변경 중 오류가 발생했습니다: ${code}`,
+    noRecordsYet: '공개 주소 추가 시 레코드가 표시됩니다.',
     adminAddress: '관리 주소',
+    adminPorts: (tunnelPort: string) => tunnelPort ? `HTTPS 443: 관리 콘솔 · TCP ${tunnelPort}: 터널 접속` : 'HTTPS 443: 관리 콘솔',
+    fromEnvironment: '환경 변수로 구성됨',
+    fromEnvironmentTip: 'MEERKAT_DOMAIN, MEERKAT_ADMIN_HOSTNAME 환경 변수로 구성됩니다. 변경은 배포 환경 변수에서 하십시오.',
+    domainFromEnvironment: '대표 도메인은 환경 변수(MEERKAT_DOMAIN)로 구성되어 있어 변경할 수 없습니다.',
     publicAddresses: '공개 주소',
     publicAddress: '공개 주소',
     tunnel: '터널',
@@ -153,39 +161,39 @@
     open: '열기',
     search: '도메인 검색',
     searchPlaceholder: '도메인 검색',
-    allModes: '모든 방식',
+    allModes: '전체 방식',
     reset: '필터 초기화',
     domainListAria: '도메인 목록',
-    noMatchesTitle: '조건에 맞는 도메인이 없습니다',
+    noMatchesTitle: '일치하는 도메인이 없습니다',
     clearFilters: '필터 초기화',
     revert: '되돌리기',
-    noPublicAddresses: '이 도메인을 쓰는 공개 주소가 없습니다',
+    noPublicAddresses: '이 도메인을 사용하는 공개 주소가 없습니다',
     missingDomain: '등록되지 않은 도메인입니다',
-    backToDomains: '도메인 목록으로',
+    backToDomains: '도메인 목록으로 이동',
     dnsPointBefore: '',
-    dnsPointAfter: '을 Outlet 서버 IP로 연결하세요.',
-    dnsPortsShort: '80번과 443번 포트에 접근할 수 있어야 합니다.',
+    dnsPointAfter: ' 레코드를 Outlet 서버 IP로 지정하십시오.',
+    dnsPortsShort: '80, 443 포트를 외부에 개방하십시오.',
     dnsPortsLabel: '포트 개방',
-    dnsPortsTip: '80번 포트는 HTTPS 인증서 발급에, 443번 포트는 HTTPS 접속에 쓰입니다. 이 도메인의 인증서는 자동으로 발급·갱신됩니다. Cloudflare DNS를 쓴다면 프록시를 끈 ‘DNS 전용’을 권장합니다.',
+    dnsPortsTip: '80 포트는 HTTPS 인증서 발급, 443 포트는 HTTPS 접속에 사용됩니다. 인증서는 자동으로 발급 및 갱신됩니다. Cloudflare DNS 사용 시 프록시를 해제한 ‘DNS 전용’ 설정을 권장합니다.',
     dnsCloudflareBadge: 'Cloudflare: DNS 전용',
     checkDns: 'DNS 확인',
     checking: '확인 중…',
-    resolved: '응답 있음',
+    resolved: '응답 정상',
     dnsNoResponse: 'DNS 응답 없음',
     noHostsToCheck: '확인할 호스트가 없습니다',
-    dnsNote: (target: string) => `이 검사는 DNS 응답 여부를 확인합니다. Cloudflare 프록시가 켜져 있으면 표시 IP는 서버 IP가 아닌 Cloudflare IP일 수 있습니다. HTTPS 인증서와 실제 접속은 ${target}로 확인하세요.`,
+    dnsNote: (target: string) => `DNS 응답 여부만 확인합니다. Cloudflare 프록시가 활성화된 경우 서버 IP 대신 Cloudflare IP가 표시될 수 있습니다. HTTPS 인증서와 실제 접속은 ${target}에서 확인하십시오.`,
     registeredPublicAddress: '등록한 공개 주소',
     changePrimary: '대표 도메인 변경',
     deleteDomain: '도메인 삭제',
-    noDomainsTitle: '아직 도메인이 없습니다',
-    noDomainsBody: '도메인을 추가하면 관리 화면을 열고 하위 도메인으로 서비스를 공개할 수 있습니다.',
+    noDomainsTitle: '등록된 도메인이 없습니다',
+    noDomainsBody: '도메인을 추가하면 관리 콘솔에 접속하고 하위 도메인으로 서비스를 공개할 수 있습니다.',
     tunnelAddress: '터널 주소',
     customAddress: '직접 지정',
     defaultAddress: '기본값',
-    notConfigured: '설정되지 않음',
-    tunnelHelp: '앱 서버의 터널 컨테이너가 Outlet에 TCP로 접속하는 주소로, 관리 화면 주소와 따로 지정할 수 있습니다.',
-    tunnelHelpSet: (port: string) => `이 호스트가 DNS 전용으로 Outlet 서버 IP를 가리키고, TCP ${port} 포트가 외부에 열려 있어야 합니다.`,
-    tunnelHelpUnset: '대표 도메인을 등록하거나 주소를 직접 지정하세요.',
+    notConfigured: '미설정',
+    tunnelHelp: '앱 서버의 터널 컨테이너가 Outlet에 TCP로 접속하는 주소입니다. 기본값은 관리 주소의 터널 포트(예: 관리 주소:2333)이며, 별도로 지정할 수 있습니다.',
+    tunnelHelpSet: (port: string) => `이 호스트의 DNS 레코드가 Outlet 서버 IP를 가리켜야 하며(DNS 전용), TCP ${port} 포트를 외부에 개방해야 합니다.`,
+    tunnelHelpUnset: '대표 도메인을 등록하거나 주소를 직접 지정하십시오.',
     testConnection: '접속 테스트',
     changeAddress: '주소 변경',
     dnsNoResponseFor: (host: string) => `DNS 응답 없음: ${host}`,
@@ -193,27 +201,27 @@
     reachable: '접속 가능',
     failed: '실패',
     latency: (ms: number) => `${ms}ms`,
-    dialRefused: '연결 거부 · 포트가 닫혀 있음',
+    dialRefused: '연결 거부 · 포트 닫힘',
     dialTimeout: '시간 초과 · 방화벽 차단 가능성',
     dialUnreachable: '네트워크 경로 없음',
-    dialNotAllowed: '로컬 주소 · 확인하지 않음',
-    partialWarning: '터널 컨테이너가 실패한 주소를 먼저 시도하면 연결이 늦어지거나 실패할 수 있습니다. 해당 DNS 레코드를 확인하세요. IPv6 주소만 실패했다면 Outlet 서버의 Docker에 IPv6 경로가 없어서일 수도 있습니다.',
-    tunnelNote: (address: string, command: string) => `Outlet 서버에서 ${address}로 TCP 연결만 시험한 결과입니다. 응답한 서버가 이 Outlet인지, 터널을 실행하는 서버의 방화벽이 허용하는지는 확인하지 않습니다. 그 서버에서도 ${command}로 확인하세요.`,
+    dialNotAllowed: '로컬 주소 · 확인 제외',
+    partialWarning: '터널 컨테이너가 실패한 주소를 먼저 시도하면 연결이 지연되거나 실패할 수 있습니다. 해당 DNS 레코드를 확인하십시오. IPv6 주소만 실패한 경우 Outlet 서버의 Docker에 IPv6 경로가 없을 수 있습니다.',
+    tunnelNote: (address: string, command: string) => `Outlet 서버에서 ${address}(으)로의 TCP 연결만 확인합니다. 응답한 서버가 이 Outlet인지, 터널 실행 서버의 방화벽이 허용하는지는 확인하지 않습니다. 해당 서버에서 ${command} 명령으로도 확인하십시오.`,
     domainHasRoutes: '공개 주소가 등록된 상태에서는 대표 도메인을 변경할 수 없습니다.',
     domainExists: '이미 등록된 도메인이거나 기존 도메인의 하위 도메인입니다.',
-    invalidDomain: '도메인 형식을 확인하세요.',
-    domainSaveFailed: (code: string) => `도메인을 저장하지 못했습니다: ${code}`,
-    dnsCheckFailed: (message: string) => `DNS를 확인하지 못했습니다: ${message}`,
+    invalidDomain: '도메인 형식이 올바르지 않습니다.',
+    domainSaveFailed: (code: string) => `도메인 저장 중 오류가 발생했습니다: ${code}`,
+    dnsCheckFailed: (message: string) => `DNS 확인 중 오류가 발생했습니다: ${message}`,
     domainInUse: '이 도메인을 사용하는 공개 주소가 있어 삭제할 수 없습니다.',
-    domainDeleteFailed: (code: string) => `도메인을 삭제하지 못했습니다: ${code}`,
-    invalidTunnelAddress: '주소 형식을 확인하세요. 예: tunnel.example.com:2333 (127.0.0.1, localhost는 사용할 수 없습니다)',
-    tunnelAddressUnset: '터널 주소가 없습니다. 대표 도메인을 등록하거나 주소를 지정하세요.',
-    tunnelDefaultUnavailable: '대표 도메인이 없어 기본값이 없으므로 주소를 비울 수 없습니다.',
-    tunnelCheckFailed: '접속을 확인하지 못했습니다',
-    tunnelSaveFailed: '터널 주소를 저장하지 못했습니다',
+    domainDeleteFailed: (code: string) => `도메인 삭제 중 오류가 발생했습니다: ${code}`,
+    invalidTunnelAddress: '주소 형식이 올바르지 않습니다. 예: tunnel.example.com:2333 (127.0.0.1, localhost 사용 불가)',
+    tunnelAddressUnset: '터널 주소가 없습니다. 대표 도메인을 등록하거나 주소를 지정하십시오.',
+    tunnelDefaultUnavailable: '대표 도메인이 없어 기본값을 사용할 수 없습니다. 주소를 입력하십시오.',
+    tunnelCheckFailed: '접속 확인 중 오류가 발생했습니다',
+    tunnelSaveFailed: '터널 주소 저장 중 오류가 발생했습니다',
     setPrimary: '대표 도메인 설정',
-    addNewDomain: '새 도메인 추가',
-    primaryDialogDescription: '관리 화면은 대표 도메인 아래 무작위 8글자 주소(예: k7m2x9qa.example.com)에서 열립니다. 대표 도메인을 바꿔도 이 이름은 유지됩니다.',
+    addNewDomain: '도메인 추가',
+    primaryDialogDescription: '관리 콘솔은 대표 도메인 아래 무작위 8자 주소(예: k7m2x9qa.example.com)에서 제공됩니다. 대표 도메인을 변경해도 이 이름은 유지됩니다.',
     domain: '도메인',
     domainPlaceholder: '예: example.com',
     close: '닫기',
@@ -222,9 +230,9 @@
     save: '저장',
     saving: '저장 중…',
     changeTunnel: '터널 주소 변경',
-    tunnelInputTip: '호스트:포트 형식이며, 비워 두면 기본 주소를 사용합니다. 대표 도메인 루트를 다른 서버에 쓰고 있다면 Outlet 서버를 가리키는 호스트를 지정하세요. 포트를 생략하면 Outlet 컨테이너의 터널 포트(기본 2333)를 붙이므로, 서버에서 공개 포트(MEERKAT_TUNNEL_PORT)를 바꿨다면 포트까지 입력하세요.',
-    tunnelSaveNote: '실행 중인 터널은 약 5초 안에 새 주소로 다시 연결합니다.',
-    deleteWarning: '삭제 후에는 되돌릴 수 없습니다. 이 도메인을 사용하는 공개 주소가 있으면 삭제할 수 없습니다.',
+    tunnelInputTip: '호스트:포트 형식. 비워 두면 기본값(관리 주소:터널 포트)을 사용합니다. 포트 생략 시 Outlet 컨테이너의 터널 포트(기본 2333)가 적용되므로, 서버의 공개 포트(MEERKAT_TUNNEL_PORT)를 변경한 경우 포트를 함께 입력하십시오.',
+    tunnelSaveNote: '실행 중인 터널은 약 5초 이내에 새 주소로 재연결됩니다.',
+    deleteWarning: '삭제한 도메인은 복원할 수 없습니다. 이 도메인을 사용하는 공개 주소가 있으면 삭제할 수 없습니다.',
   });
 
   let { outlet, records, onSaved, detail, onOpenDetail, onBack }: {
@@ -281,6 +289,8 @@
   const draftAddress = $derived(normalizeHost(tunnelInput) || tunnel?.default_address || '');
   const tunnelFieldError = $derived(tunnelDialogError || tunnelCheckErrors.draft || '');
   const tunnelHost = $derived(tunnel?.address ? hostOf(tunnel.address) : '');
+  // 환경 변수(MEERKAT_DOMAIN)로 정한 대표 도메인은 화면에서 바꿀 수 없습니다.
+  const domainFromEnvironment = $derived(outlet.domain_source === 'environment');
 
   function dialError(code = ''): string {
     return code === 'connection_refused' ? t().dialRefused : code === 'timeout' ? t().dialTimeout : code === 'unreachable' ? t().dialUnreachable : code === 'address_not_allowed' ? t().dialNotAllowed : t().connectFailed;
@@ -392,7 +402,8 @@
   function openDomainDialog(mode: 'add' | 'primary'): void {
     domainDialogMode = mode;
     domainInput = mode === 'primary' ? outlet.domain || '' : '';
-    modeInput = mode === 'primary' && outlet.domain ? modeOf(outlet.domain) : 'wildcard';
+    // 대표 도메인은 개별 호스트 방식으로 시작합니다. 와일드카드는 필요할 때 상세 화면에서 바꿉니다.
+    modeInput = mode === 'primary' ? (outlet.domain ? modeOf(outlet.domain) : 'hosts') : 'wildcard';
     dialogError = '';
     domainOpen = true;
   }
@@ -432,7 +443,7 @@
       domainOpen = false;
     } catch (cause) {
       const code = errorMessage(cause);
-      dialogError = code === 'domain_has_routes' ? t().domainHasRoutes : code === 'domain_exists' ? t().domainExists : code === 'invalid_domain' ? t().invalidDomain : t().domainSaveFailed(code);
+      dialogError = code === 'domain_has_routes' ? t().domainHasRoutes : code === 'domain_exists' ? t().domainExists : code === 'invalid_domain' ? t().invalidDomain : code === 'domain_from_environment' ? t().domainFromEnvironment : t().domainSaveFailed(code);
     } finally {
       dialogBusy = false;
     }
@@ -544,7 +555,7 @@
   {@const domainRoutes = routes.filter((route) => route.hostname.endsWith(`.${detail}`)).sort((a, b) => a.hostname.localeCompare(b.hostname))}
   {#snippet detailAction()}
     {#if primary}
-      <Button variant="outline" onclick={() => openDomainDialog('primary')}><Edit aria-hidden="true" />{t().changePrimary}</Button>
+      {#if !domainFromEnvironment}<Button variant="outline" onclick={() => openDomainDialog('primary')}><Edit aria-hidden="true" />{t().changePrimary}</Button>{/if}
     {:else}
       <Button variant="destructive" onclick={() => openDeleteDialog(detail)}><Delete aria-hidden="true" />{t().deleteDomain}</Button>
     {/if}
@@ -566,9 +577,22 @@
     <div class="grid min-w-0 gap-4">
       <Card.Root size="sm" role="region" aria-labelledby="dns-title">
         <Card.Header>
-          <Card.Title id="dns-title" class="flex flex-wrap items-center gap-2">{t().dnsSettings}<Badge variant={primary ? 'secondary' : 'outline'} class="cursor-default select-none">{primary ? t().primaryDomain : t().additionalDomain}</Badge></Card.Title>
+          <Card.Title id="dns-title" class="flex flex-wrap items-center gap-2">
+            {t().dnsSettings}<Badge variant={primary ? 'secondary' : 'outline'} class="cursor-default select-none">{primary ? t().primaryDomain : t().additionalDomain}</Badge>
+            {#if primary && domainFromEnvironment}
+              <Tooltip.Root>
+                <Tooltip.Trigger>
+                  {#snippet child({ props })}<Badge {...props} variant="outline" tabindex={0} class="cursor-default select-none">{t().fromEnvironment}</Badge>{/snippet}
+                </Tooltip.Trigger>
+                <Tooltip.Content class="max-w-xs">{t().fromEnvironmentTip}</Tooltip.Content>
+              </Tooltip.Root>
+            {/if}
+          </Card.Title>
           {#if primary && outlet.admin_hostname}
-            <Card.Description class="flex min-w-0 items-center gap-1.5">{t().adminAddress}<CopyText value={outlet.admin_hostname} class="text-xs" /></Card.Description>
+            <Card.Description class="grid gap-1">
+              <span class="flex min-w-0 items-center gap-1.5">{t().adminAddress}<CopyText value={outlet.admin_hostname} class="text-xs" /></span>
+              <span>{t().adminPorts(tunnelHost === outlet.admin_hostname && tunnel?.address ? portOf(tunnel.address) : '')}</span>
+            </Card.Description>
           {/if}
           <Card.Action>
             <ToggleGroup.Root type="single" variant="outline" size="sm" aria-label={t().dnsMode} disabled={modeBusy[detail]} value={detailMode} onValueChange={(next) => { if (next) draftMode = next as DomainMode; }}>

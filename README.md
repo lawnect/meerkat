@@ -323,7 +323,7 @@ The Outlet also reads these settings from its environment, so a deployment can s
 
 | Variable | Setting |
 |---|---|
-| `MEERKAT_DOMAIN` | Domain registered when the Outlet starts without one, such as `example.com`. Caddy listens on 80 and 443 only once a domain exists, so set it (and point `*.example.com` at the server) to reach the console without the local admin port. The log prints the console's address. A domain set in the console stays. |
+| `MEERKAT_DOMAIN`, `MEERKAT_ADMIN_HOSTNAME` | Primary domain, such as `example.com`, and the admin address directly under it, such as `console.example.com` (without it, a random 8-character name). Applied when the Outlet starts; the console can't change them, but can add more domains and switch this one's DNS records mode. The primary domain starts with one record per host: point the admin address at the server, which serves the console on 443 and tunnel connections on 2333, and add a record for each public address, or switch to a wildcard. Caddy listens on 80 and 443 only once a domain exists. The log prints the console's address. |
 | `MEERKAT_OIDC_ISSUER`, `MEERKAT_OIDC_CLIENT_ID`, `MEERKAT_OIDC_CLIENT_SECRET` | OpenID Connect provider. Setting the issuer turns single sign-on on. |
 | `MEERKAT_OIDC_LABEL`, `MEERKAT_OIDC_SCOPES`, `MEERKAT_OIDC_GROUPS_CLAIM` | Button name, scopes (default `openid email profile`), groups claim (default `groups`). |
 | `MEERKAT_ADMIN_EMAILS`, `MEERKAT_ADMIN_GROUPS` | Who signs in as administrator: emails or `@domain`, and groups. When both are set, a person must match both. |

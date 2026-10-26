@@ -14,6 +14,7 @@ import (
 // environmentDefaults reads the settings a deployment can give in
 // environment variables. Values saved from the admin console override them.
 //
+//	MEERKAT_DOMAIN, MEERKAT_ADMIN_HOSTNAME        primary domain and the management host directly under it
 //	MEERKAT_OIDC_ISSUER, MEERKAT_OIDC_CLIENT_ID, MEERKAT_OIDC_CLIENT_SECRET
 //	MEERKAT_OIDC_LABEL, MEERKAT_OIDC_SCOPES, MEERKAT_OIDC_GROUPS_CLAIM
 //	MEERKAT_ADMIN_EMAILS, MEERKAT_ADMIN_GROUPS   who signs in as administrator
@@ -41,6 +42,26 @@ func environmentDefaults(getenv func(string) string) (control.Defaults, []string
 		}
 		return parsed, nil
 	}
+
+	// The management host is one label under the primary domain, so it names
+	// the domain by itself; given both, they must agree.
+	domain := strings.ToLower(strings.TrimSuffix(value("MEERKAT_DOMAIN"), "."))
+	if domain != "" && !validation.Hostname(domain) {
+		warnings = append(warnings, "MEERKAT_DOMAIN must be a domain name, such as example.com; it is ignored")
+		domain = ""
+	}
+	if admin := strings.ToLower(strings.TrimSuffix(value("MEERKAT_ADMIN_HOSTNAME"), ".")); admin != "" {
+		label, under, _ := strings.Cut(admin, ".")
+		switch {
+		case !validation.Hostname(admin) || !validation.Hostname(under):
+			warnings = append(warnings, "MEERKAT_ADMIN_HOSTNAME must be a host name directly under the domain, such as console.example.com; it is ignored")
+		case domain != "" && under != domain:
+			warnings = append(warnings, "MEERKAT_ADMIN_HOSTNAME must be directly under MEERKAT_DOMAIN; it is ignored")
+		default:
+			domain, defaults.AdminLabel = under, label
+		}
+	}
+	defaults.Domain = domain
 
 	issuer := value("MEERKAT_OIDC_ISSUER")
 	if issuer == "" {
@@ -85,17 +106,6 @@ func environmentDefaults(getenv func(string) string) (control.Defaults, []string
 		defaults.Telegram = &telegram
 	}
 	return defaults, warnings
-}
-
-// environmentDomain reads MEERKAT_DOMAIN, the domain a new Outlet registers
-// when it starts, so Caddy answers on 80 and 443 and the management host is
-// reachable without the local admin port. A domain already set stays.
-func environmentDomain(getenv func(string) string) (string, string) {
-	raw := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(getenv("MEERKAT_DOMAIN")), "."))
-	if raw == "" || validation.Hostname(raw) {
-		return raw, ""
-	}
-	return "", "MEERKAT_DOMAIN must be a domain name, such as example.com; it is ignored"
 }
 
 // caddyAddresses reads where Caddy and the Outlet reach each other, for

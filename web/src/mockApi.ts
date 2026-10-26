@@ -280,6 +280,8 @@ function outletResponse(): Outlet {
     domains: [...state.outlet.domains],
     modes: { ...state.outlet.modes },
     admin_hostname: state.outlet.domain ? adminHostname(state.outlet.domain) : undefined,
+    // 미리보기는 대표 도메인을 환경 변수(MEERKAT_DOMAIN)로 정한 배포를 흉내 냅니다.
+    domain_source: state.outlet.domain ? 'environment' : undefined,
     version: '0.1.0',
     tunnel: { address: state.tunnelAddress || defaultAddress, default_address: defaultAddress, custom: Boolean(state.tunnelAddress) },
   };
@@ -686,6 +688,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
   }
   if (path === '/api/v1/outlet' && method === 'PUT') {
     if (!input.domain) fail('invalid_domain');
+    if (state.outlet.domain && input.domain !== state.outlet.domain) fail('domain_from_environment');
     if (state.outlet.domain !== input.domain && state.routes.length) fail('domain_has_routes');
     const mode = modeOf(input.mode, state.outlet.modes[state.outlet.domain]);
     delete state.outlet.modes[state.outlet.domain];

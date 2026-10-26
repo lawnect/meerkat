@@ -372,6 +372,9 @@ func (r *fakeResolver) setFailing(failing bool) {
 func TestDNSFailureAlertRunsEveryFifteenMinutes(t *testing.T) {
 	a := newAlertFixture(t)
 	a.configureTelegram(t, false)
+	if _, err := a.db.SetDomainMode(context.Background(), "example.com", control.DomainWildcard); err != nil {
+		t.Fatal(err)
+	}
 	resolver := &fakeResolver{failing: true}
 	a.store.lookupIP = resolver.lookup
 
