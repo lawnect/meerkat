@@ -283,7 +283,7 @@ func TestTelegramSettingsAPI(t *testing.T) {
 	call("POST", "/api/v1/alerts/telegram/test", nil)
 	call("PUT", "/api/v1/security/second-factor", map[string]any{"enabled": true})
 	view = decodeAlerts(t, call("DELETE", "/api/v1/alerts/telegram", nil))
-	if view.Telegram != (telegramStatus{}) || view.LoginSecondFactor {
+	if view.Telegram != (telegramStatus{Source: control.SourceDefault}) || view.LoginSecondFactor {
 		t.Fatalf("deleted: %+v", view)
 	}
 	if w := call("PUT", "/api/v1/security/second-factor", map[string]any{"enabled": true}); w.Code != 409 {

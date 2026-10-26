@@ -125,6 +125,7 @@ GET    /api/v1/security/block-rules
 PUT    /api/v1/security/block-rules
 GET    /api/v1/security/sso
 PUT    /api/v1/security/sso
+DELETE /api/v1/security/sso
 POST   /api/v1/security/sso/test
 GET    /api/v1/session/sso/start
 GET    /api/v1/session/sso/callback
@@ -169,6 +170,8 @@ GET    /api/v1/audit
 
 Telegram 메시지는 HTML(`parse_mode`)이며 이모지와 굵은 제목 한 줄, `이름: 값` 줄 두세 개, 마지막 줄의 관리 화면 링크(`https://관리주소/connectors/ID`, `/domains/도메인`, `/`)로 통일한다. 모든 동적 값은 이스케이프하고 식별자는 `<code>`로 감싼다.
 
+**환경 변수의 텔레그램.** `MEERKAT_TELEGRAM_BOT_TOKEN`과 `MEERKAT_TELEGRAM_CHAT_ID`(그리고 `MEERKAT_TELEGRAM_ENABLED`, 기본 `true`)를 주면 관리 화면에서 봇을 저장하지 않았을 때 그 값을 쓴다. `GET /api/v1/alerts`의 `telegram.source`가 `environment`이고, 테스트 메시지로 확인한 상태는 환경 변수의 봇·채팅이 그대로일 때만 유지된다. 관리 화면에서 저장하면(`source: "database"`) 그 값이 우선하고, `DELETE /api/v1/alerts/telegram`은 저장한 값을 지워 환경 변수의 봇으로 돌아간다. `telegram.environment`는 환경 변수에 봇이 있는지를 뜻한다.
+
 **로그인 보안 코드.** `login_second_factor`가 켜져 있으면 인터넷(공개 주소)에서 온 `POST /api/v1/session`은 이메일과 비밀번호가 맞아도 세션을 만들지 않는다. 대신 6자리 코드를 Telegram으로 보내고 `202 {"second_factor": "telegram", "challenge": "<id>"}`를 반환한다. 코드는 해시만 메모리에 두며 5분 동안 유효하고 5번까지 입력할 수 있다. Telegram 전송에 실패하면 `502 telegram_unreachable`이다. 이어서 `POST /api/v1/session/second-factor`에 `{"challenge": "...", "code": "123456"}`을 보내면 기존 로그인과 같은 `201`과 세션 쿠키를 받는다. 코드가 틀렸거나 만료·모르는 challenge이면 모두 같은 `401 invalid_second_factor`이고, 다섯 번째 오답은 challenge를 폐기하며 `429 too_many_attempts`다. 두 로그인 경로 모두 클라이언트 주소(IPv6는 /56 단위)당 분당 10회로 제한하며 넘으면 `429 rate_limited`와 `Retry-After: 60`을 반환한다. 인터넷에서 온 비밀번호 확인은 주소와 관계없이 15분 동안 오답 30회, 동시에 4건까지만 받고, 넘으면 `429 rate_limited`와 남은 시간을 담은 `Retry-After`를 반환한다. 공개 주소에서 로그인에 성공한 브라우저는 신뢰 기기 쿠키(`meerkat_device`, 90일, `Path=/api/v1/session`, HttpOnly·Secure·SameSite=Strict, Outlet만 아는 키로 서명)를 받고, 이 쿠키가 있으면 누구나 채울 수 있는 오답 30회 제한을 받지 않는다. 주소당 제한과 동시 4건 제한, 보안 코드는 그대로 적용되며 쿠키 자체는 아무 권한도 주지 않는다. 로컬 관리 포트는 이 공용 제한을 받지 않아 SSH로는 항상 로그인할 수 있다. 로그아웃은 데이터베이스에서 세션을 폐기한 뒤 메모리 캐시에서 지우며, 폐기 전에 시작된 조회가 세션을 다시 캐시하지 못한다. 등록된 관리자가 없는 이메일도 같은 비밀번호 해시 계산을 거치므로 응답 시간으로 관리자 이메일을 알아낼 수 없다.
 
 SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없이 세션을 만든다. 운영자가 서버에 SSH로 들어갈 수 있으면 언제든 복구할 수 있다는 뜻이다. 요청이 공개 경로를 거쳤는지는 헤더가 아니라 Outlet이 `PublicHandler` 안에서만 요청 컨텍스트에 남기는 표시로 판단하므로 클라이언트가 위조할 수 없다. 접속 주소는 Caddy가 붙인 `X-Forwarded-For`의 마지막 항목만 쓰고, 로컬 포트에서는 어떤 헤더도 믿지 않는다.
@@ -196,7 +199,7 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 | 터널 | `connector.create`, `connector.delete`, `connector.describe`, `connector.rename`, `connector.token_issue`, `connector.token_reset`, `connector.enroll`, `connector.enroll_failed` |
 | 서비스·공개 주소 | `service.create`, `service.update`, `service.delete`, `route.create`, `route.delete` |
 | 도메인·터널 주소 | `domain.set`, `domain.add`, `domain.remove`, `domain.mode`, `tunnel.update` |
-| 알림·보안 | `telegram.update`, `telegram.test`, `telegram.delete`, `alert_rules.update`, `second_factor.update`, `security.rate_limit`, `security.connection_limits`, `security.block_rules`, `security.sso` |
+| 알림·보안 | `telegram.update`, `telegram.test`, `telegram.delete`, `alert_rules.update`, `second_factor.update`, `security.rate_limit`, `security.connection_limits`, `security.block_rules`, `security.sso`, `security.sso_reset` |
 
 **요청 제한(rate limit).** 공개 경로(`PublicHandler`)에서 프록시하기 전에, 데이터베이스를 조회하기 전에 토큰 버킷으로 제한한다. `GET`과 `PUT /api/v1/security/rate-limit`은 같은 객체를 주고받으며 `PUT`은 모든 키를 담아야 하고 범위를 벗어나면 `400 invalid_rate_limit`이다. 설정은 재시작 없이 바로 적용한다.
 
@@ -268,6 +271,7 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 - 허용된 이메일에 관리자가 없으면 비밀번호 없는 관리자를 만든다. 이 관리자는 비밀번호로 로그인할 수 없고, 비밀번호 확인은 모르는 이메일과 같은 시간이 걸린다. 성공하면 비밀번호 로그인과 같은 세션·신뢰 기기 쿠키를 주고 `session.login`(`"method": "sso"`)을 남긴다. 텔레그램 보안 코드는 묻지 않는다(공급자의 다단계 인증을 쓴다). 세션 쿠키가 SameSite=Strict라서 리디렉션 대신 곧바로 `return` 경로로 이동하는 작은 페이지를 반환한다.
 - 실패하면 `return` 경로에 `?sso_error=<code>`를 붙여 `303`으로 돌려보낸다. `code`는 `sso_unavailable`, `provider_unreachable`, `invalid_state`, `provider_denied`, `token_failed`, `not_allowed`이다. 공급자 오류, 토큰 오류, 허용되지 않은 계정은 `session.login_failed`(`"method": "sso"`)로 남긴다.
 - `password_login`이 `false`이면 공개 주소의 `POST /api/v1/session`은 비밀번호를 확인하지 않고 `403 password_login_disabled`다. SSO를 끄면 `password_login`은 항상 `true`가 된다.
+- 설정은 환경 변수(`MEERKAT_OIDC_*`, `MEERKAT_ADMIN_EMAILS`, `MEERKAT_ADMIN_GROUPS`, `MEERKAT_PASSWORD_LOGIN`)로도 줄 수 있다. 관리 화면에서 저장한 값(`PUT`)이 환경 변수보다 우선하고, `DELETE /api/v1/security/sso`는 저장한 값을 지워 환경 변수 값(없으면 기본값)으로 돌아간다(`security.sso_reset`). `GET`은 `source`(`database`, `environment`, `default`)와 환경 변수에 설정이 있는지를 뜻하는 `environment`를 함께 반환한다. 환경 변수로 SSO가 켜져 있으면 관리자가 없어도 초기 설정이 끝난 것으로 보고, 허용된 사람이 처음 로그인할 때 관리자가 된다.
 - `GET /api/v1/setup/status`는 `sign_in: {"password": bool, "sso": bool, "sso_label": "…"}`를 함께 반환해 로그인 화면이 SSO 버튼과 비밀번호 양식을 고르게 한다. 로컬 관리 포트에서는 항상 비밀번호만이다.
 
 ### Outlet 사용량

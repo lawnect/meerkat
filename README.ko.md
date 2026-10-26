@@ -316,6 +316,20 @@ SSH 터널로 여는 **로컬 관리 포트**(`https://localhost:18443`)에서�
 
 관리 콘솔에 OpenID Connect 공급자(Google Workspace, Microsoft Entra ID, Okta, Keycloak, Authentik 등)로 로그인할 수 있습니다. 설정 → 보안에서 공급자의 발급자(issuer) URL, 클라이언트 ID, 시크릿을 입력하고, 화면에 나온 리디렉션 URI를 공급자에 등록하세요. 허용한 사람만 들어올 수 있습니다. 이메일 주소나 `@도메인`, 공급자가 ID 토큰에 넣어 주는 그룹, 또는 둘 다로 지정하며, 둘 다 지정하면 두 조건을 모두 충족해야 합니다(Google은 그룹을 넣지 않고, Entra ID는 테넌트 ID가 들어간 issuer가 필요합니다). 허용된 사람에게 관리자 계정이 없으면 비밀번호로는 로그인할 수 없는 계정을 만듭니다. 공개 주소에서 비밀번호 로그인을 끌 수 있지만, SSH로 여는 로컬 관리 포트에서는 항상 비밀번호로 로그인할 수 있어 공급자에 문제가 생겨도 들어올 수 있습니다.
 
+### 환경 변수로 설정
+
+아래 설정은 Outlet의 환경 변수로도 줄 수 있어서, 관리 화면 없이 배포에서 정할 수 있습니다. 관리 화면에서 저장한 값이 환경 변수보다 우선합니다. 화면에는 **환경 변수로 설정됨** 또는 **환경 변수 덮어씀**으로 표시되고, **환경 변수 값으로 되돌리기**를 누르면 저장한 값을 지우고 환경 변수 값을 다시 씁니다.
+
+| 변수 | 설정 |
+|---|---|
+| `MEERKAT_OIDC_ISSUER`, `MEERKAT_OIDC_CLIENT_ID`, `MEERKAT_OIDC_CLIENT_SECRET` | OpenID Connect 공급자. 발급자 URL을 넣으면 SSO가 켜집니다. |
+| `MEERKAT_OIDC_LABEL`, `MEERKAT_OIDC_SCOPES`, `MEERKAT_OIDC_GROUPS_CLAIM` | 버튼 이름, 범위(기본 `openid email profile`), 그룹 클레임(기본 `groups`). |
+| `MEERKAT_ADMIN_EMAILS`, `MEERKAT_ADMIN_GROUPS` | 관리자로 로그인할 사람: 이메일이나 `@도메인`, 그룹. 둘 다 쓰면 둘 다 맞아야 합니다. |
+| `MEERKAT_PASSWORD_LOGIN` | `false`면 공개 주소에서는 SSO로만 로그인합니다(SSH로 연결한 로컬 관리 포트는 예외). |
+| `MEERKAT_TELEGRAM_BOT_TOKEN`, `MEERKAT_TELEGRAM_CHAT_ID`, `MEERKAT_TELEGRAM_ENABLED` | 텔레그램 알림(`false`가 아니면 켜짐). |
+
+목록은 쉼표로 구분합니다. 환경 변수로 SSO를 켜면 초기 설정이 필요 없고, 목록에 있는 관리자가 처음 로그인할 때 계정이 만들어집니다. 값이 잘못되면 Outlet은 어느 변수인지 알려 주며 시작하지 않습니다.
+
 ### 차단 규칙
 
 Cloudflare의 사용자 지정 규칙처럼, 경로가 규칙에 맞는 공개 주소 요청을 터널로 보내기 전에 `403`으로 거부합니다. 규칙마다 경로 조건(같음, 다음으로 시작, 다음으로 끝남, 포함, 정규식과 일치)을 정하고 모든 공개 주소 또는 지정한 주소에 적용합니다(`*.example.com` 같은 와일드카드 포함). 경로는 디코딩·정리·소문자 변환 후 비교하므로 `//.env`, `/a/../.ENV`, `/x.php;jsessionid=1` 같은 변형도 막히고, `/.well-known/` 아래는 차단하지 않습니다. 기본으로는 루트의 숨김 파일(`/.env`, `/.git/…`)만 막습니다. 흔한 취약점 스캐너 경로 목록(`.php`, `/wp-`, `/phpmyadmin` 등)도 들어 있지만 Nextcloud나 WordPress처럼 그 경로를 쓰는 앱이 있어 꺼져 있으니, 필요 없는 주소에만 켜세요. 비교는 메모리에서 하며 요청당 1µs도 걸리지 않습니다. 관리 호스트와 커넥터 API에는 적용하지 않습니다.

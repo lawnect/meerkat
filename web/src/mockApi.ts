@@ -123,7 +123,7 @@ const state: {
 // 알림·2단계 인증 데모 상태. 2단계 인증을 켜면 로그인 코드는 항상 123456입니다.
 const hoursAgo = (hours: number): string => new Date(Date.now() - hours * 3600000).toISOString();
 const alerts: AlertSettings = {
-  telegram: { configured: true, enabled: true, chat_id: '-1001234567890', token_hint: 'x9Qa', verified_at: hoursAgo(50) },
+  telegram: { configured: true, enabled: true, chat_id: '-1001234567890', token_hint: 'x9Qa', verified_at: hoursAgo(50), source: 'database', environment: false },
   rules: {
     tunnel_down: { enabled: true, after_minutes: 5 },
     route_error: { enabled: true },
@@ -165,7 +165,11 @@ let sso: SsoSettings = {
   password_login: true,
   redirect_uri: 'https://k7m2x9qa.example.test/api/v1/session/sso/callback',
   available: true,
+  source: 'environment',
+  environment: true,
 };
+// 데모의 SSO는 환경 변수에서 온 것으로 둡니다. 저장하면 덮어쓰고, DELETE로 되돌립니다.
+const ssoEnvironment: SsoSettings = structuredClone(sso);
 let connectionLimits: ConnectionLimits = {
   max_upload_mb: 100,
   per_ip_concurrent: 512,
@@ -496,6 +500,8 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     if (!/^(-?\d{1,20}|@\w{5,})$/.test(body.chat_id?.trim() ?? '')) fail('invalid_telegram_chat');
     const changed = Boolean(token) || body.chat_id !== alerts.telegram.chat_id;
     alerts.telegram = {
+      ...alerts.telegram,
+      source: 'database',
       configured: true,
       enabled: Boolean(body.enabled),
       chat_id: body.chat_id!.trim(),
@@ -511,7 +517,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     return alertsResponse();
   }
   if (path === '/api/v1/alerts/telegram' && method === 'DELETE') {
-    alerts.telegram = { configured: false, enabled: false, chat_id: '', token_hint: '', verified_at: null };
+    alerts.telegram = { configured: false, enabled: false, chat_id: '', token_hint: '', verified_at: null, source: 'default', environment: false };
     alerts.login_second_factor = false;
     return alertsResponse();
   }
@@ -568,7 +574,12 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
       allowed_users: users,
       allowed_groups: groups,
       password_login: body.password_login,
+      source: 'database',
     };
+    return ssoResponse();
+  }
+  if (path === '/api/v1/security/sso' && method === 'DELETE') {
+    sso = structuredClone(ssoEnvironment);
     return ssoResponse();
   }
   if (path === '/api/v1/security/sso/test' && method === 'POST') {

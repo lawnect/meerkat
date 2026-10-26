@@ -102,12 +102,19 @@ func validEmail(email string) bool {
 
 func validPassword(password string) bool { return len(password) >= 12 && len(password) <= 1024 }
 
+// SetupComplete reports whether the console needs no first administrator:
+// one exists, or the environment turns on single sign-on, whose allowed
+// people become administrators when they first sign in.
 func (d *Database) SetupComplete(ctx context.Context) (bool, error) {
 	var count int
 	if err := d.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM admins").Scan(&count); err != nil {
 		return false, err
 	}
-	return count != 0, nil
+	if count != 0 {
+		return true, nil
+	}
+	sso, source, err := d.ssoWithSource(ctx)
+	return err == nil && source == SourceEnvironment && sso.Enabled, err
 }
 
 // Setup creates the only initial administrator. bootstrapCodeHash must be the

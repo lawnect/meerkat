@@ -22,6 +22,8 @@ type Database struct {
 	generation atomic.Uint64
 	routing    cached[*Routing]
 	connectors cached[[]Connector]
+	// defaults are the environment's settings; see SetDefaults.
+	defaults atomic.Pointer[Defaults]
 }
 
 func Open(ctx context.Context, path string) (*Database, error) {

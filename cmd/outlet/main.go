@@ -43,6 +43,12 @@ func run() error {
 		return err
 	}
 	defer controlDB.Close()
+	defaults, err := environmentDefaults(os.Getenv)
+	if err != nil {
+		return err
+	}
+	controlDB.SetDefaults(defaults)
+	slog.Info("settings from the environment", "sso", defaults.SSO != nil, "telegram", defaults.Telegram != nil)
 	store, err := outlet.OpenWithControl(cfg, *dir, controlDB)
 	if err != nil {
 		return err

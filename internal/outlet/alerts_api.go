@@ -15,6 +15,11 @@ type telegramStatus struct {
 	ChatID     string  `json:"chat_id"`
 	TokenHint  string  `json:"token_hint"`
 	VerifiedAt *string `json:"verified_at"`
+	// Source is where the bot comes from: "database", "environment" or
+	// "default"; Environment says whether the environment names one, which
+	// deleting the saved bot falls back to.
+	Source      string `json:"source"`
+	Environment bool   `json:"environment"`
 }
 
 type alertsResponse struct {
@@ -29,7 +34,8 @@ func (s *Store) alertsView(ctx context.Context) (alertsResponse, error) {
 	if err != nil {
 		return alertsResponse{}, err
 	}
-	view := alertsResponse{Telegram: telegramStatus{Configured: telegram.Configured(), Enabled: telegram.Enabled, ChatID: telegram.ChatID, TokenHint: telegram.TokenHint()}}
+	_, fromEnvironment := s.control.EnvironmentSets()
+	view := alertsResponse{Telegram: telegramStatus{Configured: telegram.Configured(), Enabled: telegram.Enabled, ChatID: telegram.ChatID, TokenHint: telegram.TokenHint(), Source: telegram.Source, Environment: fromEnvironment}}
 	if telegram.VerifiedAt != "" {
 		view.Telegram.VerifiedAt = &telegram.VerifiedAt
 	}

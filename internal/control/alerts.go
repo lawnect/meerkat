@@ -22,8 +22,11 @@ const (
 	settingTelegramChat     = "telegram_chat_id"
 	settingTelegramEnabled  = "telegram_enabled"
 	settingTelegramVerified = "telegram_verified_at"
-	settingSecondFactor     = "login_second_factor"
-	settingAlertRules       = "alert_rules"
+	// settingTelegramVerifiedFor is telegramKey of the bot and chat the
+	// verification was for.
+	settingTelegramVerifiedFor = "telegram_verified_for"
+	settingSecondFactor        = "login_second_factor"
+	settingAlertRules          = "alert_rules"
 
 	// maxAlertEvents bounds the history. Open events are never pruned.
 	maxAlertEvents = 200
@@ -81,9 +84,25 @@ type Telegram struct {
 	ChatID     string
 	Enabled    bool
 	VerifiedAt string
+	// Source is SourceDatabase, SourceEnvironment or, when nothing is set,
+	// SourceDefault.
+	Source string
 }
 
 func (t Telegram) Configured() bool { return t.BotToken != "" && t.ChatID != "" }
+
+// NewTelegram checks a bot token and chat ID given outside the admin
+// console, such as in the environment.
+func NewTelegram(token, chatID string, enabled bool) (Telegram, error) {
+	token, chatID = strings.TrimSpace(token), strings.TrimSpace(chatID)
+	if !telegramTokenPattern.MatchString(token) {
+		return Telegram{}, ErrInvalidTelegramToken
+	}
+	if !telegramChatPattern.MatchString(chatID) {
+		return Telegram{}, ErrInvalidTelegramChat
+	}
+	return Telegram{BotToken: token, ChatID: chatID, Enabled: enabled}, nil
+}
 
 // TokenHint is the last four characters of the token.
 func (t Telegram) TokenHint() string {
@@ -93,7 +112,33 @@ func (t Telegram) TokenHint() string {
 	return t.BotToken[len(t.BotToken)-4:]
 }
 
-func readTelegram(ctx context.Context, q conn) (Telegram, error) {
+// readTelegram returns the bot saved from the admin console or, when none
+// is, the environment's.
+func (d *Database) readTelegram(ctx context.Context, q conn) (Telegram, error) {
+	t, err := readStoredTelegram(ctx, q)
+	if err != nil || t.BotToken != "" || t.ChatID != "" {
+		t.Source = SourceDatabase
+		return t, err
+	}
+	env := d.environment().Telegram
+	if env == nil {
+		t.Source = SourceDefault
+		return t, nil
+	}
+	verifiedFor, err := getSetting(ctx, q, settingTelegramVerifiedFor)
+	if err != nil {
+		return Telegram{}, err
+	}
+	verifiedAt := t.VerifiedAt
+	t = *env
+	t.Source, t.VerifiedAt = SourceEnvironment, ""
+	if verifiedFor == telegramKey(env.BotToken, env.ChatID) {
+		t.VerifiedAt = verifiedAt
+	}
+	return t, nil
+}
+
+func readStoredTelegram(ctx context.Context, q conn) (Telegram, error) {
 	var t Telegram
 	for key, target := range map[string]*string{settingTelegramToken: &t.BotToken, settingTelegramChat: &t.ChatID, settingTelegramVerified: &t.VerifiedAt} {
 		value, err := getSetting(ctx, q, key)
@@ -107,7 +152,7 @@ func readTelegram(ctx context.Context, q conn) (Telegram, error) {
 	return t, err
 }
 
-func (d *Database) Telegram(ctx context.Context) (Telegram, error) { return readTelegram(ctx, d.db) }
+func (d *Database) Telegram(ctx context.Context) (Telegram, error) { return d.readTelegram(ctx, d.db) }
 
 // SetTelegram stores the bot settings. An empty token keeps the current one.
 // Changing the token or chat invalidates the verification and, with it, the
@@ -125,7 +170,7 @@ func (d *Database) SetTelegram(ctx context.Context, token, chatID string, enable
 		return err
 	}
 	defer tx.Rollback()
-	current, err := readTelegram(ctx, tx)
+	current, err := d.readTelegram(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -141,7 +186,7 @@ func (d *Database) SetTelegram(ctx context.Context, token, chatID string, enable
 		}
 	}
 	if token != current.BotToken || chatID != current.ChatID {
-		if err := deleteSettings(ctx, tx, settingTelegramVerified); err != nil {
+		if err := deleteSettings(ctx, tx, settingTelegramVerified, settingTelegramVerifiedFor); err != nil {
 			return err
 		}
 		if err := putSetting(ctx, tx, settingSecondFactor, "0", now); err != nil {
@@ -159,24 +204,28 @@ func (d *Database) MarkTelegramVerified(ctx context.Context, token, chatID strin
 		return false, err
 	}
 	defer tx.Rollback()
-	current, err := readTelegram(ctx, tx)
+	current, err := d.readTelegram(ctx, tx)
 	if err != nil || current.BotToken != token || current.ChatID != chatID {
 		return false, err
 	}
 	if err := putSetting(ctx, tx, settingTelegramVerified, stamp(at), at); err != nil {
 		return false, err
 	}
+	if err := putSetting(ctx, tx, settingTelegramVerifiedFor, telegramKey(token, chatID), at); err != nil {
+		return false, err
+	}
 	return true, tx.Commit()
 }
 
-// DeleteTelegram forgets the bot and everything that depends on it.
+// DeleteTelegram forgets the bot saved from the admin console and everything
+// that depends on it. A bot from the environment, if any, takes its place.
 func (d *Database) DeleteTelegram(ctx context.Context, now time.Time) error {
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if err := deleteSettings(ctx, tx, settingTelegramToken, settingTelegramChat, settingTelegramEnabled, settingTelegramVerified); err != nil {
+	if err := deleteSettings(ctx, tx, settingTelegramToken, settingTelegramChat, settingTelegramEnabled, settingTelegramVerified, settingTelegramVerifiedFor); err != nil {
 		return err
 	}
 	if err := putSetting(ctx, tx, settingSecondFactor, "0", now); err != nil {
@@ -204,7 +253,7 @@ func (d *Database) SetLoginSecondFactor(ctx context.Context, enabled bool, now t
 	}
 	defer tx.Rollback()
 	if enabled {
-		telegram, err := readTelegram(ctx, tx)
+		telegram, err := d.readTelegram(ctx, tx)
 		if err != nil {
 			return err
 		}

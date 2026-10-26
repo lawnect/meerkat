@@ -115,6 +115,7 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/security/block-rules", s.putBlockRules)
 	mux.HandleFunc("GET /api/v1/security/sso", s.getSSO)
 	mux.HandleFunc("PUT /api/v1/security/sso", s.putSSO)
+	mux.HandleFunc("DELETE /api/v1/security/sso", s.resetSSO)
 	mux.HandleFunc("POST /api/v1/security/sso/test", s.testSSO)
 	mux.HandleFunc("GET "+ssoPath+"/start", s.ssoStart)
 	mux.HandleFunc("GET "+ssoCallbackPath, s.ssoCallback)

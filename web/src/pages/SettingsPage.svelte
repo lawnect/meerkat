@@ -51,6 +51,10 @@
     testSent: 'Test message sent',
     disconnect: 'Disconnect',
     disconnected: 'Telegram disconnected',
+    fromEnvironment: 'Set by environment',
+    overridesEnvironment: 'Overrides environment',
+    revertToEnvironment: 'Revert to environment',
+    reverted: 'Reverted to the environment settings',
     revert: 'Revert',
     save: 'Save',
     saving: 'Saving…',
@@ -120,6 +124,10 @@
     testSent: '테스트 메시지를 보냈습니다',
     disconnect: '연결 해제',
     disconnected: '텔레그램 연결을 해제했습니다',
+    fromEnvironment: '환경 변수로 설정됨',
+    overridesEnvironment: '환경 변수 덮어씀',
+    revertToEnvironment: '환경 변수 값으로 되돌리기',
+    reverted: '환경 변수 값으로 되돌렸습니다',
     revert: '되돌리기',
     save: '저장',
     saving: '저장 중…',
@@ -242,8 +250,9 @@
     toast.success(t().testSent);
   }, 'telegram');
   const disconnect = () => run('disconnect', async () => {
+    const toEnvironment = telegram?.environment;
     adopt(await api<AlertSettings>('/api/v1/alerts/telegram', { method: 'DELETE' }), resetTelegram, resetSecurity);
-    toast.success(t().disconnected);
+    toast.success(toEnvironment ? t().reverted : t().disconnected);
   }, 'telegram');
   const saveRules = () => run('rules', async () => {
     adopt(await api<AlertSettings>('/api/v1/alerts/rules', { method: 'PUT', body: JSON.stringify(rules) }), resetRules);
@@ -306,11 +315,21 @@
                 {:else}
                   <Status label={telegram.verified_at ? t().verified : t().unverified} value={telegram.verified_at ? 'connected' : 'connecting'} />
                 {/if}
+                {#if telegram?.source === 'environment'}
+                  <Badge variant="outline" class="select-none">{t().fromEnvironment}</Badge>
+                {:else if telegram?.source === 'database' && telegram.environment}
+                  <Badge variant="outline" class="select-none">{t().overridesEnvironment}</Badge>
+                {/if}
               </Card.Title>
               {#if telegram?.configured}
                 <Card.Action class="flex gap-2">
                   <Button variant="outline" disabled={busy.test || telegramDirty} onclick={sendTest}>{#if busy.test}<Spinner aria-hidden="true" />{:else}<Send aria-hidden="true" />{/if}{t().testMessage}</Button>
-                  <Button variant="destructive" disabled={busy.disconnect} onclick={disconnect}><Delete aria-hidden="true" />{t().disconnect}</Button>
+                  {#if telegram.source === 'database' && telegram.environment}
+                    <!-- 저장한 값을 지우면 환경 변수의 봇으로 돌아갑니다. -->
+                    <Button variant="outline" disabled={busy.disconnect} onclick={disconnect}><ArrowUndo aria-hidden="true" />{t().revertToEnvironment}</Button>
+                  {:else if telegram.source === 'database'}
+                    <Button variant="destructive" disabled={busy.disconnect} onclick={disconnect}><Delete aria-hidden="true" />{t().disconnect}</Button>
+                  {/if}
                 </Card.Action>
               {/if}
             </Card.Header>

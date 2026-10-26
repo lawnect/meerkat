@@ -323,10 +323,17 @@ type ssoView struct {
 	SecretHint      string `json:"client_secret_hint"`
 	RedirectURI     string `json:"redirect_uri"`
 	AvailableAtHost bool   `json:"available"`
+	// Source is where the settings come from: "database", "environment" or
+	// "default"; Environment says whether the environment gives settings,
+	// which resetting the saved ones falls back to.
+	Source      string `json:"source"`
+	Environment bool   `json:"environment"`
 }
 
 func (s *Store) ssoSettingsView(ctx context.Context, settings control.SSO) ssoView {
 	view := ssoView{SSO: settings, SecretSet: settings.ClientSecret != "", SecretHint: settings.SecretHint()}
+	view.Environment, _ = s.control.EnvironmentSets()
+	view.Source, _ = s.control.SSOSource(ctx)
 	view.SSO.ClientSecret = ""
 	if uri, err := s.ssoRedirectURI(ctx); err == nil {
 		view.RedirectURI, view.AvailableAtHost = uri, true
@@ -382,6 +389,25 @@ func (s *Store) putSSO(w http.ResponseWriter, r *http.Request) {
 		"allowed_users": saved.AllowedUsers, "allowed_groups": saved.AllowedGroups, "password_login": saved.PasswordLogin,
 	})
 	reply(w, 200, s.ssoSettingsView(r.Context(), saved))
+}
+
+// resetSSO forgets the settings saved from the admin console, so the
+// environment's apply again.
+func (s *Store) resetSSO(w http.ResponseWriter, r *http.Request) {
+	if !s.alertsAdmin(w, r) {
+		return
+	}
+	if err := s.control.ResetSSO(r.Context()); err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	settings, err := s.control.SSO(r.Context())
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	s.audited(r, "security.sso_reset", "security", "sso", nil)
+	reply(w, 200, s.ssoSettingsView(r.Context(), settings))
 }
 
 // testSSO fetches the provider's discovery document for issuer, so a typo

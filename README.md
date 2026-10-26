@@ -317,6 +317,20 @@ Separate limits stop one request or one client from holding the Outlet's resourc
 
 The admin console can sign in with an OpenID Connect provider (Google Workspace, Microsoft Entra ID, Okta, Keycloak, Authentik, and others). Under Settings → Security, enter the provider's issuer URL, client ID, and secret, and register the redirect URI shown there with the provider. Only people you allow get in: list email addresses or `@domain` entries, groups the provider puts in the ID token, or both. When both lists are set, a person must match both (Google doesn't include groups; Entra ID needs a tenant-specific issuer). An allowed person without an admin account gets one that can't sign in with a password. You can turn off password sign-in on public addresses; the local admin port over SSH always accepts passwords, so you can still get in if the provider is down.
 
+### Settings from environment variables
+
+The Outlet also reads these settings from its environment, so a deployment can set them without the admin console. A value saved in the console overrides the environment; the console marks such settings **Set by environment** or **Overrides environment**, and **Revert to environment** drops the saved value.
+
+| Variable | Setting |
+|---|---|
+| `MEERKAT_OIDC_ISSUER`, `MEERKAT_OIDC_CLIENT_ID`, `MEERKAT_OIDC_CLIENT_SECRET` | OpenID Connect provider. Setting the issuer turns single sign-on on. |
+| `MEERKAT_OIDC_LABEL`, `MEERKAT_OIDC_SCOPES`, `MEERKAT_OIDC_GROUPS_CLAIM` | Button name, scopes (default `openid email profile`), groups claim (default `groups`). |
+| `MEERKAT_ADMIN_EMAILS`, `MEERKAT_ADMIN_GROUPS` | Who signs in as administrator: emails or `@domain`, and groups. When both are set, a person must match both. |
+| `MEERKAT_PASSWORD_LOGIN` | `false` allows only single sign-on on public addresses (the local admin port over SSH still takes passwords). |
+| `MEERKAT_TELEGRAM_BOT_TOKEN`, `MEERKAT_TELEGRAM_CHAT_ID`, `MEERKAT_TELEGRAM_ENABLED` | Telegram alerts (enabled unless `false`). |
+
+Lists are separated by commas. With single sign-on from the environment, the console needs no initial setup: the first listed administrator to sign in gets an account. The Outlet refuses to start if a value is invalid, naming the variable.
+
 ### Block rules
 
 Like Cloudflare's custom rules, block rules answer `403` to requests for public addresses whose path matches, before they reach a tunnel. Each rule has conditions on the path (equals, starts with, ends with, contains, or matches an RE2 regular expression) and applies to all public addresses or only the ones you list, including wildcards such as `*.example.com`. Paths are decoded, cleaned, and lowercased before matching, so `//.env`, `/a/../.ENV`, or `/x.php;jsessionid=1` don't slip past, and nothing under `/.well-known/` is ever blocked. Out of the box, only hidden files at the root (`/.env`, `/.git/…`) are blocked. A list of common vulnerability-scanner paths (`.php`, `/wp-`, `/phpmyadmin`, …) is included but off, because some apps (Nextcloud, WordPress) use those paths; turn it on for the addresses that don't. Matching is done in memory and adds well under a microsecond per request. Rules don't apply to the admin host or the Connector API.

@@ -355,3 +355,54 @@ func TestSafeReturnStaysInTheApp(t *testing.T) {
 		}
 	}
 }
+
+// With SSO from the environment, the console needs no setup: the first
+// allowed person to sign in becomes an administrator. Saving from the
+// console overrides the environment until the saved settings are reset.
+func TestSSOFromTheEnvironment(t *testing.T) {
+	a := newAlertFixture(t)
+	idp := newFakeIdP(t)
+	a.store.ssoHTTP = idp.server.Client()
+	env, _ := control.SSO{Enabled: true, Label: "Env", Issuer: idp.server.URL, ClientID: "meerkat", ClientSecret: "client-secret-1234",
+		Scopes: []string{"openid", "email"}, AllowedUsers: []string{"admin@corp.example.com"}, PasswordLogin: true}.Normalize()
+	a.db.SetDefaults(control.Defaults{SSO: &env})
+
+	var status struct {
+		SetupComplete bool           `json:"setup_complete"`
+		SignIn        map[string]any `json:"sign_in"`
+	}
+	w := a.publicRequest("GET", "/api/v1/setup/status", "198.51.100.30", chromeOnMac, nil)
+	if json.Unmarshal(w.Body.Bytes(), &status) != nil || !status.SetupComplete || status.SignIn["sso"] != true || status.SignIn["sso_label"] != "Env" {
+		t.Fatalf("setup status: %s", w.Body.String())
+	}
+	w = a.ssoSignIn(t, idp, map[string]any{"email": "admin@corp.example.com", "email_verified": true})
+	if w.Code != 200 {
+		t.Fatalf("first administrator through SSO: %d %s", w.Code, w.Header().Get("Location"))
+	}
+	cookie := sessionCookie(t, w)
+	call := func(method, path string, body any) map[string]any {
+		r := jsonRequest(method, path, body)
+		r.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		a.store.Handler().ServeHTTP(w, r)
+		var view map[string]any
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &view) != nil {
+			t.Fatalf("%s %s: %d %s", method, path, w.Code, w.Body.String())
+		}
+		return view
+	}
+	if view := call("GET", "/api/v1/security/sso", nil); view["source"] != "environment" || view["environment"] != true || view["client_secret_hint"] != "1234" {
+		t.Fatalf("environment view: %v", view)
+	}
+	view := call("PUT", "/api/v1/security/sso", map[string]any{"enabled": true, "label": "Console", "issuer": idp.server.URL, "client_id": "meerkat",
+		"scopes": []string{"openid"}, "groups_claim": "groups", "allowed_users": []string{"admin@corp.example.com"}, "allowed_groups": []string{}, "password_login": true})
+	if view["source"] != "database" || view["label"] != "Console" {
+		t.Fatalf("saved view: %v", view)
+	}
+	if view := call("DELETE", "/api/v1/security/sso", nil); view["source"] != "environment" || view["label"] != "Env" {
+		t.Fatalf("reset view: %v", view)
+	}
+	if event := a.lastAudit(t); event.Action != "security.sso_reset" {
+		t.Fatalf("audit: %s", event.Action)
+	}
+}

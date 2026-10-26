@@ -94,7 +94,7 @@ func TestDeleteTelegramClearsEverything(t *testing.T) {
 		t.Fatal(err)
 	}
 	telegram, _ := db.Telegram(ctx)
-	if telegram != (Telegram{}) {
+	if telegram != (Telegram{Source: SourceDefault}) {
 		t.Fatalf("telegram = %+v", telegram)
 	}
 	if on, _ := db.LoginSecondFactor(ctx); on {

@@ -137,20 +137,48 @@ func (s SSO) Normalize() (SSO, bool) {
 	return s, true
 }
 
-// SSO returns the stored settings, or the defaults.
+// SSO returns the settings saved from the admin console, or else the
+// environment's, or else the defaults.
 func (d *Database) SSO(ctx context.Context) (SSO, error) {
+	settings, _, err := d.ssoWithSource(ctx)
+	return settings, err
+}
+
+// SSOSource says where the current settings come from.
+func (d *Database) SSOSource(ctx context.Context) (string, error) {
+	_, source, err := d.ssoWithSource(ctx)
+	return source, err
+}
+
+// ResetSSO forgets the settings saved from the admin console, so the
+// environment's apply again.
+func (d *Database) ResetSSO(ctx context.Context) error {
+	return deleteSettings(ctx, d.db, settingSSO)
+}
+
+func (d *Database) ssoWithSource(ctx context.Context) (SSO, string, error) {
 	raw, err := getSetting(ctx, d.db, settingSSO)
-	if err != nil || raw == "" {
-		return DefaultSSO(), err
+	if err != nil {
+		return DefaultSSO(), SourceDefault, err
 	}
+	if raw == "" {
+		if env := d.environment().SSO; env != nil {
+			return *env, SourceEnvironment, nil
+		}
+		return DefaultSSO(), SourceDefault, nil
+	}
+	return decodeSSO(raw), SourceDatabase, nil
+}
+
+func decodeSSO(raw string) SSO {
 	var settings SSO
 	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
-		return DefaultSSO(), nil
+		return DefaultSSO()
 	}
 	if settings, ok := settings.Normalize(); ok {
-		return settings, nil
+		return settings
 	}
-	return DefaultSSO(), nil
+	return DefaultSSO()
 }
 
 // SetSSO stores the settings. An empty ClientSecret keeps the stored one.

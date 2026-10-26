@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import * as Alert from '$lib/components/ui/alert/index.js';
+  import { Badge } from '$lib/components/ui/badge/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import * as ButtonGroup from '$lib/components/ui/button-group/index.js';
   import * as Card from '$lib/components/ui/card/index.js';
@@ -22,6 +23,10 @@
   const t = translations({
     title: 'SSO',
     tip: 'Sign in to the admin console with an OpenID Connect provider such as Google Workspace, Entra ID, Okta or Keycloak. Sign-ins through SSO skip the Telegram code; use the provider\'s multi-factor authentication.',
+    fromEnvironment: 'Set by environment',
+    overridesEnvironment: 'Overrides environment',
+    revertToEnvironment: 'Revert to environment',
+    reverted: 'Reverted to the environment settings',
     enabled: 'Use SSO',
     label: 'Provider name',
     labelHint: 'Shown on the sign-in button.',
@@ -55,6 +60,10 @@
   }, {
     title: 'SSO',
     tip: 'Google Workspace, Entra ID, Okta, Keycloak 같은 OpenID Connect 공급자로 관리 콘솔에 로그인합니다. SSO 로그인에는 텔레그램 코드를 묻지 않으니 공급자의 다단계 인증을 사용하세요.',
+    fromEnvironment: '환경 변수로 설정됨',
+    overridesEnvironment: '환경 변수 덮어씀',
+    revertToEnvironment: '환경 변수 값으로 되돌리기',
+    reverted: '환경 변수 값으로 되돌렸습니다',
     enabled: 'SSO 사용',
     label: '공급자 이름',
     labelHint: '로그인 버튼에 표시됩니다.',
@@ -159,6 +168,21 @@
     }
   }
 
+  // 관리 화면에서 저장한 값을 지워 환경 변수 값을 다시 씁니다.
+  async function resetToEnvironment(): Promise<void> {
+    if (busy) return;
+    busy = true;
+    error = '';
+    try {
+      adopt(await api<SsoSettings>('/api/v1/security/sso', { method: 'DELETE' }));
+      toast.success(t().reverted);
+    } catch (cause) {
+      error = t().failed(errorMessage(cause));
+    } finally {
+      busy = false;
+    }
+  }
+
   function revert(): void {
     if (saved) draft = toDraft($state.snapshot(saved) as SsoSettings);
     error = '';
@@ -183,9 +207,19 @@
 <Card.Root size="sm" role="region" aria-labelledby="sso-title">
   <form class="contents" onsubmit={save}>
     <Card.Header>
-      <Card.Title id="sso-title" class="flex items-center gap-1">{t().title}<InfoTooltip id="sso-tip" label={t().title} description={t().tip} /></Card.Title>
+      <Card.Title id="sso-title" class="flex items-center gap-2">
+        <span class="flex items-center gap-1">{t().title}<InfoTooltip id="sso-tip" label={t().title} description={t().tip} /></span>
+        {#if saved?.source === 'environment'}
+          <Badge variant="outline" class="select-none">{t().fromEnvironment}</Badge>
+        {:else if saved?.source === 'database' && saved.environment}
+          <Badge variant="outline" class="select-none">{t().overridesEnvironment}</Badge>
+        {/if}
+      </Card.Title>
       {#if draft}
         <Card.Action class="flex items-center gap-2">
+          {#if saved?.source === 'database' && saved.environment}
+            <Button variant="outline" size="sm" disabled={busy} onclick={resetToEnvironment}><ArrowUndo aria-hidden="true" />{t().revertToEnvironment}</Button>
+          {/if}
           <Field.Label for="sso-enabled" class="text-muted-foreground">{t().enabled}</Field.Label>
           <Switch id="sso-enabled" bind:checked={draft.enabled} />
         </Card.Action>

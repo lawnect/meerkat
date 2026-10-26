@@ -182,7 +182,8 @@ export interface AlertEvent {
 }
 
 export interface AlertSettings {
-  telegram: { configured: boolean; enabled: boolean; chat_id: string; token_hint: string; verified_at?: string | null };
+  // source: 관리 화면에서 저장한 값(database), 환경 변수(environment), 없음(default). environment: 환경 변수에 봇이 있는지.
+  telegram: { configured: boolean; enabled: boolean; chat_id: string; token_hint: string; verified_at?: string | null; source: SettingSource; environment: boolean };
   rules: AlertRules;
   events: AlertEvent[];
   login_second_factor: boolean;
@@ -265,6 +266,9 @@ export interface BlockRulesView {
 }
 
 // OpenID Connect 로그인(GET/PUT /api/v1/security/sso). 클라이언트 시크릿은 응답에 없고, PUT에서 비우면 저장된 값을 유지합니다.
+// 설정값의 출처. 관리 화면에서 저장한 값이 환경 변수보다 우선합니다.
+export type SettingSource = 'database' | 'environment' | 'default';
+
 export interface SsoSettings {
   enabled: boolean;
   label: string; // 32자 이하, 로그인 버튼에 표시
@@ -279,4 +283,6 @@ export interface SsoSettings {
   password_login: boolean; // 공개 주소에서 비밀번호 로그인 허용
   redirect_uri: string; // 공급자에 등록할 주소
   available: boolean; // 도메인(관리자 호스트)이 생기기 전에는 false(redirect_uri는 '')
+  source: SettingSource;
+  environment: boolean; // 환경 변수에 SSO 설정이 있는지. 저장한 값을 지우면 이 값으로 돌아갑니다
 }
