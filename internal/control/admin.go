@@ -126,6 +126,13 @@ func (d *Database) Setup(ctx context.Context, bootstrapCodeHash, code, email, pa
 	if subtle.ConstantTimeCompare([]byte(hashToken(code)), []byte(bootstrapCodeHash)) != 1 {
 		return Admin{}, ErrInvalidCredentials
 	}
+	// Single sign-on from the environment completes setup by itself; the
+	// bootstrap token must not add a password administrator beside it.
+	if sso, source, err := d.ssoWithSource(ctx); err != nil {
+		return Admin{}, err
+	} else if source == SourceEnvironment && sso.Enabled {
+		return Admin{}, ErrAlreadySetup
+	}
 	hash, err := hashPassword(password)
 	if err != nil {
 		return Admin{}, err

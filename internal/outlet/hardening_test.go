@@ -325,7 +325,7 @@ func TestTrustedDevicesSkipTheSharedFailureLimit(t *testing.T) {
 			device = cookie
 		}
 	}
-	if w.Code != 201 || device == nil || device.Path != "/api/v1/session" || !device.HttpOnly || !device.Secure || device.SameSite != http.SameSiteStrictMode {
+	if w.Code != 201 || device == nil || device.Path != "/" || !device.HttpOnly || !device.Secure || device.SameSite != http.SameSiteStrictMode {
 		t.Fatalf("public login: %d, device cookie %+v", w.Code, device)
 	}
 	for range publicFailures {

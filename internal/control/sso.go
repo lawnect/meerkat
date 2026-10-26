@@ -201,28 +201,53 @@ func (d *Database) SetSSO(ctx context.Context, settings SSO, now time.Time) (SSO
 	return settings, putSetting(ctx, d.db, settingSSO, string(raw), now)
 }
 
-// SSOAdmin returns the administrator for an email confirmed by single
-// sign-on, creating one that cannot sign in with a password if needed.
-func (d *Database) SSOAdmin(ctx context.Context, email string) (Admin, error) {
-	if !validEmail(email) {
+// ErrSSOIdentityMismatch means the email belongs to an administrator bound to
+// another account of the same provider.
+var ErrSSOIdentityMismatch = errors.New("administrator is bound to another single sign-on account")
+
+// SSOAdmin returns the administrator for a single sign-on identity: the one
+// bound to the issuer and subject, or else the one with the verified email,
+// which is then bound to them; with neither, a new administrator that cannot
+// sign in with a password. An administrator bound to another subject of the
+// same issuer is never reused, so a provider account that later claims the
+// same email cannot take it over. A changed issuer, which only an
+// administrator can configure, binds again.
+func (d *Database) SSOAdmin(ctx context.Context, issuer, subject, email string) (Admin, error) {
+	if !validEmail(email) || issuer == "" || subject == "" {
 		return Admin{}, ErrInvalidCredentials
 	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Admin{}, err
+	}
+	defer tx.Rollback()
 	var admin Admin
-	err := d.db.QueryRowContext(ctx, "SELECT id, email FROM admins WHERE email = ?", email).Scan(&admin.ID, &admin.Email)
+	err = tx.QueryRowContext(ctx, "SELECT id, email FROM admins WHERE sso_issuer = ? AND sso_subject = ?", issuer, subject).Scan(&admin.ID, &admin.Email)
 	if err == nil {
-		return admin, nil
+		return admin, tx.Commit()
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Admin{}, err
 	}
-	id, err := randomID()
-	if err != nil {
+	var boundIssuer, boundSubject string
+	err = tx.QueryRowContext(ctx, "SELECT id, email, COALESCE(sso_issuer, ''), COALESCE(sso_subject, '') FROM admins WHERE email = ?", email).Scan(&admin.ID, &admin.Email, &boundIssuer, &boundSubject)
+	switch {
+	case err == nil && boundIssuer == issuer && boundSubject != "":
+		return Admin{}, ErrSSOIdentityMismatch
+	case err == nil:
+		if _, err := tx.ExecContext(ctx, "UPDATE admins SET sso_issuer = ?, sso_subject = ? WHERE id = ?", issuer, subject, admin.ID); err != nil {
+			return Admin{}, err
+		}
+	case errors.Is(err, sql.ErrNoRows):
+		if admin.ID, err = randomID(); err != nil {
+			return Admin{}, err
+		}
+		admin.Email = email
+		if _, err := tx.ExecContext(ctx, "INSERT INTO admins(id, email, password_hash, created_at, sso_issuer, sso_subject) VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?, ?)", admin.ID, email, ssoPasswordHash, issuer, subject); err != nil {
+			return Admin{}, err
+		}
+	default:
 		return Admin{}, err
 	}
-	// A sign-in for the same email at the same moment may insert first.
-	if _, err := d.db.ExecContext(ctx, "INSERT INTO admins(id, email, password_hash, created_at) VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) ON CONFLICT(email) DO NOTHING", id, email, ssoPasswordHash); err != nil {
-		return Admin{}, err
-	}
-	err = d.db.QueryRowContext(ctx, "SELECT id, email FROM admins WHERE email = ?", email).Scan(&admin.ID, &admin.Email)
-	return admin, err
+	return admin, tx.Commit()
 }

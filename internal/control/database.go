@@ -233,6 +233,10 @@ BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
 ALTER TABLE usage_total_hourly ADD COLUMN rate_limited INTEGER NOT NULL DEFAULT 0;
 `}, {version: 11, sql: `
 ALTER TABLE connectors ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
+`}, {version: 12, sql: `
+ALTER TABLE admins ADD COLUMN sso_issuer TEXT;
+ALTER TABLE admins ADD COLUMN sso_subject TEXT;
+CREATE UNIQUE INDEX admins_sso_identity ON admins(sso_issuer, sso_subject) WHERE sso_subject IS NOT NULL;
 `}}
 
 func migrate(ctx context.Context, db *sql.DB) error {

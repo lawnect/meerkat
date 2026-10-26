@@ -197,8 +197,12 @@ func (l *attemptLimiter) allow(key string, now time.Time) bool {
 }
 
 const (
-	deviceCookie = "meerkat_device"
-	deviceTTL    = 90 * 24 * time.Hour
+	// sessionCookieName and deviceCookie carry the __Host- prefix: browsers then
+	// accept them only from this exact host, Secure and for Path=/, so an
+	// application on a sibling hostname cannot set or shadow them.
+	sessionCookieName = "__Host-meerkat_session"
+	deviceCookie      = "__Host-meerkat_device"
+	deviceTTL         = 90 * 24 * time.Hour
 )
 
 // deviceToken signs a trusted-device cookie valid until expires. The cookie
@@ -371,12 +375,12 @@ func (s *Store) startLogin(w http.ResponseWriter, r *http.Request, admin control
 		return control.Session{}, false
 	}
 	s.audit(r, "session.login", control.AuditEntry{ActorID: admin.ID, ActorEmail: admin.Email, ResourceType: "admin", ResourceID: admin.ID, Detail: detail})
-	http.SetCookie(w, &http.Cookie{Name: "meerkat_session", Value: session.Token, Path: "/", Expires: session.ExpiresAt, MaxAge: int(time.Until(session.ExpiresAt).Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: session.Token, Path: "/", Expires: session.ExpiresAt, MaxAge: int(time.Until(session.ExpiresAt).Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
 	// The local port is another origin: a cookie set there never reaches the
 	// public host, where the shared failure limit applies.
 	if _, public := requestOrigin(r); public && len(s.deviceKey) != 0 {
 		expires := s.now().Add(deviceTTL)
-		http.SetCookie(w, &http.Cookie{Name: deviceCookie, Value: s.deviceToken(expires), Path: "/api/v1/session", Expires: expires, MaxAge: int(deviceTTL.Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+		http.SetCookie(w, &http.Cookie{Name: deviceCookie, Value: s.deviceToken(expires), Path: "/", Expires: expires, MaxAge: int(deviceTTL.Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
 	}
 	s.announceLogin(r, admin.Email)
 	return session, true

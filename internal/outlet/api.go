@@ -608,7 +608,7 @@ func (s *Store) logout(w http.ResponseWriter, r *http.Request) {
 	var admin control.Admin
 	var active bool
 	if s.control != nil {
-		if cookie, err := r.Cookie("meerkat_session"); err == nil {
+		if cookie, err := r.Cookie(sessionCookieName); err == nil {
 			admin, active = s.sessionAdmin(r)
 			err := s.control.RevokeSession(r.Context(), cookie.Value)
 			// Even when revoking failed, the next request asks the database.
@@ -619,7 +619,7 @@ func (s *Store) logout(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	http.SetCookie(w, &http.Cookie{Name: "meerkat_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
 	// A single sign-on session also ends at the provider, or the next
 	// sign-in would go straight through without asking.
 	logoutURL := s.ssoLogoutURL(r)

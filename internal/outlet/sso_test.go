@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -108,7 +109,8 @@ func (a alertFixture) ssoSignIn(t *testing.T, idp *fakeIdP, claims map[string]an
 	if query.Get("redirect_uri") != "https://"+a.host+ssoCallbackPath || query.Get("code_challenge_method") != "S256" || query.Get("client_id") != "meerkat" {
 		t.Fatalf("authorization request: %s", location)
 	}
-	full := map[string]any{"iss": idp.server.URL, "aud": "meerkat", "sub": "user-1", "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(), "nonce": query.Get("nonce")}
+	// Each address is its own provider account unless the claims say otherwise.
+	full := map[string]any{"iss": idp.server.URL, "aud": "meerkat", "sub": fmt.Sprint("subject-", claims["email"]), "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(), "nonce": query.Get("nonce")}
 	for key, value := range claims {
 		full[key] = value
 	}
@@ -249,7 +251,7 @@ func TestSSOStateIsBoundToTheBrowserAndUsedOnce(t *testing.T) {
 			cookie = c
 		}
 	}
-	if cookie == nil || cookie.SameSite != http.SameSiteLaxMode || !cookie.HttpOnly || !cookie.Secure || cookie.Path != ssoPath {
+	if cookie == nil || cookie.SameSite != http.SameSiteLaxMode || !cookie.HttpOnly || !cookie.Secure || cookie.Path != "/" {
 		t.Fatalf("state cookie: %+v", cookie)
 	}
 	// The provider reports an error; the state is spent either way.
@@ -452,4 +454,110 @@ func TestSSOLogoutEndsTheProviderSession(t *testing.T) {
 		t.Fatalf("password logout: %d %s", out.Code, out.Body.String())
 	}
 	a.store.background.Wait()
+}
+
+// Only a provider-vouched, plain-ASCII email identifies an administrator.
+func TestSSORequiresAVerifiedASCIIEmail(t *testing.T) {
+	a := newAlertFixture(t)
+	a.adminSession(t)
+	idp := newFakeIdP(t)
+	a.enableSSO(t, idp, func(s *control.SSO) { s.AllowedUsers, s.AllowedGroups = []string{"@example.com"}, nil })
+	for name, verified := range map[string]any{"missing": nil, "zero": 0, "string FALSE": "FALSE", "object": map[string]any{}, "false": false} {
+		claims := map[string]any{"email": "admin@example.com"}
+		if verified != nil {
+			claims["email_verified"] = verified
+		}
+		if w := a.ssoSignIn(t, idp, claims); ssoError(w) != "not_allowed" {
+			t.Fatalf("email_verified %s: %d %s", name, w.Code, w.Header().Get("Location"))
+		}
+		a.clock.advance(loginWindow)
+	}
+	// U+0130 lowercases to an ASCII i in Go and would match admin@example.com.
+	if w := a.ssoSignIn(t, idp, map[string]any{"email": "admİn@example.com", "email_verified": true}); ssoError(w) != "not_allowed" {
+		t.Fatalf("non-ASCII email: %d %s", w.Code, w.Header().Get("Location"))
+	}
+	a.store.background.Wait()
+}
+
+// The first single sign-on binds an administrator to that provider account;
+// another account that later shows the same email is refused.
+func TestSSOBindsAdministratorsToTheirProviderAccount(t *testing.T) {
+	a := newAlertFixture(t)
+	a.adminSession(t) // password administrator admin@example.com
+	idp := newFakeIdP(t)
+	a.enableSSO(t, idp, func(s *control.SSO) { s.AllowedUsers, s.AllowedGroups = []string{"admin@example.com"}, nil })
+	existing, err := a.db.VerifyCredentials(context.Background(), "admin@example.com", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := a.ssoSignIn(t, idp, map[string]any{"email": "admin@example.com", "email_verified": true, "sub": "owner"})
+	if w.Code != 200 {
+		t.Fatalf("first SSO sign-in: %d %s", w.Code, w.Header().Get("Location"))
+	}
+	if event := a.lastAudit(t); event.Action != "session.login" || event.ResourceID != existing.ID {
+		t.Fatalf("SSO sign-in not linked to the existing administrator: %+v", event)
+	}
+	if w := a.ssoSignIn(t, idp, map[string]any{"email": "admin@example.com", "email_verified": true, "sub": "someone-else"}); ssoError(w) != "not_allowed" {
+		t.Fatalf("another account with the same email: %d %s", w.Code, w.Header().Get("Location"))
+	}
+	if event := a.lastAudit(t); event.Action != "session.login_failed" || !strings.Contains(string(event.Detail), "identity_mismatch") {
+		t.Fatalf("mismatch audit: %s %s", event.Action, event.Detail)
+	}
+	if w := a.ssoSignIn(t, idp, map[string]any{"email": "admin@example.com", "email_verified": true, "sub": "owner"}); w.Code != 200 {
+		t.Fatalf("the bound account again: %d %s", w.Code, w.Header().Get("Location"))
+	}
+	a.store.background.Wait()
+}
+
+func TestBootstrapTokenCannotAddAdministratorsBesideEnvironmentSSO(t *testing.T) {
+	a := newAlertFixture(t)
+	env, _ := control.SSO{Enabled: true, Issuer: "https://idp.example.com", ClientID: "meerkat", Scopes: []string{"openid"}, AllowedUsers: []string{"a@example.com"}, PasswordLogin: true}.Normalize()
+	a.db.SetDefaults(control.Defaults{SSO: &env})
+	if w := request(a.store.Handler(), "POST", "/api/v1/setup/admin", a.admin, adminLogin); w.Code != 409 || errorCode(t, w) != "setup_complete" {
+		t.Fatalf("setup with SSO from the environment: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// A flood of starts cannot cancel sign-ins already in flight.
+func TestSSOPendingSignInsAreRationed(t *testing.T) {
+	var st ssoState
+	now := time.Now()
+	victim := ssoPending{client: "victim", expires: now.Add(ssoStateTTL)}
+	if !st.put("victim-state", victim, now) {
+		t.Fatal("first sign-in refused")
+	}
+	for i := range maxSSOPerClient + 5 {
+		if !st.put(fmt.Sprint("attacker-", i), ssoPending{client: "attacker", expires: now.Add(ssoStateTTL)}, now) {
+			t.Fatalf("one client's own sign-ins refused at %d", i)
+		}
+	}
+	mine := 0
+	for _, entry := range st.pending {
+		if entry.client == "attacker" {
+			mine++
+		}
+	}
+	if mine != maxSSOPerClient {
+		t.Fatalf("one client holds %d sign-ins", mine)
+	}
+	for i := 0; len(st.pending) < maxSSOPending; i++ {
+		st.put(fmt.Sprint("crowd-", i), ssoPending{client: fmt.Sprint("client-", i), expires: now.Add(ssoStateTTL)}, now)
+	}
+	if st.put("late", ssoPending{client: "late", expires: now.Add(ssoStateTTL)}, now) {
+		t.Fatal("a full table admitted another sign-in")
+	}
+	if _, ok := st.take("victim-state", now); !ok {
+		t.Fatal("the victim's sign-in was evicted")
+	}
+}
+
+func TestProviderRedirectsStayOnHTTPS(t *testing.T) {
+	plain, _ := http.NewRequest("GET", "http://127.0.0.1:8123/private", nil)
+	secure, _ := http.NewRequest("GET", "https://idp.example.com/realms/x", nil)
+	if oidcClient.CheckRedirect(plain, []*http.Request{secure}) == nil {
+		t.Fatal("followed a redirect to plain HTTP")
+	}
+	if oidcClient.CheckRedirect(secure, []*http.Request{secure}) != nil {
+		t.Fatal("refused an https redirect")
+	}
 }

@@ -19,7 +19,9 @@ import (
 )
 
 const (
-	ssoCookie = "meerkat_sso"
+	// ssoCookie holds the state of a sign-in in flight. Like the session
+	// cookie it carries the __Host- prefix, which requires Path=/.
+	ssoCookie = "__Host-meerkat_sso"
 	// ssoIDTokenCookie keeps the ID token of a single sign-on session for
 	// logout: the provider ends its own session only for a request that
 	// presents it (id_token_hint).
@@ -28,7 +30,12 @@ const (
 	ssoPath          = "/api/v1/session/sso"
 	ssoCallbackPath  = ssoPath + "/callback"
 	ssoStateTTL      = 10 * time.Minute
-	maxSSOPending    = 1024
+	// maxSSOPending bounds the sign-ins in flight; maxSSOPerClient keeps
+	// one address from holding more than a few of them.
+	maxSSOPending   = 8192
+	maxSSOPerClient = 3
+	// ssoDiscoveryRetry spaces discovery attempts after one failed.
+	ssoDiscoveryRetry = 10 * time.Second
 	// ssoProviderTTL bounds how long discovery is trusted; keys are refreshed
 	// by go-oidc on their own when a token names an unknown one.
 	ssoProviderTTL = time.Hour
@@ -37,6 +44,7 @@ const (
 // ssoPending is a sign-in sent to the provider and not yet returned.
 type ssoPending struct {
 	nonce, verifier, returnTo string
+	client                    string // clientKey of the address that started it
 	expires                   time.Time
 }
 
@@ -53,30 +61,42 @@ type ssoState struct {
 	mu       sync.Mutex
 	pending  map[string]ssoPending
 	provider *ssoProvider
+	// discovering serializes discovery, so a burst of starts makes one
+	// request to the provider; failedAt delays the next after a failure.
+	discovering sync.Mutex
+	failedAt    time.Time
+	failure     error
 }
 
-func (st *ssoState) put(state string, p ssoPending, now time.Time) {
+// put admits a sign-in, or reports false when there is no room. An address
+// with maxSSOPerClient sign-ins in flight replaces its own oldest; sign-ins
+// of others that have not expired are never evicted, so a flood of starts
+// cannot cancel an administrator's sign-in in progress.
+func (st *ssoState) put(state string, p ssoPending, now time.Time) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if st.pending == nil {
 		st.pending = map[string]ssoPending{}
 	}
-	if len(st.pending) >= maxSSOPending {
-		// Expired entries go first; a flood of starts then evicts the
-		// sign-in closest to expiring rather than refusing new ones.
-		oldest, at := "", time.Time{}
-		for key, entry := range st.pending {
-			if !now.Before(entry.expires) {
-				delete(st.pending, key)
-			} else if oldest == "" || entry.expires.Before(at) {
-				oldest, at = key, entry.expires
+	mine, oldest := 0, ""
+	for key, entry := range st.pending {
+		switch {
+		case !now.Before(entry.expires):
+			delete(st.pending, key)
+		case entry.client == p.client:
+			mine++
+			if oldest == "" || entry.expires.Before(st.pending[oldest].expires) {
+				oldest = key
 			}
 		}
-		if len(st.pending) >= maxSSOPending {
-			delete(st.pending, oldest)
-		}
+	}
+	if mine >= maxSSOPerClient {
+		delete(st.pending, oldest)
+	} else if len(st.pending) >= maxSSOPending {
+		return false
 	}
 	st.pending[Hash(state)] = p
+	return true
 }
 
 // take removes the sign-in for state and returns it if it has not expired.
@@ -89,12 +109,22 @@ func (st *ssoState) take(state string, now time.Time) (ssoPending, bool) {
 	return p, ok && now.Before(p.expires)
 }
 
-// oidcContext makes go-oidc and oauth2 use the Outlet's client, with its
-// timeout, for discovery, keys and the token exchange.
+// oidcClient talks to the OpenID provider: with a timeout, and following
+// redirects only to https addresses, so an issuer cannot bounce the
+// Outlet's requests to plain-HTTP services on its network.
+var oidcClient = &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(r *http.Request, via []*http.Request) error {
+	if len(via) >= 3 || r.URL.Scheme != "https" {
+		return http.ErrUseLastResponse
+	}
+	return nil
+}}
+
+// oidcContext makes go-oidc and oauth2 use the Outlet's client for
+// discovery, keys and the token exchange.
 func (s *Store) oidcContext(ctx context.Context) context.Context {
 	client := s.ssoHTTP
 	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+		client = oidcClient
 	}
 	return oidc.ClientContext(ctx, client)
 }
@@ -102,18 +132,34 @@ func (s *Store) oidcContext(ctx context.Context) context.Context {
 // discover returns the provider for issuer, fetching its configuration when
 // the issuer changed or the cached one is old.
 func (s *Store) discover(ctx context.Context, issuer string) (*oidc.Provider, error) {
-	s.sso.mu.Lock()
-	cached := s.sso.provider
-	s.sso.mu.Unlock()
-	if cached != nil && cached.issuer == issuer && s.now().Sub(cached.fetched) < ssoProviderTTL {
-		return cached.provider, nil
+	cached := func() *oidc.Provider {
+		s.sso.mu.Lock()
+		defer s.sso.mu.Unlock()
+		if p := s.sso.provider; p != nil && p.issuer == issuer && s.now().Sub(p.fetched) < ssoProviderTTL {
+			return p.provider
+		}
+		return nil
+	}
+	if provider := cached(); provider != nil {
+		return provider, nil
+	}
+	s.sso.discovering.Lock()
+	defer s.sso.discovering.Unlock()
+	// Another request may have fetched it while this one waited.
+	if provider := cached(); provider != nil {
+		return provider, nil
+	}
+	if s.sso.failure != nil && s.now().Sub(s.sso.failedAt) < ssoDiscoveryRetry {
+		return nil, s.sso.failure
 	}
 	// The provider keeps this context for fetching keys later, so it must
 	// not be the request's.
 	provider, err := oidc.NewProvider(s.oidcContext(context.Background()), issuer)
 	if err != nil {
+		s.sso.failure, s.sso.failedAt = err, s.now()
 		return nil, err
 	}
+	s.sso.failure = nil
 	s.sso.mu.Lock()
 	s.sso.provider = &ssoProvider{issuer: issuer, provider: provider, fetched: s.now()}
 	s.sso.mu.Unlock()
@@ -233,10 +279,14 @@ func (s *Store) ssoStart(w http.ResponseWriter, r *http.Request) {
 	}
 	state, nonce, verifier := Token(), Token(), oauth2.GenerateVerifier()
 	now := s.now()
-	s.sso.put(state, ssoPending{nonce: nonce, verifier: verifier, returnTo: returnTo, expires: now.Add(ssoStateTTL)}, now)
+	ip, _ := requestOrigin(r)
+	if !s.sso.put(state, ssoPending{nonce: nonce, verifier: verifier, returnTo: returnTo, client: clientKey(ip), expires: now.Add(ssoStateTTL)}, now) {
+		ssoFailed(w, r, returnTo, "sso_busy")
+		return
+	}
 	// Lax, not Strict: the provider sends the browser back with a top-level
 	// navigation from its own site, and the state must come along.
-	http.SetCookie(w, &http.Cookie{Name: ssoCookie, Value: state, Path: ssoPath, MaxAge: int(ssoStateTTL.Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: ssoCookie, Value: state, Path: "/", MaxAge: int(ssoStateTTL.Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
 	http.Redirect(w, r, oauthConfig(settings, provider, redirectURI).AuthCodeURL(state, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)), http.StatusFound)
 }
 
@@ -245,6 +295,15 @@ func (s *Store) ssoStart(w http.ResponseWriter, r *http.Request) {
 type ssoClaims struct {
 	Email         string `json:"email"`
 	EmailVerified any    `json:"email_verified"`
+}
+
+func asciiOnly(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 func claimStrings(value any) []string {
@@ -286,7 +345,7 @@ func ssoAllowed(settings control.SSO, email string, groups []string) bool {
 func (s *Store) ssoCallback(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	cookie, _ := r.Cookie(ssoCookie)
-	http.SetCookie(w, &http.Cookie{Name: ssoCookie, Value: "", Path: ssoPath, MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: ssoCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
 	state := query.Get("state")
 	// The state must come back in the cookie of the browser that started:
 	// a callback link sent to someone else cannot sign them in.
@@ -342,17 +401,24 @@ func (s *Store) ssoCallback(w http.ResponseWriter, r *http.Request) {
 		fail("token_failed", "invalid_token", "")
 		return
 	}
-	email := strings.ToLower(strings.TrimSpace(claims.Email))
-	// A provider that says the address is unverified is not trusted with it.
-	if verified, said := claims.EmailVerified.(bool); said && !verified || claims.EmailVerified == "false" || attemptedEmail(email) == "" {
-		fail("not_allowed", "unverified_email", email)
+	email := strings.TrimSpace(claims.Email)
+	// Only an address the provider vouches for identifies an administrator:
+	// email_verified must be true, not merely absent. Non-ASCII addresses are
+	// refused, since case folding could map one onto another (İ to i).
+	if claims.EmailVerified != true && claims.EmailVerified != "true" || !asciiOnly(email) || attemptedEmail(strings.ToLower(email)) == "" {
+		fail("not_allowed", "unverified_email", attemptedEmail(strings.ToLower(email)))
 		return
 	}
+	email = strings.ToLower(email)
 	if !ssoAllowed(settings, email, claimStrings(all[settings.GroupsClaim])) {
 		fail("not_allowed", "not_allowed", email)
 		return
 	}
-	admin, err := s.control.SSOAdmin(r.Context(), email)
+	admin, err := s.control.SSOAdmin(r.Context(), idToken.Issuer, idToken.Subject, email)
+	if errors.Is(err, control.ErrSSOIdentityMismatch) {
+		fail("not_allowed", "identity_mismatch", email)
+		return
+	}
 	if err != nil {
 		ssoFailed(w, r, pending.returnTo, "sso_unavailable")
 		return

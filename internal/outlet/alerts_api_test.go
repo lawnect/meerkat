@@ -157,7 +157,7 @@ func (a alertFixture) publicRequest(method, path, forwardedFor, agent string, bo
 func sessionCookie(t *testing.T, w *httptest.ResponseRecorder) *http.Cookie {
 	t.Helper()
 	for _, cookie := range w.Result().Cookies() {
-		if cookie.Name == "meerkat_session" && cookie.Value != "" {
+		if cookie.Name == sessionCookieName && cookie.Value != "" {
 			return cookie
 		}
 	}

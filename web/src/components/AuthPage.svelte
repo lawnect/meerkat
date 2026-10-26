@@ -52,11 +52,12 @@
     ssoProviderDenied: 'The SSO provider declined the sign-in.',
     ssoTokenFailed: 'Couldn\'t verify the SSO sign-in.',
     ssoNotAllowed: 'This account isn\'t allowed to sign in.',
-    passwordLoginDisabled: 'Password sign-in is off. Use SSO.',
+    ssoBusy: 'Try again in a moment.',
+    passwordLoginDisabled: 'Password sign-in is disabled. Sign in with SSO.',
   }, {
     setupTitle: '초기 설정',
     loginTitle: '로그인',
-    setupIntro: '이 서버의 관리자 계정을 만듭니다.',
+    setupIntro: '이 서버의 관리자 계정을 생성합니다.',
     setupCode: '설정 코드',
     setupCodePlaceholder: '서버의 admin.token 값',
     email: '이메일',
@@ -65,29 +66,30 @@
     passwordHint: '12자 이상',
     passwordPlaceholder: '비밀번호',
     busy: '처리 중…',
-    createAdmin: '관리자 만들기',
+    createAdmin: '관리자 생성',
     submitLogin: '로그인',
-    invalidSetup: '설정 코드, 이메일 또는 비밀번호를 확인하세요. 비밀번호는 12자 이상이어야 합니다.',
-    setupFailed: (code: string) => `설정에 실패했습니다: ${code}`,
+    invalidSetup: '설정 코드, 이메일 또는 비밀번호가 올바르지 않습니다. 비밀번호는 12자 이상이어야 합니다.',
+    setupFailed: (code: string) => `초기 설정 중 오류가 발생했습니다: ${code}`,
     loginFailed: '로그인에 실패했습니다.',
-    rateLimited: '로그인 시도가 너무 많습니다. 몇 분 후 다시 시도하세요.',
+    rateLimited: '로그인 시도 횟수를 초과했습니다. 잠시 후 다시 시도하십시오.',
     codeTitle: '인증 코드 입력',
-    codeIntro: '텔레그램으로 6자리 코드를 보냈습니다.',
+    codeIntro: 'Telegram으로 6자리 인증 코드가 전송되었습니다.',
     codeLabel: '인증 코드',
     verify: '확인',
-    backToLogin: '다시 로그인',
-    codeInvalid: '코드가 맞지 않거나 만료되었습니다.',
-    codeLocked: '시도 횟수를 넘었습니다. 다시 로그인해 새 코드를 받으세요.',
-    telegramUnreachable: '텔레그램으로 코드를 보내지 못했습니다. SSH로 연결한 로컬 관리 포트에서 로그인하세요.',
+    backToLogin: '로그인 화면으로 이동',
+    codeInvalid: '인증 코드가 올바르지 않거나 만료되었습니다.',
+    codeLocked: '입력 시도 횟수를 초과했습니다. 다시 로그인하여 새 인증 코드를 받으십시오.',
+    telegramUnreachable: 'Telegram으로 인증 코드를 전송할 수 없습니다. SSH로 연결한 로컬 관리 포트에서 로그인하십시오.',
     ssoSignIn: (label: string) => (label ? `${label} 계정으로 로그인` : 'SSO로 로그인'),
     or: '또는',
     ssoUnavailable: 'SSO 로그인을 사용할 수 없습니다.',
-    ssoProviderUnreachable: 'SSO 공급자에 연결하지 못했습니다.',
-    ssoInvalidState: '로그인 요청이 만료되었습니다. 다시 시도하세요.',
-    ssoProviderDenied: 'SSO 공급자가 로그인을 거부했습니다.',
-    ssoTokenFailed: 'SSO 로그인을 확인하지 못했습니다.',
+    ssoProviderUnreachable: 'SSO 공급자에 연결할 수 없습니다.',
+    ssoInvalidState: '로그인 요청이 만료되었습니다. 다시 시도하십시오.',
+    ssoProviderDenied: 'SSO 공급자에서 로그인이 거부되었습니다.',
+    ssoTokenFailed: 'SSO 로그인 확인 중 오류가 발생했습니다.',
     ssoNotAllowed: '이 계정에는 접근 권한이 없습니다.',
-    passwordLoginDisabled: '비밀번호 로그인이 꺼져 있습니다. SSO로 로그인하세요.',
+    ssoBusy: '잠시 후 다시 시도하십시오.',
+    passwordLoginDisabled: '비밀번호 로그인이 비활성화되어 있습니다. SSO로 로그인하십시오.',
   });
 
   let { mode, signIn = { password: true, sso: false, sso_label: '' }, onLogin, onSetup }: { mode: 'setup' | 'login'; signIn?: SignInOptions; onLogin: () => Promise<void>; onSetup: () => void } = $props();
@@ -95,7 +97,7 @@
   let email = $state('');
   let password = $state('');
   type FailureKind = 'invalidSetup' | 'setupFailed' | 'loginFailed' | 'rateLimited' | 'codeInvalid' | 'codeLocked' | 'telegramUnreachable'
-    | 'ssoUnavailable' | 'ssoProviderUnreachable' | 'ssoInvalidState' | 'ssoProviderDenied' | 'ssoTokenFailed' | 'ssoNotAllowed' | 'passwordLoginDisabled';
+    | 'ssoUnavailable' | 'ssoProviderUnreachable' | 'ssoInvalidState' | 'ssoProviderDenied' | 'ssoTokenFailed' | 'ssoNotAllowed' | 'ssoBusy' | 'passwordLoginDisabled';
   let failure = $state<{ kind: FailureKind; code: string } | null>(null);
   // 2단계 인증을 켜 둔 Outlet은 비밀번호 확인 뒤 텔레그램 코드를 한 번 더 받습니다.
   let challenge = $state('');
@@ -112,6 +114,7 @@
     provider_denied: 'ssoProviderDenied',
     token_failed: 'ssoTokenFailed',
     not_allowed: 'ssoNotAllowed',
+    sso_busy: 'ssoBusy',
   };
   const showPassword = $derived(mode === 'setup' || signIn.password || !signIn.sso);
   const ssoFirst = $derived(mode === 'login' && signIn.sso);
@@ -205,7 +208,7 @@
 </script>
 
 {#snippet errorAlert()}
-  {#if error}<Alert.Root variant="destructive"><Warning aria-hidden="true" /><Alert.Description>{error}</Alert.Description></Alert.Root>{/if}
+  {#if error}<Alert.Root variant="destructive"><Warning aria-hidden="true" /><Alert.Description class="break-keep">{error}</Alert.Description></Alert.Root>{/if}
 {/snippet}
 
 <main class="relative flex min-h-svh flex-col items-center justify-center gap-6 bg-muted p-6 md:p-10">
@@ -245,7 +248,7 @@
                   {/snippet}
                 </InputOTP.Root>
               </Field.Field>
-              {#if error}<Alert.Root variant="destructive"><Warning aria-hidden="true" /><Alert.Description>{error}</Alert.Description></Alert.Root>{/if}
+              {#if error}<Alert.Root variant="destructive"><Warning aria-hidden="true" /><Alert.Description class="break-keep">{error}</Alert.Description></Alert.Root>{/if}
               <Field.Field>
                 <Button type="submit" disabled={busy || otp.length !== 6}>{#if busy}<Spinner aria-hidden="true" />{t().busy}{:else}<ArrowEnter aria-hidden="true" />{t().verify}{/if}</Button>
                 <Button variant="outline" disabled={busy} onclick={restart}><ArrowLeft aria-hidden="true" />{t().backToLogin}</Button>
@@ -265,7 +268,7 @@
             {#if showPassword}
               {#if mode === 'setup'}
                 <Field.Field>
-                  <Field.Label for="setup-code">{t().setupCode}</Field.Label>
+                  <Field.Label for="setup-code" class="sr-only">{t().setupCode}</Field.Label>
                   <InputGroup.Root>
                     <InputGroup.Addon><Key aria-hidden="true" /></InputGroup.Addon>
                     <InputGroup.Input id="setup-code" bind:value={code} placeholder={t().setupCodePlaceholder} autocomplete="off" required />
@@ -273,14 +276,14 @@
                 </Field.Field>
               {/if}
               <Field.Field>
-                <Field.Label for="email">{t().email}</Field.Label>
+                <Field.Label for="email" class="sr-only">{t().email}</Field.Label>
                 <InputGroup.Root>
                   <InputGroup.Addon><Mail aria-hidden="true" /></InputGroup.Addon>
                   <InputGroup.Input id="email" bind:value={email} type="email" placeholder={t().emailPlaceholder} autocomplete="username" required />
                 </InputGroup.Root>
               </Field.Field>
               <Field.Field>
-                <Field.Label for="password">{t().password}</Field.Label>
+                <Field.Label for="password" class="sr-only">{t().password}</Field.Label>
                 <InputGroup.Root>
                   <InputGroup.Addon><LockClosed aria-hidden="true" /></InputGroup.Addon>
                   <InputGroup.Input id="password" bind:value={password} type="password" placeholder={t().passwordPlaceholder} autocomplete={mode === 'setup' ? 'new-password' : 'current-password'} minlength={mode === 'setup' ? 12 : undefined} aria-describedby={mode === 'setup' ? 'password-hint' : undefined} required />

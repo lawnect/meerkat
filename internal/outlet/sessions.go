@@ -83,7 +83,7 @@ func (s *Store) sessionAdmin(r *http.Request) (control.Admin, bool) {
 	if s.control == nil {
 		return control.Admin{}, false
 	}
-	cookie, err := r.Cookie("meerkat_session")
+	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
 		return control.Admin{}, false
 	}

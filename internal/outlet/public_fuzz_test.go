@@ -24,7 +24,7 @@ func FuzzPublicHandler(f *testing.F) {
 		"GET /.well-known/meerkat/cert-ask?domain=%00..%2f HTTP/1.1\r\nHost: outlet:8080\r\n\r\n",
 		"POST / HTTP/1.1\r\nHost: app.example.com\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nabcd\r\n0\r\n\r\n",
 		"POST /api/v1/session HTTP/1.1\r\nHost: {admin}\r\nContent-Type: application/json\r\nContent-Length: 9\r\n\r\n{\"email\":",
-		"PUT /api/v1/outlet HTTP/1.1\r\nHost: {admin}\r\nContent-Type: application/json\r\nCookie: meerkat_session=%%%\r\nContent-Length: 2\r\n\r\n{}",
+		"PUT /api/v1/outlet HTTP/1.1\r\nHost: {admin}\r\nContent-Type: application/json\r\nCookie: __Host-meerkat_session=%%%\r\nContent-Length: 2\r\n\r\n{}",
 		"GET /api/v1/usage?from=x&to=y&tz=../../etc/passwd HTTP/1.1\r\nHost: {admin}\r\n\r\n",
 		"GET /connector/v1/config HTTP/1.1\r\nHost: example.com\r\n\r\n",
 		"OPTIONS * HTTP/1.1\r\nHost: app.example.com\r\n\r\n",
