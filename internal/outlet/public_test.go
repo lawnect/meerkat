@@ -387,3 +387,72 @@ func TestClientErrorsAreNotUpstreamErrors(t *testing.T) {
 		t.Fatalf("ordinary request: %d", code)
 	}
 }
+
+// An app gets the client address Caddy saw as X-Real-IP, a single IP, and
+// none of the client headers a client could forge; a WebSocket upgrade too.
+func TestProxySetsTheRealClientAddress(t *testing.T) {
+	seen := make(chan http.Header, 4)
+	record := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Clone()
+		if r.Header.Get("Upgrade") == "" {
+			return
+		}
+		conn, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = io.WriteString(rw, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+		_ = rw.Flush()
+	})
+	f := newProxyFixture(t, record)
+	f.route(t, 0, "app.example.com")
+	forged := map[string]string{"X-Real-Ip": "6.6.6.6", "Cf-Connecting-Ip": "6.6.6.6", "Cf-Connecting-Ipv6": "2001:db8::6", "True-Client-Ip": "6.6.6.6", "X-Client-Ip": "6.6.6.6", "Forwarded": "for=6.6.6.6"}
+	check := func(name string, headers http.Header, want string) {
+		t.Helper()
+		if got := headers.Values("X-Real-Ip"); want == "" && len(got) != 0 || want != "" && (len(got) != 1 || got[0] != want) {
+			t.Fatalf("%s: X-Real-IP = %q, want %q", name, got, want)
+		}
+		for header := range forged {
+			if header != "X-Real-Ip" && headers.Get(header) != "" {
+				t.Fatalf("%s: %s passed through", name, header)
+			}
+		}
+	}
+	for _, c := range []struct{ name, forwardedFor, want string }{
+		// The client's own X-Forwarded-For comes first; Caddy appends the address it saw.
+		{"ipv4", "6.6.6.6, 203.0.113.9", "203.0.113.9"},
+		{"ipv6", "2001:db8::1", "2001:db8::1"},
+		{"unknown", "", ""},
+		{"not an address", "6.6.6.6, unknown", ""},
+	} {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.Host = "app.example.com"
+		for name, value := range forged {
+			r.Header.Set(name, value)
+		}
+		if c.forwardedFor != "" {
+			r.Header.Set("X-Forwarded-For", c.forwardedFor)
+		}
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, r)
+		if w.Code != 200 {
+			t.Fatalf("%s: %d", c.name, w.Code)
+		}
+		check(c.name, <-seen, c.want)
+	}
+
+	server := httptest.NewServer(f.handler)
+	defer server.Close()
+	conn, reader := dial(t, strings.TrimPrefix(server.URL, "http://"))
+	request := "GET /live/websocket HTTP/1.1\r\nHost: app.example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nX-Forwarded-For: 6.6.6.6, 198.51.100.4\r\n"
+	for name, value := range forged {
+		request += name + ": " + value + "\r\n"
+	}
+	_, _ = io.WriteString(conn, request+"\r\n")
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if res, err := http.ReadResponse(reader, nil); err != nil || res.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade: %v %v", res, err)
+	}
+	check("websocket", <-seen, "198.51.100.4")
+}

@@ -171,7 +171,7 @@ Caddy는 각 호스트에 첫 HTTPS 연결이 들어올 때 Outlet에 등록 여
 인증서 장애 시 복구 경로로 유지합니다. 추가 도메인은 **도메인 관리**에서 등록하고
 도메인마다 와일드카드 또는 개별 호스트 방식을 고릅니다. **DNS 연결 확인**은 방식에 맞는 이름(와일드카드는 임의의 하위 주소, 개별 호스트는 공개 주소마다, 대표 도메인은 관리 주소, 그 도메인에 속한 터널 주소)만 조회합니다.
 
-공개 요청은 Caddy에서 HTTPS를 종료한 뒤 Outlet과 터널을 통해 내부 앱에 HTTP로 전달됩니다. 내부 앱에는 원래 공개 `Host`와 `X-Forwarded-Host`, `X-Forwarded-Proto: https`, `X-Forwarded-Port: 443`, `X-Forwarded-For`가 전달됩니다. 앱이 HTTPS 여부를 판단할 때는 프록시 헤더를 신뢰하도록 해당 앱의 프록시 설정을 켜야 합니다. 앱이 내부 연결 자체에도 TLS를 요구한다면 현재 HTTP 연결 대상과는 맞지 않습니다.
+공개 요청은 Caddy에서 HTTPS를 종료한 뒤 Outlet과 터널을 통해 내부 앱에 HTTP로 전달됩니다. 내부 앱에는 원래 공개 `Host`와 `X-Forwarded-Host`, `X-Forwarded-Proto: https`, `X-Forwarded-Port: 443`, `X-Forwarded-For`, `X-Real-IP`가 전달됩니다. `X-Real-IP`는 Caddy가 확인한 클라이언트 IP 하나(포트·목록 제외)이며 WebSocket 업그레이드 요청에도 동일하게 설정됩니다. 클라이언트가 보낸 값은 덮어쓰고, 접속 주소를 확인할 수 없으면 헤더를 제외합니다. 신뢰할 클라이언트 주소로는 이 헤더를 사용하십시오. 클라이언트가 위조할 수 있는 주소 헤더(`CF-Connecting-IP`, `CF-Connecting-IPv6`, `True-Client-IP`, `X-Client-IP`, `Forwarded`)는 제거되므로, Cloudflare에서 옮겨 온 앱은 `X-Real-IP`로 변경해야 합니다. 앱이 HTTPS 여부를 판단할 때는 프록시 헤더를 신뢰하도록 해당 앱의 프록시 설정을 켜야 합니다. 앱이 내부 연결 자체에도 TLS를 요구한다면 현재 HTTP 연결 대상과는 맞지 않습니다.
 
 기존 설치는 `outlet-init -domain` 방식을 계속 사용할 수 있습니다. 이전 DNS-01
 설치에서 전환할 때는 새 Outlet 이미지와 Compose 파일을 적용하고 서비스를 다시 시작합니다.

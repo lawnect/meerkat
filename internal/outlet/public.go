@@ -81,6 +81,11 @@ func (s *Store) servedSince(serviceID string, t time.Time) bool {
 	return ok && !t.IsZero() && v.(*atomic.Int64).Load() > t.UnixNano()
 }
 
+// spoofableClientHeaders name a client address. Behind Caddy only
+// X-Forwarded-For's last entry is real, so these are removed before a
+// request reaches an app; X-Real-IP is then set from that entry.
+var spoofableClientHeaders = []string{"X-Real-Ip", "Cf-Connecting-Ip", "Cf-Connecting-Ipv6", "True-Client-Ip", "X-Client-Ip", "Forwarded"}
+
 // isCertificateAsk reports whether r is Caddy's own on-demand TLS check.
 // Caddy calls it directly, without X-Forwarded-For; every request Caddy
 // proxies for a client carries that header, so a client that sets
@@ -236,9 +241,18 @@ func (s *Store) PublicHandler() http.Handler {
 				pr.Out.Header.Set("X-Forwarded-Host", host)
 				pr.Out.Header.Set("X-Forwarded-Proto", "https")
 				pr.Out.Header.Set("X-Forwarded-Port", "443")
-				pr.Out.Header.Del("X-Real-Ip")
 				pr.Out.Header.Del("X-Forwarded-Ssl")
 				pr.Out.Header.Del("X-Url-Scheme")
+				// Apps get one client address they can trust: X-Real-IP is
+				// the address Caddy saw, never a value the client sent.
+				// Headers a CDN would set, which an app moved off one might
+				// still trust, are dropped since a client could forge them.
+				for _, name := range spoofableClientHeaders {
+					pr.Out.Header.Del(name)
+				}
+				if client := forwardedClient(pr.In); client != "" {
+					pr.Out.Header.Set("X-Real-Ip", client)
+				}
 				forwardedFor := pr.In.Header.Get("X-Forwarded-For")
 				if peer, _, err := net.SplitHostPort(pr.In.RemoteAddr); err == nil {
 					if forwardedFor != "" {
