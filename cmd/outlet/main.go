@@ -48,6 +48,11 @@ func run() error {
 		slog.Warn(warning)
 	}
 	controlDB.SetDefaults(defaults)
+	if domain, warning := environmentDomain(os.Getenv); warning != "" {
+		slog.Warn(warning)
+	} else if domain != "" {
+		cfg.Domain = domain
+	}
 	upstream, metrics, caddyWarnings := caddyAddresses(os.Getenv)
 	for _, warning := range caddyWarnings {
 		slog.Warn(warning)
@@ -57,6 +62,12 @@ func run() error {
 	store, err := outlet.OpenWithControl(cfg, *dir, controlDB)
 	if err != nil {
 		return err
+	}
+	// Caddy listens on 80 and 443 only once a domain exists.
+	if current, err := controlDB.Outlet(context.Background()); err == nil && current.AdminHostname != "" {
+		slog.Info("admin console", "url", "https://"+current.AdminHostname+"/")
+	} else if err == nil {
+		slog.Warn("no domain yet, so Caddy doesn't listen on 80 or 443: set MEERKAT_DOMAIN, or add one in the console on the local admin port")
 	}
 	server := &http.Server{Addr: cfg.ListenAddress, Handler: store.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
 	// Caddy refuses client headers over 16 KB; the headers it adds must still fit here.

@@ -102,10 +102,13 @@ func validEmail(email string) bool {
 
 func validPassword(password string) bool { return len(password) >= 12 && len(password) <= 1024 }
 
-// SetupComplete reports whether the console needs no first administrator:
-// one exists, or the environment turns on single sign-on, whose allowed
-// people become administrators when they first sign in.
-func (d *Database) SetupComplete(ctx context.Context) (bool, error) {
+// SetupComplete reports whether the console needs no first administrator.
+// One existing ends setup everywhere. On public addresses single sign-on
+// from the environment ends it too, since its allowed people become
+// administrators when they first sign in; the local admin port keeps the
+// bootstrap token until an administrator exists, so SSH is always a way in,
+// even before a domain makes single sign-on reachable.
+func (d *Database) SetupComplete(ctx context.Context, public bool) (bool, error) {
 	var count int
 	if err := d.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM admins").Scan(&count); err != nil {
 		return false, err
@@ -113,25 +116,31 @@ func (d *Database) SetupComplete(ctx context.Context) (bool, error) {
 	if count != 0 {
 		return true, nil
 	}
+	if !public {
+		return false, nil
+	}
 	sso, source, err := d.ssoWithSource(ctx)
 	return err == nil && source == SourceEnvironment && sso.Enabled, err
 }
 
 // Setup creates the only initial administrator. bootstrapCodeHash must be the
 // SHA-256 digest stored by the deployment bootstrap, never a plaintext secret.
-func (d *Database) Setup(ctx context.Context, bootstrapCodeHash, code, email, password string) (Admin, error) {
+func (d *Database) Setup(ctx context.Context, bootstrapCodeHash, code, email, password string, public bool) (Admin, error) {
 	if !validEmail(email) || !validPassword(password) || len(bootstrapCodeHash) != 64 {
 		return Admin{}, ErrInvalidCredentials
 	}
 	if subtle.ConstantTimeCompare([]byte(hashToken(code)), []byte(bootstrapCodeHash)) != 1 {
 		return Admin{}, ErrInvalidCredentials
 	}
-	// Single sign-on from the environment completes setup by itself; the
-	// bootstrap token must not add a password administrator beside it.
-	if sso, source, err := d.ssoWithSource(ctx); err != nil {
-		return Admin{}, err
-	} else if source == SourceEnvironment && sso.Enabled {
-		return Admin{}, ErrAlreadySetup
+	// Single sign-on from the environment completes setup on public
+	// addresses; the bootstrap token must not add a password administrator
+	// there. Over SSH it still creates the first one.
+	if public {
+		if sso, source, err := d.ssoWithSource(ctx); err != nil {
+			return Admin{}, err
+		} else if source == SourceEnvironment && sso.Enabled {
+			return Admin{}, ErrAlreadySetup
+		}
 	}
 	hash, err := hashPassword(password)
 	if err != nil {

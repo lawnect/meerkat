@@ -323,6 +323,7 @@ The Outlet also reads these settings from its environment, so a deployment can s
 
 | Variable | Setting |
 |---|---|
+| `MEERKAT_DOMAIN` | Domain registered when the Outlet starts without one, such as `example.com`. Caddy listens on 80 and 443 only once a domain exists, so set it (and point `*.example.com` at the server) to reach the console without the local admin port. The log prints the console's address. A domain set in the console stays. |
 | `MEERKAT_OIDC_ISSUER`, `MEERKAT_OIDC_CLIENT_ID`, `MEERKAT_OIDC_CLIENT_SECRET` | OpenID Connect provider. Setting the issuer turns single sign-on on. |
 | `MEERKAT_OIDC_LABEL`, `MEERKAT_OIDC_SCOPES`, `MEERKAT_OIDC_GROUPS_CLAIM` | Button name, scopes (default `openid email profile`), groups claim (default `groups`). |
 | `MEERKAT_ADMIN_EMAILS`, `MEERKAT_ADMIN_GROUPS` | Who signs in as administrator: emails or `@domain`, and groups. When both are set, a person must match both. |
@@ -330,7 +331,7 @@ The Outlet also reads these settings from its environment, so a deployment can s
 | `MEERKAT_TELEGRAM_BOT_TOKEN`, `MEERKAT_TELEGRAM_CHAT_ID`, `MEERKAT_TELEGRAM_ENABLED` | Telegram alerts (enabled unless `false`). |
 | `MEERKAT_CADDY_UPSTREAM`, `MEERKAT_CADDY_METRICS` | Where Caddy reaches the Outlet (default `outlet:8080`) and where the Outlet reads Caddy's metrics (default `caddy:9090`). Set them when the services have other names, such as `outlet-k3x9:8080` and `caddy-k3x9:9090`, so Compose stacks on a shared network (Coolify) don't collide. Not shown in the console. |
 
-Lists are separated by commas. With single sign-on from the environment, the console needs no initial setup: the first listed administrator to sign in gets an account. A missing or invalid value never stops the Outlet, so tunnels keep running: that setting is left out and the log names the variable.
+Lists are separated by commas. With single sign-on from the environment, the public console needs no initial setup: the first listed administrator to sign in gets an account. Until an administrator exists, the local admin port over SSH still offers setup with `admin.token`. A missing or invalid value never stops the Outlet, so tunnels keep running: that setting is left out and the log names the variable.
 
 ### Block rules
 

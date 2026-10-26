@@ -509,12 +509,44 @@ func TestSSOBindsAdministratorsToTheirProviderAccount(t *testing.T) {
 	a.store.background.Wait()
 }
 
+// With single sign-on from the environment, the bootstrap token can't add a
+// password administrator from the internet, but over SSH it still creates
+// the first one: before a domain exists, nobody could sign in otherwise.
 func TestBootstrapTokenCannotAddAdministratorsBesideEnvironmentSSO(t *testing.T) {
 	a := newAlertFixture(t)
 	env, _ := control.SSO{Enabled: true, Issuer: "https://idp.example.com", ClientID: "meerkat", Scopes: []string{"openid"}, AllowedUsers: []string{"a@example.com"}, PasswordLogin: true}.Normalize()
 	a.db.SetDefaults(control.Defaults{SSO: &env})
-	if w := request(a.store.Handler(), "POST", "/api/v1/setup/admin", a.admin, adminLogin); w.Code != 409 || errorCode(t, w) != "setup_complete" {
-		t.Fatalf("setup with SSO from the environment: %d %s", w.Code, w.Body.String())
+	status := func(h http.Handler, r *http.Request) bool {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		var body struct {
+			Complete bool `json:"setup_complete"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		return body.Complete
+	}
+	public := func(method, path string) *http.Request {
+		r := jsonRequest(method, path, adminLogin)
+		r.Host = a.host
+		r.Header.Set("X-Forwarded-For", "198.51.100.20")
+		r.Header.Set("Authorization", "Bearer "+a.admin)
+		return r
+	}
+	if !status(a.store.PublicHandler(), public("GET", "/api/v1/setup/status")) || status(a.store.Handler(), httptest.NewRequest("GET", "/api/v1/setup/status", nil)) {
+		t.Fatal("setup should be over on public addresses only")
+	}
+	w := httptest.NewRecorder()
+	a.store.PublicHandler().ServeHTTP(w, public("POST", "/api/v1/setup/admin"))
+	if w.Code != 409 || errorCode(t, w) != "setup_complete" {
+		t.Fatalf("public setup with SSO from the environment: %d %s", w.Code, w.Body.String())
+	}
+	if w := request(a.store.Handler(), "POST", "/api/v1/setup/admin", a.admin, adminLogin); w.Code != 201 {
+		t.Fatalf("setup over SSH: %d %s", w.Code, w.Body.String())
+	}
+	if !status(a.store.Handler(), httptest.NewRequest("GET", "/api/v1/setup/status", nil)) {
+		t.Fatal("setup not over once an administrator exists")
 	}
 }
 

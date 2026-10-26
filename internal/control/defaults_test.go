@@ -15,7 +15,7 @@ func TestEnvironmentSettingsYieldToSavedOnes(t *testing.T) {
 	}
 	defer db.Close()
 	now := time.Now()
-	if complete, _ := db.SetupComplete(ctx); complete {
+	if complete, _ := db.SetupComplete(ctx, true); complete {
 		t.Fatal("setup complete with nothing configured")
 	}
 	envSSO, _ := SSO{Enabled: true, Issuer: "https://idp.example.com", ClientID: "meerkat", ClientSecret: "env-secret-1234", Scopes: []string{"openid"}, AllowedUsers: []string{"a@example.com"}, PasswordLogin: true}.Normalize()
@@ -33,8 +33,11 @@ func TestEnvironmentSettingsYieldToSavedOnes(t *testing.T) {
 	if source, _ := db.SSOSource(ctx); source != SourceEnvironment {
 		t.Fatalf("sso source = %s", source)
 	}
-	if complete, _ := db.SetupComplete(ctx); !complete {
-		t.Fatal("setup not complete with SSO from the environment")
+	if complete, _ := db.SetupComplete(ctx, true); !complete {
+		t.Fatal("setup not complete on public addresses with SSO from the environment")
+	}
+	if complete, _ := db.SetupComplete(ctx, false); complete {
+		t.Fatal("the local admin port lost its bootstrap path")
 	}
 	tg, _ := db.Telegram(ctx)
 	if tg.Source != SourceEnvironment || tg.ChatID != "-1001234567890" || tg.VerifiedAt != "" {

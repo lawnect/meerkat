@@ -258,7 +258,7 @@ func (s *Store) ssoStart(w http.ResponseWriter, r *http.Request) {
 	// Before the first administrator exists, setup needs the bootstrap
 	// token; single sign-on must not be another way to create one.
 	_, public := requestOrigin(r)
-	complete, _ := s.setupComplete(r.Context())
+	complete, _ := s.setupComplete(r)
 	settings, err := s.control.SSO(r.Context())
 	if err != nil || !settings.Enabled || !public || !complete {
 		ssoFailed(w, r, returnTo, "sso_unavailable")

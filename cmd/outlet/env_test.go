@@ -71,3 +71,16 @@ func TestCaddyAddresses(t *testing.T) {
 		}
 	}
 }
+
+func TestEnvironmentDomain(t *testing.T) {
+	for raw, want := range map[string]string{"": "", " Example.COM. ": "example.com", "tunnel.example.com": "tunnel.example.com"} {
+		if got, warning := environmentDomain(env(map[string]string{"MEERKAT_DOMAIN": raw})); got != want || warning != "" {
+			t.Fatalf("%q: %q, %q", raw, got, warning)
+		}
+	}
+	for _, raw := range []string{"https://example.com", "example.com/x", "exa mple.com", "*.example.com"} {
+		if got, warning := environmentDomain(env(map[string]string{"MEERKAT_DOMAIN": raw})); got != "" || warning == "" {
+			t.Fatalf("%q accepted: %q", raw, got)
+		}
+	}
+}

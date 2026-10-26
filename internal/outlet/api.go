@@ -479,7 +479,7 @@ func (s *Store) heartbeat(w http.ResponseWriter, r *http.Request) {
 
 func (s *Store) admin(w http.ResponseWriter, r *http.Request) bool {
 	if s.control != nil {
-		complete, err := s.setupComplete(r.Context())
+		complete, err := s.setupComplete(r)
 		if err != nil {
 			fail(w, r, 503, "persistence_failed")
 			return false
@@ -509,7 +509,7 @@ func (s *Store) setupStatus(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "control_database_unavailable")
 		return
 	}
-	complete, err := s.setupComplete(r.Context())
+	complete, err := s.setupComplete(r)
 	if err != nil {
 		fail(w, r, 503, "persistence_failed")
 		return
@@ -534,7 +534,8 @@ func (s *Store) setupAdmin(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req, "email", "password") {
 		return
 	}
-	admin, err := s.control.Setup(r.Context(), s.config.AdminTokenHash, bearer(r), req.Email, req.Password)
+	_, public := requestOrigin(r)
+	admin, err := s.control.Setup(r.Context(), s.config.AdminTokenHash, bearer(r), req.Email, req.Password, public)
 	if errors.Is(err, control.ErrAlreadySetup) {
 		fail(w, r, 409, "setup_complete")
 		return

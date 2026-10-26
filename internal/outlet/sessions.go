@@ -1,7 +1,6 @@
 package outlet
 
 import (
-	"context"
 	"net/http"
 	"sync"
 	"time"
@@ -102,13 +101,18 @@ func (s *Store) sessionAdmin(r *http.Request) (control.Admin, bool) {
 }
 
 // setupComplete stays true once an administrator exists; none can be deleted.
-func (s *Store) setupComplete(ctx context.Context) (bool, error) {
+func (s *Store) setupComplete(r *http.Request) (bool, error) {
 	if s.setupDone.Load() {
 		return true, nil
 	}
-	complete, err := s.control.SetupComplete(ctx)
-	if complete {
+	_, public := requestOrigin(r)
+	complete, err := s.control.SetupComplete(r.Context(), public)
+	if err != nil || !complete {
+		return false, err
+	}
+	// Only an administrator ends setup for every origin.
+	if admins, err := s.control.SetupComplete(r.Context(), false); err == nil && admins {
 		s.setupDone.Store(true)
 	}
-	return complete, err
+	return true, nil
 }

@@ -87,6 +87,17 @@ func environmentDefaults(getenv func(string) string) (control.Defaults, []string
 	return defaults, warnings
 }
 
+// environmentDomain reads MEERKAT_DOMAIN, the domain a new Outlet registers
+// when it starts, so Caddy answers on 80 and 443 and the management host is
+// reachable without the local admin port. A domain already set stays.
+func environmentDomain(getenv func(string) string) (string, string) {
+	raw := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(getenv("MEERKAT_DOMAIN")), "."))
+	if raw == "" || validation.Hostname(raw) {
+		return raw, ""
+	}
+	return "", "MEERKAT_DOMAIN must be a domain name, such as example.com; it is ignored"
+}
+
 // caddyAddresses reads where Caddy and the Outlet reach each other, for
 // deployments whose services aren't called outlet and caddy:
 //
