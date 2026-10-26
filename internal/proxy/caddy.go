@@ -23,6 +23,11 @@ const caddyGlobal = `	metrics {
 
 const caddyHeader = "{\n" + caddyGlobal + "}\n\n:9090 {\n\tmetrics /metrics\n}\n"
 
+// DefaultUpstream is where Caddy reaches the Outlet's public listener: the
+// outlet service on the Compose network. A deployment that names the service
+// differently passes its own host:port to DynamicCaddyfile.
+const DefaultUpstream = "outlet:8080"
+
 // EmptyCaddyfile starts Caddy without requesting a public certificate.
 // The Outlet replaces it once an administrator registers the first domain.
 func EmptyCaddyfile() []byte { return []byte(caddyHeader) }
@@ -32,11 +37,12 @@ func EmptyCaddyfile() []byte { return []byte(caddyHeader) }
 // Caddy keeps an idle connection to the Outlet for every request in flight,
 // up to 4096, instead of its default 32, and closes them before the Outlet's
 // 30 s idle timeout does; otherwise it spends its CPU opening connections
-// and reuses ones the Outlet has just closed.
-func DynamicCaddyfile() []byte {
+// and reuses ones the Outlet has just closed. upstream must already be a
+// validated host:port; it is written into the configuration as is.
+func DynamicCaddyfile(upstream string) []byte {
 	return []byte(`{
 ` + caddyGlobal + `	on_demand_tls {
-		ask http://outlet:8080/.well-known/meerkat/cert-ask
+		ask http://` + upstream + `/.well-known/meerkat/cert-ask
 	}
 }
 
@@ -55,7 +61,7 @@ https:// {
 			disable_tlsalpn_challenge
 		}
 	}
-	reverse_proxy http://outlet:8080 {
+	reverse_proxy http://` + upstream + ` {
 		transport http {
 			keepalive 25s
 			keepalive_idle_conns_per_host 4096

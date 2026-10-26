@@ -55,3 +55,16 @@ func TestEnvironmentDefaults(t *testing.T) {
 		}
 	}
 }
+
+func TestCaddyUpstream(t *testing.T) {
+	for raw, want := range map[string]string{"": "outlet:8080", " Outlet-K3X9:8080 ": "outlet-k3x9:8080", "10.0.0.5:8080": "10.0.0.5:8080"} {
+		if got, warning := caddyUpstream(env(map[string]string{"MEERKAT_CADDY_UPSTREAM": raw})); got != want || warning != "" {
+			t.Fatalf("%q: %q, %q", raw, got, warning)
+		}
+	}
+	for _, raw := range []string{"outlet", "outlet:8080 {", "outlet:8080\nimport x", "outlet:0", "127.0.0.1:8080", "a b:8080"} {
+		if got, warning := caddyUpstream(env(map[string]string{"MEERKAT_CADDY_UPSTREAM": raw})); got != "outlet:8080" || warning == "" {
+			t.Fatalf("%q accepted: %q", raw, got)
+		}
+	}
+}

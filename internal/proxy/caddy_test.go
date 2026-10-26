@@ -8,7 +8,7 @@ import (
 )
 
 func TestCaddyfileUsesStableOnDemandRouting(t *testing.T) {
-	config := string(DynamicCaddyfile())
+	config := string(DynamicCaddyfile(DefaultUpstream))
 	if !strings.Contains(config, "metrics {\n\t\tper_host") || !strings.Contains(config, ":9090 {\n\tmetrics /metrics") {
 		t.Fatalf("usage metrics endpoint missing from config: %q", config)
 	}
@@ -36,7 +36,14 @@ func TestCaddyfileExampleMatchesGenerated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(example) != string(DynamicCaddyfile()) {
-		t.Fatalf("deploy/Caddyfile.example differs from DynamicCaddyfile():\n%s", DynamicCaddyfile())
+	if string(example) != string(DynamicCaddyfile(DefaultUpstream)) {
+		t.Fatalf("deploy/Caddyfile.example differs from DynamicCaddyfile():\n%s", DynamicCaddyfile(DefaultUpstream))
+	}
+}
+
+func TestCaddyfileFollowsTheUpstream(t *testing.T) {
+	config := string(DynamicCaddyfile("outlet-k3x9:8080"))
+	if !strings.Contains(config, "ask http://outlet-k3x9:8080/.well-known/meerkat/cert-ask") || !strings.Contains(config, "reverse_proxy http://outlet-k3x9:8080 {") || strings.Contains(config, "outlet:8080") {
+		t.Fatalf("upstream not used: %q", config)
 	}
 }

@@ -84,9 +84,10 @@ func (s *Store) servedSince(serviceID string, t time.Time) bool {
 // isCertificateAsk reports whether r is Caddy's own on-demand TLS check.
 // Caddy calls it directly, without X-Forwarded-For; every request Caddy
 // proxies for a client carries that header, so a client that sets
-// Host: outlet:8080 still cannot ask which names the Outlet would certify.
-func isCertificateAsk(r *http.Request) bool {
-	return r.URL.Path == certificateAskPath && r.Host == "outlet:8080" && len(r.Header.Values("X-Forwarded-For")) == 0
+// Host: outlet:8080 (the upstream) still cannot ask which names the Outlet
+// would certify.
+func (s *Store) isCertificateAsk(r *http.Request) bool {
+	return r.URL.Path == certificateAskPath && r.Host == s.config.CaddyUpstream && len(r.Header.Values("X-Forwarded-For")) == 0
 }
 
 func publicHostname(raw string) string {
@@ -133,7 +134,7 @@ func (s *Store) PublicHandler() http.Handler {
 	transport := upstreamTransport()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(context.WithValue(r.Context(), originKey{}, publicOrigin{ip: forwardedClient(r)}))
-		if isCertificateAsk(r) {
+		if s.isCertificateAsk(r) {
 			if r.Method != http.MethodGet {
 				w.WriteHeader(http.StatusMethodNotAllowed)
 				return

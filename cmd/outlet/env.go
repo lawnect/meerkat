@@ -7,6 +7,8 @@ import (
 	"unicode"
 
 	"github.com/lawnect/meerkat/internal/control"
+	"github.com/lawnect/meerkat/internal/proxy"
+	"github.com/lawnect/meerkat/internal/validation"
 )
 
 // environmentDefaults reads the settings a deployment can give in
@@ -83,4 +85,19 @@ func environmentDefaults(getenv func(string) string) (control.Defaults, []string
 		defaults.Telegram = &telegram
 	}
 	return defaults, warnings
+}
+
+// caddyUpstream reads MEERKAT_CADDY_UPSTREAM, the host:port Caddy uses to
+// reach the Outlet's public listener, for deployments whose outlet service
+// isn't called outlet. Empty or invalid gives proxy.DefaultUpstream; an
+// invalid value also gives a warning.
+func caddyUpstream(getenv func(string) string) (string, string) {
+	raw := strings.ToLower(strings.TrimSpace(getenv("MEERKAT_CADDY_UPSTREAM")))
+	if raw == "" {
+		return proxy.DefaultUpstream, ""
+	}
+	if !validation.TunnelAddress(raw) {
+		return proxy.DefaultUpstream, "MEERKAT_CADDY_UPSTREAM must be host:port, such as outlet:8080; using " + proxy.DefaultUpstream
+	}
+	return raw, ""
 }

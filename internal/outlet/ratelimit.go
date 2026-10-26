@@ -361,7 +361,7 @@ func subnetOf(ip string) string {
 // exemptFromRateLimit keeps certificate issuance working under any limit.
 // Only Caddy's internal ask is exempt: Caddy answers ACME challenges itself,
 // so those paths arriving here are ordinary public requests.
-func exemptFromRateLimit(r *http.Request) bool { return isCertificateAsk(r) }
+func (s *Store) exemptFromRateLimit(r *http.Request) bool { return s.isCertificateAsk(r) }
 
 func (s *Store) reloadRateLimit(ctx context.Context) error {
 	if s.control == nil || s.limiter == nil {
@@ -389,7 +389,7 @@ func (s *Store) limitRequest(w http.ResponseWriter, r *http.Request, host string
 		return false
 	}
 	config := limiter.config.Load()
-	if config == nil || !config.Enabled || exemptFromRateLimit(r) {
+	if config == nil || !config.Enabled || s.exemptFromRateLimit(r) {
 		return false
 	}
 	ip, _ := requestOrigin(r)

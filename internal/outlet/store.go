@@ -48,6 +48,11 @@ type Config struct {
 	TunnelServerPublicKey  string `json:"tunnel_server_public_key,omitempty"`
 	TunnelServerPrivateKey string `json:"tunnel_server_private_key,omitempty"`
 	Connectors             []Seed `json:"connectors"`
+	// CaddyUpstream is the host:port Caddy uses to reach the public
+	// listener, written into the generated Caddyfile and expected as the
+	// Host of Caddy's certificate check. It comes from the environment;
+	// empty means proxy.DefaultUpstream.
+	CaddyUpstream string `json:"-"`
 }
 
 type Record struct {
@@ -136,6 +141,14 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 	}
 	if err := validation.Endpoint(config.ListenAddress); err != nil {
 		return nil, err
+	}
+	if config.CaddyUpstream == "" {
+		config.CaddyUpstream = proxy.DefaultUpstream
+	}
+	// The same rules as a tunnel address: a DNS name, Compose service name
+	// or IP literal with a port, so nothing else reaches the Caddyfile.
+	if !validation.TunnelAddress(config.CaddyUpstream) {
+		return nil, errors.New("invalid Caddy upstream")
 	}
 	records := make(map[string]Record)
 	services, ports := map[string]bool{}, map[string]bool{}
@@ -303,7 +316,7 @@ func (s *Store) reconcileProxy(ctx context.Context) error {
 	if routing.Outlet.Domain == "" {
 		return securefs.WriteIfChanged(s.proxyPath, proxy.EmptyCaddyfile())
 	}
-	return securefs.WriteIfChanged(s.proxyPath, proxy.DynamicCaddyfile())
+	return securefs.WriteIfChanged(s.proxyPath, proxy.DynamicCaddyfile(s.config.CaddyUpstream))
 }
 
 const persistInterval = 30 * time.Second

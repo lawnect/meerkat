@@ -431,7 +431,7 @@ func TestOnlyTheCertificateAskIsExempt(t *testing.T) {
 	spoofed := httptest.NewRequest("GET", certificateAskPath+"?domain="+a.host, nil)
 	spoofed.Host = "outlet:8080"
 	spoofed.Header.Set("X-Forwarded-For", "203.0.113.7")
-	if !exemptFromRateLimit(ask) || exemptFromRateLimit(public) || exemptFromRateLimit(spoofed) || exemptFromRateLimit(httptest.NewRequest("GET", "/.well-known/acme-challenge/x", nil)) {
+	if !a.store.exemptFromRateLimit(ask) || a.store.exemptFromRateLimit(public) || a.store.exemptFromRateLimit(spoofed) || a.store.exemptFromRateLimit(httptest.NewRequest("GET", "/.well-known/acme-challenge/x", nil)) {
 		t.Fatal("exemptions are wrong")
 	}
 	w := httptest.NewRecorder()

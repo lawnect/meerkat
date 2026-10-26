@@ -328,6 +328,7 @@ The Outlet also reads these settings from its environment, so a deployment can s
 | `MEERKAT_ADMIN_EMAILS`, `MEERKAT_ADMIN_GROUPS` | Who signs in as administrator: emails or `@domain`, and groups. When both are set, a person must match both. |
 | `MEERKAT_PASSWORD_LOGIN` | `false` allows only single sign-on on public addresses (the local admin port over SSH still takes passwords). |
 | `MEERKAT_TELEGRAM_BOT_TOKEN`, `MEERKAT_TELEGRAM_CHAT_ID`, `MEERKAT_TELEGRAM_ENABLED` | Telegram alerts (enabled unless `false`). |
+| `MEERKAT_CADDY_UPSTREAM` | Where Caddy reaches the Outlet (default `outlet:8080`). Set it when the outlet service has another name, such as `outlet-k3x9:8080`, so Compose stacks on a shared network (Coolify) don't collide. Not shown in the console. |
 
 Lists are separated by commas. With single sign-on from the environment, the console needs no initial setup: the first listed administrator to sign in gets an account. A missing or invalid value never stops the Outlet, so tunnels keep running: that setting is left out and the log names the variable.
 
