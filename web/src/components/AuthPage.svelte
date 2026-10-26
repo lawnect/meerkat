@@ -1,18 +1,87 @@
 <script lang="ts">
+  import * as Alert from '$lib/components/ui/alert/index.js';
+  import { Button } from '$lib/components/ui/button/index.js';
+  import * as Card from '$lib/components/ui/card/index.js';
+  import * as Field from '$lib/components/ui/field/index.js';
+  import * as InputGroup from '$lib/components/ui/input-group/index.js';
+  import * as InputOTP from '$lib/components/ui/input-otp/index.js';
+  import { REGEXP_ONLY_DIGITS } from 'bits-ui';
+  import { Spinner } from '$lib/components/ui/spinner/index.js';
+  import { ArrowEnter, ArrowLeft, Key, LockClosed, Mail, PersonAdd, Warning } from '../icons';
   import { api, errorMessage } from '../api';
-  import Button from './ui/Button.svelte';
-  import Card from './ui/Card.svelte';
+  import { pageHref } from '../navigation';
+  import { translations } from '../i18n.svelte';
+  import BrandMark from './BrandMark.svelte';
+  import LocaleSwitch from './LocaleSwitch.svelte';
+  import ThemeToggle from './ThemeToggle.svelte';
+
+  const t = translations({
+    setupTitle: 'First-time setup',
+    loginTitle: 'Sign in',
+    setupIntro: 'Create the administrator account for this server.',
+    setupCode: 'Setup code',
+    setupCodePlaceholder: 'The admin.token value on the server',
+    email: 'Email',
+    emailPlaceholder: 'you@example.com',
+    password: 'Password',
+    passwordHint: 'At least 12 characters',
+    passwordPlaceholder: 'Password',
+    busy: 'Working…',
+    createAdmin: 'Create administrator',
+    submitLogin: 'Sign in',
+    invalidSetup: 'Check the setup code, email, and password. The password must be at least 12 characters.',
+    setupFailed: (code: string) => `Setup failed: ${code}`,
+    loginFailed: 'The email or password is incorrect.',
+    codeTitle: 'Enter the code',
+    codeIntro: 'We sent a 6-digit code to Telegram.',
+    codeLabel: 'Verification code',
+    verify: 'Verify',
+    backToLogin: 'Sign in again',
+    codeInvalid: 'The code is wrong or has expired.',
+    codeLocked: 'Too many attempts. Sign in again to get a new code.',
+    telegramUnreachable: 'Couldn\'t send the code to Telegram. Sign in over the SSH-forwarded local admin port instead.',
+  }, {
+    setupTitle: '처음 한 번만 설정하세요',
+    loginTitle: '로그인',
+    setupIntro: '이 서버의 관리자 계정을 만듭니다.',
+    setupCode: '설정 코드',
+    setupCodePlaceholder: '서버의 admin.token 값',
+    email: '이메일',
+    emailPlaceholder: 'you@example.com',
+    password: '비밀번호',
+    passwordHint: '12자 이상',
+    passwordPlaceholder: '비밀번호',
+    busy: '처리 중…',
+    createAdmin: '관리자 만들기',
+    submitLogin: '로그인',
+    invalidSetup: '설정 코드, 이메일 또는 비밀번호를 확인하세요. 비밀번호는 12자 이상이어야 합니다.',
+    setupFailed: (code: string) => `설정에 실패했습니다: ${code}`,
+    loginFailed: '이메일 또는 비밀번호가 올바르지 않습니다.',
+    codeTitle: '인증 코드 입력',
+    codeIntro: '텔레그램으로 6자리 코드를 보냈습니다.',
+    codeLabel: '인증 코드',
+    verify: '확인',
+    backToLogin: '다시 로그인',
+    codeInvalid: '코드가 맞지 않거나 만료되었습니다.',
+    codeLocked: '시도 횟수를 넘었습니다. 다시 로그인해 새 코드를 받으세요.',
+    telegramUnreachable: '텔레그램으로 코드를 보내지 못했습니다. SSH로 연결한 로컬 관리 포트에서 로그인하세요.',
+  });
 
   let { mode, onLogin, onSetup }: { mode: 'setup' | 'login'; onLogin: () => Promise<void>; onSetup: () => void } = $props();
   let code = $state('');
   let email = $state('');
   let password = $state('');
-  let error = $state('');
+  type FailureKind = 'invalidSetup' | 'setupFailed' | 'loginFailed' | 'codeInvalid' | 'codeLocked' | 'telegramUnreachable';
+  let failure = $state<{ kind: FailureKind; code: string } | null>(null);
+  // 2단계 인증을 켜 둔 Outlet은 비밀번호 확인 뒤 텔레그램 코드를 한 번 더 받습니다.
+  let challenge = $state('');
+  let otp = $state('');
   let busy = $state(false);
+  const error = $derived(!failure ? '' : failure.kind === 'setupFailed' ? t().setupFailed(failure.code) : t()[failure.kind]);
 
   async function submit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-    error = '';
+    failure = null;
     busy = true;
     try {
       if (mode === 'setup') {
@@ -23,60 +92,150 @@
         });
         onSetup();
       } else {
-        await api<{ admin: { email: string }; expires_at: string }>('/api/v1/session', {
+        const response = await api<{ second_factor?: 'telegram'; challenge?: string }>('/api/v1/session', {
           method: 'POST',
           body: JSON.stringify({ email, password }),
         });
+        if (response.second_factor && response.challenge) {
+          challenge = response.challenge;
+          otp = '';
+          return;
+        }
         await onLogin();
       }
     } catch (cause) {
-      const code = errorMessage(cause);
-      if (mode === 'setup' && code === 'invalid_setup_credential') {
-        error = '설정 코드, 이메일 또는 비밀번호를 확인하세요. 비밀번호는 12자 이상이어야 합니다.';
+      const reason = errorMessage(cause);
+      if (mode === 'setup' && reason === 'invalid_setup_credential') {
+        failure = { kind: 'invalidSetup', code: reason };
       } else if (mode === 'setup') {
-        error = `설정에 실패했습니다: ${code}`;
+        failure = { kind: 'setupFailed', code: reason };
+      } else if (reason === 'telegram_unreachable') {
+        failure = { kind: 'telegramUnreachable', code: reason };
       } else {
-        error = '이메일 또는 비밀번호가 올바르지 않습니다.';
+        failure = { kind: 'loginFailed', code: reason };
       }
     } finally {
       busy = false;
     }
   }
+
+  async function verify(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    if (busy || otp.length !== 6) return;
+    failure = null;
+    busy = true;
+    try {
+      await api('/api/v1/session/second-factor', { method: 'POST', body: JSON.stringify({ challenge, code: otp }) });
+      await onLogin();
+    } catch (cause) {
+      const reason = errorMessage(cause);
+      otp = '';
+      if (reason === 'too_many_attempts') {
+        challenge = '';
+        failure = { kind: 'codeLocked', code: reason };
+      } else {
+        failure = { kind: 'codeInvalid', code: reason };
+      }
+    } finally {
+      busy = false;
+    }
+  }
+
+  function restart(): void {
+    challenge = '';
+    otp = '';
+    password = '';
+    failure = null;
+  }
 </script>
 
-<main class="auth-wrap">
-  <Card as="section" class="auth">
-    <div class="auth-brand">MEERKAT / OUTLET</div>
-    <h1>{mode === 'setup' ? '처음 한 번만 설정하세요' : '로그인'}</h1>
-    <p class="auth-intro">{mode === 'setup' ? '이 서버의 관리자가 사용할 계정을 만듭니다. 설정 코드는 서버에서만 확인할 수 있습니다.' : 'Meerkat Outlet 운영 콘솔에 접속합니다.'}</p>
-    <form onsubmit={submit}>
-      {#if mode === 'setup'}
-        <div class="field">
-          <label for="setup-code">설정 코드</label>
-          <input class="input input-bordered" id="setup-code" bind:value={code} placeholder="서버의 admin.token 값" autocomplete="off" required />
-        </div>
-      {/if}
-      <div class="field">
-        <label for="email">이메일</label>
-        <input class="input input-bordered" id="email" bind:value={email} type="email" placeholder="you@example.com" autocomplete="username" required />
-      </div>
-      <div class="field">
-        <label for="password">비밀번호</label>
-        <input class="input input-bordered" id="password" bind:value={password} type="password" placeholder={mode === 'setup' ? '12자 이상' : '비밀번호'} autocomplete={mode === 'setup' ? 'new-password' : 'current-password'} minlength={mode === 'setup' ? 12 : undefined} required />
-      </div>
-      <div class="form-actions">
-        <Button type="submit" disabled={busy}>{busy ? '처리 중…' : mode === 'setup' ? '관리자 만들기' : '로그인'}</Button>
-      </div>
-      {#if error}<p class="error" role="alert">{error}</p>{/if}
-    </form>
-  </Card>
+<main class="relative flex min-h-svh flex-col items-center justify-center gap-6 bg-muted p-6 md:p-10">
+  <div class="absolute end-3 top-3 flex items-center gap-0.5">
+    <LocaleSwitch />
+    <ThemeToggle />
+  </div>
+  <div class="flex w-full max-w-sm flex-col gap-6">
+    <a href={pageHref('overview')} class="flex items-center gap-2 self-center text-sm font-semibold outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+      <BrandMark class="size-8 shrink-0" />
+      <span>Meerkat <span class="font-medium text-muted-foreground">Outlet</span></span>
+    </a>
+    <Card.Root>
+      <Card.Header class="text-center">
+        <Card.Title class="text-xl" role="heading" aria-level={1}>{challenge ? t().codeTitle : mode === 'setup' ? t().setupTitle : t().loginTitle}</Card.Title>
+        {#if challenge}<Card.Description>{t().codeIntro}</Card.Description>{:else if mode === 'setup'}<Card.Description>{t().setupIntro}</Card.Description>{/if}
+      </Card.Header>
+      <Card.Content>
+        {#if challenge}
+          <form onsubmit={verify}>
+            <Field.Group>
+              <Field.Field class="items-center">
+                <Field.Label for="login-code" class="sr-only">{t().codeLabel}</Field.Label>
+                <InputOTP.Root id="login-code" class="justify-center" maxlength={6} pattern={REGEXP_ONLY_DIGITS} bind:value={otp} autocomplete="one-time-code" inputmode="numeric">
+                  {#snippet children({ cells })}
+                    <InputOTP.Group>
+                      {#each cells.slice(0, 3) as cell (cell)}
+                        <InputOTP.Slot {cell} />
+                      {/each}
+                    </InputOTP.Group>
+                    <InputOTP.Separator />
+                    <InputOTP.Group>
+                      {#each cells.slice(3, 6) as cell (cell)}
+                        <InputOTP.Slot {cell} />
+                      {/each}
+                    </InputOTP.Group>
+                  {/snippet}
+                </InputOTP.Root>
+              </Field.Field>
+              {#if error}<Alert.Root variant="destructive"><Warning aria-hidden="true" /><Alert.Description>{error}</Alert.Description></Alert.Root>{/if}
+              <Field.Field>
+                <Button type="submit" disabled={busy || otp.length !== 6}>{#if busy}<Spinner aria-hidden="true" />{t().busy}{:else}<ArrowEnter aria-hidden="true" />{t().verify}{/if}</Button>
+                <Button variant="outline" disabled={busy} onclick={restart}><ArrowLeft aria-hidden="true" />{t().backToLogin}</Button>
+              </Field.Field>
+            </Field.Group>
+          </form>
+        {:else}
+        <form onsubmit={submit}>
+          <Field.Group>
+            {#if mode === 'setup'}
+              <Field.Field>
+                <Field.Label for="setup-code">{t().setupCode}</Field.Label>
+                <InputGroup.Root>
+                  <InputGroup.Addon><Key aria-hidden="true" /></InputGroup.Addon>
+                  <InputGroup.Input id="setup-code" bind:value={code} placeholder={t().setupCodePlaceholder} autocomplete="off" required />
+                </InputGroup.Root>
+              </Field.Field>
+            {/if}
+            <Field.Field>
+              <Field.Label for="email">{t().email}</Field.Label>
+              <InputGroup.Root>
+                <InputGroup.Addon><Mail aria-hidden="true" /></InputGroup.Addon>
+                <InputGroup.Input id="email" bind:value={email} type="email" placeholder={t().emailPlaceholder} autocomplete="username" required />
+              </InputGroup.Root>
+            </Field.Field>
+            <Field.Field>
+              <Field.Label for="password">{t().password}</Field.Label>
+              <InputGroup.Root>
+                <InputGroup.Addon><LockClosed aria-hidden="true" /></InputGroup.Addon>
+                <InputGroup.Input id="password" bind:value={password} type="password" placeholder={t().passwordPlaceholder} autocomplete={mode === 'setup' ? 'new-password' : 'current-password'} minlength={mode === 'setup' ? 12 : undefined} aria-describedby={mode === 'setup' ? 'password-hint' : undefined} required />
+              </InputGroup.Root>
+              {#if mode === 'setup'}<Field.Description id="password-hint">{t().passwordHint}</Field.Description>{/if}
+            </Field.Field>
+            {#if error}<Alert.Root variant="destructive"><Warning aria-hidden="true" /><Alert.Description>{error}</Alert.Description></Alert.Root>{/if}
+            <Field.Field>
+              <Button type="submit" disabled={busy}>
+                {#if busy}
+                  <Spinner aria-hidden="true" />{t().busy}
+                {:else if mode === 'setup'}
+                  <PersonAdd aria-hidden="true" />{t().createAdmin}
+                {:else}
+                  <ArrowEnter aria-hidden="true" />{t().submitLogin}
+                {/if}
+              </Button>
+            </Field.Field>
+          </Field.Group>
+        </form>
+        {/if}
+      </Card.Content>
+    </Card.Root>
+  </div>
 </main>
-
-<style>
-  :global(.auth-wrap) { display: grid; min-height: 100vh; place-items: center; padding: 16px; background: var(--paper); }
-  :global(.auth) { width: min(480px, 100%); padding: 26px; }
-  :global(.auth-brand) { margin-bottom: 24px; font-size: 13px; font-weight: 800; letter-spacing: .1em; }
-  :global(.auth h1) { margin: 0 0 5px; font-size: 25px; letter-spacing: -.04em; }
-  :global(.auth-intro) { margin: 0 0 18px; color: var(--muted); }
-  :global(.auth .field) { margin-top: 11px; }
-</style>

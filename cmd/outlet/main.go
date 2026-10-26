@@ -55,6 +55,8 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	go store.RunUsageCollector(ctx)
+	go store.RunAlerts(ctx)
+	go store.RunRateLimits(ctx)
 	done := make(chan error, 2)
 	go func() { done <- server.ListenAndServeTLS(cfg.TLSCertificate, cfg.TLSKey) }()
 	go func() { done <- publicServer.ListenAndServe() }()

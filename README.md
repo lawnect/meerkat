@@ -1,37 +1,42 @@
+<p align="center"><img src="web/src/assets/meerkat-inverted.svg" width="96" height="96" alt="Meerkat logo"></p>
+<p align="center"><b>English</b> · <a href="README.ko.md">한국어</a></p>
+
 # Meerkat
 
-서비스 서버의 Connector가 Outlet으로 아웃바운드 터널을 만드는 self-hosted gateway입니다. 하나의 터널에 여러 서비스를 연결하고 각각 HTTPS 주소로 공개할 수 있습니다. 초기 구현 이력은 [구현 계획](docs/IMPLEMENTATION_PLAN.md)에 남아 있습니다.
+Meerkat is a self-hosted gateway in which a Connector on your service server opens an outbound tunnel to an Outlet. You can connect multiple services over a single tunnel and expose each one at its own HTTPS address. The history of the initial implementation is kept in the [implementation plan](docs/IMPLEMENTATION_PLAN.md) (Korean).
 
-제품의 최종 목표와 현재 범위는 [제품 방향 문서](docs/PRODUCT_DIRECTION.md)에서 확인할 수 있습니다.
+The product's end goal and current scope are described in the [product direction document](docs/PRODUCT_DIRECTION.md) (Korean).
 
-## 관리 UI 개발
+## Admin UI development
 
-관리 UI는 Svelte와 TypeScript, Vite로 빌드하고 Outlet Go 바이너리에 포함합니다. Node.js 22.18+가 필요합니다.
+The admin UI is built with Svelte, TypeScript, and Vite, and embedded in the Outlet Go binary. Node.js 22.18+ is required.
+
+The UI is built with [shadcn-svelte](https://www.shadcn-svelte.com/) (lyra style, no rounded corners) and Tailwind CSS 4. Icons come from Fluent UI System Icons, and the typeface is SUIT, which is bundled in the repository. Light and dark theme colors are defined in `web/src/app.css`. The theme follows the operating system setting at first, and a choice made with the theme button below the sidebar is saved in the browser. The default language is English; the Korean UI opens by adding `/ko` before the same path (for example, `/ko/connectors`). UI state, such as list search terms, filters, sorting, and pages, and the active tab on a detail page, is kept in the URL query, so it reopens as it was after a refresh or when you share the URL. The Outlet serves the UI with a CSP of `style-src 'self'` and `script-src 'self'`, so don't use inline styles or scripts. For component conventions, see [web/src/components/README.md](web/src/components/README.md) (Korean).
 
 ```sh
 npm ci
 npm run dev
 ```
 
-Vite는 기본적으로 로컬 PoC API `https://localhost:18443`에 `/api` 요청을 전달합니다.
-다른 Outlet에 연결하려면 `MEERKAT_DEV_API=https://outlet.example.com npm run dev`를 사용합니다.
-화면 작업만 할 때는 `VITE_MOCK_API=true npm run dev`로 브라우저 내 가짜 API를 사용할 수 있습니다. 예제 Connector와 서비스를 제공하며, 변경 사항은 페이지를 새로고침하면 초기화됩니다. 상단의 `MOCK API` 표시가 켜져 있는지 확인하세요.
+By default, Vite proxies `/api` requests to the local PoC API at `https://localhost:18443`.
+To connect to a different Outlet, use `MEERKAT_DEV_API=https://outlet.example.com npm run dev`.
+For UI-only work, `VITE_MOCK_API=true npm run dev` uses an in-browser mock API. It provides 32 tunnels (a mix of connected, disconnected, and not-yet-installed states), 5 domains (wildcard and individual-host), and sample usage, alerts, and audit logs. Changes are reset when you reload the page. If you turn on two-step verification for login in the mock API, the verification code is `123456`.
 
-프로덕션 번들을 미리 확인하려면 다음 명령으로 정적 파일을 생성합니다.
+To preview the production bundle, generate the static files with the following command:
 
 ```sh
 npm run build
 ```
 
-Vite가 `web/dist/`에 자산을 생성합니다. Docker 빌드는 이를 Go 바이너리에 포함하며, Node.js는 최종 이미지에 들어가지 않습니다.
+Vite writes the assets to `web/dist/`. The Docker build embeds them in the Go binary, and Node.js isn't included in the final image.
 
-## 로컬에서 실행
+## Run locally
 
-Go 1.26+, Docker Engine, Docker Compose가 필요합니다. 명령은 저장소 루트에서 실행합니다.
+Go 1.26+, Docker Engine, and Docker Compose are required. Run the commands from the repository root.
 
-현재 작업에서 검증한 설정은 `.local/poc-verified/`에 보존되어 있습니다. 재실행하려면 아래 예시의 `.local/poc/` 대신 그 경로를 사용하고 `poc-init`은 생략합니다. E2E에도 `MEERKAT_POC_DIR`로 그 절대 경로를 지정합니다.
+The configuration verified for the current work is preserved in `.local/poc-verified/`. To rerun it, use that path instead of `.local/poc/` in the examples below and skip `poc-init`. For E2E tests, also set `MEERKAT_POC_DIR` to its absolute path.
 
-먼저 이미지를 빌드하고 새 테스트 설정을 생성합니다. 등록 토큰은 생성 후 1시간에 만료되므로 빌드 후 생성합니다. `poc-init`은 기존 디렉터리를 덮어쓰지 않습니다.
+First, build the image and generate a new test configuration. Registration tokens expire one hour after they're generated, so generate the configuration after the build. `poc-init` doesn't overwrite an existing directory.
 
 ```sh
 docker build -t meerkat-poc:local -f deploy/Dockerfile .
@@ -39,34 +44,34 @@ go run ./cmd/poc-init -dir .local/poc
 docker compose --env-file .local/poc/compose.env -f deploy/compose.poc.yaml up -d --no-build
 ```
 
-## GitHub Actions와 GHCR 배포
+## Deploy with GitHub Actions and GHCR
 
-`main` 브랜치에 push하면 GitHub Actions가 `linux/amd64`와 `linux/arm64` 이미지를 빌드해
-`ghcr.io/lawnect/meerkat:latest`와 커밋 SHA 태그로 게시합니다. 원격 Outlet/Connector VM에서는
-소스 코드를 빌드하지 않고 GHCR 이미지를 가져와 Compose로 실행합니다.
+When you push to the `main` branch, GitHub Actions builds `linux/amd64` and `linux/arm64` images and publishes them as
+`ghcr.io/lawnect/meerkat:latest` and a commit SHA tag. Remote Outlet and Connector VMs don't build
+the source code; they pull the GHCR image and run it with Compose.
 
-새 서버의 첫 실행은 아래 **Outlet 초기 접속** 순서대로 진행합니다. 기존 설치를 업데이트할 때는
-서버의 `compose.env`와 `compose.outlet.yaml`을 확인한 뒤 이미지를 가져와 Compose를 다시 실행합니다.
-GHCR 패키지가 private이면 VM에서 `read:packages` 권한이 있는 GitHub 토큰으로 `docker login ghcr.io`를 실행합니다.
-운영 배포에서는 `latest` 대신 검증한 커밋 SHA 태그를 `MEERKAT_IMAGE`로 지정하는 것을 권장합니다.
+For the first run on a new server, follow the **Initial Outlet access** steps below. To update an existing installation,
+check the server's `compose.env` and `compose.outlet.yaml`, pull the image, and run Compose again.
+If the GHCR package is private, run `docker login ghcr.io` on the VM with a GitHub token that has the `read:packages` scope.
+For production deployments, we recommend setting a verified commit SHA tag instead of `latest` in `MEERKAT_IMAGE`.
 
-### Outlet 초기 접속
+### Initial Outlet access
 
-운영용 Outlet은 로컬 `poc-init`을 사용하지 않고, 게시된 Meerkat 이미지의
-`outlet-init`으로 키와 설정 코드를 생성합니다. 첫 실행에는 도메인이 필요하지 않습니다.
-서버에 쓰기 가능한 배포 디렉터리를 만듭니다.
+A production Outlet doesn't use the local `poc-init`. Instead, it generates keys and a setup code with
+`outlet-init` from the published Meerkat image. A domain isn't required for the first run.
+Create a writable deployment directory on the server.
 
 ```sh
 sudo install -d -o "$(id -u)" -g "$(id -g)" -m 700 /opt/meerkat-outlet
 ```
 
-운영자의 컴퓨터에서 저장소의 Compose 파일을 서버로 복사합니다.
+On the operator's computer, copy the repository's Compose file to the server.
 
 ```sh
 scp deploy/compose.outlet.yaml user@SERVER_IP:/opt/meerkat-outlet/compose.outlet.yaml
 ```
 
-이후 서버에서 다음을 실행합니다.
+Then run the following on the server.
 
 ```sh
 docker pull ghcr.io/lawnect/meerkat:latest
@@ -78,15 +83,15 @@ docker run --rm \
   -dir /out -region 'Chuncheon, KR'
 ```
 
-`outlet-init`은 `/opt/meerkat-outlet/configs/`에 내부 Outlet 인증서,
-일회성 관리자 설정 코드(`admin.token`)와 Noise 서버 키를 생성합니다. 도메인을
-등록하기 전에는 공개 호스트가 없는 Caddyfile을 만듭니다. 실행 중인 Outlet이 관리하는
-`outlet-data/rathole/server.toml`과 `outlet-data/caddy/Caddyfile`은 직접 수정하지 않습니다.
+`outlet-init` generates the internal Outlet certificate, a one-time admin setup code (`admin.token`),
+and the Noise server key in `/opt/meerkat-outlet/configs/`. Until you register a domain, it creates a Caddyfile
+with no public hosts. Don't edit `outlet-data/rathole/server.toml` or `outlet-data/caddy/Caddyfile` directly;
+the running Outlet manages them.
 
-요청 진단 화면의 Outlet 지역은 위 `-region` 값으로 표시됩니다. 기존 설치에서는
-`/opt/meerkat-outlet/configs/outlet.json`에 `"region": "Chuncheon, KR"`를 추가한 뒤
-Outlet 컨테이너를 재시작하면 됩니다.
-그 다음 `/opt/meerkat-outlet/compose.env`를 다음처럼 생성합니다.
+The Outlet region on the path diagnostics page comes from the `-region` value above. For an existing installation, add
+`"region": "Chuncheon, KR"` to `/opt/meerkat-outlet/configs/outlet.json` and restart
+the Outlet container.
+Then create `/opt/meerkat-outlet/compose.env` as follows:
 
 ```sh
 cat >/opt/meerkat-outlet/compose.env <<'EOF'
@@ -101,69 +106,73 @@ EOF
 chmod 600 /opt/meerkat-outlet/compose.env
 ```
 
-`MEERKAT_UID`와 `MEERKAT_GID`는 실제 `id -u`, `id -g` 결과로 바꿉니다.
-`MEERKAT_BIND_ADDRESS`에는 서버의 터널·공개 HTTP 수신 인터페이스를 지정합니다.
-모든 인터페이스에서 수신하려면 예시처럼 `0.0.0.0`을 사용합니다.
-`compose.env`는 서버 전용 파일이며 Git에 올리지 않습니다. 모든 서비스를 함께 시작합니다.
+Replace `MEERKAT_UID` and `MEERKAT_GID` with the actual output of `id -u` and `id -g`.
+Set `MEERKAT_BIND_ADDRESS` to the server interface that receives tunnel and public HTTP traffic.
+To listen on all interfaces, use `0.0.0.0` as in the example.
+`compose.env` is a server-only file; don't commit it to Git. Start all services together.
 
 ```sh
 docker compose --env-file /opt/meerkat-outlet/compose.env \
   -f /opt/meerkat-outlet/compose.outlet.yaml up -d
 ```
 
-Compose는 Outlet의 HTTPS 관리 포트 `8443`을 서버의 `127.0.0.1:18443`에만 연결합니다.
-공인 IP의 `18443` 포트에는 접속할 수 없습니다. 운영자의 컴퓨터에서 공개 인증서만 복사하고
-SSH 터널을 엽니다. 개인키나 `admin.token` 파일은 복사하지 않습니다.
+Compose maps the Outlet's HTTPS admin port `8443` only to `127.0.0.1:18443` on the server.
+Port `18443` isn't reachable on the public IP. From the operator's computer, copy only the public certificate and
+open an SSH tunnel. Don't copy private keys or the `admin.token` file.
 
 ```sh
 scp user@SERVER_IP:/opt/meerkat-outlet/configs/root-ca.pem ./meerkat-root-ca.pem
 ssh -N -L 18443:127.0.0.1:18443 user@SERVER_IP
 ```
 
-브라우저에서 `https://localhost:18443`을 엽니다. 서버에서만
-`/opt/meerkat-outlet/configs/admin.token` 값을 확인해 설정 코드로 입력하고 관리자 계정을 만든 뒤
-로그인합니다. 이 코드는 관리자 생성에 한 번만 사용할 수 있습니다.
-첫 도메인을 등록할 때까지는 이 SSH 경로로 관리합니다. 브라우저가 자체 서명 인증서를
-신뢰하지 않으면 복사한 `meerkat-root-ca.pem`을 브라우저 또는 운영체제의 신뢰 저장소에
-등록합니다. HTTPS를 유지해야 세션 쿠키가 정상적으로 동작합니다.
+Open `https://localhost:18443` in a browser. Read the value of
+`/opt/meerkat-outlet/configs/admin.token` on the server only, enter it as the setup code, create an admin account, and then
+sign in. This code can be used only once, to create the admin.
+Until you register your first domain, you manage the Outlet over this SSH path. If the browser doesn't
+trust the self-signed certificate, add the copied `meerkat-root-ca.pem` to the browser's or operating system's trust store.
+Keep using HTTPS so that session cookies work correctly. Even with Telegram login verification codes turned on, sign-ins over this SSH path don't require a code, so it serves as a recovery path when you can't receive codes ([details](#telegram-alerts-and-login-security)).
 
-### 공개 도메인으로 전환
+### Switch to a public domain
 
-1. 로컬 관리 화면의 **도메인 관리**에서 대표 도메인을 등록합니다. 이때 Caddy가 고정된 공개 프록시 설정으로 전환됩니다.
-2. Cloudflare DNS에서 대표 도메인의 와일드카드(`*`) A 레코드를 Outlet의 공인 IPv4 주소로
-   지정하고 DNS-only로 둡니다. 터널 주소를 기본값(`대표도메인:2333`)으로 쓴다면 루트(`@`)도 같은
-   주소로 지정합니다. IPv6를 사용한다면 AAAA 레코드도 설정합니다.
-3. TCP 80·443과 터널 포트(기본 2333)를 외부에 엽니다. HTTP-01 인증을 위해 80번 포트의 요청이
-   Caddy까지 도달해야 합니다.
+1. In **Domains** in the local admin console, choose a primary domain and a DNS record mode. Caddy then switches to a fixed public proxy configuration,
+   and the admin hostname `<8-character random name>.PRIMARY_DOMAIN` is set (for example, `k7m2x9qa.example.com`). This name stays the same even if you change domains.
+   An Outlet that registered a domain before this feature existed keeps using `meerkat.PRIMARY_DOMAIN`, so existing Connectors and bookmarks don't break.
+2. In Cloudflare DNS, point an A record to the Outlet's public IPv4 address and set it to DNS only.
+   - **Wildcard:** A single `*` record sends the admin hostname and all public addresses to the Outlet.
+   - **Individual hosts:** Create a record for the admin hostname and one for each public address. Choose this when the root or other subdomains run on another server.
 
-Connector는 관리 API(`https://meerkat.대표도메인`)와 별개로 **터널 주소**에 TCP로 접속해 데이터
-터널을 엽니다. 기본값은 `대표도메인:2333`입니다. 대표 도메인의 루트를 회사 웹사이트처럼 다른
-서버에 쓰고 있다면 **도메인 관리 → 터널 주소**에서 `meerkat.대표도메인:2333`처럼 Outlet을
-가리키는 호스트로 바꾸고 **접속 테스트**로 확인합니다. 저장하면 등록된 Connector가 다음 상태 보고 때
-새 설정을 받아 다시 연결합니다. 화면에서 지정한 값이 `outlet.json`의 `tunnel_remote_address`보다
-우선하며, 비워 두면 `tunnel_remote_address` 또는 `대표도메인:2333`을 사용합니다. Outlet은 시작할 때도
-모든 Connector 설정을 현재 터널 주소로 맞추므로 `tunnel_remote_address`를 바꾼 뒤에는 재시작하면
-됩니다. `127.0.0.1`, `localhost` 같은 루프백 주소는 지정할 수 없습니다. 접속 테스트는 Outlet
-서버에서 DNS 조회와 TCP 연결만 확인하므로 Connector 서버의 방화벽은 해당 서버에서
-`nc -vz 터널호스트 2333`으로 따로 확인합니다. 이 테스트는 rathole 핸드셰이크 없이 연결을 닫으므로
-rathole 로그에 실패 기록이 남을 수 있습니다.
+   The root (`@`) is needed only if you set the tunnel address directly to the root. If you use IPv6, also set AAAA records.
+3. Open TCP ports 80 and 443 and the tunnel port (default 2333) to the outside. For HTTP-01 validation, requests on port 80 must
+   reach Caddy.
 
-Caddy는 각 호스트에 첫 HTTPS 연결이 들어올 때 Outlet에 등록 여부를 확인하고, HTTP-01로 인증서를 발급·갱신합니다. 공개 주소를 추가하거나 삭제해도 Caddy 설정은 갱신되지 않습니다. 와일드카드 DNS 레코드는
-공개 주소가 서버를 가리키게 하므로 계속 사용하지만 와일드카드 인증서는 발급하지 않습니다.
-인증서 발급 후 `https://meerkat.대표도메인`에 접속해 다시 로그인합니다. 대표 도메인의 루트 주소는 기존 터널의 API 연결에만 사용하며 관리 화면은 제공하지 않습니다. SSH 터널은 DNS 또는
-인증서 장애 시 복구 경로로 유지합니다. 추가 도메인은 **도메인 관리**에서 등록하고
-각 도메인의 DNS 레코드를 같은 방식으로 설정합니다.
+Besides the admin API (`https://ADMIN_HOSTNAME`), a Connector connects over TCP to the **tunnel address** to open the data
+tunnel. The default is `ADMIN_HOSTNAME:2333`, so you don't need to create a separate DNS record, and the root can stay on another server.
+To use a different host, such as `tunnel.PRIMARY_DOMAIN:2333`, change it under **Domains → Tunnel address** and verify it with
+**Test connection**. After you save, registered Connectors receive the new
+configuration at their next status report and reconnect. The value set in the UI takes precedence over `tunnel_remote_address` in `outlet.json`.
+If you leave it empty, `tunnel_remote_address` or `ADMIN_HOSTNAME:2333` is used. The Outlet also aligns
+all Connector configurations with the current tunnel address at startup, so after changing `tunnel_remote_address` you only need to restart it.
+Loopback addresses such as `127.0.0.1` and `localhost` can't be used. The connection test only checks DNS resolution and the TCP connection
+from the Outlet server, so check the Connector server's firewall separately, on that server, with
+`nc -vz TUNNEL_HOST 2333`. This test closes the connection without a rathole handshake, so
+failures may appear in the rathole log.
 
-공개 요청은 Caddy에서 HTTPS를 종료한 뒤 Outlet과 터널을 통해 내부 앱에 HTTP로 전달됩니다. 내부 앱에는 원래 공개 `Host`와 `X-Forwarded-Host`, `X-Forwarded-Proto: https`, `X-Forwarded-Port: 443`, `X-Forwarded-For`가 전달됩니다. 앱이 HTTPS 여부를 판단할 때는 프록시 헤더를 신뢰하도록 해당 앱의 프록시 설정을 켜야 합니다. 앱이 내부 연결 자체에도 TLS를 요구한다면 현재 HTTP 연결 대상과는 맞지 않습니다.
+On the first HTTPS connection to each host, Caddy asks the Outlet whether the host is registered, then issues and renews certificates via HTTP-01. Adding or deleting a public address doesn't update the Caddy configuration. The wildcard DNS record
+keeps pointing public addresses at the server, so keep it, but no wildcard certificate is issued.
+After the certificate is issued, open `https://ADMIN_HOSTNAME` and sign in again. The root address of the primary domain only responds to API connections from existing Connectors that registered with the root, and it doesn't serve the admin console. Keep the SSH tunnel as a recovery path for DNS or
+certificate failures. Register additional domains in **Domains**, and
+choose wildcard or individual-host mode for each domain. **Check DNS** looks up only the names that fit the mode (an arbitrary subdomain for wildcard, each public address for individual hosts, the admin hostname for the primary domain, and the tunnel addresses that belong to that domain).
 
-기존 설치는 `outlet-init -domain` 방식을 계속 사용할 수 있습니다. 이전 DNS-01
-설치에서 전환할 때는 새 Outlet 이미지와 Compose 파일을 적용하고 서비스를 다시 시작합니다.
-`compose.env`에 남아 있는 `MEERKAT_CLOUDFLARE_API_TOKEN`은 삭제할 수 있습니다.
+Public requests are terminated as HTTPS at Caddy and then forwarded over HTTP through the Outlet and the tunnel to the internal app. The internal app receives the original public `Host` along with `X-Forwarded-Host`, `X-Forwarded-Proto: https`, `X-Forwarded-Port: 443`, and `X-Forwarded-For`. For the app to detect HTTPS, enable trust for proxy headers in the app's proxy settings. If the app requires TLS even on the internal connection, it isn't compatible with the current HTTP connection target.
 
-기존 설치를 이 구조로 처음 전환할 때는 Caddy 설정이 한 번 바뀌므로 기존 WebSocket 연결이 끊길 수 있습니다. 이후에는 서비스와 공개 주소를 추가해도 Caddy가 다시 설정을 읽지 않아 다른 주소의 WebSocket 연결을 유지합니다.
+Existing installations can keep using `outlet-init -domain`. When migrating from an earlier DNS-01
+installation, apply the new Outlet image and Compose file and restart the services.
+You can delete any remaining `MEERKAT_CLOUDFLARE_API_TOKEN` in `compose.env`.
 
-구형 초기화 디렉터리에 도메인·터널 설정이 없다면 새 키를 만들지 말고 아래 업그레이드를
-한 번 실행합니다. 이미 업그레이드한 디렉터리에는 다시 실행하지 않습니다.
+The first time you migrate an existing installation to this structure, the Caddy configuration changes once, so existing WebSocket connections may drop. After that, adding services and public addresses no longer makes Caddy reload its configuration, so WebSocket connections on other addresses stay up.
+
+If an older init directory has no domain or tunnel settings, don't generate new keys; run the upgrade below
+once. Don't run it again on a directory that has already been upgraded.
 
 ```sh
 docker run --rm --user "$(id -u):$(id -g)" \
@@ -173,9 +182,9 @@ docker run --rm --user "$(id -u):$(id -g)" \
   -upgrade -dir /out -domain saeoo.com
 ```
 
-### 로컬 PoC 확인
+### Verify the local PoC
 
-실행되는 컨테이너는 Outlet API, rathole server, Connector 2개, HTTP 테스트 서비스 2개입니다. API에는 로컬 테스트용 HTTPS 인증서를 사용하고, 데이터 터널에는 Noise를 사용합니다. 앱과 rathole service 포트에는 호스트 공개 포트를 만들지 않습니다. rathole service 포트는 Outlet 컨테이너 네트워크에서만 접근할 수 있습니다. 두 앱은 서로 다른 Compose 네트워크에 있습니다.
+The running containers are the Outlet API, the rathole server, 2 Connectors, and 2 HTTP test services. The API uses a local test HTTPS certificate, and the data tunnel uses Noise. No host-published ports are created for the apps or the rathole service ports. The rathole service ports are reachable only from the Outlet container network. The two apps are on different Compose networks.
 
 ```sh
 curl --cacert .local/poc/configs/root-ca.pem https://localhost:18443/healthz
@@ -183,9 +192,9 @@ docker compose --env-file .local/poc/compose.env -f deploy/compose.poc.yaml exec
 docker compose --env-file .local/poc/compose.env -f deploy/compose.poc.yaml exec -T outlet /usr/local/bin/poc-probe -url http://127.0.0.1:31002/ -expect meerkat:app-b
 ```
 
-터널 응답은 각각 `meerkat:app-a`, `meerkat:app-b`입니다. localhost:18443은 관리 HTTPS API, localhost:2333은 rathole control port입니다. `poc-probe`는 Outlet 컨테이너 안의 loopback service port로 실제 요청을 보냅니다.
+The tunnel responses are `meerkat:app-a` and `meerkat:app-b`, respectively. localhost:18443 is the admin HTTPS API, and localhost:2333 is the rathole control port. `poc-probe` sends real requests to the loopback service ports inside the Outlet container.
 
-관리 API의 상태를 확인할 때는 토큰을 명령행 인자에 넣지 않고 curl 설정을 표준 입력으로 전달할 수 있습니다. 토큰 값을 터미널에 출력하지 않습니다.
+To check the admin API status, you can pass the curl configuration on standard input instead of putting the token in a command-line argument. Don't print the token value to the terminal.
 
 ```sh
 IFS= read -r meerkat_admin_token < .local/poc/configs/admin.token
@@ -194,9 +203,9 @@ printf 'header = "Authorization: Bearer %s"\n' "$meerkat_admin_token" |
 unset meerkat_admin_token
 ```
 
-`status`는 관리 API heartbeat 상태이며, `tunnel_status`는 Outlet의 HTTP probe 결과입니다. `heartbeat.process_state`와 `heartbeat.service_health`는 각각 자식 프로세스와 대상 서비스 상태입니다. heartbeat가 15초 없으면 `stale`, 60초 없으면 `disconnected`입니다. Outlet 재시작 시 이전 연결 상태는 초기화하고 새 heartbeat를 기다립니다.
+`status` is the admin API heartbeat state, and `tunnel_status` is the result of the Outlet's HTTP probe. `heartbeat.process_state` and `heartbeat.service_health` are the state of the child process and the target service, respectively. With no heartbeat for 15 seconds the status is `stale`, and after 60 seconds it's `disconnected`. When the Outlet restarts, it resets the previous connection states and waits for new heartbeats.
 
-## 검증
+## Verification
 
 ```sh
 go test -race ./...
@@ -205,71 +214,100 @@ npx --yes @redocly/cli@2 lint api/openapi.json --extends=spec
 MEERKAT_E2E=1 go test -v ./test/e2e -count=1
 ```
 
-E2E는 실행 중인 `meerkat-poc` 프로젝트만 대상으로 합니다. 두 HTTP 터널, 잘못된/재사용 등록 토큰, 서비스 권한, rathole crash 후 재시작, 서비스 장애 격리, Connector 재시작, Outlet 재시작 후 저장 상태 복구를 확인합니다. 이 테스트는 해당 PoC의 앱과 Connector를 중지·재시작하므로 실제 운영 환경에서는 실행하지 않습니다.
+The E2E tests target only the running `meerkat-poc` project. They check two HTTP tunnels, invalid and reused registration tokens, service authorization, restart after a rathole crash, isolation of service failures, Connector restart, and recovery of stored state after an Outlet restart. These tests stop and restart that PoC's apps and Connectors, so don't run them in a real production environment.
 
-2026-10-09 검증: macOS/ARM64 Docker 환경에서 E2E 6개 항목, `go test -race ./...`, `go vet ./...`, OpenAPI 문법 검사 통과. Linux ARM64와 AMD64 이미지 빌드 및 두 플랫폼의 rathole 실행도 확인했습니다. 실제 서버 간 연결과 AMD64의 전체 E2E는 아직 수행하지 않았습니다.
+Verified on 2026-10-09: on macOS/ARM64 Docker, the 6 E2E items, `go test -race ./...`, `go vet ./...`, and the OpenAPI syntax check passed. Linux ARM64 and AMD64 image builds and rathole execution on both platforms were also confirmed. Connections between real servers and the full E2E run on AMD64 haven't been done yet.
 
-다른 설정 디렉터리를 사용했다면 Compose의 `--env-file` 경로를 바꾸고 E2E에 그 절대 경로를 전달합니다.
+If you used a different configuration directory, change the Compose `--env-file` path and pass its absolute path to the E2E tests.
 
 ```sh
 MEERKAT_E2E=1 MEERKAT_POC_DIR=/absolute/path/to/fixture go test -v ./test/e2e -count=1
 ```
 
-중지·정리할 때 파일과 자격 증명은 보존됩니다. 다시 실행하면 Connector가 저장된 identity를 사용합니다.
+Stopping and cleaning up preserves files and credentials. When you start it again, the Connector uses its stored identity.
 
 ```sh
 docker compose --env-file .local/poc/compose.env -f deploy/compose.poc.yaml down
 docker compose --env-file .local/poc/compose.env -f deploy/compose.poc.yaml up -d --no-build
 ```
 
-## 설정과 인증
+## Configuration and authentication
 
-Connector JSON 예제는 [configs/connector.example.json](configs/connector.example.json)에 있습니다. `MEERKAT_OUTLET`, `MEERKAT_NAME`, `MEERKAT_DATA_DIR`, `MEERKAT_TARGET`, `MEERKAT_RATHOLE_BINARY`, `MEERKAT_ROOT_CA`, `MEERKAT_HEARTBEAT_INTERVAL` 환경변수로 덮어쓸 수 있습니다.
+A Connector JSON example is in [configs/connector.example.json](configs/connector.example.json). You can override it with the environment variables `MEERKAT_OUTLET`, `MEERKAT_NAME`, `MEERKAT_DATA_DIR`, `MEERKAT_TARGET`, `MEERKAT_RATHOLE_BINARY`, `MEERKAT_ROOT_CA`, and `MEERKAT_HEARTBEAT_INTERVAL`.
 
-### 터널 설치와 서비스 등록
+### Install a tunnel and register services
 
-관리 화면에서는 설치하고 연결 상태를 확인하는 대상을 **터널**이라고 부릅니다. 실행 프로그램과 API의 이름은 `Connector`입니다.
+In the admin console, the thing you install and whose connection status you check is called a **tunnel**. The executable and the API call it `Connector`.
 
-**터널 관리** 목록에는 터널 이름, 연결 상태, 연결 서비스, 최근 응답, 생성일이 표시됩니다. 터널 이름을 누르면 상세 화면에서 현황, 연결 서비스, 공개 주소와 요청 경로를 확인할 수 있습니다. 터널 ID는 목록 대신 상세 정보에 표시됩니다. 터널을 만들면 상세 화면에 설치 명령이 바로 표시됩니다. 명령에는 해당 터널의 실행 토큰이 포함됩니다. 이 명령으로 터널을 실행하면 Outlet이 서비스가 없는 터널의 인증 연결 상태를 확인합니다. 화면에 **터널 연결됨**이 표시되면 같은 상세 화면에서 서비스 이름, 앱 호스트, 내부 포트를 등록하고 공개 주소를 추가할 수 있습니다. 실행 중인 Connector가 새 설정을 받아 서비스 터널을 시작합니다. 별도 **연결 서비스** 메뉴에서도 등록된 서비스를 관리할 수 있습니다.
+The **Tunnels** list shows each tunnel's name, connection status, services, last response, and creation date. Select a tunnel name to see its status, services, public addresses, and request paths on the detail page. The tunnel ID appears in the details rather than in the list. When you create a tunnel, the detail page immediately shows the install command, which includes that tunnel's run token. When you run the tunnel with this command, the Outlet checks the authenticated connection of a tunnel that has no services yet. When the console shows **Tunnel connected**, you can register the service name, app host, and internal port on the same detail page and add public addresses. The running Connector receives the new configuration and starts the service tunnel. You can also manage registered services from a separate **Services** menu.
 
-터널 상세 화면에서 연결을 기다리는 동안에는 연결 상태를 2초마다 조회합니다. **연결 확인** 버튼으로 즉시 다시 조회할 수도 있습니다. 연결되면 일반 대시보드의 10초 갱신 주기로 돌아갑니다.
+While the tunnel detail page waits for a connection, it checks the connection status every 2 seconds. You can also check again immediately with the **Check connection** button. Once connected, it returns to the normal 10-second dashboard refresh interval.
 
-터널의 **연결 상태**는 Connector가 최근 Outlet에 인증된 응답을 보냈는지를 나타냅니다. 연결 서비스를 추가하거나 수정한 직후에는 해당 서비스의 상태가 **확인 대기**로 바뀌며, 내부 앱 접근과 터널 경로가 확인되면 **연결됨**으로 표시됩니다. 서비스 확인 중에도 터널 자체의 연결 상태는 별도로 유지됩니다.
+A tunnel's **connection status** indicates whether the Connector has recently sent an authenticated response to the Outlet. Right after you add or edit a service, that service's status changes to **Pending check**, and once access to the internal app and the tunnel path are confirmed, it shows **Connected**. While a service is being checked, the tunnel's own connection status is tracked separately.
 
-앱 호스트 이름을 터널 컨테이너에서 찾을 수 없다면 Connector는 연결을 유지하며 해당 서비스를 **오류**로 보고하고 5초마다 다시 확인합니다. 서비스의 앱 호스트와 내부 포트 또는 Docker 네트워크를 고치면 새 설정을 받아 연결을 재시도합니다. 같은 Compose 파일의 `app` 서비스에서 `traefik/whoami`를 실행한다면 연결 대상은 `app:80`입니다.
+If the app host name can't be resolved from the tunnel container, the Connector keeps the connection, reports that service as **Error**, and rechecks every 5 seconds. Fix the service's app host and internal port or the Docker network, and the Connector receives the new configuration and retries the connection. If you run `traefik/whoami` as the `app` service in the same Compose file, the connection target is `app:80`.
 
-연결 서비스 화면의 **서비스 이름**은 대시보드에서 구별할 이름이고, **앱 호스트**와 **내부 포트**는 터널이 실제 앱에 접속할 주소입니다. 하나의 터널에 여러 서비스를 등록할 수 있지만, 같은 터널 안에서 앱 호스트와 내부 포트의 조합은 중복할 수 없습니다. 같은 앱을 여러 주소로 공개하려면 기존 서비스에 공개 주소를 추가하세요. 공개 서브도메인은 이후 **공개 주소**에서 별도로 입력합니다.
-터널 상세 화면의 **개요** 탭에서는 연결 상태와 서비스별 내부 연결 대상을 확인하고 서비스를 등록·수정할 수 있습니다. 서비스의 **경로 보기**를 누르거나 **경로** 탭을 선택하면 요청 흐름과 서비스별 공개 주소를 확인·관리할 수 있습니다. 연결 대상의 **수정**을 누르면 앱 호스트와 내부 포트를 변경할 수 있습니다. 서비스 삭제 전에는 해당 서비스의 공개 주소를 먼저 삭제해야 합니다. 서비스를 추가·수정·삭제하면 Connector가 변경된 전체 서비스 설정을 다시 받아 연결하므로 같은 터널의 다른 서비스도 잠시 중단될 수 있습니다.
+On the services screen, **Service name** is the name that distinguishes the service in the dashboard, and **App host** and **Internal port** are the address the tunnel actually uses to reach the app. You can register multiple services on one tunnel, but the same combination of app host and internal port can't appear twice in the same tunnel. To publish the same app at multiple addresses, add public addresses to the existing service. You enter public subdomains separately afterward, under **Public addresses**.
+On the tunnel detail page's **Overview** tab, you can check the connection status and each service's internal target, and register or edit services. Select a service's **View routes**, or select the **Routes** tab, to see and manage the request flow and each service's public addresses. Select **Edit** on a target to change the app host and internal port. Before deleting a service, delete its public addresses first. Adding, editing, or deleting a service makes the Connector fetch and reconnect with the entire changed service configuration, so other services on the same tunnel may be briefly interrupted.
 
-터널 개요의 **사용량**에는 24시간·7일·30일 요청 추이, 요청 크기 추정량, 응답 본문 크기, 5xx 응답 수와 서비스별 합계가 표시됩니다. 서비스별 필터로 한 서비스의 요청 추이와 합계를 볼 수 있습니다. Outlet은 Caddy의 호스트별 메트릭을 15초마다 수집해 SQLite에 시간별로 저장하며 30일이 지난 집계는 삭제합니다. 화면도 15초마다 갱신합니다. 기능 적용 이후의 공개 HTTP 경로만 집계하며, Caddy도 함께 재시작되어 수집되지 않은 요청은 복구할 수 없습니다. Cloudflare 엣지 캐시에서 처리되어 Outlet에 도달하지 않은 요청은 집계되지 않습니다. URL·클라이언트 IP·헤더별 요청 기록은 저장하지 않습니다.
+The tunnel detail page's **Usage** tab overlays the request count, data received (estimated from request size), data sent (response body size), and 5xx responses over 24 hours, 7 days, or 30 days on one chart, and when there are two or more services it shows each service's share as a donut chart. A service filter lets you view a single service. The Outlet collects Caddy's per-host metrics every 15 seconds, stores them hourly in SQLite, and deletes aggregates older than 30 days. The UI also refreshes every 15 seconds. Hourly totals for the whole Outlet are kept for 10 years and used for the hourly, daily, monthly, and yearly request charts on the Overview page. The Overview traffic card reloads every 5 seconds by default (you can turn this off with the switch on the card) and shows each tunnel's share of requests for the same period beside it. Only public HTTP paths after this feature was applied are counted, and because Caddy is restarted along with it, requests that weren't collected can't be recovered. Requests served from the Cloudflare edge cache that never reached the Outlet aren't counted. Request records by URL, client IP, or header aren't stored.
 
-| 앱 실행 방식 | 앱 호스트 | 내부 포트 | 앱 연결 시 작업 |
+| How the app runs | App host | Internal port | Action when connecting the app |
 | --- | --- | --- | --- |
-| Docker 컨테이너의 앱 | `app` (Compose 서비스 이름) | 앱이 컨테이너 안에서 듣는 포트, 예: `3000` | 서비스 등록 시 터널을 앱 네트워크에 연결 |
-| 같은 Linux 서버에서 직접 실행 중인 앱 | `127.0.0.1` | 앱이 서버에서 듣는 포트, 예: `3000` | 터널을 호스트 네트워크로 재생성 |
+| App in a Docker container | `app` (Compose service name) | The port the app listens on inside the container, for example `3000` | When you register the service, connect the tunnel to the app's network |
+| App running directly on the same Linux server | `127.0.0.1` | The port the app listens on on the server, for example `3000` | Recreate the tunnel on the host network |
 
-터널 설치 단계에는 앱 네트워크를 입력하지 않습니다. Docker 명령으로 설치한 터널은 Docker 기본 브리지에서 Outlet에 연결되고, Compose 터널은 해당 프로젝트의 기본 네트워크에서 연결됩니다. 앱 등록 시 터널이 Docker 앱과 다른 네트워크에 있다면 앱 서버에서 `docker network connect APP_NETWORK meerkat-TUNNEL_NAME`을 실행합니다. 같은 Compose 파일의 기본 네트워크를 이미 공유한다면 추가 연결은 필요 없습니다. Compose가 컨테이너를 재생성해도 연결이 유지되게 하려면 터널 서비스의 `networks:`에도 앱 네트워크를 추가하세요. 앱 네트워크가 `internal: true`이면 터널의 기존 외부 통신 네트워크도 유지해야 합니다.
+The tunnel install step doesn't ask for an app network. A tunnel installed with a Docker command connects to the Outlet over the default Docker bridge, and a Compose tunnel connects over its project's default network. If the tunnel is on a different network than the Docker app when you register the app, run `docker network connect APP_NETWORK meerkat-TUNNEL_NAME` on the app server. If they already share the default network of the same Compose file, no extra connection is needed. To keep the connection when Compose recreates the container, also add the app network to the tunnel service's `networks:`. If the app network is `internal: true`, also keep the tunnel's existing external-facing network.
 
-Linux 서버의 앱이 `127.0.0.1:3000`에서만 수신한다면 터널 컨테이너도 Linux 호스트 네트워크에서 실행해야 합니다. 같은 실행 토큰을 유지하며 컨테이너를 `--network host`로 다시 만들거나 Compose 서비스에 `network_mode: host`를 지정하고 다시 생성하세요. 연결 서비스에는 `127.0.0.1`과 `3000`을 입력합니다. 앱 포트를 인터넷에 공개할 필요는 없습니다.
+If a Linux server app listens only on `127.0.0.1:3000`, the tunnel container must also run on the Linux host network. Keeping the same run token, recreate the container with `--network host`, or set `network_mode: host` on the Compose service and recreate it. For the service, enter `127.0.0.1` and `3000`. The app port doesn't need to be exposed to the internet.
 
-설치 안내에서는 **Docker 명령** 또는 **Docker Compose**를 선택할 수 있습니다. Compose 안에서는 기존 파일에 터널 서비스를 추가하거나 새 터널 전용 파일을 만들 수 있습니다. 어느 방법도 터널 설치 시 앱 네트워크를 요구하지 않습니다. 전용 파일은 `meerkat-tunnel.yaml`로 저장하고 `docker compose -f meerkat-tunnel.yaml up -d`로 실행합니다.
+The install guide lets you choose **Docker command** or **Docker Compose**. With Compose, you can add the tunnel service to an existing file or create a new tunnel-only file. Neither method requires an app network when you install the tunnel. Save the dedicated file as `meerkat-tunnel.yaml` and run it with `docker compose -f meerkat-tunnel.yaml up -d`.
 
-관리 화면은 Outlet 주소, 터널 이름, 재사용 가능한 실행 토큰을 설치 코드 하나로 묶어 `docker run ... ghcr.io/lawnect/meerkat:latest connect <설치코드>` 형태의 명령을 만듭니다. 설치 코드에는 비밀 토큰이 포함되므로 공유하지 마세요. 컨테이너를 다시 만들 때도 같은 명령을 사용합니다. 실행 파일은 임시 저장 공간에 런타임 파일을 만들며 영구 Docker 볼륨이 필요하지 않습니다. 설치 코드가 유실되면 관리 화면에서 연결을 초기화해 새 토큰을 발급하고, Compose의 `command`를 교체하세요. 이때 이전 토큰과 연결은 무효가 됩니다. 기존 일회용 등록 토큰과 저장된 자격 증명을 사용하는 Connector는 계속 지원합니다.
+The admin console bundles the Outlet address, the tunnel name, and a reusable run token into a single install code, and generates a command of the form `docker run ... ghcr.io/lawnect/meerkat:latest connect <install-code>`. The install code contains a secret token, so don't share it. Use the same command when you recreate the container. The executable creates its runtime files in temporary storage and doesn't need a persistent Docker volume. The install command runs the container with a read-only root filesystem (`--read-only`), all capabilities dropped (`--cap-drop ALL`) and `no-new-privileges`; `/var/lib/meerkat`, which holds the credentials, and `/tmp` live only in memory (tmpfs), so nothing is left on the host disk. If you lose the install code, reset the connection in the admin console to issue a new token, and replace the Compose `command`. The previous token and connection become invalid. Connectors that use an older one-time registration token and stored credentials are still supported.
 
-새 실행 토큰은 자동 만료되지 않으며 서버에는 해시만 저장됩니다. 관리 화면에서 초기화하거나 터널을 삭제하면 무효가 됩니다. 기존 PoC의 일회용 등록 토큰과 Connector API 자격 증명에는 기존 만료 설정이 적용됩니다.
+New run tokens don't expire automatically, and only a hash is stored on the server. They become invalid when you reset them in the admin console or delete the tunnel. The existing expiration settings still apply to the earlier PoC's one-time registration tokens and Connector API credentials.
 
-관리 API의 토큰과 등록 토큰은 Outlet 상태 파일에 SHA-256 해시로 저장합니다. Connector API 자격 증명도 Outlet에는 해시만 남깁니다. rathole service token과 서버 Noise 개인키는 rathole 설정에 필요한 별도의 비밀정보입니다. 파일은 0600, state directory는 0700으로 저장하며 `.local/`은 Git 및 Docker 빌드 컨텍스트에서 제외합니다. 같은 data directory를 두 프로세스가 동시에 사용하지 못하도록 잠급니다.
+Admin API tokens and registration tokens are stored in the Outlet state file as SHA-256 hashes. For Connector API credentials, too, the Outlet keeps only the hash. The rathole service token and the server Noise private key are separate secrets that the rathole configuration requires. Files are stored with mode 0600 and the state directory with mode 0700, and `.local/` is excluded from Git and the Docker build context. The data directory is locked so that two processes can't use the same one at the same time.
 
-수동 설정에서 `MEERKAT_TARGET`을 지정한 경우 Connector는 등록된 모든 서비스 대상이 해당 host/port와 일치하는지 확인합니다. 여러 서비스를 연결하려면 이 설정을 생략하고 관리 화면에서 각 서비스 대상을 등록하세요. 대상은 loopback 또는 명시한 Compose 서비스 이름만 허용하고, DNS 결과가 local/private IP인지 확인해 실제 rathole 대상 IP를 고정합니다. 새 서비스의 이름을 아직 찾을 수 없어도 연결 가능한 기존 서비스는 터널을 유지하며, 새 대상이 확인되면 Rathole 설정을 갱신해 해당 서비스만 추가합니다. Outlet과 Connector는 이때 기존 서비스의 Rathole 프로세스와 공개 경로를 유지합니다. Compose 서비스가 재생성되어 기존 대상의 IP가 바뀌면 Connector를 재시작해야 합니다. 사설 IP라는 사실만으로 네트워크 격리가 보장되지는 않으므로 실제 배포에도 필요한 Docker 네트워크만 터널에 연결해야 합니다.
+If `MEERKAT_TARGET` is set in a manual configuration, the Connector checks that every registered service target matches that host and port. To connect multiple services, omit this setting and register each service target in the admin console. Only loopback addresses and explicitly specified Compose service names are allowed as targets, and the Connector checks that the DNS result is a local or private IP and pins the actual rathole target IP. Even if a new service's name can't be resolved yet, existing reachable services keep their tunnels, and once the new target resolves, the Connector updates the Rathole configuration and adds only that service. During this, the Outlet and Connector keep the existing services' Rathole processes and public routes. If a Compose service is recreated and an existing target's IP changes, restart the Connector. A private IP alone doesn't guarantee network isolation, so even in a real deployment, connect only the Docker networks that are actually needed to the tunnel.
 
-## 현재 경계와 다음 단계
+### Telegram alerts and login security
 
-Outlet의 관리 저장소는 원자적으로 저장하는 JSON 파일이며 SQLite 이전 단계입니다. [api/openapi.json](api/openapi.json)은 현재 구현된 API만 정의합니다. 대상 health는 TCP 연결 확인이고, Outlet의 HTTP tunnel probe는 `/`에서 500 미만 응답을 확인합니다. 대상별 probe 경로·Host 헤더·TCP 서비스 probe는 후속 단계입니다.
+**Telegram alerts.** Create a bot with BotFather to get a token, then send the bot a message first from the chat that should receive alerts, or invite the bot to a group or channel. In the admin console's alert settings, enter the bot token and the chat ID (a number for a personal chat, usually a negative number for a group, and `@channel_name` for a public channel), then send a **test message** to verify. The bot token is stored only in the Outlet's SQLite database (`control.db`, mode 0600), and the API and UI show only its last four characters. It's also kept out of logs and error messages. Alerts are sent in English, and all types share the same format (an emoji and a bold title, `name: value` lines, and a link to the admin console).
 
-자식 프로세스 crash는 지수 백오프와 jitter로 최대 5번 재시작합니다. 1분 이상 안정적으로 실행하면 재시작 예산을 초기화합니다. 네트워크 연결이 끊겼을 때의 rathole 내부 재연결은 v0.5.0의 1초 retry 설정을 사용합니다. 임의의 shell command는 Connector에서 실행하지 않고, child stdout/stderr도 로그로 전송하지 않습니다.
+| Rule | Default | When it alerts |
+| --- | --- | --- |
+| Tunnel disconnected | On, 5 minutes | Alerts when a tunnel that has finished registration isn't `connected` for longer than the configured time, and sends a recovery notice when it reconnects. |
+| Public address error | On | Alerts when a public address has an error, and sends a recovery notice when it clears. |
+| DNS failure | On | Every 15 minutes, looks up the same names as **Check DNS** and alerts if the lookup fails. |
+| 5xx spike | On, 5% and 50 requests | Alerts once per hour window if the current or previous UTC hour has 50 or more requests and a 5xx rate of 5% or higher. |
+| Admin login | On | On every login, reports the email, the access address (shown as such for the local admin port), and the browser and OS. |
+| Rate limit | On, 500 per 10 minutes | When many requests are rejected, alerts once every 30 minutes with which limit triggered and the top IPs, subnets, and endpoints. |
 
-이 단계의 API 인증은 Connector별 bearer credential입니다. 로컬 Ed25519 identity를 생성해 공개키를 등록하지만, 서명 기반 API 인증과 proof-of-possession은 아직 구현하지 않았습니다. Noise NK는 Outlet 서버를 공개키로 인증하며, Connector의 터널 권한은 서비스별 token으로 확인합니다.
+The same problem isn't alerted again while it stays open, and the same target isn't alerted again if the problem recurs within an hour. If delivery of an alert fails, the event records an error code, and ongoing problems (tunnels, public addresses, DNS) are retried for an hour. Login alerts are sent separately from the login response, so even if Telegram is slow or down, login isn't delayed. All rules are evaluated only after Telegram is configured and enabled.
 
-API credential 만료는 Meerkat Connector가 터널을 종료하게 하지만 rathole service token 자체에 TTL을 부여하지는 않습니다. 독립 rathole client까지 강제로 폐기하려면 서버 설정의 service token 제거·교체와 연결 drain이 필요합니다. 등록 응답을 수신하지 못한 채 토큰이 소비된 경우의 identity 복구도 후속 작업입니다. 현재 fixture를 공개 운영에 배포하는 기능은 제공하지 않습니다.
+**Login verification code.** You can turn this on after you verify Telegram. When it's on, a login over the internet (a public address) with the correct email and password sends a 6-digit code to Telegram, and you must enter it within 5 minutes for a session to be created. The code is discarded after 5 wrong attempts. Login attempts are limited to 10 per minute per client address. Changing the bot token or chat ID clears the verification, which also turns this feature off.
 
-실제 서로 다른 서버에서의 연결과 공인 방화벽 검증, 서비스 변경 시 무중단 적용은 남아 있습니다. 설계 기준은 [ARCHITECTURE.md](docs/ARCHITECTURE.md), [IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md), [CONFIG_ROLLOUT.md](docs/CONFIG_ROLLOUT.md)를 참고합니다.
+On the **local admin port** (`https://localhost:18443`) opened through the SSH tunnel, you sign in without a code. Even if you lose your Telegram account or the bot is misconfigured, you can always recover as long as you can SSH into the server. Whether a request came over a public path is determined by a marker the Outlet attaches internally, not by request headers, so it can't be spoofed with headers such as `X-Forwarded-For`. For the access address, only the last entry of the `X-Forwarded-For` header that Caddy appends is trusted.
+
+### Audit log
+
+Every action an admin takes (successful and failed logins, verification code checks, logouts, and changes to tunnels, services, public addresses, domains, tunnel addresses, and Telegram, alert, and rate limit settings) is recorded in the SQLite `audit_events` table with the time, account, access path (`public`/`local`), access address, browser, target, and non-secret details. Tokens, passwords, verification codes, and bot tokens aren't recorded. The log is append-only. SQLite triggers block updates and deletes, and there is no delete API or retention period, so entries can't be erased from the UI. This doesn't stop a server administrator who can edit the database file directly, so it assumes that access to the server is controlled. If recording fails, the change request ends with `503 audit_failed`, and a login doesn't create a session.
+
+### Rate limiting
+
+Public requests are limited with token buckets before they're proxied. There are limits per client IP, per subnet (IPv4 /24, IPv6 /64), and per public hostname, plus admin-defined rules per endpoint (a host and path prefix, applied to the overall total or per IP). If any one of them is exceeded, the request is rejected with `429 Too Many Requests` and `Retry-After: 1`, and the response says which limit triggered. The defaults are generous enough not to trigger during normal use (300 requests per second per IP with a burst of 1000, 1500 and 5000 per subnet, and no per-host limit). The admin host's login path (`/api/v1/session`) has its own rule of 3 requests per second per IP with a burst of 30, which you can edit in the list. Settings take effect immediately without a restart, and rejected requests are aggregated hourly and shown in the usage chart. Certificate issuance checks (`cert-ask`) and ACME paths aren't limited, and the local admin port opened over SSH doesn't go through these limits.
+
+This feature provides protection at the application layer (L7). It rejects requests after they've reached the Outlet, so it can't stop large-scale (volumetric) DDoS attacks that saturate the server's link and firewall. For such attacks, also use network-layer protection, such as the Cloudflare proxy (orange cloud) or your hosting provider's DDoS protection. Putting a proxy in front can change the access address, so first verify that the per-IP limits still work as intended.
+
+## Current limits and next steps
+
+The Outlet's admin store is a JSON file written atomically, and it's an interim step before SQLite. [api/openapi.json](api/openapi.json) defines only the APIs implemented today. Target health is a TCP connection check, and the Outlet's HTTP tunnel probe checks for a response below 500 at `/`. Per-target probe paths and Host headers, and TCP service probes, are follow-up work.
+
+A child process crash is followed by up to 5 restarts with exponential backoff and jitter. After the process runs stably for 1 minute or more, the restart budget resets. When the network connection drops, rathole's internal reconnection uses the v0.5.0 1-second retry setting. The Connector doesn't run arbitrary shell commands, and it doesn't send child stdout/stderr as logs.
+
+API authentication at this stage is a per-Connector bearer credential. A local Ed25519 identity is generated and its public key is registered, but signature-based API authentication and proof of possession aren't implemented yet. Noise NK authenticates the Outlet server by its public key, and a Connector's tunnel permission is verified with a per-service token.
+
+Expiring an API credential makes the Meerkat Connector shut down the tunnel, but it doesn't give the rathole service token itself a TTL. Forcibly revoking even a standalone rathole client requires removing or rotating the service token in the server configuration and draining connections. Identity recovery when a token is consumed but the registration response is never received is also follow-up work. There is no feature for deploying the current fixture to public production.
+
+Connections between genuinely separate servers, validation against a public firewall, and zero-downtime application of service changes remain to be done. For design references, see [ARCHITECTURE.md](docs/ARCHITECTURE.md) (Korean), [IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) (Korean), and [CONFIG_ROLLOUT.md](docs/CONFIG_ROLLOUT.md) (Korean).

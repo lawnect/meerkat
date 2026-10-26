@@ -1,82 +1,195 @@
 @import "tailwindcss";
-@plugin "daisyui" {
-  themes: light --default;
+@import "tw-animate-css";
+@import "shadcn-svelte/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* SUIT(OFL-1.1, https://sun.fo/suit) 가변 글꼴을 저장소에 포함해 외부 요청 없이 사용합니다. */
+@font-face {
+  font-family: "SUIT Variable";
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./assets/fonts/suit/SUIT-Variable.woff2") format("woff2-variations");
 }
 
+@theme {
+  --font-sans: "SUIT Variable", ui-sans-serif, system-ui, sans-serif;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
 :root {
-  --color-base-100: #fffdfa;
-  --color-base-200: #faf8f5;
-  --color-base-300: #e9e4dd;
-  --color-base-content: #292824;
-  --color-primary: #ef6a2d;
-  --color-primary-content: #ffffff;
-  --color-success: #288b69;
-  --paper: var(--color-base-200);
-  --panel: var(--color-base-100);
-  --ink: var(--color-base-content);
-  --muted: color-mix(in srgb, var(--color-base-content) 62%, transparent);
-  --line: var(--color-base-300);
-  --accent: var(--color-primary);
-  --accent-dark: #b8491b;
-  --green: var(--color-success);
-  --amber: var(--color-warning);
+  /* 기본색은 shadcn Slate, 강조색(primary·accent)은 프리셋 b4XrBI의 sky를 씁니다. */
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.129 0.042 264.695);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.129 0.042 264.695);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.129 0.042 264.695);
+  --primary: oklch(0.5 0.134 242.749);
+  --primary-foreground: oklch(0.977 0.013 236.62);
+  --secondary: oklch(0.968 0.007 247.896);
+  --secondary-foreground: oklch(0.208 0.042 265.755);
+  --muted: oklch(0.968 0.007 247.896);
+  --muted-foreground: oklch(0.554 0.046 257.417);
+  --accent: oklch(0.5 0.134 242.749);
+  --accent-foreground: oklch(0.977 0.013 236.62);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.929 0.013 255.508);
+  --input: oklch(0.929 0.013 255.508);
+  --ring: oklch(0.704 0.04 256.788);
+  --chart-1: oklch(0.5 0.134 242.749);
+  --chart-2: oklch(0.685 0.169 237.323);
+  --chart-3: oklch(0.828 0.111 230.318);
+  --chart-4: oklch(0.391 0.09 240.876);
+  --chart-5: oklch(0.901 0.058 230.902);
+  --radius: 0;
+  --sidebar: oklch(1 0 0);
+  --sidebar-foreground: oklch(0.129 0.042 264.695);
+  --sidebar-primary: oklch(0.588 0.158 241.966);
+  --sidebar-primary-foreground: oklch(0.977 0.013 236.62);
+  --sidebar-accent: oklch(0.968 0.007 247.896);
+  --sidebar-accent-foreground: oklch(0.208 0.042 265.755);
+  --sidebar-border: oklch(0.929 0.013 255.508);
+  --sidebar-ring: oklch(0.704 0.04 256.788);
 }
 
-* { box-sizing: border-box; }
-
-body {
-  margin: 0;
-  background: var(--paper);
-  color: var(--ink);
-  font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+.dark {
+  --background: oklch(0.129 0.042 264.695);
+  --foreground: oklch(0.984 0.003 247.858);
+  --card: oklch(0.208 0.042 265.755);
+  --card-foreground: oklch(0.984 0.003 247.858);
+  --popover: oklch(0.208 0.042 265.755);
+  --popover-foreground: oklch(0.984 0.003 247.858);
+  --primary: oklch(0.443 0.11 240.79);
+  --primary-foreground: oklch(0.977 0.013 236.62);
+  --secondary: oklch(0.279 0.041 260.031);
+  --secondary-foreground: oklch(0.984 0.003 247.858);
+  --muted: oklch(0.279 0.041 260.031);
+  --muted-foreground: oklch(0.704 0.04 256.788);
+  --accent: oklch(0.443 0.11 240.79);
+  --accent-foreground: oklch(0.977 0.013 236.62);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.551 0.027 264.364);
+  --chart-1: oklch(0.685 0.169 237.323);
+  --chart-2: oklch(0.5 0.134 242.749);
+  --chart-3: oklch(0.828 0.111 230.318);
+  --chart-4: oklch(0.391 0.09 240.876);
+  --chart-5: oklch(0.588 0.158 241.966);
+  --sidebar: oklch(0.208 0.042 265.755);
+  --sidebar-foreground: oklch(0.984 0.003 247.858);
+  --sidebar-primary: oklch(0.685 0.169 237.323);
+  --sidebar-primary-foreground: oklch(0.293 0.066 243.157);
+  --sidebar-accent: oklch(0.279 0.041 260.031);
+  --sidebar-accent-foreground: oklch(0.984 0.003 247.858);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.551 0.027 264.364);
 }
 
-button, input { font: inherit; }
-button { cursor: pointer; }
-button:focus-visible, input:focus-visible { outline: 2px solid #ef9b6f; outline-offset: 2px; }
-.ui-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex: none; border: 1px solid transparent; border-radius: 6px; font-weight: 650; line-height: 1.3; text-align: center; text-decoration: none; white-space: nowrap; transition: background-color .15s, border-color .15s, color .15s; }
-.ui-button--md { min-height: 32px; padding: 6px 12px; font-size: 12px; }
-.ui-button--sm { min-height: 27px; padding: 4px 8px; font-size: 11px; }
-.ui-button--primary { border-color: var(--accent); background: var(--accent); color: #fff; }
-.ui-button--primary:hover:not(:disabled) { border-color: #d85b22; background: #d85b22; }
-.ui-button--secondary { border-color: #d8d1c9; background: #fffdfa; color: #4e4640; }
-.ui-button--secondary:hover:not(:disabled) { border-color: #bcb1a7; background: #faf4ee; }
-.ui-button--danger { border-color: #e8c7c0; background: #fffdfa; color: #a64132; }
-.ui-button--danger:hover:not(:disabled) { border-color: #d9a89e; background: #fcf1ee; }
-.ui-button--text { min-height: 0; border-color: transparent; padding: 2px 0; background: transparent; color: var(--accent-dark); }
-.ui-button--text:hover:not(:disabled) { color: #8e3512; text-decoration: underline; text-underline-offset: 3px; }
-.ui-button--plain { min-height: 0; border: 0; border-radius: 0; padding: 0; background: transparent; color: inherit; font: inherit; font-weight: inherit; line-height: inherit; white-space: normal; text-align: inherit; }
-.ui-button:disabled { opacity: .48; cursor: not-allowed; }
-.ui-button:focus-visible { outline: 2px solid #ef9b6f; outline-offset: 2px; }
-
-.ui-card { min-width: 0; border-radius: 8px; }
-.ui-card--soft { border: 1px solid rgba(219,207,196,.76); background: rgba(255,253,250,.68); box-shadow: 0 8px 24px rgba(77,58,43,.055), inset 0 1px rgba(255,255,255,.72); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
-.ui-card--solid { border: 1px solid var(--line); background: var(--panel); }
-.ui-card--glass { border: 1px solid rgba(255,255,255,.88); background: rgba(255,255,255,.52); box-shadow: 0 9px 24px rgba(86,62,45,.09); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
-.ui-card--sm { padding: 11px 13px; }
-.ui-card--md { padding: 16px 18px; }
-
-/* 카드 제목과 카드 안의 보조 항목 제목은 화면마다 같은 위계를 사용합니다. */
-.ui-card-header { border-bottom: 1px solid var(--line); padding: 12px 18px; }
-.ui-card-title { margin: 0; color: var(--ink); font-size: 13px; font-weight: 700; line-height: 1.45; letter-spacing: 0; }
-.ui-card-title small { margin-left: 5px; color: var(--muted); font-size: 11px; font-weight: 500; }
-.ui-meta-label { color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1.45; letter-spacing: 0; }
-
-.dashboard-grid { display: grid; gap: 12px; }
-.field { display: grid; gap: 5px; }
-.field.full { grid-column: 1 / -1; }
-.field label { color: #4f5759; font-size: 12px; font-weight: 700; }
-.field small { color: var(--muted); font-size: 11px; }
-.field input { width: 100%; }
-.form-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
-.error, .success { margin-top: 10px !important; font-size: 12px; }
-.error { color: #a54134 !important; }
-.success { color: var(--green) !important; }
-
-.empty {
-  border: 1px dashed #b9b6ad;
-  padding: 22px;
-  text-align: center;
+@layer base {
+	* {
+		@apply border-border outline-ring/50;
+  }
+	/* 문서 배경을 본문(Sidebar.Inset)과 같은 색으로 맞춰, 끝까지 스크롤해 튕길 때 다른 색이 비치지 않게 합니다. */
+	html,
+	body {
+		@apply bg-muted text-foreground;
+  }
+	/* dark 변형은 .dark의 자손에만 걸리므로 .dark가 붙는 html은 직접 지정합니다. */
+	html.dark,
+	html.dark body {
+		@apply bg-background;
+  }
+	body {
+		@apply text-sm;
+  }
+	html {
+		@apply font-sans;
+  }
+  /* type=search의 기본 지우기(x) 버튼은 파란 글리프라 화면의 다른 아이콘과 어긋납니다. 필터 초기화 버튼이 그 역할을 합니다. */
+  input[type="search"]::-webkit-search-cancel-button { appearance: none; display: none; }
+  /* unplugin-icons는 크기를 1.2em으로 정해 글자 크기에 따라 14.4px처럼 어중간하게 그려집니다.
+     size-* 클래스가 없는 Fluent 아이콘은 만든 크기(12·16·20·24px) 그대로 그려 흐려지지 않게 합니다. */
+  svg[viewBox="0 0 12 12"]:not([class*="size-"]) { width: 12px; height: 12px; }
+  svg[viewBox="0 0 16 16"]:not([class*="size-"]) { width: 16px; height: 16px; }
+  svg[viewBox="0 0 20 20"]:not([class*="size-"]) { width: 20px; height: 20px; }
+  svg[viewBox="0 0 24 24"]:not([class*="size-"]) { width: 24px; height: 24px; }
 }
-.empty h2 { margin: 0 0 7px; font-size: 19px; }
-.empty p { max-width: 510px; margin: 0 auto 12px; color: var(--muted); }
+
+/* svelte-sonner는 자체 CSS 변수로 모서리를 둥글게 합니다. 화면 전체가 각진 Lyra 스타일이라 0으로 맞춥니다. */
+:where(html) [data-sonner-toaster][data-sonner-theme] {
+  --border-radius: 0;
+}
+
+/* 글 안의 링크와 눌러서 복사하는 값: 평소에는 연한 점선 밑줄, 마우스를 올리면 진한 점선 밑줄. */
+@utility text-link {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-thickness: 1px;
+  text-decoration-color: color-mix(in oklab, currentColor 30%, transparent);
+  text-underline-offset: 5px;
+
+  &:hover {
+    text-decoration-color: currentColor;
+  }
+}
+
+/* 화면 전환 효과를 쓰지 않습니다: 마우스 효과의 색 전환, 대화상자·툴팁·메뉴의 나타남/사라짐 애니메이션을 모두 끕니다.
+   로딩 표시(animate-spin)와 자리 표시(animate-pulse)는 상태를 알리는 용도라 그대로 둡니다. */
+*,
+*::before,
+*::after {
+  transition: none !important;
+}
+
+[class*="animate-in"],
+[class*="animate-out"],
+[data-slot="collapsible-content"],
+[data-slot="sheet-content"],
+[data-slot="sheet-overlay"],
+[data-slot="dialog-overlay"],
+[data-slot="alert-dialog-overlay"] {
+  animation: none !important;
+}
+
+/* 카드 안에 들어간 상자(외곽선 항목, 카드)는 트래픽 지표 칸처럼 연한 배경으로 바깥 카드와 구분합니다. */
+[data-slot="card"] :is([data-slot="item"][data-variant="outline"], [data-slot="card"]) {
+  background-color: color-mix(in oklab, var(--muted) 50%, transparent);
+}

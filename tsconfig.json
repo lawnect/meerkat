@@ -12,8 +12,21 @@
     "skipLibCheck": true,
     "strict": true,
     "target": "ESNext",
-    "types": ["vite/client"],
-    "verbatimModuleSyntax": true
+    "types": [
+      "vite/client"
+    ],
+    "verbatimModuleSyntax": true,
+    "paths": {
+      "$lib": [
+        "./web/src/lib"
+      ],
+      "$lib/*": [
+        "./web/src/lib/*"
+      ]
+    }
   },
-  "include": ["web/src/**/*.ts", "web/src/**/*.svelte"]
+  "include": [
+    "web/src/**/*.ts",
+    "web/src/**/*.svelte"
+  ]
 }

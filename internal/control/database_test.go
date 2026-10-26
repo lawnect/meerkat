@@ -14,7 +14,7 @@ func TestOpenMigratesAndPreservesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version, err := db.Version(ctx); err != nil || version != 4 {
+	if version, err := db.Version(ctx); err != nil || version != migrations[len(migrations)-1].version {
 		t.Fatalf("version = %d, %v", version, err)
 	}
 	if _, err := db.SQL().ExecContext(ctx, "INSERT INTO outlet_settings(key, value, updated_at) VALUES ('domain', 'example.com', 'now')"); err != nil {
@@ -94,5 +94,37 @@ func TestUsageMigrationAfterAbandonedVersionThree(t *testing.T) {
 	}
 	if count != 2 {
 		t.Fatalf("usage tables = %d", count)
+	}
+}
+
+func TestDomainModeMigrationKeepsLegacyAdminLabel(t *testing.T) {
+	ctx := context.Background()
+	raw, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	raw.SetMaxOpenConns(1)
+	all := migrations
+	defer func() { migrations = all }()
+	migrations = nil
+	for _, m := range all {
+		if m.version < 6 {
+			migrations = append(migrations, m)
+		}
+	}
+	if err := migrate(ctx, raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.ExecContext(ctx, "INSERT INTO outlet_settings(key, value, updated_at) VALUES ('domain', 'example.com', 'now')"); err != nil {
+		t.Fatal(err)
+	}
+	migrations = all
+	if err := migrate(ctx, raw); err != nil {
+		t.Fatal(err)
+	}
+	var label string
+	if err := raw.QueryRowContext(ctx, "SELECT value FROM outlet_settings WHERE key = 'admin_label'").Scan(&label); err != nil || label != "meerkat" {
+		t.Fatalf("admin label = %q, %v", label, err)
 	}
 }

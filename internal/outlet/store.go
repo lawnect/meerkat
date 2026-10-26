@@ -84,6 +84,14 @@ type Store struct {
 	// Tunnel checks resolve and dial through these when set (tests).
 	lookupIP func(context.Context, string) ([]net.IPAddr, error)
 	dialTCP  func(context.Context, string) (net.Conn, error)
+	// Telegram messages go through this when set (tests).
+	sendTelegram func(ctx context.Context, token, chatID, text string) error
+	challenges   challenges
+	loginLimit   attemptLimiter
+	alerts       alertState
+	limiter      *rateLimiter
+	// background tracks login notifications still being sent.
+	background sync.WaitGroup
 }
 
 func Hash(s string) string { b := sha256.Sum256([]byte(s)); return hex.EncodeToString(b[:]) }
@@ -136,7 +144,7 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 			return nil, err
 		}
 		if outlet.Domain == "" {
-			if _, err := controlDB.SetDomain(context.Background(), config.Domain); err != nil {
+			if _, err := controlDB.SetDomain(context.Background(), config.Domain, ""); err != nil {
 				return nil, err
 			}
 		}
@@ -175,7 +183,7 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 		outlet, err := controlDB.Outlet(context.Background())
 		var tunnel outletTunnel
 		if err == nil {
-			tunnel, err = s.tunnel(context.Background(), outlet.Domain)
+			tunnel, err = s.tunnel(context.Background(), outlet.AdminHostname)
 		}
 		if err == nil {
 			err = s.retargetTunnels(tunnel.Address)
@@ -201,6 +209,10 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 		return nil, err
 	}
 	if err := s.reconcileTunnel(); err != nil {
+		return nil, err
+	}
+	s.limiter = newRateLimiter()
+	if err := s.reloadRateLimit(context.Background()); err != nil {
 		return nil, err
 	}
 	return s, nil

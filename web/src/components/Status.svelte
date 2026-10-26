@@ -1,14 +1,16 @@
 <script lang="ts">
+  import { Badge } from '$lib/components/ui/badge/index.js';
+  import { cn } from '$lib/utils.js';
   import { statusKind } from '../api';
-  let { label, value }: { label: string; value?: string } = $props();
+
+  // 연결 상태 배지. 정상은 초록, 대기는 노랑, 문제는 빨강으로 표시합니다.
+  let { label, value, class: className = '' }: { label: string; value?: string; class?: string } = $props();
+
+  const tone = {
+    ok: 'bg-emerald-500/10 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-300',
+    warn: 'bg-amber-500/15 text-amber-800 dark:bg-amber-400/15 dark:text-amber-300',
+    bad: 'bg-destructive/10 text-destructive dark:bg-destructive/20',
+  } as const;
 </script>
 
-<span class="connection-status"><i class="connection-status-dot {statusKind(value)}"></i><span>{label}</span></span>
-
-<style>
-  .connection-status { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
-  .connection-status-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #9a9d9a; }
-  .connection-status-dot.ok { background: #3a8a6b; }
-  .connection-status-dot.warn { background: #c98a27; }
-  .connection-status-dot.bad { background: #bb4d3d; }
-</style>
+<Badge variant="secondary" class={cn('cursor-default select-none', tone[statusKind(value)], className)}>{label}</Badge>

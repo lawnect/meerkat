@@ -164,6 +164,63 @@ CREATE TABLE usage_hourly (
   PRIMARY KEY(route_id, hour)
 );
 CREATE INDEX usage_hourly_by_hour ON usage_hourly(hour);
+`}, {version: 5, sql: `
+CREATE TABLE usage_total_hourly (
+  hour TEXT PRIMARY KEY,
+  requests INTEGER NOT NULL DEFAULT 0,
+  request_bytes INTEGER NOT NULL DEFAULT 0,
+  response_bytes INTEGER NOT NULL DEFAULT 0,
+  error_responses INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO usage_total_hourly(hour, requests, request_bytes, response_bytes, error_responses)
+SELECT hour, SUM(requests), SUM(request_bytes), SUM(response_bytes), SUM(error_responses)
+FROM usage_hourly WHERE true GROUP BY hour
+ON CONFLICT(hour) DO NOTHING;
+`}, {version: 6, sql: `
+CREATE TABLE outlet_domain_modes (
+  domain TEXT PRIMARY KEY,
+  mode TEXT NOT NULL CHECK (mode IN ('wildcard', 'hosts')),
+  updated_at TEXT NOT NULL
+);
+INSERT INTO outlet_settings(key, value, updated_at)
+SELECT 'admin_label', 'meerkat', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+FROM outlet_settings WHERE key = 'domain'
+ON CONFLICT(key) DO NOTHING;
+`}, {version: 7, sql: `
+ALTER TABLE connectors ADD COLUMN description TEXT NOT NULL DEFAULT '';
+`}, {version: 8, sql: `
+CREATE TABLE alert_events (
+  id INTEGER PRIMARY KEY,
+  key TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  message TEXT NOT NULL,
+  ref TEXT NOT NULL DEFAULT '',
+  opened_at TEXT NOT NULL,
+  resolved_at TEXT,
+  sent INTEGER NOT NULL DEFAULT 0,
+  error TEXT
+);
+CREATE UNIQUE INDEX alert_events_open_key ON alert_events(key) WHERE resolved_at IS NULL;
+CREATE INDEX alert_events_by_key ON alert_events(key, opened_at);
+`}, {version: 9, sql: `
+ALTER TABLE audit_events ADD COLUMN actor_email TEXT;
+ALTER TABLE audit_events ADD COLUMN source TEXT;
+ALTER TABLE audit_events ADD COLUMN ip TEXT;
+ALTER TABLE audit_events ADD COLUMN user_agent TEXT;
+ALTER TABLE audit_events ADD COLUMN detail TEXT;
+CREATE INDEX audit_events_by_created ON audit_events(created_at);
+CREATE TRIGGER audit_events_no_update BEFORE UPDATE ON audit_events
+BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
+CREATE TRIGGER audit_events_no_delete BEFORE DELETE ON audit_events
+BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
+CREATE TRIGGER audit_events_no_replace BEFORE INSERT ON audit_events
+WHEN EXISTS (SELECT 1 FROM audit_events WHERE id = NEW.id)
+BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
+`}, {version: 10, sql: `
+ALTER TABLE usage_total_hourly ADD COLUMN rate_limited INTEGER NOT NULL DEFAULT 0;
+`}, {version: 11, sql: `
+ALTER TABLE connectors ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
 `}}
 
 func migrate(ctx context.Context, db *sql.DB) error {

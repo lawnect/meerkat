@@ -3,6 +3,7 @@ package outlet
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	// The slim runtime image has no zoneinfo database for time.LoadLocation.
+	_ "time/tzdata"
 
 	"github.com/lawnect/meerkat/internal/control"
 )
@@ -189,4 +192,42 @@ func (s *Store) connectorUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, 200, usage)
+}
+
+// outletUsage returns Outlet-wide request totals grouped into calendar buckets
+// of the requested zone. The client supplies unit-aligned from/to bounds.
+func (s *Store) outletUsage(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "persistence_unavailable")
+		return
+	}
+	query := r.URL.Query()
+	from, fromErr := time.Parse(time.RFC3339, query.Get("from"))
+	to, toErr := time.Parse(time.RFC3339, query.Get("to"))
+	location := time.UTC
+	if zone := query.Get("tz"); zone != "" {
+		var err error
+		// "Local" would expose the server zone instead of an IANA name.
+		if location, err = time.LoadLocation(zone); err != nil || zone == "Local" {
+			fail(w, r, 400, "invalid_usage_range")
+			return
+		}
+	}
+	if fromErr != nil || toErr != nil {
+		fail(w, r, 400, "invalid_usage_range")
+		return
+	}
+	series, err := s.control.OutletUsageSeries(r.Context(), query.Get("unit"), from, to, location)
+	if errors.Is(err, control.ErrInvalidUsageRange) {
+		fail(w, r, 400, "invalid_usage_range")
+		return
+	}
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	reply(w, 200, series)
 }

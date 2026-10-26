@@ -1,34 +1,150 @@
 <script lang="ts">
-  import { statusLabel } from '../api';
+  import * as Alert from '$lib/components/ui/alert/index.js';
+  import { Button } from '$lib/components/ui/button/index.js';
+  import { Badge } from '$lib/components/ui/badge/index.js';
+  import * as Card from '$lib/components/ui/card/index.js';
+  import * as Item from '$lib/components/ui/item/index.js';
+  import * as Tooltip from '$lib/components/ui/tooltip/index.js';
+  import { Add, ArrowRight, ArrowRight12, Checkmark, Warning } from '../icons';
+  import { connectorLabel, statusKind, statusLabel } from '../api';
+  import { translations } from '../i18n.svelte';
+  import { connectorDetailPath, pageHref } from '../navigation';
   import PageHead from '../components/PageHead.svelte';
-  import Panel from '../components/Panel.svelte';
   import ConnectionMap from '../components/ConnectionMap.svelte';
-  import Button from '../components/ui/Button.svelte';
-  import Card from '../components/ui/Card.svelte';
-  import type { DashboardData, PageKey } from '../types';
+  import InfoTooltip from '../components/InfoTooltip.svelte';
+  import RequestTrend from '../components/RequestTrend.svelte';
+  import StatCard from '../components/StatCard.svelte';
+  import TruncateText from '../components/TruncateText.svelte';
+  import TunnelShare from '../components/TunnelShare.svelte';
+  import type { DashboardData, PageKey, UsageSeries } from '../types';
 
-  type ConnectionIssue = { id: string; name: string; details: string[] };
+  type ConnectionIssue = { id: string; name: string; details: string[]; severe: boolean };
+  type Step = { label: string; done: boolean; action: string; view: PageKey; openDetail?: boolean };
 
-  let { data, navigate, onOpenDetail }: { data: DashboardData; navigate: (view: PageKey) => Promise<void>; onOpenDetail: (id: string) => void } = $props();
+  const t = translations({
+    title: 'Overview',
+    description: 'See the status of your tunnels and public addresses.',
+    manageTunnels: 'Tunnels',
+    createTunnel: 'Create a tunnel',
+    nextDomain: 'Enter the Outlet domain in Domains.',
+    nextCreate: 'Create a tunnel.',
+    nextInstall: 'Check the tunnel install command and run it on your server.',
+    nextConnection: 'Check the tunnel connection status.',
+    nextService: 'Register an app address in the tunnel details.',
+    nextRoute: 'Add a public address in the tunnel details.',
+    stepDomain: 'Check the domain',
+    stepDomainAction: 'Change it in Domains',
+    stepTunnel: 'Create a tunnel',
+    stepTunnelAction: 'Create a new tunnel',
+    stepConnect: 'Install and connect the tunnel',
+    stepConnectInstall: 'Check the install command',
+    stepConnectStatus: 'Check the connection status',
+    stepService: 'Register a service',
+    stepServiceAction: 'Enter the service name and internal address',
+    stepRoute: 'Add a public address',
+    stepRouteAction: 'Register a domain',
+    completed: 'Completed',
+    tunnels: 'Tunnels',
+    tunnelsHint: 'Connected tunnels out of all registered tunnels.',
+    tunnelsConnected: (count: number) => `${count} connected now`,
+    services: 'Services',
+    servicesHint: 'Services with an internal address and port.',
+    servicesAcross: (count: number) => `Across ${count} ${count === 1 ? 'tunnel' : 'tunnels'}`,
+    noTunnelsYet: 'No tunnels yet',
+    publicAddresses: 'Public addresses',
+    publicAddressesHint: 'Domains registered, regardless of connection status.',
+    domainCount: (count: number) => `Under ${count} ${count === 1 ? 'domain' : 'domains'}`,
+    noDomain: 'No domain set',
+    attention: 'Needs attention',
+    attentionHint: 'Tunnels, services, or public addresses that need review.',
+    attentionCount: (count: number) => `${count} ${count === 1 ? 'connection' : 'connections'} to review`,
+    allHealthy: 'All connections healthy',
+    gettingStarted: 'Getting started',
+    glossaryBody: 'A tunnel is the connection from your app server to Outlet. In the tunnel details you can register several app addresses and add public addresses to each service.',
+    issuesTitle: 'Connections that need attention',
+    showAll: (count: number) => `Show all (${count})`,
+    tunnelStatus: (status: string) => `Tunnel ${status.toLowerCase()}`,
+    noService: 'No service registered',
+    serviceDisabled: 'Service disabled',
+    servicePort: (status: string) => `Service port ${status.toLowerCase()}`,
+    noRoute: 'No public address',
+    routesNeedReview: (count: number) => `${count} public ${count === 1 ? 'address needs' : 'addresses need'} review`,
+  }, {
+    title: '개요',
+    description: '터널과 공개 주소의 현황을 확인할 수 있습니다.',
+    manageTunnels: '터널 관리',
+    createTunnel: '터널 만들기',
+    nextDomain: '도메인 관리에서 Outlet 도메인을 입력하세요.',
+    nextCreate: '터널을 하나 만드세요.',
+    nextInstall: '터널 설치 명령을 확인하고 서버에서 실행하세요.',
+    nextConnection: '터널 연결 상태를 확인하세요.',
+    nextService: '터널 상세에서 앱 주소를 등록하세요.',
+    nextRoute: '터널 상세에서 공개 주소를 추가하세요.',
+    stepDomain: '도메인 확인',
+    stepDomainAction: '도메인 관리에서 변경',
+    stepTunnel: '터널 만들기',
+    stepTunnelAction: '새 터널 만들기',
+    stepConnect: '터널 설치 및 연결',
+    stepConnectInstall: '설치 명령 확인',
+    stepConnectStatus: '연결 상태 확인',
+    stepService: '연결 서비스 등록',
+    stepServiceAction: '서비스 이름과 내부 주소 입력',
+    stepRoute: '공개 주소 추가',
+    stepRouteAction: '도메인 등록',
+    completed: '완료됨',
+    tunnels: '터널',
+    tunnelsHint: '등록된 터널 중 연결된 터널의 수입니다.',
+    tunnelsConnected: (count: number) => `현재 ${count}개 연결됨`,
+    services: '연결 서비스',
+    servicesHint: '내부 주소와 포트를 등록한 서비스입니다.',
+    servicesAcross: (count: number) => `터널 ${count}개에 등록됨`,
+    noTunnelsYet: '아직 터널이 없습니다',
+    publicAddresses: '공개 주소',
+    publicAddressesHint: '접속 상태와 별개로 등록된 도메인입니다.',
+    domainCount: (count: number) => `도메인 ${count}개에 설정됨`,
+    noDomain: '도메인 미설정',
+    attention: '확인 필요',
+    attentionHint: '확인이 필요한 터널, 서비스, 공개 주소입니다.',
+    attentionCount: (count: number) => `확인할 연결 ${count}개`,
+    allHealthy: '모든 연결이 정상입니다',
+    gettingStarted: '시작하기',
+    glossaryBody: '터널은 앱 서버에서 Outlet으로 이어지는 연결입니다. 터널 상세에서 여러 앱 주소를 등록하고 각 서비스에 공개 주소를 추가할 수 있습니다.',
+    issuesTitle: '확인이 필요한 연결',
+    showAll: (count: number) => `더보기 (${count})`,
+    tunnelStatus: (status: string) => `터널 ${status}`,
+    noService: '연결 서비스 미등록',
+    serviceDisabled: '연결 서비스 사용 안 함',
+    servicePort: (status: string) => `서비스 포트 ${status}`,
+    noRoute: '공개 주소 없음',
+    routesNeedReview: (count: number) => `공개 주소 ${count}개 확인 필요`,
+  });
+
+  let { data, navigate, onOpenDetail }: { data: DashboardData; navigate: (view: PageKey) => Promise<void>; onOpenDetail: (id: string, search?: string) => void } = $props();
+  // 트래픽 카드가 불러온 사용량을 터널별 카드도 함께 씁니다(요청은 한 번).
+  let usage = $state<UsageSeries | null>(null);
+  let usageError = $state('');
   const connected = $derived(data.connectors.filter((connector) => connector.status === 'connected').length);
+  const serviceTunnels = $derived(new Set(data.records.map((record) => record.connector.id)).size);
+  const domainCount = $derived(data.outlet.domains?.length ?? (data.outlet.domain ? 1 : 0));
   const next = $derived(!data.outlet.domain
-    ? '도메인 관리에서 Outlet 도메인을 입력하세요.'
+    ? t().nextDomain
     : data.connectors.length === 0
-      ? '터널을 하나 만드세요.'
+      ? t().nextCreate
       : connected === 0
-        ? data.services.length === 0 ? '터널 설치 명령을 확인하고 서버에서 실행하세요.' : '터널 연결 상태를 확인하세요.'
+        ? data.services.length === 0 ? t().nextInstall : t().nextConnection
         : data.services.length === 0
-          ? '터널 상세에서 앱 주소를 등록하세요.'
+          ? t().nextService
           : data.routes.length === 0
-            ? '터널 상세에서 공개 주소를 추가하세요.'
+            ? t().nextRoute
             : null);
-  const items = $derived([
-    ['도메인 확인', Boolean(data.outlet.domain), '도메인 관리에서 변경', 'domains'],
-    ['터널 만들기', data.connectors.length > 0, '새 터널 만들기', 'connectors'],
-    ['터널 설치 및 연결', connected > 0, data.connectors.some((connector) => connector.status === 'draft') ? '설치 명령 확인' : '연결 상태 확인', 'connectors'],
-    ['연결 서비스 등록', data.services.length > 0, '서비스 이름과 내부 주소 입력', 'connectors', true],
-    ['공개 주소 추가', data.routes.length > 0, '도메인 등록', 'connectors', true],
-  ] as [string, boolean, string, PageKey, boolean?][]);
+  const items = $derived<Step[]>([
+    { label: t().stepDomain, done: Boolean(data.outlet.domain), action: t().stepDomainAction, view: 'domains' },
+    { label: t().stepTunnel, done: data.connectors.length > 0, action: t().stepTunnelAction, view: 'connectors' },
+    { label: t().stepConnect, done: connected > 0, action: data.connectors.some((connector) => connector.status === 'draft') ? t().stepConnectInstall : t().stepConnectStatus, view: 'connectors' },
+    { label: t().stepService, done: data.services.length > 0, action: t().stepServiceAction, view: 'connectors', openDetail: true },
+    { label: t().stepRoute, done: data.routes.length > 0, action: t().stepRouteAction, view: 'connectors', openDetail: true },
+  ]);
+  const currentStep = $derived(items.find((item) => !item.done));
 
   function openOnboardingTarget(view: PageKey, openDetail?: boolean): void {
     if (openDetail) {
@@ -40,119 +156,114 @@
     }
     void navigate(view);
   }
+  // 문제가 많아도 개요가 길어지지 않도록 일부만 보여주고, 나머지는 터널 관리에서 봅니다.
+  const issueLimit = 6;
   const showOnboarding = $derived(Boolean(next) && !(data.outlet.domain && data.routes.length > 0 && data.connectors.some((connector) => connector.status !== 'draft')));
   const connectionIssues = $derived.by((): ConnectionIssue[] => {
     const issues: ConnectionIssue[] = [];
     for (const connector of data.connectors) {
       const record = data.records.find((item) => item.connector.id === connector.id);
       const details: string[] = [];
+      let severe = statusKind(connector.status) === 'bad';
 
-      if (connector.status !== 'connected') details.push(`터널 ${statusLabel(connector.status)}`);
+      if (connector.status !== 'connected') details.push(t().tunnelStatus(statusLabel(connector.status)));
       if (!record) {
-        details.push('연결 서비스 미등록');
+        details.push(t().noService);
       } else {
-        if (!record.service.enabled) details.push('연결 서비스 사용 안 함');
-        else if (record.service.observed_status !== 'connected') details.push(`서비스 포트 ${statusLabel(record.service.observed_status)}`);
+        if (!record.service.enabled) details.push(t().serviceDisabled);
+        else if (record.service.observed_status !== 'connected') {
+          details.push(t().servicePort(statusLabel(record.service.observed_status)));
+          if (statusKind(record.service.observed_status) === 'bad') severe = true;
+        }
 
-        if (!record.routes.length) details.push('공개 주소 없음');
+        if (!record.routes.length) details.push(t().noRoute);
         else {
           const needsReview = record.routes.filter((route) => !route.enabled || Boolean(route.last_error) || route.applied_revision < route.desired_revision).length;
-          if (needsReview) details.push(`공개 주소 ${needsReview}개 확인 필요`);
+          if (needsReview) details.push(t().routesNeedReview(needsReview));
         }
       }
 
-      if (details.length) issues.push({ id: connector.id, name: connector.name, details });
+      if (details.length) issues.push({ id: connector.id, name: connectorLabel(connector), details, severe });
     }
-    return issues;
+    // 끊김·오류처럼 심각한 연결을 먼저 보여줍니다.
+    return issues.sort((a, b) => Number(b.severe) - Number(a.severe));
   });
 </script>
 
-<PageHead kicker="MEERKAT OUTLET" title="오늘의 운영 상태" description={next ?? '터널과 공개 주소의 현황을 확인할 수 있습니다.'}>
-  {#snippet action()}
-    <Button onclick={() => navigate('connectors')}>{data.connectors.length ? '터널 관리' : '터널 만들기'}</Button>
-  {/snippet}
-</PageHead>
+<PageHead title={t().title} />
 
-<div class="dashboard-grid summary-grid">
-  <Card class="summary-card">
-    <div class="stat-label">터널</div>
-    <div class="connector-stats">
-      <div><div class="stat-value">{data.connectors.length}</div><div class="stat-note">등록됨</div></div>
-      <div><div class="stat-value">{connected}</div><div class="stat-note">현재 연결됨</div></div>
-    </div>
-  </Card>
-  <Card class="summary-card"><div class="stat-label">등록된 연결 서비스</div><div class="stat-value">{data.services.length}</div><div class="stat-note">내부 주소와 포트를 등록한 서비스</div></Card>
-  <Card class="summary-card"><div class="stat-label">설정된 공개 주소</div><div class="stat-value">{data.routes.length}</div><div class="stat-note">접속 상태와 별개로 등록된 도메인</div></Card>
-</div>
-
-<ConnectionMap {data} {navigate} {onOpenDetail} />
-
-<style>
-  .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 20px; }
-  .summary-grid :global(.summary-card) { padding: 13px 16px; }
-  .stat-label { color: #6f6a65; font-size: 12px; }
-  .stat-value { margin-top: 3px; font-size: 24px; font-weight: 650; letter-spacing: -.05em; line-height: 1.2; }
-  .stat-note { margin-top: 4px; color: var(--muted); font-size: 11px; }
-  .connector-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 3px; }
-  .connector-stats > div + div { border-left: 1px solid var(--line); padding-left: 14px; }
-  .connector-stats .stat-value { margin-top: 0; }
-  .two-col { grid-template-columns: minmax(0, 1.35fr) minmax(280px, .65fr); }
-  .onboarding-list { display: grid; gap: 0; margin: 4px 0 0; }
-  .onboarding-list :global(.onboarding-item) { display: grid; width: 100%; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 10px; border-bottom: 1px solid var(--line); padding: 9px 0; color: inherit; text-align: left; }
-  .onboarding-list :global(.onboarding-item:last-child) { border-bottom: 0; }
-  .onboarding-number { display: grid; width: 22px; height: 22px; place-items: center; border: 1px solid #aaa99f; border-radius: 50%; color: var(--muted); font-size: 12px; }
-  :global(.onboarding-item.done) .onboarding-number { border-color: var(--green); background: var(--green); color: white; }
-  .onboarding-list strong { display: block; font-size: 13px; }
-  .onboarding-list small { color: var(--muted); }
-  .onboarding-action { color: var(--accent-dark); font-size: 12px; font-weight: 700; }
-  :global(.callout) { border: 0; border-left: 2px solid var(--accent); border-radius: 0 6px 6px 0; padding: 10px 13px; background: #fbf3ed; color: #5f4b42; font-size: 13px; }
-  :global(.callout strong) { display: block; margin-bottom: 2px; color: var(--ink); }
-  :global(.help-panel) { margin-top: 10px; }
-  :global(.help-panel h2) { margin: 0 0 5px; font-size: 17px; }
-  :global(.help-panel p) { margin: 0; color: var(--muted); }
-  .issue-heading { margin: 0 0 9px; font-size: 17px; font-weight: 700; letter-spacing: -.035em; }
-  .issue-list { display: grid; gap: 6px; }
-  .issue-list :global(.issue-card) { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  .issue-copy { display: flex; align-items: start; gap: 10px; min-width: 0; }
-  .issue-dot { flex: none; width: 7px; height: 7px; margin-top: 7px; border-radius: 50%; background: var(--accent); }
-  .issue-copy h3 { margin: 0 0 2px; font-size: 13px; font-weight: 700; }
-  .issue-copy p { margin: 0; color: var(--muted); font-size: 12px; }
-  .issue-list :global(.issue-action) { flex: none; }
-  @media (max-width: 900px) { .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .two-col { grid-template-columns: 1fr; } }
-  @media (max-width: 600px) { .summary-grid { grid-template-columns: 1fr; } .issue-list :global(.issue-card) { align-items: start; flex-direction: column; gap: 8px; } .issue-list :global(.issue-action) { margin-left: 17px; } }
-</style>
-
-{#if showOnboarding}
-  <div class="dashboard-grid two-col">
-    <Panel title="시작하기" description="Meerkat에서 서비스를 공개하는 순서입니다.">
-      <div class="onboarding-list">
-        {#each items as [label, done, action, view, openDetail], i}
-          <Button variant="plain" class={done ? 'onboarding-item done' : 'onboarding-item'} onclick={() => openOnboardingTarget(view, openDetail)}>
-            <span class="onboarding-number">{done ? '✓' : i + 1}</span>
-            <span><strong>{label}</strong><small>{done ? '완료됨' : action}</small></span>
-            <span class="onboarding-action">{done ? '완료' : action}</span>
-          </Button>
-        {/each}
-      </div>
-    </Panel>
-    <div>
-      <Card variant="solid" padding="none" class="callout"><strong>현재 할 일</strong><span>{next}</span></Card>
-      <Card class="help-panel"><h2>용어 안내</h2><p>터널은 앱 서버에서 Outlet으로 이어지는 연결입니다. 터널 상세에서 여러 앱 주소를 등록하고 각 서비스에 공개 주소를 추가할 수 있습니다.</p></Card>
-    </div>
+<div class="grid gap-4">
+  <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+    <StatCard label={t().tunnels} hint={t().tunnelsHint} hintId="stat-tunnels-hint" value={String(data.connectors.length)} sub={data.connectors.length ? t().tunnelsConnected(connected) : t().noTunnelsYet} />
+    <StatCard label={t().services} hint={t().servicesHint} hintId="stat-services-hint" value={String(data.services.length)} sub={t().servicesAcross(serviceTunnels)} />
+    <StatCard label={t().publicAddresses} hint={t().publicAddressesHint} hintId="stat-addresses-hint" value={String(data.routes.length)} sub={domainCount ? t().domainCount(domainCount) : t().noDomain} />
+    <StatCard label={t().attention} hint={t().attentionHint} hintId="stat-attention-hint" value={String(connectionIssues.length)} sub={connectionIssues.length ? t().attentionCount(connectionIssues.length) : t().allHealthy} />
   </div>
-{:else if connectionIssues.length}
-  <section class="connection-alerts" aria-label="연결 상태">
-    <h2 class="issue-heading">확인이 필요한 연결</h2>
-    <div class="issue-list">
-      {#each connectionIssues as issue (issue.id)}
-        <Card as="article" padding="sm" class="issue-card">
-          <div class="issue-copy">
-            <span class="issue-dot" aria-hidden="true"></span>
-            <div><h3>{issue.name}</h3><p>{issue.details.join(' · ')}</p></div>
+
+  {#if showOnboarding}
+    <Card.Root size="sm" role="region" aria-labelledby="getting-started-heading">
+      <Card.Header>
+        <Card.Title id="getting-started-heading" class="flex items-center gap-0.5">{t().gettingStarted}<InfoTooltip id="getting-started-hint" label={t().gettingStarted} description={t().glossaryBody} /></Card.Title>
+      </Card.Header>
+      <Card.Content>
+        <ol class="grid gap-1 lg:grid-cols-5">
+          {#each items as item, index (index)}
+            <li class="flex min-w-0 items-center gap-2" aria-current={item === currentStep ? 'step' : undefined}>
+              <span class={['flex size-6 shrink-0 items-center justify-center text-xs font-medium', item === currentStep ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground']} aria-hidden="true">
+                {#if item.done}<Checkmark class="size-4" />{:else}{index + 1}{/if}
+              </span>
+              <span class={['min-w-0', item === currentStep ? 'font-medium' : item.done && 'text-muted-foreground']}>{item.label}{#if item.done}<span class="sr-only"> ({t().completed})</span>{/if}</span>
+            </li>
+          {/each}
+        </ol>
+        {#if currentStep}
+          <div class="mt-4 flex justify-end">
+            <Tooltip.Root>
+              <Tooltip.Trigger>
+                {#snippet child({ props })}
+                  <Button {...props} class="max-sm:w-full" onclick={() => openOnboardingTarget(currentStep.view, currentStep.openDetail)}>{currentStep.label}<ArrowRight aria-hidden="true" /></Button>
+                {/snippet}
+              </Tooltip.Trigger>
+              <Tooltip.Content>{currentStep.action}</Tooltip.Content>
+            </Tooltip.Root>
           </div>
-          <Button variant="text" size="sm" class="issue-action" onclick={() => onOpenDetail(issue.id)}>터널 보기 <span aria-hidden="true">↗</span></Button>
-        </Card>
-      {/each}
-    </div>
-  </section>
-{/if}
+        {/if}
+      </Card.Content>
+    </Card.Root>
+  {:else if connectionIssues.length}
+    <Card.Root size="sm" aria-labelledby="issues-title">
+      <Card.Header>
+        <Card.Title id="issues-title" class="flex items-center gap-2">{t().issuesTitle}<Badge variant="secondary">{connectionIssues.length}</Badge></Card.Title>
+        {#if connectionIssues.length > issueLimit}
+          <Card.Action>
+            <Button variant="outline" size="sm" href={pageHref('connectors')} onclick={(event) => { event.preventDefault(); void navigate('connectors'); }}>{t().showAll(connectionIssues.length)}<ArrowRight12 aria-hidden="true" /></Button>
+          </Card.Action>
+        {/if}
+      </Card.Header>
+      <Card.Content>
+        <Item.Group class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {#each connectionIssues.slice(0, issueLimit) as issue (issue.id)}
+            <Item.Root variant="outline" size="sm">
+              {#snippet child({ props })}
+                <a {...props} href={connectorDetailPath(issue.id)} onclick={(event) => { event.preventDefault(); onOpenDetail(issue.id); }}>
+                  <Item.Media><Warning class={issue.severe ? 'text-destructive' : 'text-amber-600 dark:text-amber-400'} aria-hidden="true" /></Item.Media>
+                  <Item.Content class="min-w-0">
+                    <Item.Title class="w-full text-sm"><TruncateText text={issue.name} /></Item.Title>
+                    <Item.Description class="w-full"><TruncateText text={issue.details.join(' · ')} /></Item.Description>
+                  </Item.Content>
+                </a>
+              {/snippet}
+            </Item.Root>
+          {/each}
+        </Item.Group>
+      </Card.Content>
+    </Card.Root>
+  {/if}
+
+  <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
+    <RequestTrend bind:series={usage} bind:error={usageError} class="lg:col-span-2" />
+    <TunnelShare series={usage} error={usageError} labels={Object.fromEntries(data.connectors.map((connector) => [connector.id, connectorLabel(connector)]))} {onOpenDetail} />
+  </div>
+
+  <ConnectionMap {data} {navigate} {onOpenDetail} />
+</div>

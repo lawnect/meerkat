@@ -16,7 +16,7 @@ func TestCreateAndListHTTPRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.SetDomain(ctx, "example.com"); err != nil {
+	if _, err := db.SetDomain(ctx, "example.com", ""); err != nil {
 		t.Fatal(err)
 	}
 	connector, err := db.CreateConnector(ctx, "edge-a")
@@ -50,7 +50,7 @@ func TestCreateHTTPRouteRejectsUnsafeHostname(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.SetDomain(ctx, "example.com"); err != nil {
+	if _, err := db.SetDomain(ctx, "example.com", ""); err != nil {
 		t.Fatal(err)
 	}
 	connector, err := db.CreateConnector(ctx, "edge-a")

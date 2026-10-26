@@ -18,18 +18,26 @@ func Handler() http.Handler {
 	files := http.FileServer(http.FS(site))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
-		switch r.URL.Path {
+		// Korean pages use the same routes under /ko.
+		page := r.URL.Path
+		if page == "/ko" || strings.HasPrefix(page, "/ko/") {
+			page = "/" + strings.TrimPrefix(strings.TrimPrefix(page, "/ko"), "/")
+		}
+		switch page {
 		case "/", "/connectors", "/services", "/domains", "/routes", "/diagnostics", "/settings":
 			w.Header().Set("Cache-Control", "no-store")
 			http.ServeFileFS(w, r, site, "index.html")
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/connectors/") {
-			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/connectors/"), "/")
-			if id != "" && !strings.Contains(id, "/") {
-				w.Header().Set("Cache-Control", "no-store")
-				http.ServeFileFS(w, r, site, "index.html")
-				return
+		// Detail pages: /connectors/{id} and /domains/{domain}.
+		for _, prefix := range []string{"/connectors/", "/domains/"} {
+			if strings.HasPrefix(page, prefix) {
+				id := strings.TrimSuffix(strings.TrimPrefix(page, prefix), "/")
+				if id != "" && !strings.Contains(id, "/") {
+					w.Header().Set("Cache-Control", "no-store")
+					http.ServeFileFS(w, r, site, "index.html")
+					return
+				}
 			}
 		}
 		if !strings.HasPrefix(r.URL.Path, "/assets/") {

@@ -1,3 +1,4 @@
+import { translations } from './i18n.svelte';
 import { mockApi } from './mockApi';
 
 export const mockApiEnabled = import.meta.env.VITE_MOCK_API === 'true';
@@ -24,17 +25,30 @@ export async function api<T = Record<string, unknown>>(url: string, options: Req
   return body as T;
 }
 
+// 화면에 보이는 터널 이름: 표시 이름이 있으면 그것을, 없으면 실행 이름을 씁니다. 터널 이름을 보여주는 곳은 모두 이 함수를 씁니다.
+export const connectorLabel = (connector: { name: string; display_name?: string }): string => connector.display_name || connector.name;
+
+const statusLabels = translations({
+  draft: 'Awaiting setup',
+  connected: 'Connected',
+  connecting: 'Connecting',
+  stale: 'Not responding',
+  disconnected: 'Disconnected',
+  unknown: 'Pending check',
+  error: 'Error',
+} as Record<string, string>, {
+  draft: '등록 대기',
+  connected: '연결됨',
+  connecting: '연결 중',
+  stale: '응답 없음',
+  disconnected: '연결 끊김',
+  unknown: '확인 대기',
+  error: '오류',
+});
+
 export function statusLabel(value: string | undefined): string {
-  const labels: Record<string, string> = {
-    draft: '등록 대기',
-    connected: '연결됨',
-    connecting: '연결 중',
-    stale: '응답 없음',
-    disconnected: '연결 끊김',
-    unknown: '확인 대기',
-    error: '오류',
-  };
-  return value ? labels[value] || value : '확인 대기';
+  const labels = statusLabels();
+  return value ? labels[value] || value : labels.unknown;
 }
 
 export function statusKind(value: string | undefined): 'ok' | 'bad' | 'warn' {

@@ -48,3 +48,20 @@ func TestHandlerServesEmbeddedSvelteEntryAndRestrictiveCSP(t *testing.T) {
 		t.Fatalf("non-asset dashboard path status = %d, want 404", other.Code)
 	}
 }
+
+func TestHandlerServesKoreanPagesUnderPrefix(t *testing.T) {
+	for _, path := range []string{"/ko", "/ko/", "/ko/connectors", "/ko/connectors/abc", "/ko/domains", "/ko/domains/example.com", "/domains/example.com", "/ko/diagnostics"} {
+		recorder := httptest.NewRecorder()
+		Handler().ServeHTTP(recorder, httptest.NewRequest("GET", path, nil))
+		if recorder.Code != 200 || !strings.Contains(recorder.Body.String(), "Meerkat Outlet") {
+			t.Fatalf("%s status = %d, want the dashboard entry page", path, recorder.Code)
+		}
+	}
+	for _, path := range []string{"/korea", "/ko/assets/app.js", "/ko/ko", "/ko/connectors/a/b", "/domains/a/b"} {
+		recorder := httptest.NewRecorder()
+		Handler().ServeHTTP(recorder, httptest.NewRequest("GET", path, nil))
+		if recorder.Code != 404 {
+			t.Fatalf("%s status = %d, want 404", path, recorder.Code)
+		}
+	}
+}

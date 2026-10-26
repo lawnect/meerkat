@@ -1,93 +1,144 @@
 <script lang="ts">
-  import type { ServiceRecord } from '../types';
-  import LinkButton from './ui/LinkButton.svelte';
+  import { Badge } from '$lib/components/ui/badge/index.js';
+  import * as Item from '$lib/components/ui/item/index.js';
+  import { Cube, Globe, Open, Open12, PlugConnected } from '../icons';
+  import type { Route, ServiceRecord } from '../types';
+  import { statusLabel } from '../api';
+  import { translations } from '../i18n.svelte';
+  import Status from './Status.svelte';
+  import TruncateText from './TruncateText.svelte';
 
   let { tunnelName, records }: { tunnelName: string; records: ServiceRecord[] } = $props();
+
+  const t = translations({
+    graphLabel: (name: string) => `Request path diagram for tunnel ${name}`,
+    addresses: 'Public addresses',
+    tunnel: 'Tunnel',
+    services: 'Services',
+    noAddresses: 'No public addresses',
+    openAddress: (hostname: string, service: string) => `Open public address ${hostname}, service ${service}`,
+    routeLive: 'Live',
+    routeWaiting: 'Waiting',
+    routeError: 'Error',
+    routeOff: 'Disabled',
+  }, {
+    graphLabel: (name: string) => `${name} 터널의 요청 경로 연결도`,
+    addresses: '공개 주소',
+    tunnel: '터널',
+    services: '연결 서비스',
+    noAddresses: '공개 주소 없음',
+    openAddress: (hostname: string, service: string) => `${hostname} 공개 주소 열기, 연결 서비스 ${service}`,
+    routeLive: '공개 중',
+    routeWaiting: '대기 중',
+    routeError: '오류',
+    routeOff: '사용 안 함',
+  });
+
+  type RouteKind = 'live' | 'waiting' | 'error' | 'off';
+  const kindStatus = { live: 'connected', waiting: 'connecting', error: 'error', off: 'disabled' } as const;
 
   const paths = $derived(records.flatMap((record) => record.routes.map((route) => ({ record, route }))));
   const graphHeight = $derived(Math.max(190, Math.max(paths.length, records.length) * 76 + 64));
   const centerY = $derived(graphHeight / 2);
+  const tunnelStatus = $derived(records[0]?.connector.status);
 
   function nodeY(index: number, count: number): number {
     if (count < 2) return graphHeight / 2;
     return 65 + (index * (graphHeight - 130)) / (count - 1);
   }
 
-  function inboundPath(index: number): string {
-    const y = nodeY(index, paths.length);
-    return `M 310 ${y} C 360 ${y}, 360 ${centerY}, 410 ${centerY}`;
+  // 왼쪽부터 연결 서비스(내부) → 터널 → 공개 주소(외부) 순서로 둡니다.
+  function servicePath(index: number): string {
+    const y = nodeY(index, records.length);
+    return `M 270 ${y} C 340 ${y}, 340 ${centerY}, 410 ${centerY}`;
   }
 
-  function outboundPath(index: number): string {
-    const y = nodeY(index, records.length);
-    return `M 610 ${centerY} C 665 ${centerY}, 665 ${y}, 730 ${y}`;
+  function addressPath(index: number): string {
+    const y = nodeY(index, paths.length);
+    return `M 610 ${centerY} C 650 ${centerY}, 650 ${y}, 690 ${y}`;
+  }
+
+  function routeKind(record: ServiceRecord, route: Route): RouteKind {
+    if (!route.enabled || !record.service.enabled) return 'off';
+    if (route.last_error) return 'error';
+    if (route.applied_revision < route.desired_revision) return 'waiting';
+    if (record.connector.status !== 'connected' || record.service.observed_status !== 'connected') return 'waiting';
+    return 'live';
+  }
+
+  function routeLabel(kind: RouteKind): string {
+    return kind === 'live' ? t().routeLive : kind === 'waiting' ? t().routeWaiting : kind === 'error' ? t().routeError : t().routeOff;
   }
 </script>
 
-<div class="graph-scroll" role="region" aria-label={`${tunnelName} 터널의 요청 경로 연결도`} tabindex="0">
-  <div class="route-graph" style:height={`${graphHeight}px`}>
-    <svg class="graph-lines" viewBox={`0 0 1000 ${graphHeight}`} preserveAspectRatio="none" aria-hidden="true">
-      {#each paths as path, index (path.route.id)}
-        <path d={inboundPath(index)} class:inactive={!path.route.enabled} />
-      {/each}
+<div class="overflow-x-auto border bg-muted/30 outline-none focus-visible:ring-3 focus-visible:ring-ring/50" role="region" aria-label={t().graphLabel(tunnelName)} tabindex="0">
+  <div class="relative mx-auto w-full max-w-[1080px] min-w-[760px]" style:height={`${graphHeight}px`}>
+    <svg class="pointer-events-none absolute inset-0 size-full overflow-visible fill-none stroke-muted-foreground/40" viewBox={`0 0 1000 ${graphHeight}`} preserveAspectRatio="none" aria-hidden="true">
       {#each records as record, index (record.service.id)}
-        <path d={outboundPath(index)} class:inactive={!record.service.enabled} />
+        <path d={servicePath(index)} stroke-width="2" vector-effect="non-scaling-stroke" stroke-dasharray={record.service.enabled ? undefined : '5 5'} />
+      {/each}
+      {#each paths as path, index (path.route.id)}
+        <path d={addressPath(index)} stroke-width="2" vector-effect="non-scaling-stroke" stroke-dasharray={path.route.enabled ? undefined : '5 5'} />
       {/each}
     </svg>
 
-    <div class="graph-column-label address-label">공개 주소</div>
-    <div class="graph-column-label tunnel-label">터널</div>
-    <div class="graph-column-label service-label">연결 서비스</div>
+    <div class="absolute top-4 left-[3%] z-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground"><Cube class="size-4" aria-hidden="true" />{t().services}</div>
+    <div class="absolute top-4 left-[41%] z-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground"><PlugConnected class="size-4" aria-hidden="true" />{t().tunnel}</div>
+    <div class="absolute top-4 left-[69%] z-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground"><Globe class="size-4" aria-hidden="true" />{t().addresses}</div>
 
     {#if paths.length}
       {#each paths as path, index (path.route.id)}
-        <div class="graph-node address-node" class:inactive={!path.route.enabled} style:top={`${nodeY(index, paths.length)}px`}>
-          <LinkButton href={`https://${path.route.hostname}`} target="_blank" rel="noopener noreferrer" variant="text" size="sm" class="graph-address-link" aria-label={`${path.route.hostname} 공개 주소 열기, 연결 서비스 ${path.record.service.name}`}>
-            <strong class="node-address">{path.route.hostname}</strong>
-            <svg class="external-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M9 7h8v8" /></svg>
-          </LinkButton>
+        {@const kind = routeKind(path.record, path.route)}
+        <div class={['absolute left-[69%] z-1 h-15 w-[28%] -translate-y-1/2', !path.route.enabled && 'opacity-55']} style:top={`${nodeY(index, paths.length)}px`}>
+          <Item.Root variant="outline" size="xs" class="h-full flex-nowrap bg-card">
+            {#snippet child({ props })}
+              <a {...props} href={`https://${path.route.hostname}`} target="_blank" rel="noopener noreferrer" aria-label={t().openAddress(path.route.hostname, path.record.service.name)}>
+                <Item.Media variant="icon"><Globe class="text-muted-foreground" aria-hidden="true" /></Item.Media>
+                <Item.Content class="min-w-0">
+                  <Item.Title class="max-w-full min-w-0 text-sm"><TruncateText text={path.route.hostname} /></Item.Title>
+                  <Item.Description>
+                    {#if kind === 'off'}
+                      <Badge variant="outline" class="text-muted-foreground select-none">{routeLabel(kind)}</Badge>
+                    {:else}
+                      <Status label={routeLabel(kind)} value={kindStatus[kind]} />
+                    {/if}
+                  </Item.Description>
+                </Item.Content>
+                <Open12 class="size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
+              </a>
+            {/snippet}
+          </Item.Root>
         </div>
       {/each}
     {:else}
-      <div class="graph-empty-address" style:top={`${centerY}px`}>공개 주소 없음</div>
+      <div class="absolute left-[69%] h-15 w-[28%] -translate-y-1/2" style:top={`${centerY}px`}>
+        <Item.Root variant="outline" size="xs" class="h-full flex-nowrap border-dashed bg-card">
+          <Item.Media variant="icon"><Globe class="text-muted-foreground" aria-hidden="true" /></Item.Media>
+          <Item.Content><Item.Description>{t().noAddresses}</Item.Description></Item.Content>
+        </Item.Root>
+      </div>
     {/if}
 
-    <div class="graph-node tunnel-node" style:top={`${centerY}px`}>
-      <svg class="tunnel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="5" /><path d="M8 8h8M8 13h8M8 17h.01M16 17h.01" /></svg><strong>{tunnelName}</strong>
+    <div class="absolute left-[41%] z-1 h-15 w-[20%] -translate-y-1/2" style:top={`${centerY}px`}>
+      <Item.Root variant="outline" size="xs" class="h-full flex-nowrap border-foreground/40 bg-card">
+        <Item.Media variant="icon"><PlugConnected class="text-muted-foreground" aria-hidden="true" /></Item.Media>
+        <Item.Content class="min-w-0">
+          <Item.Title class="max-w-full min-w-0 text-sm"><TruncateText text={tunnelName} /></Item.Title>
+          {#if tunnelStatus}<Item.Description><Status label={statusLabel(tunnelStatus)} value={tunnelStatus} /></Item.Description>{/if}
+        </Item.Content>
+      </Item.Root>
     </div>
 
     {#each records as record, index (record.service.id)}
-      <div class="graph-node service-node" class:inactive={!record.service.enabled} style:top={`${nodeY(index, records.length)}px`}>
-        <strong>{record.service.name}</strong><code>{record.service.target.host}:{record.service.target.port}</code>
+      <div class={['absolute left-[3%] z-1 h-15 w-[24%] -translate-y-1/2', !record.service.enabled && 'opacity-55']} style:top={`${nodeY(index, records.length)}px`}>
+        <Item.Root variant="outline" size="xs" class="h-full flex-nowrap bg-card">
+          <Item.Media variant="icon"><Cube class="text-muted-foreground" aria-hidden="true" /></Item.Media>
+          <Item.Content class="min-w-0">
+            <Item.Title class="max-w-full min-w-0 text-sm"><TruncateText text={record.service.name} /></Item.Title>
+            <Item.Description><TruncateText text={`${record.service.target.host}:${record.service.target.port}`} class="font-mono" /></Item.Description>
+          </Item.Content>
+        </Item.Root>
       </div>
     {/each}
   </div>
 </div>
-
-<style>
-  .graph-scroll { overflow-x: auto; background-color: #fffdfa; background-image: radial-gradient(#ebe4dd 1px, transparent 1px); background-size: 20px 20px; }
-  .graph-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-  .route-graph { position: relative; width: 100%; min-width: 760px; max-width: 1080px; margin: 0 auto; }
-  .graph-lines { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
-  .graph-lines path { fill: none; stroke: #c8c1bb; stroke-width: 2; vector-effect: non-scaling-stroke; }
-  .graph-lines path.inactive { stroke: #d8d4d0; stroke-dasharray: 5 5; }
-  .graph-column-label { position: absolute; top: 19px; z-index: 1; color: var(--muted); font-size: 11px; font-weight: 700; }
-  .address-label { left: 3%; }
-  .tunnel-label { left: 41%; }
-  .service-label { left: 73%; }
-  .graph-node { position: absolute; z-index: 1; box-sizing: border-box; display: flex; align-items: center; min-width: 0; height: 46px; transform: translateY(-50%); border: 1px solid #d9d3cc; border-radius: 24px; background: #fffdfa; box-shadow: 0 2px 6px rgba(55, 44, 34, .06); }
-  .graph-node.inactive { opacity: .55; }
-  .address-node { left: 3%; width: 28%; }
-  .address-node :global(.graph-address-link) { display: flex; justify-content: space-between; gap: 8px; width: 100%; height: 100%; min-width: 0; overflow: hidden; padding: 0 14px; color: var(--accent-dark); font-size: 12px; font-weight: 650; text-align: left; }
-  .address-node :global(.graph-address-link:hover) { text-decoration: none; }
-  .node-address { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .external-icon { flex: none; width: 16px; height: 16px; }
-  .tunnel-node { left: 41%; width: 20%; gap: 8px; border-color: #d6beb0; padding: 0 14px; background: #fff9f4; }
-  .tunnel-node strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-  .tunnel-icon { flex: none; width: 16px; height: 16px; color: var(--accent-dark); }
-  .service-node { left: 73%; width: 24%; display: grid; align-content: center; justify-items: center; gap: 2px; padding: 0 14px; text-align: center; }
-  .service-node strong, .service-node code { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .service-node strong { font-size: 12px; }
-  .service-node code { color: var(--muted); font-size: 11px; }
-  .graph-empty-address { position: absolute; left: 3%; box-sizing: border-box; display: grid; width: 28%; height: 46px; place-items: center; transform: translateY(-50%); border: 1px dashed #d9d3cc; border-radius: 24px; background: #fffdfa; color: var(--muted); font-size: 12px; }
-</style>

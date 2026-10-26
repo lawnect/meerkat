@@ -1,8 +1,57 @@
 <script lang="ts">
-  import { statusLabel } from '../api';
-  import type { DashboardData, PageKey, Route } from '../types';
-  import Button from './ui/Button.svelte';
-  import Card from './ui/Card.svelte';
+  import { Badge } from '$lib/components/ui/badge/index.js';
+  import { Button } from '$lib/components/ui/button/index.js';
+  import * as Card from '$lib/components/ui/card/index.js';
+  import * as Empty from '$lib/components/ui/empty/index.js';
+  import * as Item from '$lib/components/ui/item/index.js';
+  import { Kbd } from '$lib/components/ui/kbd/index.js';
+  import * as Tooltip from '$lib/components/ui/tooltip/index.js';
+  import { connectorLabel, statusLabel } from '../api';
+  import { translations } from '../i18n.svelte';
+  import { ArrowRight, ArrowRight12, ChevronRight, Cube, Globe, PlugConnected, PlugConnected20, type IconComponent } from '../icons';
+  import { connectorDetailPath, pageHref } from '../navigation';
+  import type { DashboardData, PageKey, Route as RouteRecord } from '../types';
+  import InfoTooltip from './InfoTooltip.svelte';
+  import Status from './Status.svelte';
+  import TruncateText from './TruncateText.svelte';
+
+  const t = translations({
+    title: 'Service connection path',
+    description: 'The path from a public address through a tunnel to a service.',
+    manageTunnels: 'Tunnels',
+    publicAddress: 'Public address',
+    tunnel: 'Tunnel',
+    service: 'Service',
+    noRoute: 'No public address set',
+    routeUnset: 'Not set',
+    viewTunnel: 'View tunnel',
+    disabled: 'Disabled',
+    error: 'Error',
+    applying: 'Applying',
+    applied: 'Applied',
+    showAll: (count: number) => `Show all (${count})`,
+    empty: 'No connections to show yet.',
+    firstService: 'Register your first service',
+    firstTunnel: 'Create your first tunnel',
+  }, {
+    title: '서비스 연결 경로',
+    description: '외부 주소에서 터널을 거쳐 연결 서비스로 이어지는 경로입니다.',
+    manageTunnels: '터널 관리',
+    publicAddress: '외부 주소',
+    tunnel: '터널',
+    service: '연결 서비스',
+    noRoute: '공개 주소 미설정',
+    routeUnset: '미설정',
+    viewTunnel: '터널 보기',
+    disabled: '사용 안 함',
+    error: '오류',
+    applying: '반영 중',
+    applied: '반영됨',
+    showAll: (count: number) => `더보기 (${count})`,
+    empty: '아직 표시할 연결이 없습니다.',
+    firstService: '첫 서비스 등록',
+    firstTunnel: '첫 터널 만들기',
+  });
 
   let { data, navigate, onOpenDetail }: { data: DashboardData; navigate: (view: PageKey) => Promise<void>; onOpenDetail: (id: string) => void } = $props();
 
@@ -15,96 +64,127 @@
     else void navigate('connectors');
   }
 
-  function routeReady(route?: Route): boolean {
-    return Boolean(route?.enabled && route.applied_revision >= route.desired_revision && !route.last_error);
+  // 같은 탭에서 터널 상세로 이동하고, 새 탭 열기 같은 기본 동작은 그대로 둡니다.
+  function openTunnel(event: MouseEvent, id: string): void {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    onOpenDetail(id);
   }
 
-  function routeStatus(route?: Route): string {
-    if (!route) return '미설정';
-    if (!route.enabled) return '사용 안 함';
-    if (route.last_error) return '오류';
-    if (route.applied_revision < route.desired_revision) return '반영 중';
-    return '반영됨';
+  // 같은 탭에서 전체 목록으로 이동하고, 새 탭 열기 같은 기본 동작은 그대로 둡니다.
+  function openAll(event: MouseEvent): void {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    void navigate('connectors');
+  }
+
+  function routeState(route?: RouteRecord): { label: string; value: string } {
+    if (!route) return { label: t().routeUnset, value: 'unknown' };
+    if (!route.enabled) return { label: t().disabled, value: 'disabled' };
+    if (route.last_error) return { label: t().error, value: 'error' };
+    if (route.applied_revision < route.desired_revision) return { label: t().applying, value: 'pending' };
+    return { label: t().applied, value: 'connected' };
   }
 </script>
 
-<section class="connection-section" aria-labelledby="connection-heading">
-  <div class="connection-heading">
-    <div>
-      <p class="section-kicker">CONNECTION MAP</p>
-      <h2 id="connection-heading">서비스 연결 경로</h2>
-      <p>외부 주소에서 터널을 거쳐 연결 서비스로 이어지는 경로입니다.</p>
-    </div>
-    <Button variant="text" size="sm" class="map-link" onclick={() => navigate('connectors')}>터널 관리 <span aria-hidden="true">↗</span></Button>
-  </div>
+{#snippet nodeIcon(Icon: IconComponent, label: string)}
+  <Tooltip.Root>
+    <Tooltip.Trigger>
+      {#snippet child({ props })}
+        <span {...props} class="shrink-0 text-muted-foreground"><Icon class="size-4" aria-hidden="true" /></span>
+      {/snippet}
+    </Tooltip.Trigger>
+    <Tooltip.Content>{label}</Tooltip.Content>
+  </Tooltip.Root>
+{/snippet}
 
-  {#if visible.length}
-    <div class="flow-list">
-      {#each visible as record (record.service.id)}
-        {@const route = record.routes[0]}
-        <Card as="article" padding="none" class="path-card">
-          <div class="path-step">
-            <span class="step-label">외부 주소</span>
-            <div class="step-name">
-              <strong title={route?.hostname || '공개 주소 미설정'}>{route?.hostname || '공개 주소 미설정'}</strong>
-              {#if record.routes.length > 1}<span class="extra-routes">+{record.routes.length - 1}</span>{/if}
-            </div>
-            <span class:active={routeReady(route)} class="step-status"><span class="status-dot" aria-hidden="true"></span>{routeStatus(route)}</span>
-          </div>
-          <span class="path-arrow" aria-hidden="true">→</span>
-          <div class="path-step">
-            <span class="step-label">터널</span>
-            <div class="step-name"><strong title={record.connector.name}>{record.connector.name}</strong></div>
-            <span class:active={record.connector.status === 'connected'} class="step-status"><span class="status-dot" aria-hidden="true"></span>{statusLabel(record.connector.status)}</span>
-          </div>
-          <span class="path-arrow" aria-hidden="true">→</span>
-          <div class="path-step">
-            <span class="step-label">연결 서비스</span>
-            <div class="step-name"><strong title={record.service.name}>{record.service.name}</strong></div>
-            <span class:active={record.service.enabled && record.service.observed_status === 'connected'} class="step-status"><span class="status-dot" aria-hidden="true"></span>{record.service.enabled ? statusLabel(record.service.observed_status) : '사용 안 함'} <span class="target-address">· {record.service.target.host}:{record.service.target.port}</span></span>
-          </div>
-        </Card>
-      {/each}
-    </div>
-    {#if data.records.length > visible.length}<p class="more-records">이 외 {data.records.length - visible.length}개의 연결이 더 있습니다.</p>{/if}
-  {:else}
-    <Card variant="solid" padding="none" class="map-empty">
-      <p>아직 표시할 연결이 없습니다.</p>
-      <Button variant="text" size="sm" onclick={openFirstTunnel}>{hasConnectedTunnel ? '첫 서비스 등록' : '첫 터널 만들기'} <span aria-hidden="true">↗</span></Button>
-    </Card>
-  {/if}
-</section>
+{#snippet flowArrow()}
+  <Item.Media variant="icon" class="hidden text-muted-foreground md:flex"><ArrowRight aria-hidden="true" /></Item.Media>
+{/snippet}
 
-<style>
-  .connection-section { margin: 0 0 20px; }
-  .connection-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
-  .section-kicker { margin: 0 0 5px; color: var(--accent-dark); font-size: 10px; font-weight: 750; letter-spacing: .14em; }
-  .connection-heading h2 { margin: 0 0 3px; font-size: 18px; font-weight: 700; letter-spacing: -.035em; }
-  .connection-heading p:not(.section-kicker) { margin: 0; color: var(--muted); font-size: 12px; }
-  .connection-heading :global(.map-link) { flex: none; }
-  .flow-list { display: grid; gap: 8px; }
-  .flow-list :global(.path-card) { display: grid; grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1fr) 24px minmax(0, 1fr); align-items: center; gap: 10px; padding: 12px 16px; }
-  .path-step { min-width: 0; }
-  .step-label { display: block; margin-bottom: 3px; color: #81766f; font-size: 11px; font-weight: 650; }
-  .step-name { display: flex; align-items: baseline; gap: 7px; min-width: 0; color: var(--ink); font-size: 15px; line-height: 1.35; }
-  .step-name strong { min-width: 0; overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-  .extra-routes { flex: none; color: var(--muted); font-size: 11px; }
-  .step-status { display: flex; align-items: center; gap: 5px; min-width: 0; margin-top: 4px; color: #8a817a; font-size: 11px; }
-  .step-status.active { color: #4d8069; }
-  .status-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-  .target-address { min-width: 0; overflow: hidden; color: #8a817a; text-overflow: ellipsis; white-space: nowrap; }
-  .path-arrow { color: #b49e8d; font-size: 19px; text-align: center; }
-  .more-records { margin: 9px 0 0; color: #82766d; font-size: 11px; text-align: center; }
-  :global(.map-empty) { display: grid; min-height: 84px; align-content: center; justify-items: center; gap: 4px; border: 1px dashed #d4c2b4; padding: 14px; background: transparent; color: #766d65; }
-  :global(.map-empty) p { margin: 0; }
-  @media (max-width: 700px) {
-    .connection-heading { align-items: start; }
-    .flow-list :global(.path-card) { grid-template-columns: 1fr; gap: 4px; padding: 12px 14px; }
-    .path-arrow { padding-left: 2px; font-size: 17px; line-height: 1; text-align: left; transform: rotate(90deg); transform-origin: 9px center; }
-    .path-step { padding: 3px 0; }
-  }
-  @media (max-width: 470px) {
-    .connection-heading { display: block; }
-    .connection-heading :global(.map-link) { margin-top: 7px; }
-  }
-</style>
+{#if visible.length}
+  <Card.Root size="sm" role="region" aria-labelledby="connection-heading">
+    <Card.Header>
+      <Card.Title id="connection-heading" class="flex items-center gap-1">{t().title}<InfoTooltip id="connection-hint" label={t().title} description={t().description} /></Card.Title>
+    </Card.Header>
+    <Card.Content>
+      <Item.Group>
+        {#each visible as record (record.service.id)}
+          {@const route = record.routes[0]}
+          {@const routeInfo = routeState(route)}
+          <Item.Root variant="outline" size="sm" role="listitem" class="relative flex-col items-stretch pe-9 md:flex-row md:flex-nowrap md:items-center md:pe-3 [&_[data-slot=badge]]:cursor-pointer">
+            {#snippet child({ props })}
+              <a {...props} href={connectorDetailPath(record.connector.id)} onclick={(event) => openTunnel(event, record.connector.id)}>
+                <Item.Content class="min-w-0">
+                  <Item.Title class="w-full min-w-0 text-sm">
+                    {@render nodeIcon(Cube, t().service)}
+                    <span class="sr-only">{t().service}: </span>
+                    <TruncateText text={record.service.name} />
+                  </Item.Title>
+                  <Item.Description class="line-clamp-none flex flex-wrap items-center gap-2">
+                    <Status label={record.service.enabled ? statusLabel(record.service.observed_status) : t().disabled} value={record.service.enabled ? record.service.observed_status : 'disabled'} />
+                    <Kbd class="max-w-full truncate font-mono">{record.service.target.host}:{record.service.target.port}</Kbd>
+                  </Item.Description>
+                </Item.Content>
+                {@render flowArrow()}
+
+                <Item.Content class="min-w-0">
+                  <Item.Title class="w-full min-w-0 text-sm">
+                    {@render nodeIcon(PlugConnected, t().tunnel)}
+                    <span class="sr-only">{t().tunnel}: </span>
+                    <TruncateText text={connectorLabel(record.connector)} />
+                  </Item.Title>
+                  <Item.Description class="line-clamp-none flex flex-wrap items-center gap-2"><Status label={statusLabel(record.connector.status)} value={record.connector.status} /></Item.Description>
+                </Item.Content>
+
+                {@render flowArrow()}
+
+                <Item.Content class="min-w-0">
+                  <Item.Title class="w-full min-w-0 text-sm">
+                    {@render nodeIcon(Globe, t().publicAddress)}
+                    <span class="sr-only">{t().publicAddress}: </span>
+                    {#if route}
+                      <TruncateText text={route.hostname} />
+                    {:else}
+                      <span class="truncate text-muted-foreground">{t().noRoute}</span>
+                    {/if}
+                    {#if record.routes.length > 1}
+                      <Tooltip.Root>
+                        <Tooltip.Trigger>
+                          {#snippet child({ props })}
+                            <Badge {...props} variant="secondary" class="cursor-default select-none">+{record.routes.length - 1}</Badge>
+                          {/snippet}
+                        </Tooltip.Trigger>
+                        <Tooltip.Content>{record.routes.slice(1).map((item) => item.hostname).join(', ')}</Tooltip.Content>
+                      </Tooltip.Root>
+                    {/if}
+                  </Item.Title>
+                  <Item.Description class="line-clamp-none flex flex-wrap items-center gap-2"><Status label={routeInfo.label} value={routeInfo.value} /></Item.Description>
+                </Item.Content>
+
+
+                <Item.Actions class="absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground md:static md:translate-y-0"><ChevronRight aria-hidden="true" /></Item.Actions>
+                <span class="sr-only">{t().viewTunnel}</span>
+              </a>
+            {/snippet}
+          </Item.Root>
+        {/each}
+      </Item.Group>
+    </Card.Content>
+    {#if data.records.length > visible.length}
+      <Card.Footer class="justify-end">
+        <Button variant="outline" size="sm" href={pageHref('connectors')} onclick={openAll}>{t().showAll(data.records.length - visible.length)}<ArrowRight12 aria-hidden="true" /></Button>
+      </Card.Footer>
+    {/if}
+  </Card.Root>
+{:else}
+  <Empty.Root class="border border-dashed">
+    <Empty.Header>
+      <Empty.Media variant="icon"><PlugConnected20 class="size-5" aria-hidden="true" /></Empty.Media>
+      <Empty.Title>{t().empty}</Empty.Title>
+    </Empty.Header>
+    <Empty.Content>
+      <Button variant="outline" onclick={openFirstTunnel}>{hasConnectedTunnel ? t().firstService : t().firstTunnel}<ArrowRight aria-hidden="true" /></Button>
+    </Empty.Content>
+  </Empty.Root>
+{/if}

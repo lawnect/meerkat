@@ -125,7 +125,8 @@
 - [ ] Outlet 이중화 및 failover
 - [ ] Connector 다중 Outlet failover
 - [ ] 서비스 설정 변경 시 터널 내 다른 서비스 연결을 유지하는 적용 방식
-- [ ] 서비스별 rate limit과 circuit breaker
+- [x] 공개 요청 rate limit — IP·서브넷·호스트·엔드포인트별 토큰 버킷(관리 화면에서 설정, [API_CONTRACT.md](API_CONTRACT.md) 참고)
+- [ ] 서비스별 circuit breaker
 - [ ] UDP 지원 검토
 - [ ] 선택적 WireGuard 연동 검토
 - [ ] PostgreSQL 등 외부 관리 DB 지원

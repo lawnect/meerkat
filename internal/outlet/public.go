@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/lawnect/meerkat/internal/contract"
 	"github.com/lawnect/meerkat/internal/validation"
 )
 
@@ -38,7 +37,7 @@ func (s *Store) certificateAllowed(ctx context.Context, hostname string) (bool, 
 	if outlet.Domain == "" {
 		return false, nil
 	}
-	if hostname == contract.AdminHostname(outlet.Domain) {
+	if hostname == outlet.AdminHostname {
 		return true, nil
 	}
 	for _, domain := range outlet.Domains {
@@ -56,6 +55,7 @@ func (s *Store) PublicHandler() http.Handler {
 	admin := s.Handler()
 	transport := &http.Transport{Proxy: nil}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(context.WithValue(r.Context(), originKey{}, publicOrigin{ip: forwardedClient(r)}))
 		if r.URL.Path == certificateAskPath && r.Host == "outlet:8080" {
 			if r.Method != http.MethodGet {
 				w.WriteHeader(http.StatusMethodNotAllowed)
@@ -76,12 +76,15 @@ func (s *Store) PublicHandler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
+		if s.limitRequest(w, r, host) {
+			return
+		}
 		outlet, err := s.control.Outlet(r.Context())
 		if err != nil {
 			http.Error(w, "route unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		if host == contract.AdminHostname(outlet.Domain) {
+		if host == outlet.AdminHostname {
 			admin.ServeHTTP(w, r)
 			return
 		}

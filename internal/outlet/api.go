@@ -99,18 +99,31 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/setup/status", s.setupStatus)
 	mux.HandleFunc("POST /api/v1/setup/admin", s.setupAdmin)
 	mux.HandleFunc("POST /api/v1/session", s.login)
+	mux.HandleFunc("POST /api/v1/session/second-factor", s.secondFactor)
 	mux.HandleFunc("DELETE /api/v1/session", s.logout)
+	mux.HandleFunc("GET /api/v1/audit", s.getAudit)
+	mux.HandleFunc("GET /api/v1/security/rate-limit", s.getRateLimit)
+	mux.HandleFunc("PUT /api/v1/security/rate-limit", s.putRateLimit)
+	mux.HandleFunc("GET /api/v1/alerts", s.getAlerts)
+	mux.HandleFunc("PUT /api/v1/alerts/telegram", s.putTelegram)
+	mux.HandleFunc("POST /api/v1/alerts/telegram/test", s.testTelegram)
+	mux.HandleFunc("DELETE /api/v1/alerts/telegram", s.deleteTelegram)
+	mux.HandleFunc("PUT /api/v1/alerts/rules", s.putAlertRules)
+	mux.HandleFunc("PUT /api/v1/security/second-factor", s.putSecondFactor)
 	mux.HandleFunc("GET /api/v1/outlet", s.getOutlet)
 	mux.HandleFunc("POST /api/v1/outlet/domains/{domain}/check-dns", s.checkOutletDomainDNS)
 	mux.HandleFunc("PUT /api/v1/outlet", s.updateOutlet)
 	mux.HandleFunc("POST /api/v1/outlet/domains", s.addOutletDomain)
 	mux.HandleFunc("DELETE /api/v1/outlet/domains/{domain}", s.deleteOutletDomain)
+	mux.HandleFunc("PUT /api/v1/outlet/domains/{domain}/mode", s.updateOutletDomainMode)
 	mux.HandleFunc("PUT /api/v1/outlet/tunnel", s.updateTunnel)
 	mux.HandleFunc("POST /api/v1/outlet/tunnel/check", s.checkTunnel)
 	mux.HandleFunc("GET /api/v1/diagnostics/trace", s.trace)
 	mux.HandleFunc("GET /api/v1/connectors", s.list)
+	mux.HandleFunc("GET /api/v1/usage", s.outletUsage)
 	mux.HandleFunc("GET /api/v1/connectors/{id}/usage", s.connectorUsage)
 	mux.HandleFunc("POST /api/v1/connectors", s.createConnector)
+	mux.HandleFunc("PATCH /api/v1/connectors/{id}", s.updateConnector)
 	mux.HandleFunc("DELETE /api/v1/connectors/{id}", s.deleteConnector)
 	mux.HandleFunc("GET /api/v1/connectors/{id}/services", s.listServices)
 	mux.HandleFunc("POST /api/v1/connectors/{id}/services", s.createService)
@@ -461,7 +474,7 @@ func (s *Store) setupStatus(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	reply(w, 200, map[string]bool{"setup_complete": complete})
+	reply(w, 200, map[string]any{"setup_complete": complete, "version": contract.Version})
 }
 
 func (s *Store) setupAdmin(w http.ResponseWriter, r *http.Request) {
@@ -473,7 +486,7 @@ func (s *Store) setupAdmin(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req, "email", "password") {
 		return
 	}
-	_, err := s.control.Setup(r.Context(), s.config.AdminTokenHash, bearer(r), req.Email, req.Password)
+	admin, err := s.control.Setup(r.Context(), s.config.AdminTokenHash, bearer(r), req.Email, req.Password)
 	if errors.Is(err, control.ErrAlreadySetup) {
 		fail(w, r, 409, "setup_complete")
 		return
@@ -482,30 +495,55 @@ func (s *Store) setupAdmin(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 401, "invalid_setup_credential")
 		return
 	}
+	if !s.auditedEntry(w, r, "setup.admin_create", control.AuditEntry{ActorID: admin.ID, ActorEmail: admin.Email, ResourceType: "admin", ResourceID: admin.ID}) {
+		return
+	}
 	reply(w, 201, map[string]string{"status": "created"})
 }
 
+// login checks the password. A request from the internet then needs the
+// Telegram code when the second factor is on; the local admin port, reached
+// over SSH, never does, so an operator can always get in.
 func (s *Store) login(w http.ResponseWriter, r *http.Request) {
 	if s.control == nil {
 		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	if !s.allowLogin(w, r) {
 		return
 	}
 	var req adminCredentials
 	if !decode(w, r, &req, "email", "password") {
 		return
 	}
-	session, err := s.control.Login(r.Context(), req.Email, req.Password)
+	admin, err := s.control.VerifyCredentials(r.Context(), req.Email, req.Password)
 	if err != nil {
+		s.auditFailure(r, "session.login_failed", control.AuditEntry{ActorEmail: attemptedEmail(req.Email), ResourceType: "admin", ResourceID: "unknown", Detail: map[string]any{"reason": "invalid_credentials"}})
 		fail(w, r, 401, "invalid_credentials")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "meerkat_session", Value: session.Token, Path: "/", Expires: session.ExpiresAt, MaxAge: int(time.Until(session.ExpiresAt).Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
-	reply(w, 201, map[string]any{"admin": session.Admin, "expires_at": session.ExpiresAt})
+	if _, public := requestOrigin(r); public {
+		required, err := s.control.LoginSecondFactor(r.Context())
+		if err != nil {
+			fail(w, r, 503, "persistence_failed")
+			return
+		}
+		if required {
+			s.startSecondFactor(w, r, admin)
+			return
+		}
+	}
+	s.finishLogin(w, r, admin, false)
 }
 
 func (s *Store) logout(w http.ResponseWriter, r *http.Request) {
+	var admin control.Admin
+	var active bool
 	if s.control != nil {
 		if cookie, err := r.Cookie("meerkat_session"); err == nil {
+			var authErr error
+			admin, authErr = s.control.Authenticate(r.Context(), cookie.Value)
+			active = authErr == nil
 			if err := s.control.RevokeSession(r.Context(), cookie.Value); err != nil {
 				fail(w, r, 503, "persistence_failed")
 				return
@@ -513,6 +551,9 @@ func (s *Store) logout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.SetCookie(w, &http.Cookie{Name: "meerkat_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	if active && !s.auditedEntry(w, r, "session.logout", control.AuditEntry{ActorID: admin.ID, ActorEmail: admin.Email, ResourceType: "admin", ResourceID: admin.ID}) {
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -541,15 +582,19 @@ type outletTunnel struct {
 type outletResponse struct {
 	control.Outlet
 	Tunnel outletTunnel `json:"tunnel"`
+	// Version is the Outlet's software version, also shown on the login page.
+	Version string `json:"version"`
 }
 
 // tunnel resolves the endpoint Connectors dial: the administrator's setting,
-// then outlet.json, then the primary domain on the rathole listen port.
-func (s *Store) tunnel(ctx context.Context, domain string) (outletTunnel, error) {
+// then outlet.json, then the management host on the rathole listen port. The
+// management host already points at the Outlet for the Connector API, so the
+// default needs no extra DNS record and leaves the domain root free.
+func (s *Store) tunnel(ctx context.Context, adminHostname string) (outletTunnel, error) {
 	tunnel := outletTunnel{DefaultAddress: s.config.TunnelRemoteAddress}
-	if tunnel.DefaultAddress == "" && domain != "" {
+	if tunnel.DefaultAddress == "" && adminHostname != "" {
 		if _, port, err := net.SplitHostPort(s.config.TunnelListenAddress); err == nil {
-			tunnel.DefaultAddress = net.JoinHostPort(domain, port)
+			tunnel.DefaultAddress = net.JoinHostPort(adminHostname, port)
 		}
 	}
 	custom, err := s.control.TunnelAddress(ctx)
@@ -564,12 +609,12 @@ func (s *Store) tunnel(ctx context.Context, domain string) (outletTunnel, error)
 }
 
 func (s *Store) replyOutlet(w http.ResponseWriter, r *http.Request, status int, outlet control.Outlet) {
-	tunnel, err := s.tunnel(r.Context(), outlet.Domain)
+	tunnel, err := s.tunnel(r.Context(), outlet.AdminHostname)
 	if err != nil {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	reply(w, status, outletResponse{outlet, tunnel})
+	reply(w, status, outletResponse{Outlet: outlet, Tunnel: tunnel, Version: contract.Version})
 }
 
 type dnsRecordCheck struct {
@@ -608,11 +653,10 @@ func (s *Store) checkOutletDomainDNS(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 404, "domain_not_found")
 		return
 	}
-	// Query a fresh subdomain to test whether the wildcard record is active.
-	probeLabel := strings.ToLower(strings.NewReplacer("_", "a").Replace(Token()[:12]))
-	hostnames := []string{domain, "check-" + probeLabel + "." + domain}
-	if domain == outlet.Domain {
-		hostnames = append(hostnames, contract.AdminHostname(domain))
+	hostnames, err := s.dnsHostnames(r.Context(), outlet, domain)
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
 	}
 	result := domainDNSCheck{CheckedAt: time.Now().UTC(), Records: make([]dnsRecordCheck, 0, len(hostnames))}
 	resolver := net.DefaultResolver
@@ -633,8 +677,53 @@ func (s *Store) checkOutletDomainDNS(w http.ResponseWriter, r *http.Request) {
 	reply(w, http.StatusOK, result)
 }
 
+// dnsHostnames lists the names that must resolve to the Outlet for a domain:
+// the management host on the primary domain, a fresh probe name in wildcard
+// mode or every public address in hosts mode, and the tunnel host when it
+// belongs to this domain. The domain root is checked only when it is the
+// tunnel host, because it may serve another site.
+func (s *Store) dnsHostnames(ctx context.Context, outlet control.Outlet, domain string) ([]string, error) {
+	hostnames := []string{}
+	add := func(hostname string) {
+		for _, existing := range hostnames {
+			if existing == hostname {
+				return
+			}
+		}
+		hostnames = append(hostnames, hostname)
+	}
+	if domain == outlet.Domain && outlet.AdminHostname != "" {
+		add(outlet.AdminHostname)
+	}
+	if outlet.Modes[domain] == control.DomainHosts {
+		routes, err := s.control.DomainRouteHostnames(ctx, domain)
+		if err != nil {
+			return nil, err
+		}
+		for _, hostname := range routes {
+			add(hostname)
+		}
+	} else {
+		// Query a fresh subdomain to test whether the wildcard record is active.
+		add("check-" + strings.ToLower(strings.NewReplacer("_", "a", "-", "a").Replace(Token()[:12])) + "." + domain)
+	}
+	tunnel, err := s.tunnel(ctx, outlet.AdminHostname)
+	if err != nil {
+		return nil, err
+	}
+	if host, _, splitErr := net.SplitHostPort(tunnel.Address); splitErr == nil && (host == domain || strings.HasSuffix(host, "."+domain)) {
+		add(host)
+	}
+	return hostnames, nil
+}
+
 type outletRequest struct {
 	Domain string `json:"domain"`
+	Mode   string `json:"mode,omitempty"`
+}
+
+type domainModeRequest struct {
+	Mode string `json:"mode"`
 }
 
 func (s *Store) updateOutlet(w http.ResponseWriter, r *http.Request) {
@@ -649,9 +738,18 @@ func (s *Store) updateOutlet(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req, "domain") {
 		return
 	}
-	outlet, err := s.control.SetDomain(r.Context(), req.Domain)
+	previous, err := s.control.Outlet(r.Context())
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	outlet, err := s.control.SetDomain(r.Context(), req.Domain, req.Mode)
 	if errors.Is(err, control.ErrInvalidDomain) {
 		fail(w, r, 400, "invalid_domain")
+		return
+	}
+	if errors.Is(err, control.ErrInvalidDomainMode) {
+		fail(w, r, 400, "invalid_domain_mode")
 		return
 	}
 	if errors.Is(err, control.ErrDomainHasRoutes) {
@@ -666,13 +764,25 @@ func (s *Store) updateOutlet(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
+	// The management host follows the primary domain; so do its saved limits.
+	err = s.control.RenameRateLimitHost(r.Context(), previous.AdminHostname, outlet.AdminHostname, s.now())
+	if err == nil {
+		err = s.reloadRateLimit(r.Context())
+	}
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	if !s.audited(w, r, "domain.set", "domain", req.Domain, map[string]any{"mode": outlet.Modes[req.Domain]}) {
+		return
+	}
 	if err := s.reconcileProxy(r.Context()); err != nil {
 		fail(w, r, 503, "proxy_reconcile_failed")
 		return
 	}
 	// A default tunnel address follows the primary domain.
 	s.mu.Lock()
-	tunnel, err := s.tunnel(r.Context(), outlet.Domain)
+	tunnel, err := s.tunnel(r.Context(), outlet.AdminHostname)
 	if err == nil {
 		err = s.retargetTunnels(tunnel.Address)
 	}
@@ -681,7 +791,7 @@ func (s *Store) updateOutlet(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	reply(w, 200, outletResponse{outlet, tunnel})
+	reply(w, 200, outletResponse{Outlet: outlet, Tunnel: tunnel, Version: contract.Version})
 }
 
 func (s *Store) addOutletDomain(w http.ResponseWriter, r *http.Request) {
@@ -696,9 +806,13 @@ func (s *Store) addOutletDomain(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req, "domain") {
 		return
 	}
-	outlet, err := s.control.AddDomain(r.Context(), req.Domain)
+	outlet, err := s.control.AddDomain(r.Context(), req.Domain, req.Mode)
 	if errors.Is(err, control.ErrInvalidDomain) {
 		fail(w, r, 400, "invalid_domain")
+		return
+	}
+	if errors.Is(err, control.ErrInvalidDomainMode) {
+		fail(w, r, 400, "invalid_domain_mode")
 		return
 	}
 	if errors.Is(err, control.ErrDomainExists) {
@@ -709,11 +823,47 @@ func (s *Store) addOutletDomain(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
+	if !s.audited(w, r, "domain.add", "domain", req.Domain, map[string]any{"mode": outlet.Modes[req.Domain]}) {
+		return
+	}
 	if err := s.reconcileProxy(r.Context()); err != nil {
 		fail(w, r, 503, "proxy_reconcile_failed")
 		return
 	}
 	s.replyOutlet(w, r, 201, outlet)
+}
+
+// updateOutletDomainMode switches a domain between one wildcard record and
+// per-host records. It changes DNS guidance and checks only; routing is the same.
+func (s *Store) updateOutletDomainMode(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	var req domainModeRequest
+	if !decode(w, r, &req, "mode") {
+		return
+	}
+	outlet, err := s.control.SetDomainMode(r.Context(), r.PathValue("domain"), req.Mode)
+	if errors.Is(err, control.ErrInvalidDomainMode) {
+		fail(w, r, 400, "invalid_domain_mode")
+		return
+	}
+	if errors.Is(err, control.ErrDomainNotFound) {
+		fail(w, r, 404, "domain_not_found")
+		return
+	}
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	if !s.audited(w, r, "domain.mode", "domain", r.PathValue("domain"), map[string]any{"mode": req.Mode}) {
+		return
+	}
+	s.replyOutlet(w, r, 200, outlet)
 }
 
 func (s *Store) deleteOutletDomain(w http.ResponseWriter, r *http.Request) {
@@ -739,6 +889,9 @@ func (s *Store) deleteOutletDomain(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	if !s.audited(w, r, "domain.remove", "domain", r.PathValue("domain"), nil) {
 		return
 	}
 	if err := s.reconcileProxy(r.Context()); err != nil {
@@ -836,7 +989,7 @@ func (s *Store) updateTunnel(w http.ResponseWriter, r *http.Request) {
 	outlet, err := s.control.Outlet(r.Context())
 	var current outletTunnel
 	if err == nil {
-		current, err = s.tunnel(r.Context(), outlet.Domain)
+		current, err = s.tunnel(r.Context(), outlet.AdminHostname)
 	}
 	if err != nil {
 		fail(w, r, 503, "persistence_failed")
@@ -855,7 +1008,7 @@ func (s *Store) updateTunnel(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	tunnel, err := s.tunnel(r.Context(), outlet.Domain)
+	tunnel, err := s.tunnel(r.Context(), outlet.AdminHostname)
 	if err == nil {
 		err = s.retargetTunnels(tunnel.Address)
 	}
@@ -869,7 +1022,10 @@ func (s *Store) updateTunnel(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	reply(w, 200, outletResponse{outlet, tunnel})
+	if !s.audited(w, r, "tunnel.update", "outlet", "tunnel", map[string]any{"address": address}) {
+		return
+	}
+	reply(w, 200, outletResponse{Outlet: outlet, Tunnel: tunnel, Version: contract.Version})
 }
 
 type tunnelDial struct {
@@ -908,7 +1064,7 @@ func (s *Store) checkTunnel(w http.ResponseWriter, r *http.Request) {
 		outlet, err := s.control.Outlet(r.Context())
 		var tunnel outletTunnel
 		if err == nil {
-			tunnel, err = s.tunnel(r.Context(), outlet.Domain)
+			tunnel, err = s.tunnel(r.Context(), outlet.AdminHostname)
 		}
 		if err != nil {
 			fail(w, r, 503, "persistence_failed")
@@ -1156,7 +1312,7 @@ func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
 	outlet, err := s.control.Outlet(r.Context())
 	var tunnel outletTunnel
 	if err == nil {
-		tunnel, err = s.tunnel(r.Context(), outlet.Domain)
+		tunnel, err = s.tunnel(r.Context(), outlet.AdminHostname)
 	}
 	if err != nil {
 		s.mu.Unlock()
@@ -1213,6 +1369,13 @@ func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Unlock()
+	action := "connector.token_issue"
+	if r.URL.Query().Get("reset") == "true" {
+		action = "connector.token_reset"
+	}
+	if !s.audited(w, r, action, "connector", id, map[string]any{"name": name}) {
+		return
+	}
 	if err := s.reconcileTunnel(); err != nil {
 		fail(w, r, 503, "tunnel_reconcile_failed")
 		return
@@ -1271,7 +1434,67 @@ func (s *Store) probePortUsed(port int, extra map[string]string) bool {
 }
 
 type connectorRequest struct {
-	Name string `json:"name"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// connectorUpdateRequest changes dashboard-only fields; omitted fields stay.
+type connectorUpdateRequest struct {
+	Description *string `json:"description,omitempty"`
+	DisplayName *string `json:"display_name,omitempty"`
+}
+
+// updateConnector changes the administrator's note on a Connector. The note
+// is never sent to the Connector itself.
+func (s *Store) updateConnector(w http.ResponseWriter, r *http.Request) {
+	if !s.admin(w, r) {
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	var req connectorUpdateRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.Description == nil && req.DisplayName == nil {
+		fail(w, r, 400, "invalid_request")
+		return
+	}
+	id := r.PathValue("id")
+	result := map[string]string{"id": id}
+	if req.DisplayName != nil {
+		name, err := s.control.SetConnectorDisplayName(r.Context(), id, *req.DisplayName)
+		if !s.connectorUpdateOK(w, r, err) || !s.audited(w, r, "connector.rename", "connector", id, map[string]any{"display_name": name}) {
+			return
+		}
+		result["display_name"] = name
+	}
+	if req.Description != nil {
+		description, err := s.control.SetConnectorDescription(r.Context(), id, *req.Description)
+		if !s.connectorUpdateOK(w, r, err) || !s.audited(w, r, "connector.describe", "connector", id, nil) {
+			return
+		}
+		result["description"] = description
+	}
+	reply(w, 200, result)
+}
+
+func (s *Store) connectorUpdateOK(w http.ResponseWriter, r *http.Request, err error) bool {
+	switch {
+	case errors.Is(err, control.ErrInvalidDescription):
+		fail(w, r, 400, "invalid_description")
+	case errors.Is(err, control.ErrInvalidDisplayName):
+		fail(w, r, 400, "invalid_display_name")
+	case errors.Is(err, control.ErrConnectorNotFound):
+		fail(w, r, 404, "connector_not_found")
+	case err != nil:
+		fail(w, r, 503, "persistence_failed")
+	default:
+		return true
+	}
+	return false
 }
 
 func (s *Store) createConnector(w http.ResponseWriter, r *http.Request) {
@@ -1286,13 +1509,20 @@ func (s *Store) createConnector(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req, "name") {
 		return
 	}
-	connector, err := s.control.CreateConnector(r.Context(), req.Name)
+	connector, err := s.control.CreateDescribedConnector(r.Context(), req.Name, req.Description)
+	if errors.Is(err, control.ErrInvalidDescription) {
+		fail(w, r, 400, "invalid_description")
+		return
+	}
 	if errors.Is(err, control.ErrConnectorExists) {
 		fail(w, r, 409, "connector_name_taken")
 		return
 	}
 	if err != nil {
 		fail(w, r, 400, "invalid_connector")
+		return
+	}
+	if !s.audited(w, r, "connector.create", "connector", connector.ID, map[string]any{"name": connector.Name}) {
 		return
 	}
 	reply(w, 201, connector)
@@ -1316,6 +1546,7 @@ func (s *Store) deleteConnector(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 404, "connector_not_found")
 		return
 	}
+	name := s.connectorName(r.Context(), id)
 	if err := s.removeManaged(id); err != nil {
 		fail(w, r, 503, "persistence_failed")
 		return
@@ -1334,6 +1565,9 @@ func (s *Store) deleteConnector(w http.ResponseWriter, r *http.Request) {
 		} else {
 			fail(w, r, 503, "persistence_failed")
 		}
+		return
+	}
+	if !s.audited(w, r, "connector.delete", "connector", id, map[string]any{"name": name}) {
 		return
 	}
 	if err := s.reconcileProxy(r.Context()); err != nil {
@@ -1409,12 +1643,15 @@ func (s *Store) createService(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
+	if !s.audited(w, r, "service.create", "service", service.ID, map[string]any{"connector_id": r.PathValue("id"), "name": req.Name, "protocol": req.Protocol, "target": req.Target}) {
+		return
+	}
 	s.mu.Lock()
 	if record, ok := s.managed[r.PathValue("id")]; ok {
 		prior := record.Configuration.ActiveServices()
 		remoteAddress := ""
 		if outlet, outletErr := s.control.Outlet(r.Context()); outletErr == nil {
-			if tunnel, tunnelErr := s.tunnel(r.Context(), outlet.Domain); tunnelErr == nil {
+			if tunnel, tunnelErr := s.tunnel(r.Context(), outlet.AdminHostname); tunnelErr == nil {
 				remoteAddress = tunnel.Address
 			}
 		}
@@ -1511,6 +1748,11 @@ func (s *Store) updateServiceTarget(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if err := s.record(r, control.AuditEntry{Action: "service.update", ResourceType: "service", ResourceID: serviceID, Detail: map[string]any{"connector_id": id, "target": req.Target}}); err != nil {
+		s.mu.Unlock()
+		s.auditError(w, r, "service.update", err)
+		return
+	}
 	if changed {
 		services[index].Target = req.Target
 		record.Configuration.ServiceID, record.Configuration.Target, record.Configuration.Tunnel = "", contract.Target{}, contract.Tunnel{}
@@ -1554,6 +1796,9 @@ func (s *Store) deleteService(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		fail(w, r, 503, "persistence_failed")
 	default:
+		if !s.audited(w, r, "service.delete", "service", r.PathValue("service_id"), map[string]any{"connector_id": r.PathValue("id")}) {
+			return
+		}
 		s.mu.Lock()
 		if record, ok := s.managed[r.PathValue("id")]; ok {
 			remaining := []contract.ServiceConfiguration{}
@@ -1639,6 +1884,9 @@ func (s *Store) createHTTPRoute(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
+	if !s.audited(w, r, "route.create", "route", route.ID, map[string]any{"service_id": r.PathValue("id"), "hostname": route.Hostname}) {
+		return
+	}
 	if err := s.reconcileProxy(r.Context()); err != nil {
 		fail(w, r, 503, "proxy_reconcile_failed")
 		return
@@ -1654,6 +1902,7 @@ func (s *Store) deleteHTTPRoute(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "control_database_unavailable")
 		return
 	}
+	hostname := s.routeHostname(r.Context(), r.PathValue("id"), r.PathValue("route_id"))
 	err := s.control.DeleteHTTPRoute(r.Context(), r.PathValue("id"), r.PathValue("route_id"))
 	if errors.Is(err, control.ErrRouteNotFound) {
 		fail(w, r, 404, "route_not_found")
@@ -1661,6 +1910,9 @@ func (s *Store) deleteHTTPRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	if !s.audited(w, r, "route.delete", "route", r.PathValue("route_id"), map[string]any{"service_id": r.PathValue("id"), "hostname": hostname}) {
 		return
 	}
 	if err := s.reconcileProxy(r.Context()); err != nil {

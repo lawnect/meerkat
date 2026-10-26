@@ -1,4 +1,4 @@
-export type PageKey = 'overview' | 'connectors' | 'domains' | 'diagnostics';
+export type PageKey = 'overview' | 'connectors' | 'domains' | 'diagnostics' | 'settings';
 export type AuthMode = 'loading' | 'setup' | 'login' | 'unavailable' | 'dashboard';
 
 export interface OutletTunnel {
@@ -7,9 +7,18 @@ export interface OutletTunnel {
   custom: boolean;
 }
 
+// wildcard: *.도메인 레코드 하나로 모든 하위 주소를 Outlet으로 보냅니다.
+// hosts: 관리 주소와 공개 주소마다 DNS 레코드를 따로 만듭니다(루트나 다른 하위 주소는 다른 서버에 둘 수 있습니다).
+export type DomainMode = 'wildcard' | 'hosts';
+
 export interface Outlet {
   domain?: string;
   domains?: string[];
+  modes?: Record<string, DomainMode>;
+  // 관리 화면과 Connector API 주소. 대표 도메인을 처음 등록할 때 정한 8글자 이름을 씁니다.
+  admin_hostname?: string;
+  // Outlet 프로그램 버전.
+  version?: string;
   tunnel?: OutletTunnel;
 }
 
@@ -28,7 +37,12 @@ export interface DomainDNSCheck {
 
 export interface Connector {
   id: string;
+  // 설치 명령과 컨테이너 이름에 쓰는 바꿀 수 없는 이름.
   name: string;
+  // 화면에 보여줄 이름(최대 64자). 비어 있으면 name을 씁니다.
+  display_name?: string;
+  // 관리자가 적어 두는 메모. 화면에만 쓰입니다.
+  description?: string;
   status: string;
   created_at: string;
   last_seen?: string;
@@ -112,4 +126,95 @@ export interface TraceSnapshot {
     cloudflare_colo?: string;
     cloudflare_country?: string;
   };
+}
+
+export type UsageUnit = 'hour' | 'day' | 'month' | 'year';
+
+export interface UsageBucket {
+  start: string;
+  requests: number;
+  request_bytes: number;
+  response_bytes: number;
+  error_responses: number;
+}
+
+export interface UsageSeries {
+  unit: UsageUnit;
+  updated_at?: string;
+  buckets: UsageBucket[];
+  // 같은 기간의 터널별 합계. 처리 건수가 많은 순입니다.
+  connectors: Array<{
+    connector_id: string;
+    name: string;
+    requests: number;
+    request_bytes: number;
+    response_bytes: number;
+    error_responses: number;
+  }>;
+}
+
+// 텔레그램 알림과 로그인 2단계 인증 설정(GET /api/v1/alerts).
+export interface AlertRules {
+  tunnel_down: { enabled: boolean; after_minutes: number };
+  route_error: { enabled: boolean };
+  dns_failure: { enabled: boolean };
+  error_spike: { enabled: boolean; threshold_percent: number; min_requests: number };
+  login: { enabled: boolean };
+}
+
+export interface AlertEvent {
+  id: number;
+  kind: keyof AlertRules | string;
+  subject: string;
+  message: string;
+  opened_at: string;
+  resolved_at?: string | null;
+  sent: boolean;
+  error?: string;
+}
+
+export interface AlertSettings {
+  telegram: { configured: boolean; enabled: boolean; chat_id: string; token_hint: string; verified_at?: string | null };
+  rules: AlertRules;
+  events: AlertEvent[];
+  login_second_factor: boolean;
+}
+
+// 감사 로그(GET /api/v1/audit). 기록은 지울 수 없습니다.
+export interface AuditEvent {
+  id: string;
+  created_at: string;
+  actor_email?: string | null;
+  action: string;
+  resource_type: string;
+  resource_id: string;
+  source: 'public' | 'local' | string;
+  ip?: string | null;
+  user_agent?: string | null;
+  detail?: string | null;
+}
+
+export interface AuditPage {
+  events: AuditEvent[];
+  total: number;
+}
+
+// 요청 제한(GET/PUT /api/v1/security/rate-limit). rps와 burst가 0이면 그 제한은 꺼집니다.
+export interface RateBucket {
+  rps: number;
+  burst: number;
+}
+
+export interface RateEndpointRule extends RateBucket {
+  host: string;
+  path_prefix: string;
+  per: 'total' | 'ip';
+}
+
+export interface RateLimitSettings {
+  enabled: boolean;
+  per_ip: RateBucket;
+  per_subnet: RateBucket;
+  per_address: RateBucket;
+  endpoints: RateEndpointRule[];
 }

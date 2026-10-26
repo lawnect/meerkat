@@ -212,6 +212,55 @@
         }
       }
     },
+    "/api/v1/usage": {
+      "get": {
+        "operationId": "getOutletUsage",
+        "summary": "Outlet-wide request usage grouped into hour, day, month or year buckets",
+        "description": "Sums the Outlet-wide hourly totals, which are kept for 10 years, into calendar buckets of the requested time zone. Buckets cover [from, to) and are aligned to the unit in tz; a from that is not on a boundary is aligned down. Every bucket in the range is returned, with zeros when nothing was recorded. Hour buckets are one elapsed hour long, and day, month and year buckets follow the calendar, so a daylight-saving day can be 23 or 25 hours.",
+        "security": [{ "adminToken": [] }],
+        "parameters": [
+          { "name": "unit", "in": "query", "required": true, "schema": { "type": "string", "enum": ["hour", "day", "month", "year"] } },
+          { "name": "from", "in": "query", "required": true, "description": "Inclusive start, RFC 3339", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "to", "in": "query", "required": true, "description": "Exclusive end, RFC 3339; must be after from", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "tz", "in": "query", "required": false, "description": "IANA time zone used to align buckets", "schema": { "type": "string", "default": "UTC", "example": "Asia/Seoul" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "One entry per bucket of requests, estimated incoming bytes, response body bytes, and HTTP 5xx responses",
+            "content": { "application/json": { "schema": {
+              "type": "object",
+              "required": ["unit", "buckets", "connectors"],
+              "properties": {
+                "unit": { "type": "string", "enum": ["hour", "day", "month", "year"] },
+                "updated_at": { "type": "string", "format": "date-time", "description": "Last collection time; omitted before the first collection" },
+                "buckets": { "type": "array", "maxItems": 1000, "items": { "type": "object", "required": ["start", "requests", "request_bytes", "response_bytes", "error_responses", "rate_limited"], "properties": {
+                  "start": { "type": "string", "format": "date-time", "description": "Bucket start in the requested time zone", "example": "2026-10-01T00:00:00+09:00" },
+                  "requests": { "type": "integer", "format": "int64" },
+                  "request_bytes": { "type": "integer", "format": "int64" },
+                  "response_bytes": { "type": "integer", "format": "int64" },
+                  "error_responses": { "type": "integer", "format": "int64" },
+                  "rate_limited": { "type": "integer", "format": "int64", "description": "Requests the Outlet rejected with 429" }
+                } } },
+                "connectors": { "type": "array", "description": "Totals per tunnel over the whole range, busiest first; tunnels without requests are left out. Built from per-route hours, which are kept for 30 days.", "items": { "type": "object", "required": ["connector_id", "name", "requests", "request_bytes", "response_bytes", "error_responses"], "properties": {
+                  "connector_id": { "type": "string" },
+                  "name": { "type": "string" },
+                  "requests": { "type": "integer", "format": "int64" },
+                  "request_bytes": { "type": "integer", "format": "int64" },
+                  "response_bytes": { "type": "integer", "format": "int64" },
+                  "error_responses": { "type": "integer", "format": "int64" }
+                } } }
+              }
+            } } }
+          },
+          "400": {
+            "description": "invalid_usage_range: unknown unit or time zone, unparsable or non-increasing from and to, or more than 1000 buckets",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/PersistenceFailure" }
+        }
+      }
+    },
     "/api/v1/connectors/{id}/usage": {
       "get": {
         "operationId": "getConnectorUsage",

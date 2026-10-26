@@ -143,13 +143,20 @@ func (d *Database) Setup(ctx context.Context, bootstrapCodeHash, code, email, pa
 	return Admin{ID: id, Email: email}, nil
 }
 
-func (d *Database) Login(ctx context.Context, email, password string) (Session, error) {
+// VerifyCredentials checks an email and password without starting a session,
+// so a second factor can run between the two steps.
+func (d *Database) VerifyCredentials(ctx context.Context, email, password string) (Admin, error) {
 	var admin Admin
 	var passwordHash string
 	err := d.db.QueryRowContext(ctx, "SELECT id, email, password_hash FROM admins WHERE email = ?", email).Scan(&admin.ID, &admin.Email, &passwordHash)
 	if err != nil || !verifyPassword(password, passwordHash) {
-		return Session{}, ErrInvalidCredentials
+		return Admin{}, ErrInvalidCredentials
 	}
+	return admin, nil
+}
+
+// StartSession issues a session for an administrator who has passed every login step.
+func (d *Database) StartSession(ctx context.Context, admin Admin) (Session, error) {
 	token, err := randomToken()
 	if err != nil {
 		return Session{}, err
@@ -167,6 +174,14 @@ func (d *Database) Login(ctx context.Context, email, password string) (Session, 
 		return Session{}, err
 	}
 	return Session{Token: token, ExpiresAt: expiresAt, Admin: admin}, nil
+}
+
+func (d *Database) Login(ctx context.Context, email, password string) (Session, error) {
+	admin, err := d.VerifyCredentials(ctx, email, password)
+	if err != nil {
+		return Session{}, err
+	}
+	return d.StartSession(ctx, admin)
 }
 
 func (d *Database) Authenticate(ctx context.Context, token string) (Admin, error) {

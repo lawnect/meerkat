@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -86,17 +87,22 @@ func TestTunnelAddressSettingRetargetsConnectors(t *testing.T) {
 	f.cfg.TunnelServerPrivateKey = base64.StdEncoding.EncodeToString(make([]byte, 32))
 	store, _ := controlStore(t, f)
 	h := store.Handler()
+	// The default address uses the generated management host, not the domain
+	// root, which may serve another site.
 	w := request(h, "PUT", "/api/v1/outlet", f.admin, map[string]any{"domain": "example.com"})
-	if outlet := decodeOutlet(t, w.Body.Bytes()); w.Code != 200 || outlet.Tunnel != (outletTunnel{Address: "example.com:2333", DefaultAddress: "example.com:2333"}) {
+	outlet := decodeOutlet(t, w.Body.Bytes())
+	label := strings.TrimSuffix(outlet.AdminHostname, ".example.com")
+	defaultAddress := label + ".example.com:2333"
+	if w.Code != 200 || len(label) != 8 || outlet.Tunnel != (outletTunnel{Address: defaultAddress, DefaultAddress: defaultAddress}) {
 		t.Fatalf("outlet: %d %s", w.Code, w.Body.String())
 	}
 	connector, enrolled := enrolledConnector(t, h, f.admin)
-	if got := enrolled.Services[0].Tunnel.RemoteAddress; got != "example.com:2333" {
+	if got := enrolled.Services[0].Tunnel.RemoteAddress; got != defaultAddress {
 		t.Fatalf("default tunnel address = %q", got)
 	}
 
-	w = request(h, "PUT", "/api/v1/outlet/tunnel", f.admin, map[string]any{"address": " Meerkat.Example.com "})
-	if outlet := decodeOutlet(t, w.Body.Bytes()); w.Code != 200 || outlet.Tunnel != (outletTunnel{Address: "meerkat.example.com:2333", DefaultAddress: "example.com:2333", Custom: true}) {
+	w = request(h, "PUT", "/api/v1/outlet/tunnel", f.admin, map[string]any{"address": " Tunnel.Example.com "})
+	if outlet := decodeOutlet(t, w.Body.Bytes()); w.Code != 200 || outlet.Tunnel != (outletTunnel{Address: "tunnel.example.com:2333", DefaultAddress: defaultAddress, Custom: true}) {
 		t.Fatalf("custom tunnel: %d %s", w.Code, w.Body.String())
 	}
 	hb := contract.Heartbeat{ConnectorID: connector.ID, Revision: enrolled.Revision, Version: contract.Version, ProcessState: "running", ServiceHealth: "unknown", ServiceHealths: map[string]string{enrolled.Services[0].ServiceID: "healthy"}, ObservedAt: time.Now().UTC()}
@@ -108,26 +114,26 @@ func TestTunnelAddressSettingRetargetsConnectors(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &updated); err != nil || w.Code != 200 {
 		t.Fatalf("config: %d %s", w.Code, w.Body.String())
 	}
-	if updated.Revision <= enrolled.Revision || updated.Services[0].Tunnel.RemoteAddress != "meerkat.example.com:2333" {
+	if updated.Revision <= enrolled.Revision || updated.Services[0].Tunnel.RemoteAddress != "tunnel.example.com:2333" {
 		t.Fatalf("retargeted config = %#v", updated)
 	}
 	if w = request(h, "POST", "/api/v1/connectors/"+connector.ID+"/services", f.admin, map[string]any{"name": "api", "protocol": "http", "target": map[string]any{"host": "api", "port": 8080}}); w.Code != 201 {
 		t.Fatalf("second service: %d %s", w.Code, w.Body.String())
 	}
-	assertTunnelAddress(t, store, connector.ID, "meerkat.example.com:2333")
+	assertTunnelAddress(t, store, connector.ID, "tunnel.example.com:2333")
 
 	w = request(h, "PUT", "/api/v1/outlet/tunnel", f.admin, map[string]any{"address": ""})
-	if outlet := decodeOutlet(t, w.Body.Bytes()); w.Code != 200 || outlet.Tunnel != (outletTunnel{Address: "example.com:2333", DefaultAddress: "example.com:2333"}) {
+	if outlet := decodeOutlet(t, w.Body.Bytes()); w.Code != 200 || outlet.Tunnel != (outletTunnel{Address: defaultAddress, DefaultAddress: defaultAddress}) {
 		t.Fatalf("reset tunnel: %d %s", w.Code, w.Body.String())
 	}
-	assertTunnelAddress(t, store, connector.ID, "example.com:2333")
+	assertTunnelAddress(t, store, connector.ID, defaultAddress)
 
-	// A default address follows the primary domain.
+	// A default address follows the primary domain and keeps the label.
 	revision := store.managed[connector.ID].Configuration.Revision
 	if w = request(h, "PUT", "/api/v1/outlet", f.admin, map[string]any{"domain": "example.org"}); w.Code != 200 {
 		t.Fatalf("domain change: %d %s", w.Code, w.Body.String())
 	}
-	assertTunnelAddress(t, store, connector.ID, "example.org:2333")
+	assertTunnelAddress(t, store, connector.ID, label+".example.org:2333")
 	if store.managed[connector.ID].Configuration.Revision <= revision {
 		t.Fatal("domain change did not publish a new revision")
 	}
