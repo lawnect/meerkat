@@ -328,7 +328,8 @@ GET    https://<보호 주소>/.meerkat/access/logout
 - 앱에는 `X-Meerkat-Access-Email`로 이메일을 전달한다. 클라이언트가 보낸 같은 헤더와 세션 쿠키는 지운다.
 
 **로그인 흐름**
-- `start`는 공개 관리 호스트에서, 정책이 보호하는 주소에 대해서만 동작한다(그 밖은 `404`). state(Lax 쿠키 `__Host-meerkat_access_state`), nonce, PKCE로 공급자에 보낸다. 진행 중 로그인 수 제한은 관리자 SSO와 같다.
+- 보호 주소는 로그인으로 보낼 때 그 브라우저에 `__Host-meerkat_access_bind` 쿠키를 두고, 그 해시를 `bind`로 `start`에 넘긴다. 티켓은 이 쿠키를 가진 브라우저에서만 세션으로 바뀌므로, 다른 사람의 로그인으로 받은 티켓 링크로는 로그인되지 않는다(로그인 CSRF 방지).
+- `start`는 공개 관리 호스트에서, 정책이 보호하는 주소와 `bind`가 있을 때만 동작한다(그 밖은 `404`). state(Lax 쿠키 `__Host-meerkat_access_state`), nonce, PKCE로 공급자에 보낸다. 진행 중 로그인 수 제한은 관리자 SSO와 같다.
 - `callback`은 ID 토큰을 검증한다. `email_verified`가 `true`이고 ASCII 이메일이어야 한다. 그 주소의 정책 중 하나라도 허용해야 1분짜리 일회용 티켓을 발급하고, 보호 주소의 `/.meerkat/access/finish`로 보낸다(`access.login`, 실패는 `access.login_failed`).
 - `finish`는 그 주소에 발급된 티켓만 받아 세션 쿠키로 바꾸고 원래 경로로 보낸다.
 - `/.meerkat/access/` 아래 경로는 Outlet이 처리하며, 기본 차단 규칙보다 먼저 확인한다.

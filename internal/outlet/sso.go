@@ -45,6 +45,7 @@ const (
 type ssoPending struct {
 	nonce, verifier, returnTo string
 	host                      string // the protected address an access sign-in returns to
+	bind                      string // Hash of that browser's accessBindCookie
 	client                    string // clientKey of the address that started it
 	expires                   time.Time
 }

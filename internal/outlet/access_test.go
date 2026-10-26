@@ -25,11 +25,14 @@ func whoami() http.Handler {
 type accessFixture struct {
 	proxyFixture
 	idp *fakeIdP
+	// binds keeps the browser's binding cookie per address, as a browser
+	// would between the challenge and the finish.
+	binds map[string]*http.Cookie
 }
 
 func newAccessFixture(t *testing.T, policies ...control.AccessPolicy) accessFixture {
 	t.Helper()
-	f := accessFixture{proxyFixture: newProxyFixture(t, whoami(), whoami()), idp: newFakeIdP(t)}
+	f := accessFixture{proxyFixture: newProxyFixture(t, whoami(), whoami()), idp: newFakeIdP(t), binds: map[string]*http.Cookie{}}
 	f.route(t, 0, "app.example.com")
 	f.route(t, 1, "other.example.com")
 	f.store.ssoHTTP = f.idp.server.Client()
@@ -87,6 +90,7 @@ func (f accessFixture) signIn(t *testing.T, host, path string, claims map[string
 	if challenge.Code != http.StatusFound {
 		t.Fatalf("challenge: %d %s", challenge.Code, challenge.Body.String())
 	}
+	f.binds[host] = cookieNamed(challenge, accessBindCookie)
 	start, err := url.Parse(challenge.Header().Get("Location"))
 	if err != nil || start.Host != f.adminHost || start.Path != accessStartPath || start.Query().Get("host") != host {
 		t.Fatalf("challenge location: %s", challenge.Header().Get("Location"))
@@ -120,7 +124,7 @@ func (f accessFixture) finish(t *testing.T, callback *httptest.ResponseRecorder)
 	if err != nil || next.Path != accessPathPrefix+"finish" {
 		t.Fatalf("callback location: %s", callback.Header().Get("Location"))
 	}
-	done := f.visit(next.Host, next.RequestURI())
+	done := f.visit(next.Host, next.RequestURI(), f.binds[next.Host])
 	session := cookieNamed(done, accessCookie)
 	if done.Code != http.StatusSeeOther || session == nil || !session.HttpOnly || !session.Secure || session.SameSite != http.SameSiteLaxMode || session.Path != "/" {
 		t.Fatalf("finish: %d %+v %s", done.Code, session, done.Body.String())
@@ -349,11 +353,29 @@ func TestAccessTicketsAreSingleUse(t *testing.T) {
 	}
 	callback = f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com"))
 	next, _ = url.Parse(callback.Header().Get("Location"))
-	if w := f.visit("app.example.com", next.RequestURI()); w.Code != http.StatusSeeOther {
+	if w := f.visit("app.example.com", next.RequestURI(), f.binds["app.example.com"]); w.Code != http.StatusSeeOther {
 		t.Fatalf("first use: %d", w.Code)
 	}
-	if w := f.visit("app.example.com", next.RequestURI()); w.Code != http.StatusBadRequest {
+	if w := f.visit("app.example.com", next.RequestURI(), f.binds["app.example.com"]); w.Code != http.StatusBadRequest {
 		t.Fatalf("second use: %d", w.Code)
+	}
+}
+
+// A ticket from an attacker's own sign-in can't sign a victim's browser in:
+// it only works in the browser the address sent to sign in.
+func TestAccessTicketsBelongToTheirBrowser(t *testing.T) {
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	callback := f.signIn(t, "app.example.com", "/", verified("mallory@corp.example.com"))
+	next, _ := url.Parse(callback.Header().Get("Location"))
+	victim := f.visit("app.example.com", "/")
+	for _, cookies := range [][]*http.Cookie{nil, {cookieNamed(victim, accessBindCookie)}} {
+		if w := f.visit("app.example.com", next.RequestURI(), cookies...); w.Code != http.StatusBadRequest || cookieNamed(w, accessCookie) != nil {
+			t.Fatalf("ticket in another browser: %d", w.Code)
+		}
+	}
+	// Without a binding the start refuses.
+	if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/"); w.Code != http.StatusNotFound {
+		t.Fatalf("start without a binding: %d", w.Code)
 	}
 }
 
@@ -362,11 +384,11 @@ func TestAccessTicketsAreSingleUse(t *testing.T) {
 func TestAccessStartStaysOnProtectedAddresses(t *testing.T) {
 	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
 	for _, host := range []string{"other.example.com", "evil.example.org", "", f.adminHost} {
-		if w := f.visit(f.adminHost, accessStartPath+"?host="+url.QueryEscape(host)+"&return=/"); w.Code != http.StatusNotFound {
+		if w := f.visit(f.adminHost, accessStartPath+"?host="+url.QueryEscape(host)+"&return=/&bind="+Hash("browser")); w.Code != http.StatusNotFound {
 			t.Fatalf("start for %q: %d", host, w.Code)
 		}
 	}
-	local := request(f.store.Handler(), "GET", accessStartPath+"?host=app.example.com&return=/", "", nil)
+	local := request(f.store.Handler(), "GET", accessStartPath+"?host=app.example.com&return=/&bind="+Hash("browser"), "", nil)
 	if local.Code != http.StatusNotFound {
 		t.Fatalf("start on the local port: %d", local.Code)
 	}
@@ -379,7 +401,7 @@ func TestAccessStartStaysOnProtectedAddresses(t *testing.T) {
 	if _, err := f.db.SetAccessProvider(context.Background(), control.AccessProvider{Enabled: false, SessionHours: 8}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/"); w.Code != http.StatusServiceUnavailable {
+	if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash("browser")); w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("start with the provider off: %d", w.Code)
 	}
 	if w := f.visit("app.example.com", "/"); w.Code != http.StatusFound {

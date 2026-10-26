@@ -30,8 +30,12 @@ import (
 // The provider then needs one redirect URI, on the management host, however
 // many addresses are protected.
 const (
-	accessCookie       = "__Host-meerkat_access"
-	accessStateCookie  = "__Host-meerkat_access_state"
+	accessCookie      = "__Host-meerkat_access"
+	accessStateCookie = "__Host-meerkat_access_state"
+	// accessBindCookie ties a sign-in to the browser that was sent to it:
+	// the protected address sets it, and its ticket only works with it, so
+	// a ticket from someone else's sign-in can't sign this browser in.
+	accessBindCookie   = "__Host-meerkat_access_bind"
 	accessPathPrefix   = "/.meerkat/access/"
 	accessStartPath    = "/api/v1/access/start"
 	accessCallbackPath = "/api/v1/access/callback"
@@ -99,6 +103,7 @@ type accessTicket struct {
 	identity control.AccessIdentity
 	host     string
 	returnTo string
+	bind     string // Hash of the browser's accessBindCookie
 	expires  time.Time
 }
 
@@ -253,7 +258,9 @@ func (s *Store) accessChallenge(w http.ResponseWriter, r *http.Request, host, ad
 		accessPage(w, r, http.StatusUnauthorized, "required")
 		return
 	}
-	query := url.Values{"host": {host}, "return": {accessReturn(r.URL.RequestURI())}}
+	bind := Token()
+	http.SetCookie(w, &http.Cookie{Name: accessBindCookie, Value: bind, Path: "/", MaxAge: int(ssoStateTTL.Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
+	query := url.Values{"host": {host}, "return": {accessReturn(r.URL.RequestURI())}, "bind": {Hash(bind)}}
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, "https://"+adminHost+accessStartPath+"?"+query.Encode(), http.StatusFound)
 }
@@ -278,9 +285,9 @@ func accessOAuth(provider control.AccessProvider, oidcProvider *oidc.Provider, r
 // send anyone elsewhere.
 func (s *Store) accessStart(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	host, returnTo := strings.ToLower(query.Get("host")), accessReturn(query.Get("return"))
+	host, returnTo, bind := strings.ToLower(query.Get("host")), accessReturn(query.Get("return")), query.Get("bind")
 	_, public := requestOrigin(r)
-	if s.control == nil || !public || len(s.access.config.Load().forHost(host)) == 0 {
+	if s.control == nil || !public || len(s.access.config.Load().forHost(host)) == 0 || len(bind) != 64 {
 		accessPage(w, r, http.StatusNotFound, "unknown")
 		return
 	}
@@ -309,7 +316,7 @@ func (s *Store) accessStart(w http.ResponseWriter, r *http.Request) {
 	state, nonce, verifier := Token(), Token(), oauth2.GenerateVerifier()
 	now := s.now()
 	ip, _ := requestOrigin(r)
-	if !s.access.login.put(state, ssoPending{nonce: nonce, verifier: verifier, returnTo: returnTo, host: host, client: clientKey(ip), expires: now.Add(ssoStateTTL)}, now) {
+	if !s.access.login.put(state, ssoPending{nonce: nonce, verifier: verifier, returnTo: returnTo, host: host, bind: bind, client: clientKey(ip), expires: now.Add(ssoStateTTL)}, now) {
 		accessPage(w, r, http.StatusServiceUnavailable, "busy")
 		return
 	}
@@ -400,7 +407,7 @@ func (s *Store) accessCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ticket := Token()
-	if !s.access.putTicket(ticket, accessTicket{identity: identity, host: pending.host, returnTo: pending.returnTo, expires: s.now().Add(accessTicketTTL)}, s.now()) {
+	if !s.access.putTicket(ticket, accessTicket{identity: identity, host: pending.host, returnTo: pending.returnTo, bind: pending.bind, expires: s.now().Add(accessTicketTTL)}, s.now()) {
 		accessPage(w, r, http.StatusServiceUnavailable, "busy")
 		return
 	}
@@ -443,7 +450,9 @@ func (s *Store) accessFinish(w http.ResponseWriter, r *http.Request, host string
 	w.Header().Set("Cache-Control", "no-store")
 	ticket, ok := s.access.takeTicket(r.URL.Query().Get("ticket"), host, s.now())
 	key := s.access.key.Load()
-	if !ok || key == nil || s.control == nil {
+	bind, _ := r.Cookie(accessBindCookie)
+	http.SetCookie(w, &http.Cookie{Name: accessBindCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
+	if !ok || key == nil || s.control == nil || bind == nil || subtle.ConstantTimeCompare([]byte(Hash(bind.Value)), []byte(ticket.bind)) != 1 {
 		accessPage(w, r, http.StatusBadRequest, "expired")
 		return
 	}
