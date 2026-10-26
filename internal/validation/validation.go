@@ -65,6 +65,32 @@ func Endpoint(s string) error {
 	return nil
 }
 
+// serviceLabel is a Compose service or container name, which may hold an
+// underscore unlike a DNS label.
+var serviceLabel = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$`)
+
+// ServiceAddress permits the host:port one container of the deployment dials
+// for another: a Compose service name, a DNS name or an IP literal, never
+// loopback, which would be the caller itself.
+func ServiceAddress(s string) bool {
+	if Endpoint(s) != nil {
+		return false
+	}
+	host, _, _ := net.SplitHostPort(s)
+	if ip := net.ParseIP(host); ip != nil {
+		return !ip.IsUnspecified() && !ip.IsLoopback()
+	}
+	if host == "localhost" || len(host) > 253 {
+		return false
+	}
+	for _, part := range strings.Split(host, ".") {
+		if !serviceLabel.MatchString(part) {
+			return false
+		}
+	}
+	return true
+}
+
 // TunnelAddress permits the host:port a Connector dials for the data tunnel:
 // a lowercase DNS name, a single-label Compose service name or an IP literal.
 // Loopback is rejected: it names the Connector's own host, never the Outlet.

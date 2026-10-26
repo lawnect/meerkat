@@ -214,6 +214,11 @@ func (d *Database) AddDomain(ctx context.Context, domain, mode string) (Outlet, 
 			return Outlet{}, ErrDomainExists
 		}
 	}
+	// While the environment's domain waits to become primary, it can't be
+	// taken as an additional one.
+	if env := d.environment(); env.Domain != "" && env.Domain != outlet.Domain && overlapsDomain(env.Domain, domain) {
+		return Outlet{}, ErrDomainFromEnvironment
+	}
 	err = d.changeRouting(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, "INSERT INTO outlet_domains(domain, created_at) VALUES (?, ?)", domain, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
@@ -302,8 +307,15 @@ func (d *Database) SetTunnelAddress(ctx context.Context, address string) error {
 // SetDomain sets the primary domain. An empty mode keeps the current one.
 // The management label is generated the first time a domain is set.
 func (d *Database) SetDomain(ctx context.Context, domain, mode string) (Outlet, error) {
+	if !validation.Hostname(domain) {
+		return Outlet{}, ErrInvalidDomain
+	}
+	// The environment's domain, or the current one while that waits on
+	// public addresses, can still change its DNS mode here.
 	if env := d.environment(); env.Domain != "" && domain != env.Domain {
-		return Outlet{}, ErrDomainFromEnvironment
+		if current, err := d.Outlet(ctx); err != nil || domain != current.Domain {
+			return Outlet{}, ErrDomainFromEnvironment
+		}
 	}
 	return d.setDomain(ctx, domain, mode, "")
 }

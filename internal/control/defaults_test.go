@@ -193,3 +193,45 @@ func TestEnvironmentAdminHostnameChanges(t *testing.T) {
 		t.Fatalf("endpoints = %+v", moved.Endpoints)
 	}
 }
+
+// While the environment's domain waits on public addresses, the current one
+// keeps its DNS mode switch, and the waiting domain can't become an
+// additional one.
+func TestPendingEnvironmentDomain(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.SetDomain(ctx, "old.com", ""); err != nil {
+		t.Fatal(err)
+	}
+	connector, _ := db.CreateConnector(ctx, "edge")
+	service, err := db.CreateService(ctx, connector.ID, "web", "http", contract.Target{Host: "app", Port: 3000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateHTTPRoute(ctx, service.ID, "app.old.com"); err != nil {
+		t.Fatal(err)
+	}
+	db.SetDefaults(Defaults{Domain: "new.com"})
+	if _, err := db.ApplyEnvironmentDomain(ctx); !errors.Is(err, ErrDomainHasRoutes) {
+		t.Fatalf("apply: %v", err)
+	}
+	if outlet, _ := db.Outlet(ctx); outlet.Domain != "old.com" || outlet.DomainSource != SourceEnvironment {
+		t.Fatalf("outlet = %+v", outlet)
+	}
+	if outlet, err := db.SetDomain(ctx, "old.com", DomainWildcard); err != nil || outlet.Modes["old.com"] != DomainWildcard {
+		t.Fatalf("mode of the current domain: %+v %v", outlet, err)
+	}
+	if _, err := db.SetDomain(ctx, "Other.com", ""); !errors.Is(err, ErrInvalidDomain) {
+		t.Fatalf("invalid domain: %v", err)
+	}
+	if _, err := db.SetDomain(ctx, "other.com", ""); !errors.Is(err, ErrDomainFromEnvironment) {
+		t.Fatalf("another domain: %v", err)
+	}
+	if _, err := db.AddDomain(ctx, "new.com", ""); !errors.Is(err, ErrDomainFromEnvironment) {
+		t.Fatalf("adding the waiting domain: %v", err)
+	}
+}

@@ -152,9 +152,9 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 	if config.CaddyMetrics == "" {
 		config.CaddyMetrics = proxy.DefaultMetrics
 	}
-	// The same rules as a tunnel address: a DNS name, Compose service name
-	// or IP literal with a port, so nothing else reaches the Caddyfile.
-	if !validation.TunnelAddress(config.CaddyUpstream) || !validation.TunnelAddress(config.CaddyMetrics) {
+	// A Compose service name, DNS name or IP literal with a port, so nothing
+	// else reaches the Caddyfile.
+	if !validation.ServiceAddress(config.CaddyUpstream) || !validation.ServiceAddress(config.CaddyMetrics) {
 		return nil, errors.New("invalid Caddy address")
 	}
 	records := make(map[string]Record)

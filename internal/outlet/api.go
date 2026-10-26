@@ -927,6 +927,10 @@ func (s *Store) addOutletDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	outlet, err := s.control.AddDomain(r.Context(), req.Domain, req.Mode)
+	if errors.Is(err, control.ErrDomainFromEnvironment) {
+		fail(w, r, 409, "domain_from_environment")
+		return
+	}
 	if errors.Is(err, control.ErrInvalidDomain) {
 		fail(w, r, 400, "invalid_domain")
 		return

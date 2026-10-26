@@ -59,12 +59,12 @@ func run() error {
 			if err := controlDB.RenameRateLimitHost(context.Background(), before.AdminHostname, after.AdminHostname, time.Now()); err != nil {
 				slog.Warn("rate limits saved for the old management host weren't moved", "error", err.Error())
 			}
-			slog.Warn("management host changed; Connectors set up with the old address need a new enrollment", "from", before.AdminHostname, "to", after.AdminHostname)
+			slog.Warn("management host changed: enroll Connectors set up with the old address again, and register the new single sign-on redirect URI", "from", before.AdminHostname, "to", after.AdminHostname, "sso_redirect_uri", "https://"+after.AdminHostname+"/api/v1/session/sso/callback")
 		}
 	}
-	upstream, metrics, caddyWarnings := caddyAddresses(os.Getenv)
-	for _, warning := range caddyWarnings {
-		slog.Warn(warning)
+	upstream, metrics, err := caddyAddresses(os.Getenv)
+	if err != nil {
+		return err
 	}
 	cfg.CaddyUpstream, cfg.CaddyMetrics = upstream, metrics
 	slog.Info("settings from the environment", "sso", defaults.SSO != nil, "telegram", defaults.Telegram != nil, "caddy_upstream", upstream, "caddy_metrics", metrics)
@@ -74,7 +74,8 @@ func run() error {
 	}
 	// Caddy listens on 80 and 443 only once a domain exists.
 	if current, err := controlDB.Outlet(context.Background()); err == nil && current.AdminHostname != "" {
-		slog.Info("admin console", "url", "https://"+current.AdminHostname+"/")
+		// The identity provider must know the redirect URI before the first sign-in.
+		slog.Info("admin console", "url", "https://"+current.AdminHostname+"/", "sso_redirect_uri", "https://"+current.AdminHostname+"/api/v1/session/sso/callback", "sso_post_logout_redirect_uri", "https://"+current.AdminHostname+"/")
 	} else if err == nil {
 		slog.Warn("no domain yet, so Caddy doesn't listen on 80 or 443: set MEERKAT_DOMAIN, or add one in the console on the local admin port")
 	}

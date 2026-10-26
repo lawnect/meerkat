@@ -57,17 +57,18 @@ func TestEnvironmentDefaults(t *testing.T) {
 }
 
 func TestCaddyAddresses(t *testing.T) {
-	if upstream, metrics, warnings := caddyAddresses(env(nil)); upstream != "outlet:8080" || metrics != "caddy:9090" || len(warnings) != 0 {
-		t.Fatalf("defaults: %q, %q, %v", upstream, metrics, warnings)
+	if upstream, metrics, err := caddyAddresses(env(nil)); upstream != "outlet:8080" || metrics != "caddy:9090" || err != nil {
+		t.Fatalf("defaults: %q, %q, %v", upstream, metrics, err)
 	}
-	upstream, metrics, warnings := caddyAddresses(env(map[string]string{"MEERKAT_CADDY_UPSTREAM": " Outlet-K3X9:8080 ", "MEERKAT_CADDY_METRICS": "10.0.0.5:9090"}))
-	if upstream != "outlet-k3x9:8080" || metrics != "10.0.0.5:9090" || len(warnings) != 0 {
-		t.Fatalf("set: %q, %q, %v", upstream, metrics, warnings)
+	upstream, metrics, err := caddyAddresses(env(map[string]string{"MEERKAT_CADDY_UPSTREAM": " Outlet_K3X9:8080 ", "MEERKAT_CADDY_METRICS": `"10.0.0.5:9090"`}))
+	if upstream != "outlet_k3x9:8080" || metrics != "10.0.0.5:9090" || err != nil {
+		t.Fatalf("set: %q, %q, %v", upstream, metrics, err)
 	}
-	for _, raw := range []string{"outlet", "outlet:8080 {", "outlet:8080\nimport x", "outlet:0", "127.0.0.1:8080", "a b:8080"} {
-		upstream, metrics, warnings := caddyAddresses(env(map[string]string{"MEERKAT_CADDY_UPSTREAM": raw, "MEERKAT_CADDY_METRICS": raw}))
-		if upstream != "outlet:8080" || metrics != "caddy:9090" || len(warnings) != 2 {
-			t.Fatalf("%q accepted: %q, %q, %v", raw, upstream, metrics, warnings)
+	// A bad value stops the Outlet: falling back to outlet:8080 could reach
+	// another stack's container on a shared network.
+	for _, raw := range []string{"outlet", "outlet:8080 {", "outlet:8080\nimport x", "outlet:0", "outlet:+8080", "[outlet]:8080", "127.0.0.1:8080", "a b:8080", "localhost:8080"} {
+		if _, _, err := caddyAddresses(env(map[string]string{"MEERKAT_CADDY_UPSTREAM": raw})); err == nil {
+			t.Fatalf("%q accepted", raw)
 		}
 	}
 }
@@ -97,5 +98,12 @@ func TestEnvironmentDomain(t *testing.T) {
 		if len(warnings) != 1 || defaults.Domain != c.wantDomain || defaults.AdminLabel != "" {
 			t.Fatalf("%+v accepted: %q %q %v", c, defaults.Domain, defaults.AdminLabel, warnings)
 		}
+	}
+}
+
+func TestQuotedValues(t *testing.T) {
+	defaults, warnings := environmentDefaults(env(map[string]string{"MEERKAT_DOMAIN": `"example.com"`, "MEERKAT_OIDC_ISSUER": "https://idp.example.com", "MEERKAT_OIDC_CLIENT_ID": "meerkat", "MEERKAT_ADMIN_EMAILS": "a@example.com", "MEERKAT_OIDC_LABEL": `"Lawnect SSO"`}))
+	if len(warnings) != 0 || defaults.Domain != "example.com" || defaults.SSO == nil || defaults.SSO.Label != "Lawnect SSO" {
+		t.Fatalf("%+v %v", defaults, warnings)
 	}
 }

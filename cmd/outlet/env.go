@@ -27,7 +27,7 @@ import (
 func environmentDefaults(getenv func(string) string) (control.Defaults, []string) {
 	var defaults control.Defaults
 	var warnings []string
-	value := func(name string) string { return strings.TrimSpace(getenv(name)) }
+	value := func(name string) string { return strings.TrimSpace(unquote(strings.TrimSpace(getenv(name)))) }
 	list := func(name string) []string {
 		return strings.FieldsFunc(getenv(name), func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
 	}
@@ -114,18 +114,30 @@ func environmentDefaults(getenv func(string) string) (control.Defaults, []string
 //	MEERKAT_CADDY_UPSTREAM  host:port Caddy uses for the Outlet (outlet:8080)
 //	MEERKAT_CADDY_METRICS   host:port of Caddy's metrics (caddy:9090)
 //
-// Empty or invalid values give the default; an invalid one also a warning.
-func caddyAddresses(getenv func(string) string) (upstream, metrics string, warnings []string) {
+// Empty values give the default. An invalid value stops the Outlet instead:
+// falling back to outlet or caddy could reach another stack's container on
+// a shared network.
+func caddyAddresses(getenv func(string) string) (upstream, metrics string, err error) {
 	address := func(name, fallback string) string {
-		raw := strings.ToLower(strings.TrimSpace(getenv(name)))
+		raw := strings.ToLower(unquote(strings.TrimSpace(getenv(name))))
 		if raw == "" {
 			return fallback
 		}
-		if !validation.TunnelAddress(raw) {
-			warnings = append(warnings, name+" must be host:port, such as "+fallback+"; using "+fallback)
-			return fallback
+		if !validation.ServiceAddress(raw) && err == nil {
+			err = fmt.Errorf("%s must be host:port, such as %s", name, fallback)
 		}
 		return raw
 	}
-	return address("MEERKAT_CADDY_UPSTREAM", proxy.DefaultUpstream), address("MEERKAT_CADDY_METRICS", proxy.DefaultMetrics), warnings
+	upstream, metrics = address("MEERKAT_CADDY_UPSTREAM", proxy.DefaultUpstream), address("MEERKAT_CADDY_METRICS", proxy.DefaultMetrics)
+	return upstream, metrics, err
+}
+
+// unquote removes one pair of quotes around a value: an env file read by
+// Compose drops them, but a value pasted into a deployment tool's form may
+// keep them.
+func unquote(s string) string {
+	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') && s[len(s)-1] == s[0] {
+		return s[1 : len(s)-1]
+	}
+	return s
 }
