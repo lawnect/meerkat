@@ -2,7 +2,11 @@ package contract
 
 import "time"
 
-const Version = "0.1.0"
+// Version is the release, without the "v". Release images set it from the
+// meerkat-vX.Y.Z tag at build time:
+//
+//	-ldflags "-X github.com/lawnect/meerkat/internal/contract.Version=1.0.0"
+var Version = "0.0.0-dev"
 
 type Target struct {
 	Host string `json:"host"`

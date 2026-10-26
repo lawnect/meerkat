@@ -46,14 +46,23 @@ docker compose --env-file .local/poc/compose.env -f deploy/compose.poc.yaml up -
 
 ## GitHub Actions와 GHCR 배포
 
-`main` 브랜치에 push하면 GitHub Actions가 `linux/amd64`와 `linux/arm64` 이미지를 빌드해
-`ghcr.io/lawnect/meerkat:latest`와 커밋 SHA 태그로 게시합니다. 원격 Outlet/Connector VM에서는
-소스 코드를 빌드하지 않고 GHCR 이미지를 가져와 Compose로 실행합니다.
+이미지는 릴리스 태그로 빌드합니다. 태그 하나에 이미지 하나이며 `linux/amd64`와 `linux/arm64`로 만듭니다.
+
+| 태그 | 이미지 | 내용 |
+|---|---|---|
+| `meerkat-v1.0.0` | `ghcr.io/lawnect/meerkat:v1.0.0` | Outlet, Connector, rathole. 관리 화면에 보이는 버전도 태그에서 가져옵니다. |
+| `meerkat-caddy-v0.1.1` | `ghcr.io/lawnect/meerkat-caddy:v0.1.1` | 버전을 고정한 Caddy 이미지. Caddy를 바꿀 때만 릴리스합니다. |
+
+```sh
+git tag meerkat-v1.0.0 && git push origin meerkat-v1.0.0
+```
+
+정식 버전 태그는 `latest`도 옮기고, `meerkat-v1.1.0-rc.1` 같은 사전 릴리스는 옮기지 않습니다. `main`에 push하는 것만으로는 빌드하지 않습니다. 같은 릴리스를 다시 빌드하려면 그 태그에서 워크플로를 수동으로 실행합니다. 원격 Outlet/Connector VM에서는 소스 코드를 빌드하지 않고 GHCR 이미지를 가져와 Compose로 실행합니다.
 
 새 서버의 첫 실행은 아래 **Outlet 초기 접속** 순서대로 진행합니다. 기존 설치를 업데이트할 때는
 서버의 `compose.env`와 `compose.outlet.yaml`을 확인한 뒤 이미지를 가져와 Compose를 다시 실행합니다.
 GHCR 패키지가 private이면 VM에서 `read:packages` 권한이 있는 GitHub 토큰으로 `docker login ghcr.io`를 실행합니다.
-운영 배포에서는 `latest` 대신 검증한 커밋 SHA 태그를 `MEERKAT_IMAGE`로 지정하는 것을 권장합니다.
+운영 배포에서는 `latest` 대신 `ghcr.io/lawnect/meerkat:v1.0.0` 같은 릴리스 태그를 `MEERKAT_IMAGE`(와 `MEERKAT_CADDY_IMAGE`)에 고정하는 것을 권장합니다.
 
 ### Outlet 초기 접속
 

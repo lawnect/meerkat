@@ -8,16 +8,19 @@ COPY web ./web
 RUN npm run check && npm run build
 
 FROM golang:1.26.3-bookworm AS go-build
+# The release, without the "v"; the publish workflow passes it from the tag.
+ARG VERSION=0.0.0-dev
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY cmd ./cmd
 COPY internal ./internal
 COPY --from=ui-build /src/web/dist ./internal/dashboard/assets/site
-RUN CGO_ENABLED=0 go build -trimpath -o /out/connector ./cmd/connector && \
-    CGO_ENABLED=0 go build -trimpath -o /out/outlet ./cmd/outlet && \
-    CGO_ENABLED=0 go build -trimpath -o /out/outlet-init ./cmd/outlet-init && \
-    CGO_ENABLED=0 go build -trimpath -o /out/demo-service ./cmd/demo-service && \
-    CGO_ENABLED=0 go build -trimpath -o /out/poc-probe ./cmd/poc-probe
+RUN LDFLAGS="-X github.com/lawnect/meerkat/internal/contract.Version=${VERSION}" && \
+    CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o /out/connector ./cmd/connector && \
+    CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o /out/outlet ./cmd/outlet && \
+    CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o /out/outlet-init ./cmd/outlet-init && \
+    CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o /out/demo-service ./cmd/demo-service && \
+    CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o /out/poc-probe ./cmd/poc-probe
 
 FROM debian:bookworm-slim AS rathole-download
 ARG TARGETARCH

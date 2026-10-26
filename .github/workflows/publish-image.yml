@@ -1,64 +1,77 @@
 name: Publish container images
 
+# A release tag builds one image:
+#   meerkat-vX.Y.Z        -> ghcr.io/<repo>:vX.Y.Z        (Outlet, Connector, rathole)
+#   meerkat-caddy-vX.Y.Z  -> ghcr.io/<repo>-caddy:vX.Y.Z  (pinned Caddy)
+# A tag without a pre-release suffix also moves :latest. Running the workflow
+# by hand from such a tag rebuilds that release.
 on:
   push:
-    branches: [main]
-    tags: ['v*']
-    paths:
-      - 'cmd/**'
-      - 'internal/**'
-      - 'web/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'go.mod'
-      - 'go.sum'
-      - 'deploy/Dockerfile'
-      - 'deploy/Dockerfile.caddy'
-      - '.github/workflows/publish-image.yml'
+    tags:
+      - 'meerkat-v*'
+      - 'meerkat-caddy-v*'
   workflow_dispatch:
 
 concurrency:
   group: publish-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  IMAGE_NAME: ghcr.io/${{ github.repository }}
-
 jobs:
+  release:
+    name: Read the release tag
+    runs-on: ubuntu-24.04
+    outputs:
+      name: ${{ steps.tag.outputs.name }}
+      image: ${{ steps.tag.outputs.image }}
+      dockerfile: ${{ steps.tag.outputs.dockerfile }}
+      version: ${{ steps.tag.outputs.version }}
+      latest: ${{ steps.tag.outputs.latest }}
+    steps:
+      - name: Parse tag
+        id: tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ "$REF_TYPE" != tag ]; then
+            echo "::error::Run this workflow from a meerkat-vX.Y.Z or meerkat-caddy-vX.Y.Z tag."
+            exit 1
+          fi
+          case "$TAG" in
+            meerkat-caddy-v*) image=meerkat-caddy; dockerfile=deploy/Dockerfile.caddy; version="${TAG#meerkat-caddy-v}" ;;
+            meerkat-v*)       image=meerkat;       dockerfile=deploy/Dockerfile;       version="${TAG#meerkat-v}" ;;
+            *) echo "::error::$TAG is not a meerkat-vX.Y.Z or meerkat-caddy-vX.Y.Z tag."; exit 1 ;;
+          esac
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::$version in $TAG is not a semantic version such as 1.0.0 or 1.1.0-rc.1."
+            exit 1
+          fi
+          latest=true
+          case "$version" in *-*) latest=false ;; esac
+          repo=$(printf '%s' "$REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          {
+            echo "name=$image"
+            echo "image=ghcr.io/${repo%/*}/$image"
+            echo "dockerfile=$dockerfile"
+            echo "version=$version"
+            echo "latest=$latest"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building $image v$version (latest: $latest)" >> "$GITHUB_STEP_SUMMARY"
+
   build:
-    name: Build ${{ matrix.image }} (${{ matrix.arch }})
+    name: Build ${{ matrix.arch }}
+    needs: release
     strategy:
       fail-fast: false
       matrix:
         include:
-          - image: meerkat
-            image_suffix: ''
-            dockerfile: deploy/Dockerfile
-            runner: ubuntu-24.04
+          - runner: ubuntu-24.04
             platform: linux/amd64
             arch: amd64
-            cache_scope: meerkat-amd64
-          - image: meerkat
-            image_suffix: ''
-            dockerfile: deploy/Dockerfile
-            runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04-arm
             platform: linux/arm64
             arch: arm64
-            cache_scope: meerkat-arm64
-          - image: meerkat-caddy
-            image_suffix: '-caddy'
-            dockerfile: deploy/Dockerfile.caddy
-            runner: ubuntu-24.04
-            platform: linux/amd64
-            arch: amd64
-            cache_scope: meerkat-caddy-amd64
-          - image: meerkat-caddy
-            image_suffix: '-caddy'
-            dockerfile: deploy/Dockerfile.caddy
-            runner: ubuntu-24.04-arm
-            platform: linux/arm64
-            arch: arm64
-            cache_scope: meerkat-caddy-arm64
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -78,37 +91,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}${{ matrix.image_suffix }}
-          tags: type=sha
-
       - name: Build and push architecture image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ${{ matrix.dockerfile }}
+          file: ${{ needs.release.outputs.dockerfile }}
           platforms: ${{ matrix.platform }}
+          build-args: VERSION=${{ needs.release.outputs.version }}
           push: true
-          tags: ${{ env.IMAGE_NAME }}${{ matrix.image_suffix }}:${{ github.sha }}-${{ matrix.arch }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.cache_scope }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.cache_scope }}
+          tags: ${{ needs.release.outputs.image }}:${{ github.sha }}-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.release.outputs.version }}
+          cache-from: type=gha,scope=${{ needs.release.outputs.name }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ needs.release.outputs.name }}-${{ matrix.arch }}
 
-  publish-meerkat:
-    name: Publish Meerkat manifest
-    needs: build
+  publish:
+    name: Publish manifest
+    needs: [release, build]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
 
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -119,70 +126,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=tag
-            type=sha
-
       - name: Publish multi-platform manifest
         env:
-          IMAGE: ${{ env.IMAGE_NAME }}
+          IMAGE: ${{ needs.release.outputs.image }}
+          VERSION: ${{ needs.release.outputs.version }}
+          LATEST: ${{ needs.release.outputs.latest }}
           SHA: ${{ github.sha }}
-          TAGS: ${{ steps.meta.outputs.tags }}
         run: |
-          while IFS= read -r tag; do
-            [ -z "$tag" ] || docker buildx imagetools create \
-              --tag "$tag" \
-              "$IMAGE:$SHA-amd64" \
-              "$IMAGE:$SHA-arm64"
-          done <<< "$TAGS"
-
-  publish-caddy:
-    name: Publish Caddy manifest
-    needs: build
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}-caddy
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=tag
-            type=sha
-
-      - name: Publish multi-platform manifest
-        env:
-          IMAGE: ${{ env.IMAGE_NAME }}-caddy
-          SHA: ${{ github.sha }}
-          TAGS: ${{ steps.meta.outputs.tags }}
-        run: |
-          while IFS= read -r tag; do
-            [ -z "$tag" ] || docker buildx imagetools create \
-              --tag "$tag" \
-              "$IMAGE:$SHA-amd64" \
-              "$IMAGE:$SHA-arm64"
-          done <<< "$TAGS"
+          set -- --tag "$IMAGE:v$VERSION"
+          if [ "$LATEST" = true ]; then set -- "$@" --tag "$IMAGE:latest"; fi
+          docker buildx imagetools create "$@" "$IMAGE:$SHA-amd64" "$IMAGE:$SHA-arm64"

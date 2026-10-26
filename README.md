@@ -46,14 +46,23 @@ docker compose --env-file .local/poc/compose.env -f deploy/compose.poc.yaml up -
 
 ## Deploy with GitHub Actions and GHCR
 
-When you push to the `main` branch, GitHub Actions builds `linux/amd64` and `linux/arm64` images and publishes them as
-`ghcr.io/lawnect/meerkat:latest` and a commit SHA tag. Remote Outlet and Connector VMs don't build
-the source code; they pull the GHCR image and run it with Compose.
+Images are built from release tags, one image per tag, for `linux/amd64` and `linux/arm64`:
+
+| Tag | Image | Contents |
+|---|---|---|
+| `meerkat-v1.0.0` | `ghcr.io/lawnect/meerkat:v1.0.0` | Outlet, Connector, and rathole. The version shown in the admin console comes from the tag. |
+| `meerkat-caddy-v0.1.1` | `ghcr.io/lawnect/meerkat-caddy:v0.1.1` | The pinned Caddy image. Release it only when Caddy changes. |
+
+```sh
+git tag meerkat-v1.0.0 && git push origin meerkat-v1.0.0
+```
+
+A release without a pre-release suffix also moves `latest`; `meerkat-v1.1.0-rc.1` doesn't. Pushing to `main` builds nothing. To rebuild a release, run the workflow by hand from its tag. Remote Outlet and Connector VMs don't build the source code; they pull the GHCR image and run it with Compose.
 
 For the first run on a new server, follow the **Initial Outlet access** steps below. To update an existing installation,
 check the server's `compose.env` and `compose.outlet.yaml`, pull the image, and run Compose again.
 If the GHCR package is private, run `docker login ghcr.io` on the VM with a GitHub token that has the `read:packages` scope.
-For production deployments, we recommend setting a verified commit SHA tag instead of `latest` in `MEERKAT_IMAGE`.
+For production deployments, we recommend pinning a release such as `ghcr.io/lawnect/meerkat:v1.0.0` in `MEERKAT_IMAGE` (and `MEERKAT_CADDY_IMAGE`) instead of `latest`.
 
 ### Initial Outlet access
 
