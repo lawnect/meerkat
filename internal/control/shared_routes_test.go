@@ -83,14 +83,14 @@ func TestAddressPolicy(t *testing.T) {
 		{AddressPolicy{Mode: AddressBalance}, []string{a.ID, a.ID}, ErrInvalidAddress},
 		{AddressPolicy{Mode: AddressBalance}, []string{a.ID, "m_other"}, ErrInvalidAddress},
 	} {
-		if err := db.SetAddressPolicy(ctx, "app.example.com", c.policy, c.order); !errors.Is(err, c.want) {
+		if err := db.SetAddressPolicy(ctx, "app.example.com", c.policy, c.order, nil); !errors.Is(err, c.want) {
 			t.Fatalf("%+v %v: %v", c.policy, c.order, err)
 		}
 	}
-	if err := db.SetAddressPolicy(ctx, "none.example.com", AddressPolicy{Mode: AddressFailover}, nil); !errors.Is(err, ErrAddressNotFound) {
+	if err := db.SetAddressPolicy(ctx, "none.example.com", AddressPolicy{Mode: AddressFailover}, nil, nil); !errors.Is(err, ErrAddressNotFound) {
 		t.Fatalf("unknown address: %v", err)
 	}
-	if err := db.SetAddressPolicy(ctx, "app.example.com", AddressPolicy{Mode: AddressBalance, Sticky: true}, []string{b.ID, a.ID}); err != nil {
+	if err := db.SetAddressPolicy(ctx, "app.example.com", AddressPolicy{Mode: AddressBalance, Sticky: true}, []string{b.ID, a.ID}, nil); err != nil {
 		t.Fatal(err)
 	}
 	plans, policy := fresh(t, db, "balanced").Routes("app.example.com")
@@ -98,7 +98,7 @@ func TestAddressPolicy(t *testing.T) {
 		t.Fatalf("routes = %+v %+v", plans, policy)
 	}
 	// Failover ignores stickiness.
-	if err := db.SetAddressPolicy(ctx, "app.example.com", AddressPolicy{Mode: AddressFailover, Sticky: true}, []string{a.ID, b.ID}); err != nil {
+	if err := db.SetAddressPolicy(ctx, "app.example.com", AddressPolicy{Mode: AddressFailover, Sticky: true}, []string{a.ID, b.ID}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, policy := fresh(t, db, "failover").Routes("app.example.com"); policy != (AddressPolicy{Mode: AddressFailover}) {
@@ -150,5 +150,40 @@ func TestSharedAddressMigrationKeepsRoutes(t *testing.T) {
 	routes, err := db.ListRoutes(ctx, "s1")
 	if err != nil || len(routes) != 1 || routes[0].ID != "r1" || routes[0].Hostname != "app.example.com" || routes[0].Priority != 0 || routes[0].AddressBackends != 1 {
 		t.Fatalf("routes = %+v %v", routes, err)
+	}
+}
+
+// A save made over what another administrator changed is refused, and an
+// address whose last tunnel is deleted loses its policy.
+func TestAddressPolicyFreshnessAndCleanup(t *testing.T) {
+	ctx := context.Background()
+	db := openRouting(t)
+	services := sharedServices(t, db, 2)
+	a, _ := db.CreateHTTPRoute(ctx, services[0].ID, "app.example.com", false)
+	b, _ := db.CreateHTTPRoute(ctx, services[1].ID, "app.example.com", true)
+	read := &AddressState{Mode: AddressFailover, Order: []string{a.ID, b.ID}}
+	// Someone else reorders.
+	if err := db.SetAddressPolicy(ctx, "app.example.com", AddressPolicy{Mode: AddressFailover}, []string{b.ID, a.ID}, read); err != nil {
+		t.Fatal(err)
+	}
+	// The first reader still has the old order.
+	if err := db.SetAddressPolicy(ctx, "app.example.com", AddressPolicy{Mode: AddressBalance}, []string{a.ID, b.ID}, read); !errors.Is(err, ErrAddressChanged) {
+		t.Fatalf("stale save: %v", err)
+	}
+	fresh := &AddressState{Mode: AddressFailover, Order: []string{b.ID, a.ID}}
+	if err := db.SetAddressPolicy(ctx, "app.example.com", AddressPolicy{Mode: AddressBalance, Sticky: true}, []string{a.ID, b.ID}, fresh); err != nil {
+		t.Fatalf("fresh save: %v", err)
+	}
+	if err := db.SetAddressPolicy(ctx, "app.example.com", AddressPolicy{Mode: AddressBalance}, []string{a.ID, b.ID}, &AddressState{Mode: AddressBalance, Order: []string{a.ID, b.ID}}); !errors.Is(err, ErrAddressChanged) {
+		t.Fatalf("stickiness changed since: %v", err)
+	}
+	for _, service := range services {
+		if err := db.DeleteConnector(ctx, service.ConnectorID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var count int
+	if err := db.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM address_policies").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("policies after deleting the tunnels: %d %v", count, err)
 	}
 }

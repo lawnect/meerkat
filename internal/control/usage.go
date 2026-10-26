@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -110,6 +111,17 @@ func (d *Database) RecordUsage(ctx context.Context, samples map[string]UsageSamp
 	hour := at.UTC().Truncate(time.Hour).Format(time.RFC3339)
 	var total UsageSample
 	for routeID, sample := range samples {
+		// Caddy's counters are per host and cumulative, so the baseline a
+		// delta is taken from belongs to the host: a shared address can
+		// change the route it is recorded on without counting its history
+		// again. A baseline stored per route before is still honoured.
+		counter := routeID
+		var hostname string
+		if err := tx.QueryRowContext(ctx, `SELECT hostname FROM routes WHERE id = ? AND kind = 'http'`, routeID).Scan(&hostname); err == nil {
+			counter = "host:" + strings.ToLower(hostname)
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
 		values := []struct {
 			key   string
 			value int64
@@ -120,7 +132,10 @@ func (d *Database) RecordUsage(ctx context.Context, samples map[string]UsageSamp
 		delta := UsageSample{}
 		for _, item := range values {
 			var previous int64
-			err := tx.QueryRowContext(ctx, `SELECT value FROM usage_counters WHERE route_id = ? AND metric = ?`, routeID, item.key).Scan(&previous)
+			err := tx.QueryRowContext(ctx, `SELECT value FROM usage_counters WHERE route_id = ? AND metric = ?`, counter, item.key).Scan(&previous)
+			if err == sql.ErrNoRows && counter != routeID {
+				err = tx.QueryRowContext(ctx, `SELECT value FROM usage_counters WHERE route_id = ? AND metric = ?`, routeID, item.key).Scan(&previous)
+			}
 			if err != nil && err != sql.ErrNoRows {
 				return err
 			}
@@ -138,7 +153,7 @@ func (d *Database) RecordUsage(ctx context.Context, samples map[string]UsageSamp
 			case "error_responses":
 				delta.ErrorResponses = change
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO usage_counters(route_id, metric, value) VALUES (?, ?, ?) ON CONFLICT(route_id, metric) DO UPDATE SET value = excluded.value`, routeID, item.key, item.value); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO usage_counters(route_id, metric, value) VALUES (?, ?, ?) ON CONFLICT(route_id, metric) DO UPDATE SET value = excluded.value`, counter, item.key, item.value); err != nil {
 				return err
 			}
 		}
@@ -175,7 +190,8 @@ func (d *Database) RecordUsage(ctx context.Context, samples map[string]UsageSamp
 	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_hourly WHERE route_id NOT IN (SELECT id FROM routes)`); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_counters WHERE route_id NOT IN (SELECT id FROM routes)`); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_counters WHERE route_id NOT IN (SELECT id FROM routes)
+		AND route_id NOT IN (SELECT 'host:' || lower(hostname) FROM routes WHERE kind = 'http')`); err != nil {
 		return err
 	}
 	return tx.Commit()

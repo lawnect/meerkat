@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/http/httputil"
 	"net/url"
 	"strings"
@@ -229,10 +230,16 @@ func (s *Store) PublicHandler() http.Handler {
 			defer s.connections.inflight.total.Add(-1)
 		}
 		// A request that can't reach one service goes on to the next, when
-		// it can be sent again (see retryable).
-		var serve func(attempt int)
-		serve = func(attempt int) {
-			target := backends[attempt]
+		// it can be sent again (see retryable). The next one is chosen afresh:
+		// by then its route may be gone or the service down.
+		tried := map[string]bool{}
+		var serve func(target backend)
+		serve = func(target backend) {
+			tried[target.serviceID] = true
+			// wrote says whether any attempt, the transport's own retries
+			// included, put the request on a connection; responded, whether
+			// the service answered. Either limits what may go on.
+			var wrote, responded atomic.Bool
 			upstream := &url.URL{Scheme: "http", Host: target.address}
 			proxy := &httputil.ReverseProxy{
 				Transport:  transport,
@@ -265,17 +272,23 @@ func (s *Store) PublicHandler() http.Handler {
 					if forwardedFor != "" {
 						pr.Out.Header.Set("X-Forwarded-For", forwardedFor)
 					}
+					pr.Out = pr.Out.WithContext(httptrace.WithClientTrace(pr.Out.Context(), &httptrace.ClientTrace{WroteHeaders: func() { wrote.Store(true) }}))
 				},
 				ModifyResponse: func(res *http.Response) error {
+					responded.Store(true)
 					if res.StatusCode < 500 {
 						s.noteServed(target.serviceID)
 					}
 					return nil
 				},
 				ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
-					if attempt+1 < len(backends) && retryable(r, err) {
-						serve(attempt + 1)
-						return
+					// After an answer the response is under way, or an
+					// upgraded connection taken over: never another try.
+					if !responded.Load() && retryable(r, err, wrote.Load()) {
+						if next, ok := s.nextBackend(host, origin, tried); ok {
+							serve(next)
+							return
+						}
 					}
 					// A malformed, abandoned, stalled or oversized upload is the
 					// client's error, and must not count as an upstream failure in
@@ -311,6 +324,6 @@ func (s *Store) PublicHandler() http.Handler {
 			}
 			proxy.ServeHTTP(w, r)
 		}
-		serve(0)
+		serve(backends[0])
 	})
 }

@@ -153,6 +153,10 @@ func (d *Database) DeleteConnector(ctx context.Context, id string) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM services WHERE connector_id = ?`, id); err != nil {
 			return err
 		}
+		// An address no service uses any more takes its policy along.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM address_policies WHERE hostname NOT IN (SELECT hostname FROM routes WHERE kind = 'http')`); err != nil {
+			return err
+		}
 		result, err := tx.ExecContext(ctx, `DELETE FROM connectors WHERE id = ? AND revoked_at IS NULL`, id)
 		if err != nil {
 			return err

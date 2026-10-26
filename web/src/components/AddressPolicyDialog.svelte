@@ -38,6 +38,7 @@
     save: 'Save',
     saving: 'Saving…',
     saved: 'Saved',
+    changed: 'Another administrator changed this address. Review the current settings and save again.',
     failed: (code: string) => `Couldn't save the shared address: ${code}`,
   }, {
     title: '주소 공유 설정',
@@ -58,6 +59,7 @@
     save: '저장',
     saving: '저장 중…',
     saved: '저장되었습니다',
+    changed: '다른 관리자가 이 주소의 설정을 변경했습니다. 현재 설정을 확인한 후 다시 저장하십시오.',
     failed: (code: string) => `주소 공유 설정 저장 중 오류가 발생했습니다: ${code}`,
   });
 
@@ -72,15 +74,23 @@
   let targets = $state<Target[]>([]);
   let busy = $state(false);
   let error = $state('');
+  // 창을 열 때 읽은 상태입니다. 저장할 때 함께 보내, 그 사이 다른 관리자가 바꿨으면 서버가 거부합니다.
+  let read = $state<{ mode: AddressMode; sticky: boolean; order: string[] } | null>(null);
 
-  // 열 때마다 서버 값으로 다시 채웁니다.
-  $effect(() => {
-    if (!open) return;
+  function load(): void {
     const current = records.flatMap((record) => record.routes).find((route) => route.hostname === hostname);
     mode = current?.address_mode ?? 'failover';
     sticky = current?.address_sticky ?? false;
     targets = targetsOf();
+    read = { mode, sticky, order: targets.map((target) => target.routeId) };
     error = '';
+  }
+
+  // 열릴 때만 서버 값으로 채웁니다. 열려 있는 동안 목록이 새로 고쳐져도 고친 값을 지우지 않습니다.
+  let wasOpen = false;
+  $effect(() => {
+    if (open && !wasOpen) load();
+    wasOpen = open;
   });
 
   function move(index: number, by: number): void {
@@ -102,13 +112,20 @@
     try {
       await api(`/api/v1/addresses/${encodeURIComponent(hostname)}`, {
         method: 'PUT',
-        body: JSON.stringify({ mode, sticky: mode === 'balance' && sticky, order: targets.map((target) => target.routeId) }),
+        body: JSON.stringify({ mode, sticky: mode === 'balance' && sticky, order: targets.map((target) => target.routeId), current: read }),
       });
       await onChanged();
       toast.success(t().saved);
       open = false;
     } catch (cause) {
-      error = t().failed(errorMessage(cause));
+      const code = errorMessage(cause);
+      if (code === 'address_changed') {
+        await onChanged();
+        load();
+        error = t().changed;
+      } else {
+        error = t().failed(code);
+      }
     } finally {
       busy = false;
     }

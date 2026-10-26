@@ -167,12 +167,14 @@
   let serviceError = $state('');
   let routeOpen = $state(false);
   // 다른 서비스가 쓰는 주소를 입력하면, 이 서비스를 그 주소의 대상으로 추가할지 묻습니다.
-  let sharePrompt = $state(false);
+  // 확인은 그 주소에만 묶어, 입력을 바꾸면 다시 묻습니다.
+  let sharePromptHost = $state('');
   let policyHostname = $state('');
   let policyOpen = $state(false);
   const domains = $derived(outlet.domains?.length ? outlet.domains : outlet.domain ? [outlet.domain] : []);
   const baseDomain = $derived(domains.includes(selectedDomain) ? selectedDomain : domains[0] || '');
   const routeHostname = $derived(subdomain.trim().toLowerCase() && baseDomain ? `${subdomain.trim().toLowerCase()}.${baseDomain}` : '');
+  const sharePrompt = $derived(Boolean(sharePromptHost) && sharePromptHost === routeHostname);
   const hasRoutes = $derived(record.routes.length > 0);
   const targetAddress = $derived(`${record.service.target.host.includes(':') ? `[${record.service.target.host}]` : record.service.target.host}:${record.service.target.port}`);
 
@@ -242,7 +244,7 @@
     subdomain = '';
     selectedDomain = '';
     addError = '';
-    sharePrompt = false;
+    sharePromptHost = '';
     routeOpen = true;
   }
 
@@ -254,24 +256,28 @@
   async function addRoute(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     if (!baseDomain || !routeHostname) return;
+    // 보낸 주소를 기준으로 응답을 해석합니다. 그 사이 입력이 바뀌면 응답을 무시합니다.
+    const hostname = routeHostname;
+    const shared = sharePromptHost === hostname;
     addError = '';
     busy = true;
     try {
       await api(`/api/v1/services/${encodeURIComponent(record.service.id)}/routes`, {
         method: 'POST',
-        body: JSON.stringify({ hostname: routeHostname, ...(sharePrompt ? { shared: true } : {}) }),
+        body: JSON.stringify({ hostname, ...(shared ? { shared: true } : {}) }),
       });
       await onChanged();
       routeOpen = false;
     } catch (cause) {
       const code = errorMessage(cause);
+      if (routeHostname !== hostname) return;
       // 다른 서비스가 쓰는 주소면 공유를 제안하고, 이 서비스가 이미 쓰는 주소면 오류로 알립니다.
-      const elsewhere = code === 'hostname_taken' && !sharePrompt && !record.routes.some((route) => route.hostname === routeHostname);
+      const elsewhere = code === 'hostname_taken' && !shared && !record.routes.some((route) => route.hostname === hostname);
       if (elsewhere) {
-        sharePrompt = true;
+        sharePromptHost = hostname;
         return;
       }
-      addError = code === 'hostname_taken' ? t().hostnameTaken : code === 'invalid_route' && outlet.admin_hostname && routeHostname === outlet.admin_hostname ? t().reservedHostname : code === 'invalid_route' ? t().invalidSubdomain : t().addRouteFailed(code);
+      addError = code === 'hostname_taken' ? t().hostnameTaken : code === 'invalid_route' && outlet.admin_hostname && hostname === outlet.admin_hostname ? t().reservedHostname : code === 'invalid_route' ? t().invalidSubdomain : t().addRouteFailed(code);
     } finally {
       busy = false;
     }
@@ -483,7 +489,7 @@
         <Field.Group>
           <Field.Field>
             <Field.Label for={`domain-${record.service.id}`}>{t().domain}</Field.Label>
-            <NativeSelect.Root id={`domain-${record.service.id}`} class="w-full" bind:value={() => baseDomain, (next) => { selectedDomain = next; sharePrompt = false; }}>
+            <NativeSelect.Root id={`domain-${record.service.id}`} class="w-full" disabled={busy} bind:value={() => baseDomain, (next) => { selectedDomain = next; }}>
               {#each domains as domain (domain)}
                 <NativeSelect.Option value={domain}>{domain}</NativeSelect.Option>
               {/each}
@@ -493,7 +499,7 @@
             <Field.Label for={`route-${record.service.id}`}>{t().subdomain}</Field.Label>
             <InputGroup.Root>
               <InputGroup.Addon><Globe aria-hidden="true" /></InputGroup.Addon>
-              <InputGroup.Input id={`route-${record.service.id}`} aria-describedby={`domain-suffix-${record.service.id}`} bind:value={subdomain} oninput={() => { sharePrompt = false; addError = ''; }} placeholder="app" pattern={'[a-zA-Z0-9](?:[a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?'} maxlength={63} autocapitalize="none" spellcheck={false} required />
+              <InputGroup.Input id={`route-${record.service.id}`} aria-describedby={`domain-suffix-${record.service.id}`} bind:value={subdomain} disabled={busy} oninput={() => { addError = ''; }} placeholder="app" pattern={'[a-zA-Z0-9](?:[a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?'} maxlength={63} autocapitalize="none" spellcheck={false} required />
               <InputGroup.Addon align="inline-end"><InputGroup.Text id={`domain-suffix-${record.service.id}`}>.{baseDomain}</InputGroup.Text></InputGroup.Addon>
             </InputGroup.Root>
             {#if routeHostname}

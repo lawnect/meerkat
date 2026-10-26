@@ -2,6 +2,7 @@ package outlet
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"hash/fnv"
 	"net"
@@ -71,15 +72,14 @@ func (s *Store) orderBackends(host, client string, live []backend, policy contro
 
 // retryable reports whether a request that failed to reach one service can
 // go to the next. It must have no body, which the failed attempt may have
-// consumed. A connection that never opened carried nothing, so any method
-// goes on; after that, only methods that are safe to repeat do, and never
+// consumed. A request never written to a connection reached nobody, so any
+// method goes on; once written, only methods safe to repeat do, and never
 // after a timeout, which means the service had the request.
-func retryable(r *http.Request, err error) bool {
+func retryable(r *http.Request, err error, wrote bool) bool {
 	if r.ContentLength != 0 || len(r.TransferEncoding) != 0 || r.Context().Err() != nil {
 		return false
 	}
-	var dial *net.OpError
-	if errors.As(err, &dial) && dial.Op == "dial" {
+	if !wrote {
 		return true
 	}
 	var timeout net.Error
@@ -91,4 +91,20 @@ func retryable(r *http.Request, err error) bool {
 		return true
 	}
 	return false
+}
+
+// nextBackend picks the service a retry goes to, from the routing and health
+// of now, skipping the ones tried.
+func (s *Store) nextBackend(host, client string, tried map[string]bool) (backend, bool) {
+	routing, err := s.control.Routing(context.Background())
+	if err != nil {
+		return backend{}, false
+	}
+	plans, policy := routing.Routes(host)
+	for _, candidate := range s.orderBackends(host, client, s.liveBackends(plans), policy) {
+		if !tried[candidate.serviceID] {
+			return candidate, true
+		}
+	}
+	return backend{}, false
 }

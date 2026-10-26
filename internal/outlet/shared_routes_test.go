@@ -3,11 +3,17 @@ package outlet
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/lawnect/meerkat/internal/control"
 )
@@ -310,5 +316,88 @@ func TestSharedAddressUsageGoesToTheFirstService(t *testing.T) {
 	hosts := usageHosts(plans)
 	if len(hosts) != 2 || hosts["app.example.com"] != "r1" || hosts["off.example.com"] != "r4" {
 		t.Fatalf("hosts = %v", hosts)
+	}
+}
+
+// A request written to a connection may have reached its service: only safe
+// methods go on then, and never after a timeout.
+func TestRetryableNeedsAnUnsentOrSafeRequest(t *testing.T) {
+	refused := &net.OpError{Op: "dial", Err: errors.New("connection refused")}
+	timeout := &net.OpError{Op: "read", Err: os.ErrDeadlineExceeded}
+	for _, c := range []struct {
+		method string
+		body   string
+		err    error
+		wrote  bool
+		want   bool
+	}{
+		{"POST", "", refused, false, true},
+		// Go's transport may have sent it on a reused connection before its
+		// own retry failed to dial: written, so not again.
+		{"POST", "", refused, true, false},
+		{"POST", "", io.EOF, true, false},
+		{"GET", "", io.EOF, true, true},
+		{"HEAD", "", io.EOF, true, true},
+		{"GET", "", timeout, true, false},
+		{"GET", "", timeout, false, true},
+		{"GET", "x", refused, false, false},
+	} {
+		r := httptest.NewRequest(c.method, "/", strings.NewReader(c.body))
+		if c.body == "" {
+			r = httptest.NewRequest(c.method, "/", nil)
+		}
+		if got := retryable(r, c.err, c.wrote); got != c.want {
+			t.Fatalf("%s body=%q err=%v wrote=%v: %v", c.method, c.body, c.err, c.wrote, got)
+		}
+	}
+}
+
+// Once a service answered, even with an upgrade the proxy then rejects, the
+// request never goes to another service.
+func TestNoRetryAfterAnAnswer(t *testing.T) {
+	var second atomic.Int32
+	wrongUpgrade := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: other\r\n\r\n")
+		_ = rw.Flush()
+	})
+	f := newProxyFixture(t, wrongUpgrade, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { second.Add(1) }))
+	f.route(t, 0, "app.example.com")
+	f.share(t, 1, "app.example.com")
+	server := httptest.NewServer(f.handler)
+	defer server.Close()
+	conn, reader := dial(t, strings.TrimPrefix(server.URL, "http://"))
+	_, _ = conn.Write([]byte("GET / HTTP/1.1\r\nHost: app.example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"))
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if res, err := http.ReadResponse(reader, nil); err != nil || res.StatusCode != 502 {
+		t.Fatalf("wrong upgrade: %v %v", res, err)
+	}
+	if second.Load() != 0 {
+		t.Fatalf("the second service got %d requests", second.Load())
+	}
+}
+
+// A retry picks from the routing of now: a route deleted while the first
+// service failed isn't used.
+func TestRetryRechecksTheRouting(t *testing.T) {
+	var f proxyFixture
+	var c string
+	deleting := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.unroute(t, 1, c)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			conn.Close()
+		}
+	})
+	f = newProxyFixture(t, deleting, echo("b"), echo("c"))
+	f.route(t, 0, "app.example.com")
+	c = f.share(t, 1, "app.example.com")
+	f.share(t, 2, "app.example.com")
+	if code, body := f.get("app.example.com"); code != 200 || !strings.HasPrefix(body, "c ") {
+		t.Fatalf("after b's route went: %d %q", code, body)
 	}
 }

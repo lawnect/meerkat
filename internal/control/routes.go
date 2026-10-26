@@ -18,6 +18,9 @@ var (
 	ErrServiceNotFound = errors.New("service not found")
 	ErrAddressNotFound = errors.New("public address not found")
 	ErrInvalidAddress  = errors.New("invalid public address policy")
+	// ErrAddressChanged means the policy or order changed since the caller
+	// read it.
+	ErrAddressChanged = errors.New("public address policy changed")
 )
 
 // Address modes decide which of a public address's services a request goes
@@ -177,10 +180,19 @@ func (d *Database) CreateHTTPRoute(ctx context.Context, serviceID, hostname stri
 	return route, nil
 }
 
+// AddressState is an address's policy and failover order as a caller read
+// it, to save over only what it saw.
+type AddressState struct {
+	Mode   string   `json:"mode"`
+	Sticky bool     `json:"sticky"`
+	Order  []string `json:"order"`
+}
+
 // SetAddressPolicy sets how requests for hostname are spread over its
 // services, and their failover order: order lists every route of the
-// address, first to last.
-func (d *Database) SetAddressPolicy(ctx context.Context, hostname string, policy AddressPolicy, order []string) error {
+// address, first to last. With current, it refuses when the address no
+// longer looks like that: another administrator changed it.
+func (d *Database) SetAddressPolicy(ctx context.Context, hostname string, policy AddressPolicy, order []string, current *AddressState) error {
 	if !validation.Hostname(hostname) || policy.Mode != AddressFailover && policy.Mode != AddressBalance {
 		return ErrInvalidAddress
 	}
@@ -189,7 +201,7 @@ func (d *Database) SetAddressPolicy(ctx context.Context, hostname string, policy
 		return err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, "SELECT id FROM routes WHERE kind = 'http' AND hostname = ?", hostname)
+	rows, err := tx.QueryContext(ctx, "SELECT id FROM routes WHERE kind = 'http' AND hostname = ? ORDER BY priority, created_at", hostname)
 	if err != nil {
 		return err
 	}
@@ -208,6 +220,19 @@ func (d *Database) SetAddressPolicy(ctx context.Context, hostname string, policy
 	}
 	if len(ids) == 0 {
 		return ErrAddressNotFound
+	}
+	if current != nil {
+		saved := AddressState{Mode: AddressFailover}
+		var sticky int
+		switch err := tx.QueryRowContext(ctx, "SELECT mode, sticky FROM address_policies WHERE hostname = ?", hostname).Scan(&saved.Mode, &sticky); {
+		case err == nil:
+			saved.Sticky = sticky != 0
+		case !errors.Is(err, sql.ErrNoRows):
+			return err
+		}
+		if saved.Mode != current.Mode || saved.Sticky != current.Sticky || !slices.Equal(ids, current.Order) {
+			return ErrAddressChanged
+		}
 	}
 	sorted := slices.Clone(order)
 	slices.Sort(sorted)

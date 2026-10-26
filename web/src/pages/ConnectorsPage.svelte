@@ -456,6 +456,8 @@
   const selected = $derived(data.connectors.find((connector) => connector.id === detailId));
   const selectedRecords = $derived(data.records.filter((record) => record.connector.id === detailId));
   const selectedPaths = $derived(selectedRecords.flatMap((record) => record.routes.map((route) => ({ record, route }))));
+  // 같은 터널의 여러 서비스가 공유하는 주소는 한 번만 셉니다.
+  const selectedAddressCount = $derived(new Set(selectedPaths.map((path) => path.route.hostname)).size);
   const usageRequests = $derived(usage?.hours.reduce((total, hour) => total + hour.requests, 0) ?? 0);
   const usageShares = $derived((usage?.services ?? []).filter((service) => service.requests > 0).map((service) => ({ label: service.name, value: service.requests })));
   const usagePeriodLabel = $derived(usagePeriod === 24 ? t().last24h : usagePeriod === 168 ? t().last7d : t().last30d);
@@ -546,8 +548,8 @@
     for (const record of data.records) {
       const figure = figures.get(record.connector.id) ?? { services: 0, addresses: 0, hostnames: [] };
       figure.services += 1;
-      figure.addresses += record.routes.length;
-      figure.hostnames.push(...record.routes.map((route) => route.hostname));
+      figure.hostnames.push(...record.routes.map((route) => route.hostname).filter((hostname) => !figure.hostnames.includes(hostname)));
+      figure.addresses = figure.hostnames.length;
       figures.set(record.connector.id, figure);
     }
     return figures;
@@ -1199,7 +1201,7 @@
               <Status label={statusLabel(selected.status)} value={selected.status} />
             </StatCard>
             <StatCard label={t().services} value={selectedRecords.length.toLocaleString(intlLocale())} />
-            <StatCard label={t().publicAddresses} value={selectedPaths.length.toLocaleString(intlLocale())} />
+            <StatCard label={t().publicAddresses} value={selectedAddressCount.toLocaleString(intlLocale())} />
           </div>
 
           <Card.Root size="sm" role="region" aria-label={t().servicesAria}>

@@ -71,10 +71,11 @@ Service 생성은 외부 공개를 뜻하지 않는다. Route를 활성화해야
 
 - 등록: `POST /api/v1/services/:id/routes`는 다른 서비스가 쓰는 hostname이면 `409 hostname_taken`이다. `{"hostname": "…", "shared": true}`로 보내면 그 주소의 마지막 대상으로 추가한다. 한 서비스는 한 주소에 한 번만 등록된다.
 - Route 응답: `priority`(장애 조치 순서, 작을수록 먼저), `address_mode`(`failover`, `balance`), `address_sticky`, `address_backends`(그 주소를 쓰는 서비스 수)가 들어 있다.
-- 정책: `PUT /api/v1/addresses/:hostname`에 `{"mode": "failover"|"balance", "sticky": bool, "order": ["<route id>", …]}`를 보낸다. `order`는 그 주소의 Route를 모두 한 번씩 담아야 한다. 성공하면 `204`와 `address.update` 감사 기록이고, 값이 맞지 않으면 `400 invalid_address_policy`, 주소가 없으면 `404 address_not_found`다. `sticky`는 `balance`에서만 의미가 있다.
+- 정책: `PUT /api/v1/addresses/:hostname`에 `{"mode": "failover"|"balance", "sticky": bool, "order": ["<route id>", …], "current": {"mode", "sticky", "order"}}`를 보낸다. `order`는 그 주소의 Route를 모두 한 번씩 담아야 한다. `current`는 호출자가 읽은 상태이며, 주면 그 사이 다른 관리자가 바꾼 경우 `409 address_changed`로 거부한다. 성공하면 `204`와 `address.update` 감사 기록이고, 값이 맞지 않으면 `400 invalid_address_policy`, 주소가 없으면 `404 address_not_found`다. `sticky`는 `balance`에서만 의미가 있다.
 - 선택: 공개 요청은 터널이 연결되고 서비스가 probe에 응답하는 대상만 받는다. `failover`는 그중 순서가 가장 앞선 대상을 고른다. `balance`는 차례대로 고르고, `sticky`이면 클라이언트 IP별 rendezvous hashing으로 대상을 고정한다. 정상 대상이 없으면 `404`다.
-- 재시도: 대상에 닿지 못하면 본문 없는 요청에 한해 다음 대상으로 재시도한다. 연결 자체가 실패했으면 모든 메서드를, 연결 후 응답 전에 끊겼으면 GET, HEAD, OPTIONS만 재시도한다. 시간 초과는 재시도하지 않는다.
-- 사용량: Caddy는 호스트 단위로 집계하므로 공유 주소의 사용량은 순서가 가장 앞선 Route에 기록한다.
+- 재시도: 대상에 닿지 못하면 본문 없는 요청에 한해 다음 대상으로 재시도한다. 연결에 요청을 쓰지 못했으면(전송 계층의 내부 재시도 포함) 모든 메서드를, 쓴 뒤 응답 전에 끊겼으면 GET, HEAD, OPTIONS만 재시도한다. 대상이 응답한 뒤(업그레이드 포함)나 시간 초과 뒤에는 재시도하지 않는다. 다음 대상은 재시도 시점의 라우팅과 상태로 다시 고르며, 한 요청은 대상마다 한 번만 시도한다.
+- 사용량: Caddy는 호스트 단위로 집계하므로 공유 주소의 사용량은 순서가 가장 앞선 Route에 기록한다. 증가분의 기준값은 호스트 단위로 두어, 순서가 바뀌어도 이전 사용량을 다시 세지 않는다.
+- 삭제: 터널을 삭제해 주소에 남은 Route가 없으면 주소 정책도 지운다.
 - 삭제: 마지막 Route를 지우면 주소 정책도 지운다.
 
 ### 예시: Service 생성

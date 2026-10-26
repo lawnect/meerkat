@@ -2013,6 +2013,9 @@ type addressRequest struct {
 	Mode   string   `json:"mode"`
 	Sticky bool     `json:"sticky"`
 	Order  []string `json:"order"`
+	// Current is the policy and order the caller read; when given, a save
+	// over a change made since is refused.
+	Current *control.AddressState `json:"current"`
 }
 
 // updateAddress sets how requests for a public address are spread over the
@@ -2030,7 +2033,11 @@ func (s *Store) updateAddress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hostname := r.PathValue("hostname")
-	err := s.control.SetAddressPolicy(r.Context(), hostname, control.AddressPolicy{Mode: req.Mode, Sticky: req.Sticky}, req.Order)
+	err := s.control.SetAddressPolicy(r.Context(), hostname, control.AddressPolicy{Mode: req.Mode, Sticky: req.Sticky}, req.Order, req.Current)
+	if errors.Is(err, control.ErrAddressChanged) {
+		fail(w, r, 409, "address_changed")
+		return
+	}
 	if errors.Is(err, control.ErrAddressNotFound) {
 		fail(w, r, 404, "address_not_found")
 		return
