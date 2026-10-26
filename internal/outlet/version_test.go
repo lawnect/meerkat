@@ -13,7 +13,7 @@ func TestOutletVersionIsExposed(t *testing.T) {
 	// The login page shows the version before anyone has logged in.
 	w := request(h, "GET", "/api/v1/setup/status", "", nil)
 	var status map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil || w.Code != 200 || status["version"] != contract.Version || status["setup_complete"] != false || len(status) != 2 {
+	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil || w.Code != 200 || status["version"] != contract.Version || status["setup_complete"] != false || len(status) != 3 || status["sign_in"] == nil {
 		t.Fatalf("setup status: %d %s", w.Code, w.Body.String())
 	}
 	for _, call := range []struct {

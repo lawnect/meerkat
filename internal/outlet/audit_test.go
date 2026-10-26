@@ -18,9 +18,10 @@ type auditPage struct {
 	Total  int                  `json:"total"`
 }
 
-// auditLog returns every entry, oldest first.
+// auditLog returns every entry, oldest first, once queued entries are written.
 func (a alertFixture) auditLog(t *testing.T) []control.AuditEvent {
 	t.Helper()
+	a.store.journal.flush()
 	events, _, err := a.db.Audit(context.Background(), control.AuditFilter{Limit: control.MaxAuditLimit})
 	if err != nil {
 		t.Fatal(err)
@@ -196,18 +197,22 @@ func TestAuditLoginAttemptsAndAddresses(t *testing.T) {
 	if e := a.lastAudit(t); e.Action != "session.second_factor_failed" || string(e.Detail) != `{"reason":"wrong_code"}` || e.ActorEmail == nil || *e.ActorEmail != "admin@example.com" {
 		t.Fatalf("second factor failure = %+v", e)
 	}
-	a.publicRequest("POST", "/api/v1/session/second-factor", clientIP, chromeOnMac, map[string]any{"challenge": "unknown", "code": secret})
-	if e := a.lastAudit(t); e.Action != "session.second_factor_failed" || string(e.Detail) != `{"reason":"expired_or_unknown"}` || e.ActorEmail != nil {
-		t.Fatalf("unknown challenge = %+v", e)
+	// An unknown challenge is a stranger's guess and stays out of the log.
+	recorded := len(a.auditLog(t))
+	if w := a.publicRequest("POST", "/api/v1/session/second-factor", clientIP, chromeOnMac, map[string]any{"challenge": "unknown", "code": secret}); w.Code != 401 {
+		t.Fatalf("unknown challenge: %d", w.Code)
+	}
+	if len(a.auditLog(t)) != recorded {
+		t.Fatal("an unknown challenge was recorded")
 	}
 	if w := a.publicRequest("POST", "/api/v1/session/second-factor", clientIP, chromeOnMac, map[string]any{"challenge": challenge, "code": secret}); w.Code != 201 {
 		t.Fatalf("second factor: %d %s", w.Code, w.Body.String())
 	}
 	log := a.auditLog(t)[before:]
-	if got := actions(log); !slices.Equal(got, []string{"session.login_failed", "session.login_failed", "session.second_factor_failed", "session.second_factor_failed", "session.second_factor", "session.login"}) {
+	if got := actions(log); !slices.Equal(got, []string{"session.login_failed", "session.login_failed", "session.second_factor_failed", "session.second_factor", "session.login"}) {
 		t.Fatalf("actions = %v", got)
 	}
-	if e := log[5]; string(e.Detail) != `{"second_factor":true}` || e.IP == nil || *e.IP != clientIP || e.Source != "public" {
+	if e := log[4]; string(e.Detail) != `{"method":"password","second_factor":true}` || e.IP == nil || *e.IP != clientIP || e.Source != "public" {
 		t.Fatalf("login = %+v", e)
 	}
 
@@ -216,7 +221,7 @@ func TestAuditLoginAttemptsAndAddresses(t *testing.T) {
 	r.Header.Set("X-Forwarded-For", clientIP)
 	w := httptest.NewRecorder()
 	a.store.Handler().ServeHTTP(w, r)
-	if e := a.lastAudit(t); w.Code != 201 || e.Action != "session.login" || e.Source != "local" || e.IP != nil || string(e.Detail) != `{"second_factor":false}` {
+	if e := a.lastAudit(t); w.Code != 201 || e.Action != "session.login" || e.Source != "local" || e.IP != nil || string(e.Detail) != `{"method":"password","second_factor":false}` {
 		t.Fatalf("local login = %+v", e)
 	}
 	a.store.background.Wait()
@@ -229,39 +234,35 @@ func TestAuditLoginAttemptsAndAddresses(t *testing.T) {
 	}
 }
 
-func TestAuditFailureFailsTheRequest(t *testing.T) {
+func TestAuditOutageNeverHoldsUpRequests(t *testing.T) {
 	a := newAlertFixture(t)
 	cookie := a.adminSession(t)
 	h := a.store.Handler()
-	active := func() int {
-		var n int
-		if err := a.db.SQL().QueryRow("SELECT COUNT(*) FROM sessions WHERE revoked_at IS NULL").Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
-	}
-	sessions := active()
+	before := len(a.auditLog(t))
 	// A full disk or a broken table: every audit insert now fails.
 	if _, err := a.db.SQL().Exec("CREATE TRIGGER broken_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT, 'disk full'); END"); err != nil {
 		t.Fatal(err)
 	}
 
-	w := cookieRequest(h, "POST", "/api/v1/connectors", cookie, map[string]any{"name": "edge-a"})
-	if w.Code != 503 || errorCode(t, w) != "audit_failed" {
+	if w := cookieRequest(h, "POST", "/api/v1/connectors", cookie, map[string]any{"name": "edge-a"}); w.Code != 201 {
 		t.Fatalf("mutation: %d %s", w.Code, w.Body.String())
 	}
-	// The change itself is not rolled back; the error tells the operator the record is missing.
-	if exists, _ := a.db.ConnectorExists(context.Background(), connectorID(t, a, "edge-a")); !exists {
-		t.Fatal("connector missing")
-	}
-
-	w = request(h, "POST", "/api/v1/session", "", adminLogin)
-	if w.Code != 503 || errorCode(t, w) != "audit_failed" || len(w.Result().Cookies()) != 0 || active() != sessions {
-		t.Fatalf("login without an audit record: %d %s (sessions %d, was %d)", w.Code, w.Body.String(), active(), sessions)
+	if w := request(h, "POST", "/api/v1/session", "", adminLogin); w.Code != 201 || len(w.Result().Cookies()) == 0 {
+		t.Fatalf("login: %d %s", w.Code, w.Body.String())
 	}
 	wrong := map[string]any{"email": "admin@example.com", "password": "wrong password entirely"}
 	if w := request(h, "POST", "/api/v1/session", "", wrong); w.Code != 401 {
-		t.Fatalf("a failed login still answers 401: %d", w.Code)
+		t.Fatalf("wrong password: %d", w.Code)
+	}
+	a.store.background.Wait()
+	a.store.journal.flush()
+
+	// The entries waited; once the log takes writes again they arrive in order.
+	if _, err := a.db.SQL().Exec("DROP TRIGGER broken_audit"); err != nil {
+		t.Fatal(err)
+	}
+	if got := actions(a.auditLog(t)[before:]); !slices.Equal(got, []string{"connector.create", "session.login", "session.login_failed"}) {
+		t.Fatalf("actions after recovery = %v", got)
 	}
 }
 

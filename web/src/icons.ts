@@ -5,6 +5,7 @@ import type { Component } from 'svelte';
 export type IconComponent = Component<{ class?: string; 'aria-hidden'?: 'true' }>;
 
 export { default as Add } from '~icons/fluent/add-16-regular';
+export { default as Add12 } from '~icons/fluent/add-12-regular';
 export { default as ArrowRight } from '~icons/fluent/arrow-right-16-regular';
 export { default as Checkmark } from '~icons/fluent/checkmark-16-regular';
 export { default as Copy } from '~icons/fluent/copy-16-regular';

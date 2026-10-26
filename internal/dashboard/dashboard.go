@@ -17,7 +17,8 @@ func Handler() http.Handler {
 	}
 	files := http.FileServer(http.FS(site))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+		w.Header().Set("Referrer-Policy", "same-origin")
 		// Korean pages use the same routes under /ko.
 		page := r.URL.Path
 		if page == "/ko" || strings.HasPrefix(page, "/ko/") {
@@ -40,7 +41,8 @@ func Handler() http.Handler {
 				}
 			}
 		}
-		if !strings.HasPrefix(r.URL.Path, "/assets/") {
+		// FileServer would list a directory; only files are served.
+		if !strings.HasPrefix(r.URL.Path, "/assets/") || strings.HasSuffix(r.URL.Path, "/") {
 			http.NotFound(w, r)
 			return
 		}

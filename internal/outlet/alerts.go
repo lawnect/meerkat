@@ -322,7 +322,10 @@ func (s *Store) sendLoginNotice(ctx context.Context, n notice, email string) {
 		return
 	}
 	e, opened, err := s.control.RecordAlert(ctx, control.AlertEvent{Key: "login:" + Token(), Kind: "login", Subject: email, Message: n.summary, Ref: n.ref}, 0, s.now())
-	if err != nil || !opened {
+	if err != nil {
+		// The notice matters more than its line in the alert history.
+		slog.Warn("login alert not recorded", "error", err)
+	} else if !opened {
 		return
 	}
 	s.deliver(ctx, env, e.ID, n)

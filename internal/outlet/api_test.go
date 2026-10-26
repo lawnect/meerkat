@@ -40,6 +40,7 @@ func setup(t *testing.T) fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(f.store.Close)
 	return f
 }
 

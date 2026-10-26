@@ -108,5 +108,10 @@ func Server(bind, privateKey string, services []ServerService) ([]byte, error) {
 		}
 		fmt.Fprintf(&b, "\n[server.services.%s]\ntype = \"tcp\"\ntoken = %s\nbind_addr = %s\n", s.Name, strconv.Quote(s.Token), strconv.Quote(s.BindAddress))
 	}
+	if len(services) == 0 {
+		// rathole v0.5.0 fails to parse a server without the table; an
+		// empty one starts it with no services until the first is added.
+		b.WriteString("\n[server.services]\n")
+	}
 	return []byte(b.String()), nil
 }

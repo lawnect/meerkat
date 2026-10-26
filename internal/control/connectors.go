@@ -2,7 +2,9 @@ package control
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -72,6 +74,7 @@ func (d *Database) CreateDescribedConnector(ctx context.Context, name, descripti
 	if err != nil {
 		return Connector{}, ErrConnectorExists
 	}
+	d.routingChanged()
 	return c, nil
 }
 
@@ -108,6 +111,7 @@ func (d *Database) SetConnectorDisplayName(ctx context.Context, id, raw string) 
 	} else if affected == 0 {
 		return "", ErrConnectorNotFound
 	}
+	d.routingChanged()
 	return name, nil
 }
 
@@ -126,6 +130,7 @@ func (d *Database) SetConnectorDescription(ctx context.Context, id, raw string) 
 	} else if affected == 0 {
 		return "", ErrConnectorNotFound
 	}
+	d.routingChanged()
 	return description, nil
 }
 
@@ -141,32 +146,35 @@ func (d *Database) DeleteConnector(ctx context.Context, id string) error {
 	if !validation.Label(id) {
 		return ErrConnectorNotFound
 	}
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM routes WHERE service_id IN (SELECT id FROM services WHERE connector_id = ?)`, id); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM services WHERE connector_id = ?`, id); err != nil {
-		return err
-	}
-	result, err := tx.ExecContext(ctx, `DELETE FROM connectors WHERE id = ? AND revoked_at IS NULL`, id)
-	if err != nil {
-		return err
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if affected == 0 {
-		return ErrConnectorNotFound
-	}
-	return tx.Commit()
+	return d.changeRouting(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM routes WHERE service_id IN (SELECT id FROM services WHERE connector_id = ?)`, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM services WHERE connector_id = ?`, id); err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, `DELETE FROM connectors WHERE id = ? AND revoked_at IS NULL`, id)
+		if err != nil {
+			return err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return ErrConnectorNotFound
+		}
+		return nil
+	})
 }
 
+// ListConnectors answers from memory until a Connector changes.
 func (d *Database) ListConnectors(ctx context.Context) ([]Connector, error) {
+	connectors, err := d.connectors.get(&d.generation, func() ([]Connector, error) { return d.loadConnectors(ctx) })
+	return slices.Clone(connectors), err
+}
+
+func (d *Database) loadConnectors(ctx context.Context) ([]Connector, error) {
 	rows, err := d.db.QueryContext(ctx, "SELECT id, name, display_name, description, status, created_at FROM connectors WHERE revoked_at IS NULL ORDER BY created_at DESC")
 	if err != nil {
 		return nil, err

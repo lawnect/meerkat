@@ -34,8 +34,8 @@ services:
         - >-
           test -s /config/outlet.json &&
           test -d /state &&
-          grep -q ':20FB ' /proc/net/tcp &&
-          grep -q ':1F90 ' /proc/net/tcp
+          grep -qs ':20FB ' /proc/net/tcp /proc/net/tcp6 &&
+          grep -qs ':1F90 ' /proc/net/tcp /proc/net/tcp6
       interval: 10s
       timeout: 5s
       retries: 6
@@ -56,6 +56,10 @@ services:
     # Starts with an empty config; Outlet enables fixed public routing after domain setup.
     image: ${MEERKAT_CADDY_IMAGE:-ghcr.io/lawnect/meerkat-caddy:latest}
     read_only: true
+    # Root inside the image, so DAC_OVERRIDE reads the Outlet-owned Caddyfile
+    # and certificate storage; the caddy binary needs NET_BIND_SERVICE to start.
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, DAC_OVERRIDE]
     security_opt: [no-new-privileges:true]
     tmpfs: [/tmp]
     init: true
@@ -64,7 +68,9 @@ services:
       control:
         aliases: [caddy]
     volumes:
-      - "${MEERKAT_DEPLOY_DIR}/outlet-data:/runtime:ro"
+      # Only the generated Caddyfile: the rest of outlet-data holds the control
+      # database, the tunnel's private key and every service token.
+      - "${MEERKAT_DEPLOY_DIR}/outlet-data/caddy:/runtime/caddy:ro"
       - "${MEERKAT_DEPLOY_DIR}/configs/root-ca.pem:/etc/caddy/root-ca.pem:ro"
       - "${MEERKAT_DEPLOY_DIR}/caddy-data:/data"
       - "${MEERKAT_DEPLOY_DIR}/caddy-config:/config"

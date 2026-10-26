@@ -1,6 +1,13 @@
 export type PageKey = 'overview' | 'connectors' | 'domains' | 'diagnostics' | 'settings';
 export type AuthMode = 'loading' | 'setup' | 'login' | 'unavailable' | 'dashboard';
 
+// 로그인 화면이 보여 줄 방식(GET /api/v1/setup/status의 sign_in). 공개 관리자 주소에서 SSO가 켜져 있을 때만 sso가 true입니다.
+export interface SignInOptions {
+  password: boolean;
+  sso: boolean;
+  sso_label: string; // 공급자 이름. 비어 있을 수 있습니다
+}
+
 export interface OutletTunnel {
   address: string;
   default_address: string;
@@ -160,6 +167,7 @@ export interface AlertRules {
   dns_failure: { enabled: boolean };
   error_spike: { enabled: boolean; threshold_percent: number; min_requests: number };
   login: { enabled: boolean };
+  rate_limit: { enabled: boolean; min_blocked: number };
 }
 
 export interface AlertEvent {
@@ -191,7 +199,7 @@ export interface AuditEvent {
   source: 'public' | 'local' | string;
   ip?: string | null;
   user_agent?: string | null;
-  detail?: string | null;
+  detail?: Record<string, unknown> | null;
 }
 
 export interface AuditPage {
@@ -217,4 +225,58 @@ export interface RateLimitSettings {
   per_subnet: RateBucket;
   per_address: RateBucket;
   endpoints: RateEndpointRule[];
+}
+
+// 연결 제한(GET/PUT /api/v1/security/connection-limits). 0이면 그 제한은 꺼집니다.
+export interface HostUpload {
+  host: string;
+  max_upload_mb: number;
+}
+
+export interface ConnectionLimits {
+  max_upload_mb: number;
+  per_ip_concurrent: number;
+  total_concurrent: number;
+  idle_timeout_seconds: number;
+  min_upload_kb_per_second: number;
+  hosts: HostUpload[];
+}
+
+// 차단 규칙(GET/PUT /api/v1/security/block-rules). 조건 중 하나라도 맞는 요청은 403으로 거부합니다.
+export type BlockOperator = 'equals' | 'starts_with' | 'ends_with' | 'contains' | 'matches';
+
+export interface BlockCondition {
+  operator: BlockOperator;
+  value: string; // equals·starts_with는 /로 시작, matches는 RE2 정규식(대소문자 구분 안 함), 512바이트 이하
+}
+
+export interface BlockRule {
+  id: string; // 새 규칙은 '', 서버가 부여합니다
+  name: string; // 1–64자
+  enabled: boolean;
+  hosts: string[]; // 호스트 이름. []이면 모든 공개 주소
+  conditions: BlockCondition[]; // 1–50개. 하나라도 맞으면 차단합니다
+}
+
+export interface BlockRulesView {
+  rules: BlockRule[];
+  hits: Record<string, number>; // 규칙 id별로 Outlet 시작 이후 차단한 요청 수. 없는 id도 있습니다
+  addresses: string[]; // 규칙을 한정할 수 있는 공개 주소(호스트 이름), 정렬됨
+}
+
+// OpenID Connect 로그인(GET/PUT /api/v1/security/sso). 클라이언트 시크릿은 응답에 없고, PUT에서 비우면 저장된 값을 유지합니다.
+export interface SsoSettings {
+  enabled: boolean;
+  label: string; // 32자 이하, 로그인 버튼에 표시
+  issuer: string; // https URL, 끝에 / 없음
+  client_id: string;
+  client_secret_set: boolean;
+  client_secret_hint: string; // 끝 4자. 짧거나 없으면 ''
+  scopes: string[]; // 항상 'openid' 포함
+  groups_claim: string; // 기본 'groups'
+  allowed_users: string[]; // 이메일 또는 '@도메인'
+  allowed_groups: string[];
+  password_login: boolean; // 공개 주소에서 비밀번호 로그인 허용
+  redirect_uri: string; // 공급자에 등록할 주소
+  available: boolean; // 도메인(관리자 호스트)이 생기기 전에는 false(redirect_uri는 '')
 }

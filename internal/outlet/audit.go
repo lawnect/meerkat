@@ -2,9 +2,11 @@ package outlet
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
+	"net/mail"
 	"strconv"
+	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/lawnect/meerkat/internal/control"
@@ -12,68 +14,50 @@ import (
 
 const maxAuditUserAgent = 256
 
-// record appends an audit entry for the request. The actor is the session's
-// administrator unless the caller names one; before the first administrator
-// exists (bootstrap token) there is none. The source and address follow the
-// same trust rule as the login alert: only PublicHandler vouches for a
-// forwarded address, and the local admin port is just "local".
-func (s *Store) record(r *http.Request, e control.AuditEntry) error {
-	if s.control == nil {
-		return nil
+// audit records an action without waiting for the database: the entry is
+// queued, and a slow or failing log never holds up or fails the request. The
+// actor is the session's administrator unless the entry names one; before the
+// first administrator exists (bootstrap token) there is none. The source and
+// address follow the same trust rule as the login alert: only PublicHandler
+// vouches for a forwarded address, and the local admin port is just "local".
+func (s *Store) audit(r *http.Request, action string, e control.AuditEntry) {
+	if s.journal == nil {
+		return
 	}
+	e.Action, e.At = action, s.now()
 	ip, public := requestOrigin(r)
 	e.Source, e.IP = "local", ""
 	if public {
 		e.Source, e.IP = "public", ip
 	}
-	e.UserAgent = r.UserAgent()
+	e.UserAgent = strings.Map(func(c rune) rune {
+		if unicode.IsControl(c) {
+			return -1
+		}
+		return c
+	}, r.UserAgent())
 	if utf8.RuneCountInString(e.UserAgent) > maxAuditUserAgent {
 		e.UserAgent = string([]rune(e.UserAgent)[:maxAuditUserAgent])
 	}
 	if e.ActorID == "" && e.ActorEmail == "" {
-		if cookie, err := r.Cookie("meerkat_session"); err == nil {
-			if admin, err := s.control.Authenticate(r.Context(), cookie.Value); err == nil {
-				e.ActorID, e.ActorEmail = admin.ID, admin.Email
-			}
+		if admin, ok := s.sessionAdmin(r); ok {
+			e.ActorID, e.ActorEmail = admin.ID, admin.Email
 		}
 	}
-	// The mutation is already done; a dropped connection must not skip its record.
-	return s.control.AppendAudit(context.WithoutCancel(r.Context()), e, s.now())
+	s.journal.add(e)
 }
 
-// audited records a completed mutation. When the record cannot be written the
-// request fails with 503, so a missing entry is never silent.
-func (s *Store) audited(w http.ResponseWriter, r *http.Request, action, resourceType, resourceID string, detail map[string]any) bool {
-	return s.auditedEntry(w, r, action, control.AuditEntry{ResourceType: resourceType, ResourceID: resourceID, Detail: detail})
+// audited records a completed change to a resource.
+func (s *Store) audited(r *http.Request, action, resourceType, resourceID string, detail map[string]any) {
+	s.audit(r, action, control.AuditEntry{ResourceType: resourceType, ResourceID: resourceID, Detail: detail})
 }
 
-func (s *Store) auditedEntry(w http.ResponseWriter, r *http.Request, action string, e control.AuditEntry) bool {
-	e.Action = action
-	if err := s.record(r, e); err != nil {
-		s.auditError(w, r, action, err)
-		return false
-	}
-	return true
-}
-
-func (s *Store) auditError(w http.ResponseWriter, r *http.Request, action string, err error) {
-	slog.Error("audit record failed", "action", action, "error", err)
-	fail(w, r, 503, "audit_failed")
-}
-
-// auditFailure records a rejected attempt. The response is already decided,
-// so a write failure is only logged.
-func (s *Store) auditFailure(r *http.Request, action string, e control.AuditEntry) {
-	e.Action = action
-	if err := s.record(r, e); err != nil {
-		slog.Error("audit record failed", "action", action, "error", err)
-	}
-}
-
-// attemptedEmail keeps a failed login's address short enough to store.
+// attemptedEmail keeps a failed login's address only when it is a plain
+// email address; any other text is a stranger's input to a permanent log.
 func attemptedEmail(email string) string {
-	if runes := []rune(email); len(runes) > 254 {
-		return string(runes[:254])
+	address, err := mail.ParseAddress(email)
+	if err != nil || address.Address != email || len(email) > 254 || strings.IndexFunc(email, unicode.IsControl) >= 0 {
+		return ""
 	}
 	return email
 }

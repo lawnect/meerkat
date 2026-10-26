@@ -42,7 +42,7 @@
     primaryDomain: 'Primary domain',
     additionalDomain: 'Additional domain',
     dnsSettings: 'DNS setup',
-    dnsMode: 'DNS records',
+    dnsMode: 'DNS record mode',
     modes: { wildcard: 'Wildcard', hosts: 'Individual hosts' } as Record<DomainMode, string>,
     modeHints: {
       wildcard: 'One * record sends every subdomain to the Outlet.',
@@ -101,6 +101,7 @@
     dialRefused: 'Connection refused · port is closed',
     dialTimeout: 'Timed out · possibly blocked by a firewall',
     dialUnreachable: 'No network route',
+    dialNotAllowed: 'Local address · not checked',
     partialWarning: 'If the tunnel container tries a failing address first, the connection can be slow or fail. Check the DNS records for that address. If only IPv6 addresses fail, Docker on the Outlet server may have no IPv6 route.',
     tunnelNote: (address: string, command: string) => `This only tests a TCP connection from the Outlet server to ${address}. It doesn't check whether the server that answered is this Outlet, or whether the firewall on the server running the tunnel allows it. Also run ${command} on that server to check.`,
     domainHasRoutes: 'The primary domain can\'t be changed while public addresses are registered.',
@@ -139,8 +140,8 @@
     dnsMode: 'DNS 방식',
     modes: { wildcard: '와일드카드', hosts: '개별 호스트' },
     modeHints: {
-      wildcard: '* 레코드 하나로 모든 하위 주소를 Outlet으로 보냅니다.',
-      hosts: '주소마다 레코드를 만듭니다. 루트나 다른 하위 주소를 다른 서버에 쓸 때 고르세요.',
+      wildcard: '* 레코드 하나로 모든 하위 도메인을 Outlet으로 보냅니다.',
+      hosts: '주소마다 레코드를 만듭니다. 루트나 다른 하위 도메인을 다른 서버에서 사용할 때 선택하세요.',
     },
     modeSaveFailed: (code: string) => `DNS 방식을 바꾸지 못했습니다: ${code}`,
     noRecordsYet: '공개 주소를 추가하면 여기에 레코드가 표시됩니다.',
@@ -167,7 +168,7 @@
     dnsPortsLabel: '포트 개방',
     dnsPortsTip: '80번 포트는 HTTPS 인증서 발급에, 443번 포트는 HTTPS 접속에 쓰입니다. 이 도메인의 인증서는 자동으로 발급·갱신됩니다. Cloudflare DNS를 쓴다면 프록시를 끈 ‘DNS 전용’을 권장합니다.',
     dnsCloudflareBadge: 'Cloudflare: DNS 전용',
-    checkDns: 'DNS 연결 확인',
+    checkDns: 'DNS 확인',
     checking: '확인 중…',
     resolved: '응답 있음',
     dnsNoResponse: 'DNS 응답 없음',
@@ -177,7 +178,7 @@
     changePrimary: '대표 도메인 변경',
     deleteDomain: '도메인 삭제',
     noDomainsTitle: '아직 도메인이 없습니다',
-    noDomainsBody: '도메인을 추가하면 관리 화면을 열고 하위 주소로 서비스를 공개할 수 있습니다.',
+    noDomainsBody: '도메인을 추가하면 관리 화면을 열고 하위 도메인으로 서비스를 공개할 수 있습니다.',
     tunnelAddress: '터널 주소',
     customAddress: '직접 지정',
     defaultAddress: '기본값',
@@ -195,10 +196,11 @@
     dialRefused: '연결 거부 · 포트가 닫혀 있음',
     dialTimeout: '시간 초과 · 방화벽 차단 가능성',
     dialUnreachable: '네트워크 경로 없음',
+    dialNotAllowed: '로컬 주소 · 확인하지 않음',
     partialWarning: '터널 컨테이너가 실패한 주소를 먼저 시도하면 연결이 늦어지거나 실패할 수 있습니다. 해당 DNS 레코드를 확인하세요. IPv6 주소만 실패했다면 Outlet 서버의 Docker에 IPv6 경로가 없어서일 수도 있습니다.',
     tunnelNote: (address: string, command: string) => `Outlet 서버에서 ${address}로 TCP 연결만 시험한 결과입니다. 응답한 서버가 이 Outlet인지, 터널을 실행하는 서버의 방화벽이 허용하는지는 확인하지 않습니다. 그 서버에서도 ${command}로 확인하세요.`,
     domainHasRoutes: '공개 주소가 등록된 상태에서는 대표 도메인을 변경할 수 없습니다.',
-    domainExists: '이미 등록된 도메인이거나 기존 도메인의 하위 주소입니다.',
+    domainExists: '이미 등록된 도메인이거나 기존 도메인의 하위 도메인입니다.',
     invalidDomain: '도메인 형식을 확인하세요.',
     domainSaveFailed: (code: string) => `도메인을 저장하지 못했습니다: ${code}`,
     dnsCheckFailed: (message: string) => `DNS를 확인하지 못했습니다: ${message}`,
@@ -281,7 +283,7 @@
   const tunnelHost = $derived(tunnel?.address ? hostOf(tunnel.address) : '');
 
   function dialError(code = ''): string {
-    return code === 'connection_refused' ? t().dialRefused : code === 'timeout' ? t().dialTimeout : code === 'unreachable' ? t().dialUnreachable : t().connectFailed;
+    return code === 'connection_refused' ? t().dialRefused : code === 'timeout' ? t().dialTimeout : code === 'unreachable' ? t().dialUnreachable : code === 'address_not_allowed' ? t().dialNotAllowed : t().connectFailed;
   }
 
   function hostOf(address: string): string {

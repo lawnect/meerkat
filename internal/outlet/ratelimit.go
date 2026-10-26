@@ -20,7 +20,8 @@ import (
 )
 
 const (
-	limiterShards   = 64
+	// Many shards keep one client's bucket from blocking others under load.
+	limiterShards   = 256
 	limiterCapacity = 100_000
 	// An untouched bucket is full again long before this, so dropping it changes nothing.
 	limiterIdle = 10 * time.Minute
@@ -338,14 +339,15 @@ func newRateLimiter() *rateLimiter {
 	return &rateLimiter{buckets: newBucketStore(limiterShards, limiterCapacity, limiterIdle)}
 }
 
-// subnetOf is the IPv4 /24 or IPv6 /64 holding ip.
+// subnetOf is the IPv4 /24 or IPv6 /56 holding ip. Providers commonly hand
+// one customer a /56, so a /64 would let one client spread over 256 buckets.
 func subnetOf(ip string) string {
 	addr, err := netip.ParseAddr(ip)
 	if err != nil {
 		return ""
 	}
 	addr = addr.Unmap()
-	bits := 64
+	bits := 56
 	if addr.Is4() {
 		bits = 24
 	}
@@ -357,9 +359,9 @@ func subnetOf(ip string) string {
 }
 
 // exemptFromRateLimit keeps certificate issuance working under any limit.
-func exemptFromRateLimit(requestPath string) bool {
-	return requestPath == certificateAskPath || strings.HasPrefix(requestPath, "/.well-known/acme-challenge/")
-}
+// Only Caddy's internal ask is exempt: Caddy answers ACME challenges itself,
+// so those paths arriving here are ordinary public requests.
+func exemptFromRateLimit(r *http.Request) bool { return isCertificateAsk(r) }
 
 func (s *Store) reloadRateLimit(ctx context.Context) error {
 	if s.control == nil || s.limiter == nil {
@@ -387,7 +389,7 @@ func (s *Store) limitRequest(w http.ResponseWriter, r *http.Request, host string
 		return false
 	}
 	config := limiter.config.Load()
-	if config == nil || !config.Enabled || exemptFromRateLimit(r.URL.Path) {
+	if config == nil || !config.Enabled || exemptFromRateLimit(r) {
 		return false
 	}
 	ip, _ := requestOrigin(r)
@@ -516,9 +518,8 @@ func (s *Store) putRateLimit(w http.ResponseWriter, r *http.Request) {
 	raw, _ := json.Marshal(saved)
 	var detail map[string]any
 	_ = json.Unmarshal(raw, &detail)
-	if s.audited(w, r, "security.rate_limit", "security", "rate_limit", detail) {
-		reply(w, 200, saved)
-	}
+	s.audited(r, "security.rate_limit", "security", "rate_limit", detail)
+	reply(w, 200, saved)
 }
 
 // rateLimitAlerts reports a flood once per rateAlertEvery while it lasts.

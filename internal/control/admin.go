@@ -90,6 +90,11 @@ func verifyPassword(password, encoded string) bool {
 	return err == nil && subtle.ConstantTimeCompare(actual, expected) == 1
 }
 
+// unknownAdminHash is verified against when no administrator has the email,
+// so an unknown address costs as much as a wrong password and login timing
+// does not reveal the administrator's email.
+var unknownAdminHash = fmt.Sprintf("pbkdf2-sha256$%d$%s$%s", passwordIterations, base64.RawStdEncoding.EncodeToString(make([]byte, 16)), base64.RawStdEncoding.EncodeToString(make([]byte, passwordKeyLength)))
+
 func validEmail(email string) bool {
 	address, err := mail.ParseAddress(email)
 	return err == nil && address.Address == email && len(email) <= 254
@@ -149,7 +154,15 @@ func (d *Database) VerifyCredentials(ctx context.Context, email, password string
 	var admin Admin
 	var passwordHash string
 	err := d.db.QueryRowContext(ctx, "SELECT id, email, password_hash FROM admins WHERE email = ?", email).Scan(&admin.ID, &admin.Email, &passwordHash)
-	if err != nil || !verifyPassword(password, passwordHash) {
+	// Administrators created by single sign-on have no password; they take
+	// the same time to fail as an unknown email.
+	if err == nil && passwordHash == ssoPasswordHash {
+		err = ErrInvalidCredentials
+	}
+	if err != nil {
+		passwordHash = unknownAdminHash
+	}
+	if !verifyPassword(password, passwordHash) || err != nil {
 		return Admin{}, ErrInvalidCredentials
 	}
 	return admin, nil
@@ -185,17 +198,52 @@ func (d *Database) Login(ctx context.Context, email, password string) (Session, 
 }
 
 func (d *Database) Authenticate(ctx context.Context, token string) (Admin, error) {
+	admin, _, err := d.Session(ctx, token)
+	return admin, err
+}
+
+// Session returns the administrator of a live session and when it expires.
+func (d *Database) Session(ctx context.Context, token string) (Admin, time.Time, error) {
 	var admin Admin
+	var expires string
 	err := d.db.QueryRowContext(ctx, `
-SELECT a.id, a.email FROM sessions s JOIN admins a ON a.id = s.admin_id
-WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > julianday('now')`, hashToken(token)).Scan(&admin.ID, &admin.Email)
+SELECT a.id, a.email, s.expires_at FROM sessions s JOIN admins a ON a.id = s.admin_id
+WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > julianday('now')`, hashToken(token)).Scan(&admin.ID, &admin.Email, &expires)
 	if err != nil {
-		return Admin{}, ErrInvalidCredentials
+		return Admin{}, time.Time{}, ErrInvalidCredentials
 	}
-	return admin, nil
+	expiresAt, err := time.Parse(time.RFC3339Nano, expires)
+	if err != nil {
+		return Admin{}, time.Time{}, ErrInvalidCredentials
+	}
+	return admin, expiresAt, nil
 }
 
 func (d *Database) RevokeSession(ctx context.Context, token string) error {
 	_, err := d.db.ExecContext(ctx, "UPDATE sessions SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE token_hash = ? AND revoked_at IS NULL", hashToken(token))
 	return err
+}
+
+const settingDeviceKey = "device_key"
+
+// DeviceKey is the secret that signs trusted-device cookies. It is created
+// on first use and never leaves the database or the Outlet's memory.
+func (d *Database) DeviceKey(ctx context.Context, now time.Time) ([]byte, error) {
+	fresh := make([]byte, 32)
+	if _, err := rand.Read(fresh); err != nil {
+		return nil, err
+	}
+	if _, err := d.db.ExecContext(ctx, `INSERT INTO outlet_settings(key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO NOTHING`,
+		settingDeviceKey, base64.StdEncoding.EncodeToString(fresh), stamp(now)); err != nil {
+		return nil, err
+	}
+	raw, err := getSetting(ctx, d.db, settingDeviceKey)
+	if err != nil {
+		return nil, err
+	}
+	key, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil || len(key) != 32 {
+		return nil, fmt.Errorf("stored device key is invalid")
+	}
+	return key, nil
 }

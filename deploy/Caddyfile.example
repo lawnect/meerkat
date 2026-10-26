@@ -2,6 +2,14 @@
 	metrics {
 		per_host
 	}
+	servers {
+		max_header_size 16KB
+		timeouts {
+			read_header 10s
+			read_body_idle 1h
+			write_idle 1h
+		}
+	}
 	on_demand_tls {
 		ask http://outlet:8080/.well-known/meerkat/cert-ask
 	}
@@ -22,5 +30,10 @@ https:// {
 			disable_tlsalpn_challenge
 		}
 	}
-	reverse_proxy http://outlet:8080
+	reverse_proxy http://outlet:8080 {
+		transport http {
+			keepalive 25s
+			keepalive_idle_conns_per_host 4096
+		}
+	}
 }

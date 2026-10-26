@@ -46,3 +46,11 @@ func TestClientsAtMultipleServices(t *testing.T) {
 		t.Fatal("public target accepted")
 	}
 }
+
+// rathole v0.5.0 will not start without a services table.
+func TestServerWithoutServicesHasAnEmptyTable(t *testing.T) {
+	config, err := Server("0.0.0.0:2333", base64.StdEncoding.EncodeToString(make([]byte, 32)), nil)
+	if err != nil || !strings.HasSuffix(string(config), "\n[server.services]\n") {
+		t.Fatalf("config = %q, %v", config, err)
+	}
+}

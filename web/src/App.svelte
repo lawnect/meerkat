@@ -6,7 +6,7 @@
   import { localeFromPath, setLocale, stripLocale, translations } from './i18n.svelte';
   import { connectionPollMs } from './polling';
   import { syncUrlState } from './urlState.svelte';
-  import type { AuthMode, Connector, DashboardData, Outlet, PageKey, Route, Service } from './types';
+  import type { AuthMode, Connector, DashboardData, Outlet, PageKey, Route, Service, SignInOptions } from './types';
   import AuthPage from './components/AuthPage.svelte';
   import BrandMark from './components/BrandMark.svelte';
   import LocaleSwitch from './components/LocaleSwitch.svelte';
@@ -43,6 +43,7 @@
   });
 
   let authMode = $state<AuthMode>('loading');
+  let signIn = $state<SignInOptions>({ password: true, sso: false, sso_label: '' });
   let view = $state<PageKey>(currentPage());
   let connectorDetailId = $state<string | null>(connectorIdFromPath(window.location.pathname));
   let domainDetail = $state<string | null>(domainFromPath(window.location.pathname));
@@ -178,7 +179,8 @@
     window.addEventListener('popstate', handlePopState);
     void (async () => {
       try {
-        const status = await api<{ setup_complete: boolean }>('/api/v1/setup/status');
+        const status = await api<{ setup_complete: boolean; sign_in?: SignInOptions }>('/api/v1/setup/status');
+        if (status.sign_in) signIn = status.sign_in;
         if (!status.setup_complete) {
           authMode = 'setup';
           return;
@@ -219,7 +221,7 @@
   {#if authMode === 'setup'}
     <AuthPage mode="setup" onLogin={refresh} onSetup={() => { authMode = 'login'; }} />
   {:else if authMode === 'login'}
-    <AuthPage mode="login" onLogin={refresh} onSetup={() => { authMode = 'login'; }} />
+    <AuthPage mode="login" {signIn} onLogin={refresh} onSetup={() => { authMode = 'login'; }} />
   {:else if authMode === 'loading'}
     <main class="grid min-h-svh place-items-center"><Spinner class="text-muted-foreground" /></main>
   {:else if authMode === 'unavailable'}

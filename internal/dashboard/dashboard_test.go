@@ -65,3 +65,18 @@ func TestHandlerServesKoreanPagesUnderPrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestHandlerNeverListsDirectoriesAndLimitsForms(t *testing.T) {
+	for _, path := range []string{"/assets/", "/assets/fonts/"} {
+		recorder := httptest.NewRecorder()
+		Handler().ServeHTTP(recorder, httptest.NewRequest("GET", path, nil))
+		if recorder.Code != 404 {
+			t.Fatalf("%s status = %d, want 404", path, recorder.Code)
+		}
+	}
+	recorder := httptest.NewRecorder()
+	Handler().ServeHTTP(recorder, httptest.NewRequest("GET", "/", nil))
+	if policy := recorder.Header().Get("Content-Security-Policy"); !strings.Contains(policy, "form-action 'self'") || recorder.Header().Get("Referrer-Policy") != "same-origin" {
+		t.Fatalf("headers = %v", recorder.Header())
+	}
+}

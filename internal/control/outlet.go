@@ -58,7 +58,16 @@ func randomLabel() (string, error) {
 	return string(label), nil
 }
 
+// Outlet returns the domains from the routing cache, so it costs no query.
 func (d *Database) Outlet(ctx context.Context) (Outlet, error) {
+	routing, err := d.Routing(ctx)
+	if err != nil {
+		return Outlet{}, err
+	}
+	return routing.Outlet.clone(), nil
+}
+
+func (d *Database) loadOutlet(ctx context.Context) (Outlet, error) {
 	outlet := Outlet{Domains: []string{}, Modes: map[string]string{}}
 	err := d.db.QueryRowContext(ctx, "SELECT value FROM outlet_settings WHERE key = 'domain'").Scan(&outlet.Domain)
 	if err != nil {
@@ -126,15 +135,7 @@ func (d *Database) SetDomainMode(ctx context.Context, domain, mode string) (Outl
 	if _, ok := outlet.Modes[domain]; !ok {
 		return Outlet{}, ErrDomainNotFound
 	}
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Outlet{}, err
-	}
-	defer tx.Rollback()
-	if err := setMode(ctx, tx, domain, mode); err != nil {
-		return Outlet{}, err
-	}
-	if err := tx.Commit(); err != nil {
+	if err := d.changeRouting(ctx, func(tx *sql.Tx) error { return setMode(ctx, tx, domain, mode) }); err != nil {
 		return Outlet{}, err
 	}
 	return d.Outlet(ctx)
@@ -186,18 +187,13 @@ func (d *Database) AddDomain(ctx context.Context, domain, mode string) (Outlet, 
 			return Outlet{}, ErrDomainExists
 		}
 	}
-	tx, err := d.db.BeginTx(ctx, nil)
+	err = d.changeRouting(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO outlet_domains(domain, created_at) VALUES (?, ?)", domain, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+		return setMode(ctx, tx, domain, mode)
+	})
 	if err != nil {
-		return Outlet{}, err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, "INSERT INTO outlet_domains(domain, created_at) VALUES (?, ?)", domain, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return Outlet{}, err
-	}
-	if err := setMode(ctx, tx, domain, mode); err != nil {
-		return Outlet{}, err
-	}
-	if err := tx.Commit(); err != nil {
 		return Outlet{}, err
 	}
 	return d.Outlet(ctx)
@@ -228,10 +224,14 @@ func (d *Database) RemoveDomain(ctx context.Context, domain string) (Outlet, err
 	if routes != 0 {
 		return Outlet{}, ErrDomainHasRoutes
 	}
-	if _, err := d.db.ExecContext(ctx, "DELETE FROM outlet_domains WHERE domain = ?", domain); err != nil {
-		return Outlet{}, err
-	}
-	if _, err := d.db.ExecContext(ctx, "DELETE FROM outlet_domain_modes WHERE domain = ?", domain); err != nil {
+	err = d.changeRouting(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM outlet_domains WHERE domain = ?", domain); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, "DELETE FROM outlet_domain_modes WHERE domain = ?", domain)
+		return err
+	})
+	if err != nil {
 		return Outlet{}, err
 	}
 	return d.Outlet(ctx)
@@ -240,6 +240,14 @@ func (d *Database) RemoveDomain(ctx context.Context, domain string) (Outlet, err
 // TunnelAddress returns the administrator's tunnel endpoint, or "" when the
 // Outlet derives it from outlet.json or the primary domain.
 func (d *Database) TunnelAddress(ctx context.Context) (string, error) {
+	routing, err := d.Routing(ctx)
+	if err != nil {
+		return "", err
+	}
+	return routing.tunnelAddress, nil
+}
+
+func (d *Database) loadTunnelAddress(ctx context.Context) (string, error) {
 	var address string
 	err := d.db.QueryRowContext(ctx, "SELECT value FROM outlet_settings WHERE key = 'tunnel_address'").Scan(&address)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -250,16 +258,18 @@ func (d *Database) TunnelAddress(ctx context.Context) (string, error) {
 
 // SetTunnelAddress stores a host:port endpoint. An empty address restores the default.
 func (d *Database) SetTunnelAddress(ctx context.Context, address string) error {
-	if address == "" {
-		_, err := d.db.ExecContext(ctx, "DELETE FROM outlet_settings WHERE key = 'tunnel_address'")
-		return err
-	}
-	if !validation.TunnelAddress(address) {
+	if address != "" && !validation.TunnelAddress(address) {
 		return ErrInvalidTunnelAddress
 	}
-	_, err := d.db.ExecContext(ctx, `INSERT INTO outlet_settings(key, value, updated_at) VALUES ('tunnel_address', ?, ?)
+	return d.changeRouting(ctx, func(tx *sql.Tx) error {
+		if address == "" {
+			_, err := tx.ExecContext(ctx, "DELETE FROM outlet_settings WHERE key = 'tunnel_address'")
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO outlet_settings(key, value, updated_at) VALUES ('tunnel_address', ?, ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, address, time.Now().UTC().Format(time.RFC3339Nano))
-	return err
+		return err
+	})
 }
 
 // SetDomain sets the primary domain. An empty mode keeps the current one.
@@ -302,26 +312,21 @@ func (d *Database) SetDomain(ctx context.Context, domain, mode string) (Outlet, 
 		}
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Outlet{}, err
-	}
-	defer tx.Rollback()
-	for key, value := range map[string]string{"domain": domain, "admin_label": label} {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO outlet_settings(key, value, updated_at) VALUES (?, ?, ?)
+	err = d.changeRouting(ctx, func(tx *sql.Tx) error {
+		for key, value := range map[string]string{"domain": domain, "admin_label": label} {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO outlet_settings(key, value, updated_at) VALUES (?, ?, ?)
 			ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, key, value, now); err != nil {
-			return Outlet{}, err
+				return err
+			}
 		}
-	}
-	if current.Domain != "" && current.Domain != domain {
-		if _, err := tx.ExecContext(ctx, "DELETE FROM outlet_domain_modes WHERE domain = ?", current.Domain); err != nil {
-			return Outlet{}, err
+		if current.Domain != "" && current.Domain != domain {
+			if _, err := tx.ExecContext(ctx, "DELETE FROM outlet_domain_modes WHERE domain = ?", current.Domain); err != nil {
+				return err
+			}
 		}
-	}
-	if err := setMode(ctx, tx, domain, mode); err != nil {
-		return Outlet{}, err
-	}
-	if err := tx.Commit(); err != nil {
+		return setMode(ctx, tx, domain, mode)
+	})
+	if err != nil {
 		return Outlet{}, err
 	}
 	return d.Outlet(ctx)

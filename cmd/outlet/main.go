@@ -48,7 +48,8 @@ func run() error {
 		return err
 	}
 	server := &http.Server{Addr: cfg.ListenAddress, Handler: store.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
-	publicServer := &http.Server{Addr: ":8080", Handler: store.PublicHandler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384}
+	// Caddy refuses client headers over 16 KB; the headers it adds must still fit here.
+	publicServer := &http.Server{Addr: ":8080", Handler: store.PublicHandler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 32 << 10}
 	// No request bodies, headers or child output go to logs.
 	server.ErrorLog = slog.NewLogLogger(slog.NewJSONHandler(os.Stderr, nil), slog.LevelWarn)
 	publicServer.ErrorLog = server.ErrorLog
@@ -65,6 +66,9 @@ func run() error {
 		defer stop()
 		_ = server.Shutdown(shutdownCtx)
 		_ = publicServer.Shutdown(shutdownCtx)
+		// Audit entries and connector state still in memory are written (or
+		// set aside on disk) before the database closes.
+		store.Close()
 	}
 	select {
 	case err := <-done:

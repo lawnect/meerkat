@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
 
@@ -68,6 +69,7 @@ func (d *Database) CreateService(ctx context.Context, connectorID, name, protoco
 		}
 		return Service{}, ErrServiceTargetExists
 	}
+	d.routingChanged()
 	return s, nil
 }
 
@@ -86,6 +88,9 @@ func (d *Database) UpdateServiceTarget(ctx context.Context, connectorID, service
 	affected, err := result.RowsAffected()
 	if err != nil {
 		return Service{}, err
+	}
+	if affected != 0 {
+		d.routingChanged()
 	}
 	if affected == 0 {
 		var exists bool
@@ -114,31 +119,28 @@ func (d *Database) DeleteService(ctx context.Context, connectorID, serviceID str
 	if !validation.Label(connectorID) || !validation.Label(serviceID) {
 		return ErrServiceNotFound
 	}
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var routes int
-	err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM routes r JOIN services s ON s.id = r.service_id WHERE s.id = ? AND s.connector_id = ?`, serviceID, connectorID).Scan(&routes)
-	if err != nil {
-		return err
-	}
-	if routes != 0 {
-		return ErrServiceHasRoutes
-	}
-	result, err := tx.ExecContext(ctx, `DELETE FROM services WHERE id = ? AND connector_id = ?`, serviceID, connectorID)
-	if err != nil {
-		return err
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if affected == 0 {
-		return ErrServiceNotFound
-	}
-	return tx.Commit()
+	return d.changeRouting(ctx, func(tx *sql.Tx) error {
+		var routes int
+		err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM routes r JOIN services s ON s.id = r.service_id WHERE s.id = ? AND s.connector_id = ?`, serviceID, connectorID).Scan(&routes)
+		if err != nil {
+			return err
+		}
+		if routes != 0 {
+			return ErrServiceHasRoutes
+		}
+		result, err := tx.ExecContext(ctx, `DELETE FROM services WHERE id = ? AND connector_id = ?`, serviceID, connectorID)
+		if err != nil {
+			return err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return ErrServiceNotFound
+		}
+		return nil
+	})
 }
 
 func (d *Database) ListServices(ctx context.Context, connectorID string) ([]Service, error) {

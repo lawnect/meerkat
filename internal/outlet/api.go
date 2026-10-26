@@ -44,11 +44,16 @@ func bearer(r *http.Request) string {
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any, required ...string) bool {
+	return decodeLimited(w, r, v, 16384, required...)
+}
+
+// decodeLimited is decode for a body of up to limit bytes.
+func decodeLimited(w http.ResponseWriter, r *http.Request, v any, limit int64, required ...string) bool {
 	if r.Header.Get("Content-Type") != "application/json" {
 		fail(w, r, 415, "json_required")
 		return false
 	}
-	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384))
+	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	var raw json.RawMessage
 	if err := d.Decode(&raw); err != nil {
 		fail(w, r, 400, "invalid_request")
@@ -104,6 +109,15 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/audit", s.getAudit)
 	mux.HandleFunc("GET /api/v1/security/rate-limit", s.getRateLimit)
 	mux.HandleFunc("PUT /api/v1/security/rate-limit", s.putRateLimit)
+	mux.HandleFunc("GET /api/v1/security/connection-limits", s.getConnectionLimits)
+	mux.HandleFunc("PUT /api/v1/security/connection-limits", s.putConnectionLimits)
+	mux.HandleFunc("GET /api/v1/security/block-rules", s.getBlockRules)
+	mux.HandleFunc("PUT /api/v1/security/block-rules", s.putBlockRules)
+	mux.HandleFunc("GET /api/v1/security/sso", s.getSSO)
+	mux.HandleFunc("PUT /api/v1/security/sso", s.putSSO)
+	mux.HandleFunc("POST /api/v1/security/sso/test", s.testSSO)
+	mux.HandleFunc("GET "+ssoPath+"/start", s.ssoStart)
+	mux.HandleFunc("GET "+ssoCallbackPath, s.ssoCallback)
 	mux.HandleFunc("GET /api/v1/alerts", s.getAlerts)
 	mux.HandleFunc("PUT /api/v1/alerts/telegram", s.putTelegram)
 	mux.HandleFunc("POST /api/v1/alerts/telegram/test", s.testTelegram)
@@ -133,11 +147,22 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/services/{id}/routes", s.createHTTPRoute)
 	mux.HandleFunc("DELETE /api/v1/services/{id}/routes/{route_id}", s.deleteHTTPRoute)
 	mux.HandleFunc("POST /api/v1/connectors/{id}/enrollment-tokens", s.issueToken)
+	// Every public route is same-site with the management host, so
+	// SameSite=Strict still lets a tunneled app post a form to the admin API
+	// with the session cookie. Browsers label such writes cross-origin.
+	csrf := http.NewCrossOriginProtection()
+	csrf.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fail(w, r, http.StatusForbidden, "cross_origin_request")
+	}))
+	protected := csrf.Handler(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Request-ID", Token())
-		mux.ServeHTTP(w, r)
+		if _, public := requestOrigin(r); public {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		}
+		protected.ServeHTTP(w, r)
 	})
 }
 
@@ -204,21 +229,40 @@ func (s *Store) enroll(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 400, "invalid_identity")
 		return
 	}
+	// Only requests holding a valid token are recorded, after the lock is
+	// released; a token-less guess is anyone's and stays out of the log.
+	var event *control.AuditEntry
+	defer func() {
+		if event != nil {
+			s.audit(r, event.Action, *event)
+		}
+	}()
+	enrolled := func(id string, first bool) {
+		if first {
+			event = &control.AuditEntry{Action: "connector.enroll", ResourceType: "connector", ResourceID: id, Detail: map[string]any{"name": req.Name, "version": req.Version}}
+		}
+	}
+	rejected := func(id, reason string) {
+		event = &control.AuditEntry{Action: "connector.enroll_failed", ResourceType: "connector", ResourceID: id, Detail: map[string]any{"name": req.Name, "reason": reason}}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, record := range s.records {
 		if matches(bearer(r), record.RunTokenHash) {
 			if record.Name != req.Name {
+				rejected(id, "connector_mismatch")
 				fail(w, r, 403, "connector_mismatch")
 				return
 			}
-			if !record.Enrolled {
+			first := !record.Enrolled
+			if first {
 				record.Enrolled, record.PublicKey = true, req.PublicKey
 				if err := s.save(id, record); err != nil {
 					fail(w, r, 503, "persistence_failed")
 					return
 				}
 			}
+			enrolled(id, first)
 			reply(w, 201, contract.EnrollmentResponse{Configuration: record.Configuration, Credential: bearer(r)})
 			return
 		}
@@ -226,14 +270,17 @@ func (s *Store) enroll(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if !s.now().Before(record.EnrollmentExpiresAt) {
+			rejected(id, "expired")
 			fail(w, r, 401, "invalid_enrollment_token")
 			return
 		}
 		if record.Name != req.Name {
+			rejected(id, "connector_mismatch")
 			fail(w, r, 403, "connector_mismatch")
 			return
 		}
 		if record.Enrolled {
+			rejected(id, "already_enrolled")
 			fail(w, r, 409, "already_enrolled")
 			return
 		}
@@ -246,22 +293,26 @@ func (s *Store) enroll(w http.ResponseWriter, r *http.Request) {
 			fail(w, r, 503, "persistence_failed")
 			return
 		}
+		enrolled(id, true)
 		reply(w, 201, contract.EnrollmentResponse{Configuration: record.Configuration, Credential: credential, CredentialExpiresAt: record.CredentialExpiresAt})
 		return
 	}
 	for id, record := range s.managed {
 		if matches(bearer(r), record.RunTokenHash) {
 			if record.Name != req.Name {
+				rejected(id, "connector_mismatch")
 				fail(w, r, 403, "connector_mismatch")
 				return
 			}
-			if !record.Enrolled {
+			first := !record.Enrolled
+			if first {
 				record.Enrolled, record.PublicKey = true, req.PublicKey
 				if err := s.saveManaged(id, record); err != nil {
 					fail(w, r, 503, "persistence_failed")
 					return
 				}
 			}
+			enrolled(id, first)
 			reply(w, 201, contract.EnrollmentResponse{Configuration: record.Configuration, Credential: bearer(r)})
 			return
 		}
@@ -269,14 +320,17 @@ func (s *Store) enroll(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if !s.now().Before(record.EnrollmentExpiresAt) {
+			rejected(id, "expired")
 			fail(w, r, 401, "invalid_enrollment_token")
 			return
 		}
 		if record.Name != req.Name {
+			rejected(id, "connector_mismatch")
 			fail(w, r, 403, "connector_mismatch")
 			return
 		}
 		if record.Enrolled {
+			rejected(id, "already_enrolled")
 			fail(w, r, 409, "already_enrolled")
 			return
 		}
@@ -289,6 +343,7 @@ func (s *Store) enroll(w http.ResponseWriter, r *http.Request) {
 			fail(w, r, 503, "persistence_failed")
 			return
 		}
+		enrolled(id, true)
 		reply(w, 201, contract.EnrollmentResponse{Configuration: record.Configuration, Credential: credential, CredentialExpiresAt: record.CredentialExpiresAt})
 		return
 	}
@@ -320,10 +375,7 @@ func (s *Store) configuration(w http.ResponseWriter, r *http.Request) {
 	}
 	if managed && len(record.Configuration.ActiveServices()) == 0 {
 		record.LastSeen = s.now().UTC()
-		if err := s.saveManaged(id, record); err != nil {
-			fail(w, r, 503, "persistence_failed")
-			return
-		}
+		s.observe(id, record, managed)
 	}
 	reply(w, 200, record.Configuration)
 }
@@ -364,9 +416,12 @@ func (s *Store) heartbeat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	since := record.LastSeen
 	s.mu.Unlock()
 	// An open server listening port alone is not proof of an active tunnel.
-	// An application response through that port confirms the HTTP forwarding path.
+	// An application response through that port confirms the HTTP forwarding
+	// path, and so do proxied answers since the previous heartbeat: under
+	// heavy load the probe alone can time out and take every route down.
 	statuses := map[string]string{}
 	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true}
 	client := &http.Client{Transport: transport, Timeout: 2 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
@@ -380,6 +435,9 @@ func (s *Store) heartbeat(w http.ResponseWriter, r *http.Request) {
 				}
 				res.Body.Close()
 			}
+		}
+		if probe != "connected" && s.servedSince(service.ServiceID, since) {
+			probe = "connected"
 		}
 		statuses[service.ServiceID] = probe
 	}
@@ -413,40 +471,21 @@ func (s *Store) heartbeat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	var saveErr error
-	if managed {
-		saveErr = s.saveManaged(id, record)
-	} else {
-		saveErr = s.save(id, record)
-	}
-	if saveErr != nil {
-		s.mu.Unlock()
-		fail(w, r, 503, "persistence_failed")
-		return
-	}
+	s.observe(id, record, managed)
 	s.mu.Unlock()
-	if managed {
-		if err := s.reconcileProxy(r.Context()); err != nil {
-			fail(w, r, 503, "proxy_reconcile_failed")
-			return
-		}
-	}
 	reply(w, 200, map[string]string{"status": "accepted"})
 }
 
 func (s *Store) admin(w http.ResponseWriter, r *http.Request) bool {
 	if s.control != nil {
-		complete, err := s.control.SetupComplete(r.Context())
+		complete, err := s.setupComplete(r.Context())
 		if err != nil {
 			fail(w, r, 503, "persistence_failed")
 			return false
 		}
 		if complete {
-			cookie, err := r.Cookie("meerkat_session")
-			if err == nil {
-				if _, err = s.control.Authenticate(r.Context(), cookie.Value); err == nil {
-					return true
-				}
+			if _, ok := s.sessionAdmin(r); ok {
+				return true
 			}
 			fail(w, r, 401, "invalid_admin_session")
 			return false
@@ -469,12 +508,20 @@ func (s *Store) setupStatus(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "control_database_unavailable")
 		return
 	}
-	complete, err := s.control.SetupComplete(r.Context())
+	complete, err := s.setupComplete(r.Context())
 	if err != nil {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	reply(w, 200, map[string]any{"setup_complete": complete, "version": contract.Version})
+	// The sign-in page shows the single sign-on button and hides the password
+	// form where it is off. The local port over SSH always offers passwords.
+	signIn := map[string]any{"password": true, "sso": false, "sso_label": ""}
+	if _, public := requestOrigin(r); public && complete {
+		if sso, err := s.control.SSO(r.Context()); err == nil && sso.Enabled {
+			signIn = map[string]any{"password": sso.PasswordLogin, "sso": true, "sso_label": sso.Label}
+		}
+	}
+	reply(w, 200, map[string]any{"setup_complete": complete, "version": contract.Version, "sign_in": signIn})
 }
 
 func (s *Store) setupAdmin(w http.ResponseWriter, r *http.Request) {
@@ -495,9 +542,8 @@ func (s *Store) setupAdmin(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 401, "invalid_setup_credential")
 		return
 	}
-	if !s.auditedEntry(w, r, "setup.admin_create", control.AuditEntry{ActorID: admin.ID, ActorEmail: admin.Email, ResourceType: "admin", ResourceID: admin.ID}) {
-		return
-	}
+	s.setupDone.Store(true)
+	s.audit(r, "setup.admin_create", control.AuditEntry{ActorID: admin.ID, ActorEmail: admin.Email, ResourceType: "admin", ResourceID: admin.ID})
 	reply(w, 201, map[string]string{"status": "created"})
 }
 
@@ -516,13 +562,34 @@ func (s *Store) login(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req, "email", "password") {
 		return
 	}
+	_, public := requestOrigin(r)
+	if public {
+		// With single sign-on required, a password is never checked on the
+		// internet; the local port over SSH keeps accepting it.
+		if sso, err := s.control.SSO(r.Context()); err != nil {
+			fail(w, r, 503, "persistence_failed")
+			return
+		} else if !sso.PasswordLogin {
+			fail(w, r, http.StatusForbidden, "password_login_disabled")
+			return
+		}
+		wait, ok := s.loginLimit.beginPasswordCheck(s.now(), s.trustedDevice(r))
+		if !ok {
+			w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+			fail(w, r, http.StatusTooManyRequests, "rate_limited")
+			return
+		}
+	}
 	admin, err := s.control.VerifyCredentials(r.Context(), req.Email, req.Password)
+	if public {
+		s.loginLimit.endPasswordCheck(err != nil, s.now())
+	}
 	if err != nil {
-		s.auditFailure(r, "session.login_failed", control.AuditEntry{ActorEmail: attemptedEmail(req.Email), ResourceType: "admin", ResourceID: "unknown", Detail: map[string]any{"reason": "invalid_credentials"}})
+		s.audit(r, "session.login_failed", control.AuditEntry{ActorEmail: attemptedEmail(req.Email), ResourceType: "admin", ResourceID: "unknown", Detail: map[string]any{"reason": "invalid_credentials"}})
 		fail(w, r, 401, "invalid_credentials")
 		return
 	}
-	if _, public := requestOrigin(r); public {
+	if public {
 		required, err := s.control.LoginSecondFactor(r.Context())
 		if err != nil {
 			fail(w, r, 503, "persistence_failed")
@@ -541,18 +608,19 @@ func (s *Store) logout(w http.ResponseWriter, r *http.Request) {
 	var active bool
 	if s.control != nil {
 		if cookie, err := r.Cookie("meerkat_session"); err == nil {
-			var authErr error
-			admin, authErr = s.control.Authenticate(r.Context(), cookie.Value)
-			active = authErr == nil
-			if err := s.control.RevokeSession(r.Context(), cookie.Value); err != nil {
+			admin, active = s.sessionAdmin(r)
+			err := s.control.RevokeSession(r.Context(), cookie.Value)
+			// Even when revoking failed, the next request asks the database.
+			s.sessions.revoke(cookie.Value)
+			if err != nil {
 				fail(w, r, 503, "persistence_failed")
 				return
 			}
 		}
 	}
 	http.SetCookie(w, &http.Cookie{Name: "meerkat_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
-	if active && !s.auditedEntry(w, r, "session.logout", control.AuditEntry{ActorID: admin.ID, ActorEmail: admin.Email, ResourceType: "admin", ResourceID: admin.ID}) {
-		return
+	if active {
+		s.audit(r, "session.logout", control.AuditEntry{ActorID: admin.ID, ActorEmail: admin.Email, ResourceType: "admin", ResourceID: admin.ID})
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -773,9 +841,7 @@ func (s *Store) updateOutlet(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	if !s.audited(w, r, "domain.set", "domain", req.Domain, map[string]any{"mode": outlet.Modes[req.Domain]}) {
-		return
-	}
+	s.audited(r, "domain.set", "domain", req.Domain, map[string]any{"mode": outlet.Modes[req.Domain]})
 	if err := s.reconcileProxy(r.Context()); err != nil {
 		fail(w, r, 503, "proxy_reconcile_failed")
 		return
@@ -823,9 +889,7 @@ func (s *Store) addOutletDomain(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	if !s.audited(w, r, "domain.add", "domain", req.Domain, map[string]any{"mode": outlet.Modes[req.Domain]}) {
-		return
-	}
+	s.audited(r, "domain.add", "domain", req.Domain, map[string]any{"mode": outlet.Modes[req.Domain]})
 	if err := s.reconcileProxy(r.Context()); err != nil {
 		fail(w, r, 503, "proxy_reconcile_failed")
 		return
@@ -860,9 +924,7 @@ func (s *Store) updateOutletDomainMode(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	if !s.audited(w, r, "domain.mode", "domain", r.PathValue("domain"), map[string]any{"mode": req.Mode}) {
-		return
-	}
+	s.audited(r, "domain.mode", "domain", r.PathValue("domain"), map[string]any{"mode": req.Mode})
 	s.replyOutlet(w, r, 200, outlet)
 }
 
@@ -891,9 +953,7 @@ func (s *Store) deleteOutletDomain(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	if !s.audited(w, r, "domain.remove", "domain", r.PathValue("domain"), nil) {
-		return
-	}
+	s.audited(r, "domain.remove", "domain", r.PathValue("domain"), nil)
 	if err := s.reconcileProxy(r.Context()); err != nil {
 		fail(w, r, 503, "proxy_reconcile_failed")
 		return
@@ -963,7 +1023,7 @@ func (s *Store) retargetTunnels(address string) error {
 	if err := securefs.WriteJSON(s.managedPath, next); err != nil {
 		return err
 	}
-	s.managed = next
+	s.managed, s.managedDirty = next, false
 	return nil
 }
 
@@ -1022,9 +1082,7 @@ func (s *Store) updateTunnel(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	if !s.audited(w, r, "tunnel.update", "outlet", "tunnel", map[string]any{"address": address}) {
-		return
-	}
+	s.audited(r, "tunnel.update", "outlet", "tunnel", map[string]any{"address": address})
 	reply(w, 200, outletResponse{Outlet: outlet, Tunnel: tunnel, Version: contract.Version})
 }
 
@@ -1112,6 +1170,12 @@ func (s *Store) probeTunnel(ctx context.Context, address string) tunnelCheck {
 	check.Results = make([]tunnelDial, len(ips))
 	var wg sync.WaitGroup
 	for i, ip := range ips {
+		// Connectors reach the tunnel from outside, so these never answer for
+		// it; dialing them would only probe the Outlet's own surroundings.
+		if parsed := net.ParseIP(ip); parsed == nil || parsed.IsLoopback() || parsed.IsUnspecified() || parsed.IsLinkLocalUnicast() || parsed.IsLinkLocalMulticast() || parsed.IsMulticast() {
+			check.Results[i] = tunnelDial{Address: net.JoinHostPort(ip, port), Error: "address_not_allowed"}
+			continue
+		}
 		wg.Go(func() {
 			result := tunnelDial{Address: net.JoinHostPort(ip, port)}
 			dial, cancel := context.WithTimeout(ctx, 4*time.Second)
@@ -1373,9 +1437,7 @@ func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("reset") == "true" {
 		action = "connector.token_reset"
 	}
-	if !s.audited(w, r, action, "connector", id, map[string]any{"name": name}) {
-		return
-	}
+	s.audited(r, action, "connector", id, map[string]any{"name": name})
 	if err := s.reconcileTunnel(); err != nil {
 		fail(w, r, 503, "tunnel_reconcile_failed")
 		return
@@ -1466,16 +1528,18 @@ func (s *Store) updateConnector(w http.ResponseWriter, r *http.Request) {
 	result := map[string]string{"id": id}
 	if req.DisplayName != nil {
 		name, err := s.control.SetConnectorDisplayName(r.Context(), id, *req.DisplayName)
-		if !s.connectorUpdateOK(w, r, err) || !s.audited(w, r, "connector.rename", "connector", id, map[string]any{"display_name": name}) {
+		if !s.connectorUpdateOK(w, r, err) {
 			return
 		}
+		s.audited(r, "connector.rename", "connector", id, map[string]any{"display_name": name})
 		result["display_name"] = name
 	}
 	if req.Description != nil {
 		description, err := s.control.SetConnectorDescription(r.Context(), id, *req.Description)
-		if !s.connectorUpdateOK(w, r, err) || !s.audited(w, r, "connector.describe", "connector", id, nil) {
+		if !s.connectorUpdateOK(w, r, err) {
 			return
 		}
+		s.audited(r, "connector.describe", "connector", id, nil)
 		result["description"] = description
 	}
 	reply(w, 200, result)
@@ -1522,9 +1586,7 @@ func (s *Store) createConnector(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 400, "invalid_connector")
 		return
 	}
-	if !s.audited(w, r, "connector.create", "connector", connector.ID, map[string]any{"name": connector.Name}) {
-		return
-	}
+	s.audited(r, "connector.create", "connector", connector.ID, map[string]any{"name": connector.Name})
 	reply(w, 201, connector)
 }
 
@@ -1567,9 +1629,7 @@ func (s *Store) deleteConnector(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if !s.audited(w, r, "connector.delete", "connector", id, map[string]any{"name": name}) {
-		return
-	}
+	s.audited(r, "connector.delete", "connector", id, map[string]any{"name": name})
 	if err := s.reconcileProxy(r.Context()); err != nil {
 		fail(w, r, 503, "proxy_reconcile_failed")
 		return
@@ -1643,9 +1703,7 @@ func (s *Store) createService(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	if !s.audited(w, r, "service.create", "service", service.ID, map[string]any{"connector_id": r.PathValue("id"), "name": req.Name, "protocol": req.Protocol, "target": req.Target}) {
-		return
-	}
+	s.audited(r, "service.create", "service", service.ID, map[string]any{"connector_id": r.PathValue("id"), "name": req.Name, "protocol": req.Protocol, "target": req.Target})
 	s.mu.Lock()
 	if record, ok := s.managed[r.PathValue("id")]; ok {
 		prior := record.Configuration.ActiveServices()
@@ -1748,11 +1806,7 @@ func (s *Store) updateServiceTarget(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if err := s.record(r, control.AuditEntry{Action: "service.update", ResourceType: "service", ResourceID: serviceID, Detail: map[string]any{"connector_id": id, "target": req.Target}}); err != nil {
-		s.mu.Unlock()
-		s.auditError(w, r, "service.update", err)
-		return
-	}
+	s.audit(r, "service.update", control.AuditEntry{ResourceType: "service", ResourceID: serviceID, Detail: map[string]any{"connector_id": id, "target": req.Target}})
 	if changed {
 		services[index].Target = req.Target
 		record.Configuration.ServiceID, record.Configuration.Target, record.Configuration.Tunnel = "", contract.Target{}, contract.Tunnel{}
@@ -1796,9 +1850,7 @@ func (s *Store) deleteService(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		fail(w, r, 503, "persistence_failed")
 	default:
-		if !s.audited(w, r, "service.delete", "service", r.PathValue("service_id"), map[string]any{"connector_id": r.PathValue("id")}) {
-			return
-		}
+		s.audited(r, "service.delete", "service", r.PathValue("service_id"), map[string]any{"connector_id": r.PathValue("id")})
 		s.mu.Lock()
 		if record, ok := s.managed[r.PathValue("id")]; ok {
 			remaining := []contract.ServiceConfiguration{}
@@ -1884,9 +1936,7 @@ func (s *Store) createHTTPRoute(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	if !s.audited(w, r, "route.create", "route", route.ID, map[string]any{"service_id": r.PathValue("id"), "hostname": route.Hostname}) {
-		return
-	}
+	s.audited(r, "route.create", "route", route.ID, map[string]any{"service_id": r.PathValue("id"), "hostname": route.Hostname})
 	if err := s.reconcileProxy(r.Context()); err != nil {
 		fail(w, r, 503, "proxy_reconcile_failed")
 		return
@@ -1912,9 +1962,7 @@ func (s *Store) deleteHTTPRoute(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	if !s.audited(w, r, "route.delete", "route", r.PathValue("route_id"), map[string]any{"service_id": r.PathValue("id"), "hostname": hostname}) {
-		return
-	}
+	s.audited(r, "route.delete", "route", r.PathValue("route_id"), map[string]any{"service_id": r.PathValue("id"), "hostname": hostname})
 	if err := s.reconcileProxy(r.Context()); err != nil {
 		fail(w, r, 503, "proxy_reconcile_failed")
 		return

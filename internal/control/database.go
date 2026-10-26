@@ -8,13 +8,21 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync/atomic"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/lawnect/meerkat/internal/securefs"
 )
 
-type Database struct{ db *sql.DB }
+type Database struct {
+	db *sql.DB
+	// generation counts committed changes to the tables the cached views
+	// below are built from; see routingChanged.
+	generation atomic.Uint64
+	routing    cached[*Routing]
+	connectors cached[[]Connector]
+}
 
 func Open(ctx context.Context, path string) (*Database, error) {
 	if path == "" {
@@ -44,7 +52,9 @@ func Open(ctx context.Context, path string) (*Database, error) {
 
 func (d *Database) Close() error { return d.db.Close() }
 
-// SQL exposes the connection for the control-plane repositories only.
+// SQL exposes the connection for the control-plane repositories only. Writes
+// through it to the tables behind Routing, Outlet, TunnelAddress and
+// ListConnectors bypass their caches.
 func (d *Database) SQL() *sql.DB { return d.db }
 
 func (d *Database) Version(ctx context.Context) (int, error) {

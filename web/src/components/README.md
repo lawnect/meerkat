@@ -26,6 +26,7 @@ shadcn-svelte CLI가 관리하는 코드입니다. 새 컴포넌트는 저장소
 | `StatCard` | 지표 카드 (dashboard-01의 섹션 카드). `label`, `value` 또는 `children`, `sub`, `hint`+`hintId`, `action` |
 | `TrafficChart` | 트래픽 본문. `Card.Header` 다음에 넣으면 지표 선택(`ToggleGroup`)·선 그래프·평균/최대(`Card.Footer`)를 그립니다. `buckets`, `axisLabel`, `bucketTitle`, `averageLabel` |
 | `ShareChart` | 비율 도넛 그래프와 범례 (chart-pie-donut-text). 항목이 많으면 상위 4개 다음을 "기타"로 묶습니다 |
+| `TagInput` | 값을 칩으로 쌓는 입력 (Enter·쉼표로 추가, 붙여 넣으면 여러 개). SSO 허용 사용자·그룹에 씁니다 |
 | `PaginationBar` | 목록 위·아래에 두는 줄. 왼쪽은 표시 범위, 오른쪽은 shadcn `Pagination`(문서의 Usage 구성 그대로). `total`, `perPage`, `bind:page`, `placement`. 페이지를 나누는 목록(터널·도메인·감사 로그)은 목록 위(`placement="top"`, 페이지가 둘 이상일 때만 보임)와 아래(범위는 한 페이지여도 보임)에 한 번씩 둡니다 |
 | `data-table/*` | Data Table 문서 구성의 공통 부품. `features.ts`(TanStack 기능 묶음), `DataTable`(표), `SortHeader`(정렬 머리글), `DataTablePagination`(TanStack 페이지 상태를 `PaginationBar`에 연결, `placement`) |
 | `TrendChart` | 시간에 따른 선 그래프 (`Chart` + LayerChart `LineChart`). 단위가 다른 지표를 각자의 최댓값 기준으로 겹쳐 그리고, 툴팁에 실제 값을 보여줍니다. 애니메이션은 쓰지 않습니다 |

@@ -2,7 +2,6 @@ package control
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
 	"time"
@@ -35,26 +34,6 @@ type Route struct {
 type HTTPRoutePlan struct {
 	Route
 	ConnectorID string
-}
-
-// PublicRoute returns a registered, enabled HTTP route for an exact hostname.
-// A missing route is distinct from a database failure.
-func (d *Database) PublicRoute(ctx context.Context, hostname string) (HTTPRoutePlan, bool, error) {
-	var plan HTTPRoutePlan
-	if !validation.Hostname(hostname) {
-		return plan, false, nil
-	}
-	err := d.db.QueryRowContext(ctx, `SELECT r.service_id, s.connector_id FROM routes r
-		JOIN services s ON s.id = r.service_id
-		WHERE r.kind = 'http' AND r.enabled = 1 AND s.enabled = 1 AND r.hostname = ?`, hostname).Scan(&plan.ServiceID, &plan.ConnectorID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return HTTPRoutePlan{}, false, nil
-	}
-	if err != nil {
-		return HTTPRoutePlan{}, false, err
-	}
-	plan.Hostname, plan.Enabled = hostname, true
-	return plan, true, nil
 }
 
 func (d *Database) HTTPRoutePlans(ctx context.Context) ([]HTTPRoutePlan, error) {
@@ -121,6 +100,7 @@ func (d *Database) CreateHTTPRoute(ctx context.Context, serviceID, hostname stri
 	if err != nil {
 		return Route{}, ErrRouteExists
 	}
+	d.routingChanged()
 	return route, nil
 }
 
@@ -176,5 +156,6 @@ func (d *Database) DeleteHTTPRoute(ctx context.Context, serviceID, routeID strin
 	if count == 0 {
 		return ErrRouteNotFound
 	}
+	d.routingChanged()
 	return nil
 }

@@ -392,6 +392,7 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 			<-done
 			return nil
 		case err := <-done:
+			stopChild()
 			finalCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			_ = report(finalCtx)
 			cancel()
@@ -449,6 +450,8 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 					return err
 				}
 				if err := securefs.WriteReloadable(path, nextConfig); err != nil {
+					stopChild()
+					<-done
 					return err
 				}
 				addresses = nextAddresses

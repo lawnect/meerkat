@@ -7,11 +7,15 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"log/slog"
+	"maps"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lawnect/meerkat/internal/contract"
@@ -71,7 +75,7 @@ func (r Record) probeFor(serviceID string) string {
 }
 
 type Store struct {
-	mu          sync.Mutex
+	mu          sync.RWMutex
 	path        string
 	managedPath string
 	proxyPath   string
@@ -90,8 +94,27 @@ type Store struct {
 	loginLimit   attemptLimiter
 	alerts       alertState
 	limiter      *rateLimiter
+	connections  *connectionLimiter
+	blocks       blockState
+	sso          ssoState
+	// ssoHTTP talks to the OpenID provider; nil uses a client with a timeout.
+	ssoHTTP *http.Client
+	// deviceKey signs trusted-device cookies; empty without a control database.
+	deviceKey []byte
+	// served maps a service ID to an *atomic.Int64: when, in Unix
+	// nanoseconds, it last answered proxied traffic below 500.
+	served sync.Map
 	// background tracks login notifications still being sent.
 	background sync.WaitGroup
+	journal    *auditJournal
+	sessions   sessionCache
+	setupDone  atomic.Bool
+	// Heartbeats change liveness in memory only; persistLoop writes the state
+	// files when these are set. Guarded by mu.
+	recordsDirty, managedDirty bool
+	stopWorkers                context.CancelFunc
+	workers                    sync.WaitGroup
+	closeOnce                  sync.Once
 }
 
 func Hash(s string) string { b := sha256.Sum256([]byte(s)); return hex.EncodeToString(b[:]) }
@@ -215,6 +238,27 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 	if err := s.reloadRateLimit(context.Background()); err != nil {
 		return nil, err
 	}
+	s.connections = &connectionLimiter{}
+	if err := s.reloadConnectionLimits(context.Background()); err != nil {
+		return nil, err
+	}
+	if err := s.reloadBlockRules(context.Background()); err != nil {
+		return nil, err
+	}
+	if controlDB != nil {
+		key, err := controlDB.DeviceKey(context.Background(), time.Now())
+		if err != nil {
+			return nil, err
+		}
+		s.deviceKey = key
+	}
+	workers, stop := context.WithCancel(context.Background())
+	s.stopWorkers = stop
+	if controlDB != nil {
+		s.journal = newAuditJournal(controlDB, filepath.Join(dir, "spool", "audit"))
+		s.workers.Go(func() { s.journal.run(workers) })
+	}
+	s.workers.Go(func() { s.persistLoop(workers) })
 	return s, nil
 }
 
@@ -252,14 +296,77 @@ func (s *Store) reconcileProxy(ctx context.Context) error {
 	if s.control == nil {
 		return nil
 	}
-	outlet, err := s.control.Outlet(ctx)
+	routing, err := s.control.Routing(ctx)
 	if err != nil {
 		return err
 	}
-	if outlet.Domain == "" {
+	if routing.Outlet.Domain == "" {
 		return securefs.WriteIfChanged(s.proxyPath, proxy.EmptyCaddyfile())
 	}
 	return securefs.WriteIfChanged(s.proxyPath, proxy.DynamicCaddyfile())
+}
+
+const persistInterval = 30 * time.Second
+
+// observe records a Connector's liveness in memory. Liveness never survives
+// a restart, so a heartbeat does not wait for the state file; persistLoop
+// writes it later. Called only while the store lock is held.
+func (s *Store) observe(id string, record Record, managed bool) {
+	if managed {
+		next := maps.Clone(s.managed)
+		next[id] = record
+		s.managed, s.managedDirty = next, true
+		return
+	}
+	next := maps.Clone(s.records)
+	next[id] = record
+	s.records, s.recordsDirty = next, true
+}
+
+// persist writes state files that changed only in memory.
+func (s *Store) persist() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.recordsDirty {
+		if err := securefs.WriteJSON(s.path, s.records); err != nil {
+			slog.Error("connector state not saved", "error", err)
+		} else {
+			s.recordsDirty = false
+		}
+	}
+	if s.managedDirty {
+		if err := securefs.WriteJSON(s.managedPath, s.managed); err != nil {
+			slog.Error("connector state not saved", "error", err)
+		} else {
+			s.managedDirty = false
+		}
+	}
+}
+
+func (s *Store) persistLoop(ctx context.Context) {
+	ticker := time.NewTicker(persistInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.persist()
+		case <-ctx.Done():
+			s.persist()
+			return
+		}
+	}
+}
+
+// Close stops the background writers after they save what is pending:
+// connector state, and audit entries (written, or set aside on disk). Call it
+// after the servers stop and before the control database closes.
+func (s *Store) Close() {
+	s.closeOnce.Do(func() {
+		if s.stopWorkers != nil {
+			s.stopWorkers()
+		}
+		s.workers.Wait()
+	})
 }
 
 // Persist before publishing changes: a failed write must not consume a token.
@@ -272,7 +379,7 @@ func (s *Store) save(id string, record Record) error {
 	if err := securefs.WriteJSON(s.path, next); err != nil {
 		return err
 	}
-	s.records = next
+	s.records, s.recordsDirty = next, false
 	return nil
 }
 
@@ -285,7 +392,7 @@ func (s *Store) saveManaged(id string, record Record) error {
 	if err := securefs.WriteJSON(s.managedPath, next); err != nil {
 		return err
 	}
-	s.managed = next
+	s.managed, s.managedDirty = next, false
 	return nil
 }
 
@@ -304,6 +411,6 @@ func (s *Store) removeManaged(id string) error {
 	if err := securefs.WriteJSON(s.managedPath, next); err != nil {
 		return err
 	}
-	s.managed = next
+	s.managed, s.managedDirty = next, false
 	return nil
 }

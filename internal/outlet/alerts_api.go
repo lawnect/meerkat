@@ -93,9 +93,8 @@ func (s *Store) putTelegram(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 	default:
 		detail := map[string]any{"chat_id": strings.TrimSpace(req.ChatID), "enabled": req.Enabled, "token_changed": strings.TrimSpace(req.BotToken) != ""}
-		if s.audited(w, r, "telegram.update", "telegram", "settings", detail) {
-			s.replyAlerts(w, r, 200)
-		}
+		s.audited(r, "telegram.update", "telegram", "settings", detail)
+		s.replyAlerts(w, r, 200)
 	}
 }
 
@@ -118,7 +117,7 @@ func (s *Store) testTelegram(w http.ResponseWriter, r *http.Request) {
 	}
 	now := s.now()
 	if err := s.telegramSend(r.Context(), telegram.BotToken, telegram.ChatID, testNotice(outlet.AdminHostname, now).HTML(outlet.AdminHostname)); err != nil {
-		s.auditFailure(r, "telegram.test", control.AuditEntry{ResourceType: "telegram", ResourceID: "settings", Detail: map[string]any{"ok": false, "error": telegramCode(err)}})
+		s.audit(r, "telegram.test", control.AuditEntry{ResourceType: "telegram", ResourceID: "settings", Detail: map[string]any{"ok": false, "error": telegramCode(err)}})
 		fail(w, r, 502, telegramCode(err))
 		return
 	}
@@ -126,9 +125,8 @@ func (s *Store) testTelegram(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	if s.audited(w, r, "telegram.test", "telegram", "settings", map[string]any{"ok": true}) {
-		s.replyAlerts(w, r, 200)
-	}
+	s.audited(r, "telegram.test", "telegram", "settings", map[string]any{"ok": true})
+	s.replyAlerts(w, r, 200)
 }
 
 func (s *Store) deleteTelegram(w http.ResponseWriter, r *http.Request) {
@@ -139,9 +137,8 @@ func (s *Store) deleteTelegram(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	if s.audited(w, r, "telegram.delete", "telegram", "settings", nil) {
-		s.replyAlerts(w, r, 200)
-	}
+	s.audited(r, "telegram.delete", "telegram", "settings", nil)
+	s.replyAlerts(w, r, 200)
 }
 
 func (s *Store) putAlertRules(w http.ResponseWriter, r *http.Request) {
@@ -159,9 +156,8 @@ func (s *Store) putAlertRules(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 	default:
 		detail := map[string]any{"tunnel_down": rules.TunnelDown, "route_error": rules.RouteError, "dns_failure": rules.DNSFailure, "error_spike": rules.ErrorSpike, "login": rules.Login, "rate_limit": rules.RateLimit}
-		if s.audited(w, r, "alert_rules.update", "alert_rules", "rules", detail) {
-			s.replyAlerts(w, r, 200)
-		}
+		s.audited(r, "alert_rules.update", "alert_rules", "rules", detail)
+		s.replyAlerts(w, r, 200)
 	}
 }
 
@@ -183,8 +179,7 @@ func (s *Store) putSecondFactor(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		fail(w, r, 503, "persistence_failed")
 	default:
-		if s.audited(w, r, "second_factor.update", "security", "second_factor", map[string]any{"enabled": req.Enabled}) {
-			reply(w, 200, map[string]bool{"login_second_factor": req.Enabled})
-		}
+		s.audited(r, "second_factor.update", "security", "second_factor", map[string]any{"enabled": req.Enabled})
+		reply(w, 200, map[string]bool{"login_second_factor": req.Enabled})
 	}
 }

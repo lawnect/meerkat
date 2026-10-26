@@ -2,14 +2,18 @@ package outlet
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +27,13 @@ const (
 	maxChallenges     = 64
 	loginAttempts     = 10
 	loginWindow       = time.Minute
+	maxLoginKeys      = 4096
+	// Internet logins in total, whatever the address: anyone holding an IPv6
+	// prefix has more addresses than a per-address limit can count, and each
+	// password check costs about 200 ms of CPU.
+	publicFailures      = 30
+	publicFailureWindow = 15 * time.Minute
+	passwordChecks      = 4
 )
 
 var (
@@ -142,10 +153,15 @@ func (c *challenges) verify(id, secret string, now time.Time) (control.Admin, er
 	return item.admin, errInvalidSecondFactor
 }
 
-// attemptLimiter allows loginAttempts requests per loginWindow for each address.
+// attemptLimiter allows loginAttempts requests per loginWindow for each
+// address. Internet logins also share publicFailures wrong passwords per
+// publicFailureWindow and passwordChecks password checks at a time; the local
+// admin port is exempt so the operator can always get in over SSH.
 type attemptLimiter struct {
-	mu   sync.Mutex
-	hits map[string][]time.Time
+	mu       sync.Mutex
+	hits     map[string][]time.Time
+	failures []time.Time
+	checking int
 }
 
 func (l *attemptLimiter) allow(key string, now time.Time) bool {
@@ -161,6 +177,11 @@ func (l *attemptLimiter) allow(key string, now time.Time) bool {
 			}
 		}
 	}
+	// Still full means every key is fresh: start over rather than scan on
+	// each request. The shared failure limit holds regardless.
+	if len(l.hits) >= maxLoginKeys {
+		clear(l.hits)
+	}
 	recent := l.hits[key][:0]
 	for _, at := range l.hits[key] {
 		if now.Sub(at) < loginWindow {
@@ -175,13 +196,86 @@ func (l *attemptLimiter) allow(key string, now time.Time) bool {
 	return true
 }
 
+const (
+	deviceCookie = "meerkat_device"
+	deviceTTL    = 90 * 24 * time.Hour
+)
+
+// deviceToken signs a trusted-device cookie valid until expires. The cookie
+// only marks a browser that has signed in before; it grants nothing else.
+func (s *Store) deviceToken(expires time.Time) string {
+	stamp := strconv.FormatInt(expires.Unix(), 10)
+	mac := hmac.New(sha256.New, s.deviceKey)
+	mac.Write([]byte("meerkat-device|" + stamp))
+	return stamp + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// trustedDevice reports whether the request carries a valid, unexpired
+// trusted-device cookie.
+func (s *Store) trustedDevice(r *http.Request) bool {
+	cookie, err := r.Cookie(deviceCookie)
+	if err != nil || len(s.deviceKey) == 0 {
+		return false
+	}
+	stamp, _, _ := strings.Cut(cookie.Value, ".")
+	unix, err := strconv.ParseInt(stamp, 10, 64)
+	if err != nil || !s.now().Before(time.Unix(unix, 0)) {
+		return false
+	}
+	return hmac.Equal([]byte(cookie.Value), []byte(s.deviceToken(time.Unix(unix, 0))))
+}
+
+// beginPasswordCheck admits an internet login to the password check, or says
+// how long to wait. endPasswordCheck must follow every admitted check. A
+// trusted device is exempt from the shared failure limit, which anyone can
+// fill with wrong passwords, but not from the cap on checks in progress.
+func (l *attemptLimiter) beginPasswordCheck(now time.Time, trusted bool) (time.Duration, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	recent := l.failures[:0]
+	for _, at := range l.failures {
+		if now.Sub(at) < publicFailureWindow {
+			recent = append(recent, at)
+		}
+	}
+	l.failures = recent
+	if len(recent) >= publicFailures && !trusted {
+		return recent[0].Add(publicFailureWindow).Sub(now), false
+	}
+	if l.checking >= passwordChecks {
+		return time.Second, false
+	}
+	l.checking++
+	return 0, true
+}
+
+func (l *attemptLimiter) endPasswordCheck(failed bool, now time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.checking--
+	if failed {
+		l.failures = append(l.failures, now)
+	}
+}
+
+// clientKey is the address a per-client limit counts: IPv6 clients are
+// grouped by /56, the smallest prefix networks commonly hand out; a single
+// /64 already holds more addresses than any limit counts.
+func clientKey(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil || parsed.To4() != nil {
+		return ip
+	}
+	return parsed.Mask(net.CIDRMask(56, 128)).String() + "/56"
+}
+
 // allowLogin limits password and second-factor guesses per client address.
 func (s *Store) allowLogin(w http.ResponseWriter, r *http.Request) bool {
 	key, _ := requestOrigin(r)
 	if key == "" {
 		key, _, _ = net.SplitHostPort(r.RemoteAddr)
 	}
-	if s.loginLimit.allow(key, s.now()) {
+	if s.loginLimit.allow(clientKey(key), s.now()) {
 		return true
 	}
 	w.Header().Set("Retry-After", "60")
@@ -238,12 +332,12 @@ func (s *Store) secondFactor(w http.ResponseWriter, r *http.Request) {
 	}
 	admin, err := s.challenges.verify(req.Challenge, req.Code, s.now())
 	if err != nil {
-		reason := map[error]string{errTooManyAttempts: "too_many_attempts", errInvalidSecondFactor: "wrong_code", errChallengeGone: "expired_or_unknown"}[err]
-		resource := admin.ID
-		if resource == "" {
-			resource = "unknown"
+		// An unknown challenge is anyone's guess and would only let strangers
+		// fill the permanent log; a wrong code follows a correct password.
+		if admin.ID != "" {
+			reason := map[error]string{errTooManyAttempts: "too_many_attempts", errInvalidSecondFactor: "wrong_code"}[err]
+			s.audit(r, "session.second_factor_failed", control.AuditEntry{ActorID: admin.ID, ActorEmail: admin.Email, ResourceType: "admin", ResourceID: admin.ID, Detail: map[string]any{"reason": reason}})
 		}
-		s.auditFailure(r, "session.second_factor_failed", control.AuditEntry{ActorID: admin.ID, ActorEmail: admin.Email, ResourceType: "admin", ResourceID: resource, Detail: map[string]any{"reason": reason}})
 		if errors.Is(err, errTooManyAttempts) {
 			fail(w, r, http.StatusTooManyRequests, "too_many_attempts")
 			return
@@ -251,27 +345,37 @@ func (s *Store) secondFactor(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 401, "invalid_second_factor")
 		return
 	}
-	if !s.auditedEntry(w, r, "session.second_factor", control.AuditEntry{ActorID: admin.ID, ActorEmail: admin.Email, ResourceType: "admin", ResourceID: admin.ID}) {
-		return
-	}
+	s.audit(r, "session.second_factor", control.AuditEntry{ActorID: admin.ID, ActorEmail: admin.Email, ResourceType: "admin", ResourceID: admin.ID})
 	s.finishLogin(w, r, admin, true)
 }
 
 // finishLogin starts the session and, without delaying the response, tells
 // Telegram about it. A session that cannot be audited is revoked at once.
 func (s *Store) finishLogin(w http.ResponseWriter, r *http.Request, admin control.Admin, secondFactor bool) {
+	session, ok := s.startLogin(w, r, admin, map[string]any{"method": "password", "second_factor": secondFactor})
+	if ok {
+		reply(w, 201, map[string]any{"admin": session.Admin, "expires_at": session.ExpiresAt})
+	}
+}
+
+// startLogin opens a session for admin, sets its cookies, records the login
+// and sends the login notice. On failure it has already answered.
+func (s *Store) startLogin(w http.ResponseWriter, r *http.Request, admin control.Admin, detail map[string]any) (control.Session, bool) {
 	session, err := s.control.StartSession(r.Context(), admin)
 	if err != nil {
 		fail(w, r, 503, "persistence_failed")
-		return
+		return control.Session{}, false
 	}
-	if !s.auditedEntry(w, r, "session.login", control.AuditEntry{ActorID: admin.ID, ActorEmail: admin.Email, ResourceType: "admin", ResourceID: admin.ID, Detail: map[string]any{"second_factor": secondFactor}}) {
-		_ = s.control.RevokeSession(context.WithoutCancel(r.Context()), session.Token)
-		return
-	}
+	s.audit(r, "session.login", control.AuditEntry{ActorID: admin.ID, ActorEmail: admin.Email, ResourceType: "admin", ResourceID: admin.ID, Detail: detail})
 	http.SetCookie(w, &http.Cookie{Name: "meerkat_session", Value: session.Token, Path: "/", Expires: session.ExpiresAt, MaxAge: int(time.Until(session.ExpiresAt).Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	// The local port is another origin: a cookie set there never reaches the
+	// public host, where the shared failure limit applies.
+	if _, public := requestOrigin(r); public && len(s.deviceKey) != 0 {
+		expires := s.now().Add(deviceTTL)
+		http.SetCookie(w, &http.Cookie{Name: deviceCookie, Value: s.deviceToken(expires), Path: "/api/v1/session", Expires: expires, MaxAge: int(deviceTTL.Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	}
 	s.announceLogin(r, admin.Email)
-	reply(w, 201, map[string]any{"admin": session.Admin, "expires_at": session.ExpiresAt})
+	return session, true
 }
 
 // userAgentSummary reduces a User-Agent to "Chrome on macOS" or less.

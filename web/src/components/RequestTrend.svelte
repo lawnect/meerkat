@@ -43,7 +43,7 @@
     previous: '이전 기간',
     next: '다음 기간',
     pickDate: '날짜 선택',
-    autoRefresh: '5초마다 자동 새로고침',
+    autoRefresh: '5초마다 자동 새로 고침',
     average: { hour: '시간당 평균', day: '일 평균', month: '월 평균', year: '연 평균' },
     loadFailed: (code: string) => `요청 처리 건수를 불러오지 못했습니다: ${code}`,
   });

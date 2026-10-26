@@ -1,7 +1,15 @@
-import type { AlertRules, AlertSettings, AuditEvent, RateLimitSettings, Connector, DomainMode, Outlet, Route, Service, Target, UsageBucket, UsageSeries, UsageUnit } from './types';
+import type { AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, Outlet, Route, Service, SsoSettings, Target, UsageBucket, UsageSeries, UsageUnit } from './types';
 
 const now = (): string => new Date().toISOString();
-const id = (kind: string): string => `mock-${kind}-${Math.random().toString(36).slice(2, 9)}`;
+const ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+// Same shape as the control plane's IDs: "m_" and 43 URL-safe characters.
+const id = (): string => 'm_' + Array.from(crypto.getRandomValues(new Uint8Array(43)), (byte) => ID_ALPHABET[byte & 63]).join('');
+// Seeded rows keep their ID across reloads so detail URLs stay valid.
+function seedId(name: string): string {
+  let h = 0x811c9dc5;
+  for (const char of name) h = Math.imul(h ^ char.charCodeAt(0), 0x01000193);
+  return 'm_' + Array.from({ length: 43 }, (_, i) => ID_ALPHABET[Math.floor(hashUnit(h + i * 0x9e3779b1) * 64)]).join('');
+}
 
 interface MockInput {
   address?: string;
@@ -71,28 +79,28 @@ const SEED_TUNNELS: Array<[string, string, Array<[string, string, number, string
 
 function seed() {
   const day = 86400000;
-  const connectors: Connector[] = [{ id: 'mock-connector-home', name: 'home-server', description: '집 서버 · whoami 테스트 앱', status: 'connected', created_at: now(), last_seen: now() }];
+  const connectors: Connector[] = [{ id: seedId('connector-home'), name: 'home-server', description: '집 서버 · whoami 테스트 앱', status: 'connected', created_at: now(), last_seen: now() }];
   const services: Service[] = [{
-    id: 'mock-service-whoami', connector_id: 'mock-connector-home', name: 'whoami', protocol: 'http',
+    id: seedId('service-whoami'), connector_id: seedId('connector-home'), name: 'whoami', protocol: 'http',
     target: { host: 'app', port: 80 }, enabled: true, observed_status: 'connected', created_at: now(), updated_at: now(),
   }];
   const routes: Route[] = [{
-    id: 'mock-route-whoami', service_id: 'mock-service-whoami', kind: 'http', hostname: 'whoami.example.test',
+    id: seedId('route-whoami'), service_id: seedId('service-whoami'), kind: 'http', hostname: 'whoami.example.test',
     enabled: true, desired_revision: 1, applied_revision: 1, created_at: now(), updated_at: now(),
   }];
   SEED_TUNNELS.forEach(([name, status, items], index) => {
     const created = new Date(Date.now() - (index + 2) * 3.7 * day).toISOString();
     const seen = status === 'draft' ? undefined : new Date(Date.now() - (status === 'connected' ? (index % 4) * 20000 : (index + 1) * 5 * 3600000)).toISOString();
-    const connectorId = `mock-connector-${name}`;
+    const connectorId = seedId(`connector-${name}`);
     connectors.push({ id: connectorId, name, display_name: SEED_LABELS[name] ?? '', description: SEED_NOTES[name] ?? '', status, created_at: created, last_seen: seen });
     for (const [serviceName, host, port, hostnames] of items) {
-      const serviceId = `mock-service-${name}-${serviceName}`;
+      const serviceId = seedId(`service-${name}-${serviceName}`);
       services.push({
         id: serviceId, connector_id: connectorId, name: serviceName, protocol: 'http', target: { host, port }, enabled: true,
         observed_status: status === 'connected' ? 'connected' : 'disconnected', created_at: created, updated_at: created,
       });
       hostnames.forEach((hostname, routeIndex) => routes.push({
-        id: `mock-route-${name}-${serviceName}-${routeIndex}`, service_id: serviceId, kind: 'http', hostname, enabled: true,
+        id: seedId(`route-${name}-${serviceName}-${routeIndex}`), service_id: serviceId, kind: 'http', hostname, enabled: true,
         desired_revision: 1, applied_revision: status === 'connected' ? 1 : 0, created_at: created, updated_at: created,
       }));
     }
@@ -122,6 +130,7 @@ const alerts: AlertSettings = {
     dns_failure: { enabled: true },
     error_spike: { enabled: true, threshold_percent: 5, min_requests: 50 },
     login: { enabled: true },
+    rate_limit: { enabled: true, min_blocked: 500 },
   },
   events: [
     { id: 7, kind: 'login', subject: 'dev@example.test', message: 'Admin login: dev@example.test from 203.0.113.7 (Chrome on macOS)', opened_at: hoursAgo(1), resolved_at: hoursAgo(1), sent: true },
@@ -141,6 +150,66 @@ let rateLimit: RateLimitSettings = {
   per_address: { rps: 0, burst: 0 },
   endpoints: [{ host: 'k7m2x9qa.example.test', path_prefix: '/api/v1/session', rps: 3, burst: 30, per: 'ip' }],
 };
+// SSO 데모 상태. 리디렉션 URI는 대표 도메인이 있을 때만 만들어집니다(redirectUri 참고).
+let sso: SsoSettings = {
+  enabled: true,
+  label: 'Google Workspace',
+  issuer: 'https://accounts.google.com',
+  client_id: '123456789-abc.apps.googleusercontent.com',
+  client_secret_set: true,
+  client_secret_hint: 'x7Qa',
+  scopes: ['openid', 'email', 'profile'],
+  groups_claim: 'groups',
+  allowed_users: ['@example.test'],
+  allowed_groups: [],
+  password_login: true,
+  redirect_uri: 'https://k7m2x9qa.example.test/api/v1/session/sso/callback',
+  available: true,
+};
+let connectionLimits: ConnectionLimits = {
+  max_upload_mb: 100,
+  per_ip_concurrent: 512,
+  total_concurrent: 4096,
+  idle_timeout_seconds: 30,
+  min_upload_kb_per_second: 1,
+  hosts: [{ host: 'photos.example.test', max_upload_mb: 2048 }],
+};
+let blockRules: BlockRule[] = [
+  { id: 'hidden-files', name: 'Hidden files', enabled: true, hosts: [], conditions: [{ operator: 'starts_with', value: '/.' }] },
+  {
+    id: 'scanners',
+    name: 'Vulnerability scanners',
+    enabled: false,
+    hosts: [],
+    conditions: [
+      { operator: 'matches', value: '\\.(php|phtml|asp|aspx|jsp|cgi|sql|bak|key|log|ya?ml|zip|env)$' },
+      { operator: 'starts_with', value: '/cgi-bin/' },
+      { operator: 'contains', value: '/wp-' },
+      { operator: 'contains', value: '/.env' },
+      { operator: 'matches', value: '^/(env|pma|phpmyadmin|cpanel|kpanel|plesk-stat|plesk/login|setup|config\\.json|config\\.js|settings\\.js|secrets\\.json|js/env\\.js|js/config\\.js|api/env|api/config|actuator/heapdump|_ignition/health-check)$' },
+    ],
+  },
+  {
+    id: 'unused-paths',
+    name: 'Paths this site does not use',
+    enabled: false,
+    hosts: [],
+    conditions: [
+      { operator: 'starts_with', value: '/assets/' },
+      { operator: 'starts_with', value: '/media/' },
+      { operator: 'starts_with', value: '/static/' },
+      { operator: 'starts_with', value: '/uploads/' },
+      { operator: 'matches', value: '^/(admin|administrator|components|feed|files|login|register|backup\\.tar\\.gz|config\\.xml|config/production\\.json)$' },
+    ],
+  },
+];
+let blockHits: Record<string, number> = { 'hidden-files': 1284 };
+// 규칙을 한정할 수 있는 공개 주소: 지금 있는 경로의 호스트 이름입니다.
+const blockRulesResponse = (): BlockRulesView => structuredClone({
+  rules: blockRules,
+  hits: blockHits,
+  addresses: [...new Set(state.routes.map((route) => route.hostname))].sort(),
+});
 
 // 감사 로그 데모: 최근 며칠 동안의 관리 작업을 만들어 둡니다.
 const AUDIT_SAMPLES: Array<[string, string, string, string]> = [
@@ -150,12 +219,12 @@ const AUDIT_SAMPLES: Array<[string, string, string, string]> = [
   ['route.create', 'route', 'photos.example.test', '{"service":"photos"}'],
   ['domain.add', 'domain', 'example.com', '{"mode":"hosts"}'],
   ['domain.mode', 'domain', 'example.org', '{"from":"wildcard","to":"hosts"}'],
-  ['tunnel.address', 'outlet', 'tunnel', '{"address":"default"}'],
+  ['tunnel.update', 'outlet', 'tunnel', '{"address":"default"}'],
   ['connector.token_reset', 'connector', 'office-printer', '{}'],
   ['session.login_failed', 'session', 'admin@example.test', '{"reason":"invalid_credential"}'],
-  ['telegram.save', 'alerts', 'telegram', '{"enabled":true}'],
-  ['alerts.rules', 'alerts', 'rules', '{"tunnel_down":{"after_minutes":5}}'],
-  ['connector.description', 'connector', 'legacy-erp', '{}'],
+  ['telegram.update', 'alerts', 'telegram', '{"enabled":true}'],
+  ['alert_rules.update', 'alerts', 'rules', '{"tunnel_down":{"after_minutes":5}}'],
+  ['connector.describe', 'connector', 'legacy-erp', '{}'],
   ['route.delete', 'route', 'old.example.net', '{"service":"api"}'],
   ['session.logout', 'session', 'dev@example.test', '{}'],
 ];
@@ -166,16 +235,33 @@ const auditEvents: AuditEvent[] = Array.from({ length: 128 }, (_, index) => {
     id: `audit-${128 - index}`,
     created_at: new Date(Date.now() - index * 47 * 60000).toISOString(),
     actor_email: action === 'session.login_failed' ? 'admin@example.test' : 'dev@example.test',
-    action, resource_type, resource_id, detail,
+    action, resource_type, resource_id, detail: JSON.parse(detail) as Record<string, unknown>,
     source: local ? 'local' : 'public',
     ip: local ? null : `203.0.113.${(index * 7) % 250}`,
     user_agent: local ? null : 'Chrome on macOS',
   };
 });
 const alertsResponse = (): AlertSettings => structuredClone(alerts);
+// 도메인을 모두 지우면 관리자 호스트가 없어 리디렉션 URI도 만들 수 없습니다.
+const ssoResponse = (): SsoSettings => {
+  const domain = state.outlet.domain;
+  return structuredClone({ ...sso, redirect_uri: domain ? `https://${adminHostname(domain)}/api/v1/session/sso/callback` : '', available: Boolean(domain) });
+};
 
 function fail(code: string): never {
   throw new Error(code);
+}
+
+// 서버처럼 https이고 query·fragment가 없는 주소만 Issuer로 받습니다. 끝의 /는 지웁니다.
+function issuerOf(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== 'https:' || url.search || url.hash || url.username || url.password) return null;
+    return `${url.origin}${url.pathname}`.replace(/\/+$/, '');
+  } catch {
+    return null;
+  }
 }
 
 // 실제 Outlet은 대표 도메인을 처음 등록할 때 8글자 이름을 만듭니다.
@@ -300,7 +386,7 @@ const USAGE_SHARES: Array<{ name: string; requests: number; bytes: number; error
 // so every metric sums back to the series totals. A range without requests has no rows, like the real API.
 function usageConnectors(totals: Omit<UsageBucket, 'start'>): UsageSeries['connectors'] {
   const shares = USAGE_SHARES.flatMap((share) => {
-    const connector = state.connectors.find((item) => item.id === `mock-connector-${share.name}`);
+    const connector = state.connectors.find((item) => item.name === share.name);
     return connector ? [{ share, connector }] : [];
   });
   if (totals.requests <= 0 || !shares.length) return [];
@@ -377,11 +463,11 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
   const parts = path.split('/').filter(Boolean).map(decodeURIComponent);
   const input = bodyOf(options.body);
 
-  if (path === '/api/v1/setup/status' && method === 'GET') return { setup_complete: true, version: '0.1.0' };
+  if (path === '/api/v1/setup/status' && method === 'GET') return { setup_complete: true, version: '0.1.0', sign_in: { password: true, sso: true, sso_label: 'Google Workspace' } };
   if (path === '/api/v1/setup/admin' && method === 'POST') return { status: 'created' };
   if (path === '/api/v1/session' && method === 'POST') {
     if (alerts.login_second_factor) {
-      loginChallenge = id('challenge');
+      loginChallenge = id();
       return { second_factor: 'telegram', challenge: loginChallenge };
     }
     return { admin: { email: input.email || 'dev@example.test' }, expires_at: now() };
@@ -398,7 +484,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     const offset = Math.max(0, Number(params.get('offset') ?? 0));
     const action = params.get('action') ?? '';
     const q = (params.get('q') ?? '').trim().toLowerCase();
-    const matches = auditEvents.filter((event) => event.action.startsWith(action) && (!q || [event.actor_email, event.resource_id, event.detail].some((value) => value?.toLowerCase().includes(q))));
+    const matches = auditEvents.filter((event) => event.action.startsWith(action) && (!q || [event.actor_email, event.resource_id, JSON.stringify(event.detail ?? {})].some((value) => value?.toLowerCase().includes(q))));
     return { events: matches.slice(offset, offset + limit), total: matches.length };
   }
   if (path === '/api/v1/alerts' && method === 'GET') return alertsResponse();
@@ -434,7 +520,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     const minutes = rules.tunnel_down?.after_minutes;
     const percent = rules.error_spike?.threshold_percent;
     const minimum = rules.error_spike?.min_requests;
-    if (!(minutes >= 1 && minutes <= 1440) || !(percent >= 0.1 && percent <= 100) || !(minimum >= 1 && minimum <= 1000000)) fail('invalid_alert_rules');
+    if (!(rules.rate_limit?.min_blocked >= 1) || !(minutes >= 1 && minutes <= 1440) || !(percent >= 0.1 && percent <= 100) || !(minimum >= 1 && minimum <= 1000000)) fail('invalid_alert_rules');
     alerts.rules = structuredClone(rules);
     return alertsResponse();
   }
@@ -446,6 +532,113 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     if (typeof next.enabled !== 'boolean' || !bucketOk(next.per_ip) || !bucketOk(next.per_subnet) || !bucketOk(next.per_address) || !rulesOk) fail('invalid_rate_limit');
     rateLimit = structuredClone(next);
     return structuredClone(rateLimit);
+  }
+  if (path === '/api/v1/security/sso' && method === 'GET') return ssoResponse();
+  if (path === '/api/v1/security/sso' && method === 'PUT') {
+    const body = input as unknown as Partial<Record<keyof SsoSettings | 'client_secret', unknown>>;
+    const strings = (value: unknown): string[] | null => (Array.isArray(value) && value.every((item) => typeof item === 'string') ? value as string[] : null);
+    const list = (value: unknown, fold: boolean): string[] | null => {
+      const items = strings(value);
+      if (!items) return null;
+      const cleaned = items.map((item) => (fold ? item.trim().toLowerCase() : item.trim())).filter(Boolean);
+      return cleaned.length <= 200 && cleaned.every((item) => item.length <= 200) ? [...new Set(cleaned)] : null;
+    };
+    const scopes = strings(body.scopes)?.map((scope) => scope.trim()).filter(Boolean);
+    const users = list(body.allowed_users, true);
+    const groups = list(body.allowed_groups, false);
+    const label = typeof body.label === 'string' ? body.label.trim() : null;
+    const clientId = typeof body.client_id === 'string' ? body.client_id.trim() : null;
+    const claim = typeof body.groups_claim === 'string' ? body.groups_claim.trim() : null;
+    const secret = typeof body.client_secret === 'string' ? body.client_secret.trim() : body.client_secret === undefined ? '' : null;
+    const rawIssuer = typeof body.issuer === 'string' ? body.issuer.trim() : null;
+    const issuer = rawIssuer === '' ? '' : issuerOf(rawIssuer);
+    if (typeof body.enabled !== 'boolean' || typeof body.password_login !== 'boolean' || !scopes || !users || !groups || label === null || label.length > 32 || clientId === null || claim === null || secret === null || issuer === null || clientId.length > 200 || claim.length > 200 || (secret?.length ?? 0) > 1000) fail('invalid_sso');
+    if (body.enabled && (!issuer || !clientId || users.length + groups.length === 0)) fail('invalid_sso');
+    const secretSet = secret ? true : sso.client_secret_set;
+    sso = {
+      ...sso,
+      enabled: body.enabled,
+      label,
+      issuer,
+      client_id: clientId,
+      client_secret_set: secretSet,
+      client_secret_hint: secret ? (secret.length >= 8 ? secret.slice(-4) : '') : sso.client_secret_hint,
+      scopes: ['openid', ...new Set(scopes.filter((scope) => scope !== 'openid'))],
+      groups_claim: claim || 'groups',
+      allowed_users: users,
+      allowed_groups: groups,
+      password_login: body.password_login,
+    };
+    return ssoResponse();
+  }
+  if (path === '/api/v1/security/sso/test' && method === 'POST') {
+    const issuer = issuerOf((input as { issuer?: unknown }).issuer);
+    if (!issuer) fail('invalid_issuer');
+    if (new URL(issuer).hostname.endsWith('.invalid')) fail('provider_unreachable');
+    return { authorization_endpoint: `${issuer}/o/oauth2/v2/auth` };
+  }
+  if (path === '/api/v1/security/connection-limits' && method === 'GET') return structuredClone(connectionLimits);
+  if (path === '/api/v1/security/connection-limits' && method === 'PUT') {
+    const next = input as unknown as ConnectionLimits;
+    const within = (value: unknown, max: number) => Number.isInteger(value) && (value as number) >= 0 && (value as number) <= max;
+    const hostnameOk = (host: string) => host.length <= 253 && host.split('.').every((label) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
+    const hosts = Array.isArray(next.hosts) ? next.hosts.map((entry) => ({ host: typeof entry?.host === 'string' ? entry.host.trim().toLowerCase() : '', max_upload_mb: entry?.max_upload_mb })) : null;
+    const hostsOk = hosts !== null && hosts.length <= 50 && new Set(hosts.map((entry) => entry.host)).size === hosts.length && hosts.every((entry) => hostnameOk(entry.host) && within(entry.max_upload_mb, 102400));
+    const idle = next.idle_timeout_seconds;
+    if (!within(next.max_upload_mb, 102400) || !within(next.per_ip_concurrent, 1000000) || !within(next.total_concurrent, 1000000) || !(idle === 0 || (within(idle, 3600) && idle >= 5)) || !within(next.min_upload_kb_per_second, 100000) || !hostsOk) fail('invalid_connection_limits');
+    connectionLimits = { ...next, hosts: hosts! };
+    return structuredClone(connectionLimits);
+  }
+  if (path === '/api/v1/security/block-rules' && method === 'GET') return blockRulesResponse();
+  if (path === '/api/v1/security/block-rules' && method === 'PUT') {
+    // 실제 서버처럼 rules만 받고, 값은 공백 제거·소문자 변환(정규식 제외)·정리 후 검사합니다.
+    const body = input as { rules?: unknown };
+    if (Object.keys(body).some((key) => key !== 'rules') || !Array.isArray(body.rules) || body.rules.length > 50) fail('invalid_block_rules');
+    const operators = ['equals', 'starts_with', 'ends_with', 'contains', 'matches'];
+    const hostnameOk = (host: string) => host.length <= 253 && host.split('.').every((label) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
+    const regexOk = (value: string) => {
+      if (/\(\?(?:=|!|<=|<!)/.test(value) || /\\[1-9]/.test(value)) return false;
+      try {
+        new RegExp(value, 'i');
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const condition = (raw: unknown): BlockCondition => {
+      const entry = (raw ?? {}) as Partial<BlockCondition>;
+      if (typeof entry.operator !== 'string' || !operators.includes(entry.operator) || typeof entry.value !== 'string') fail('invalid_block_rules');
+      const operator = entry.operator as BlockOperator;
+      let value = entry.value.trim();
+      if (operator !== 'matches') value = value.toLowerCase();
+      if (operator === 'equals') value = value.replace(/\/{2,}/g, '/').replace(/(.)\/$/, '$1');
+      if (!value || new TextEncoder().encode(value).length > 512 || /[\u0000-\u001f\u007f]/.test(value)) fail('invalid_block_rules');
+      if ((operator === 'equals' || operator === 'starts_with') && !value.startsWith('/')) fail('invalid_block_rules');
+      if (operator === 'matches' && !regexOk(value)) fail('invalid_block_rules');
+      return { operator, value };
+    };
+    const rules = (body.rules as unknown[]).map((raw): BlockRule => {
+      const rule = (raw ?? {}) as Partial<BlockRule>;
+      const name = typeof rule.name === 'string' ? rule.name.trim() : '';
+      if (!name || name.length > 64 || typeof rule.enabled !== 'boolean' || typeof rule.id !== 'string') fail('invalid_block_rules');
+      if (!Array.isArray(rule.hosts) || !Array.isArray(rule.conditions) || rule.conditions.length < 1 || rule.conditions.length > 50) fail('invalid_block_rules');
+      const hosts = [...new Set(rule.hosts.map((host) => (typeof host === 'string' ? host.trim().toLowerCase() : '')))];
+      if (hosts.some((host) => !hostnameOk(host.startsWith('*.') ? host.slice(2) : host))) fail('invalid_block_rules');
+      const seen = new Set<string>();
+      const conditions = rule.conditions.map(condition).filter((entry) => {
+        const key = `${entry.operator}\0${entry.value}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      return { id: rule.id, name, enabled: rule.enabled, hosts, conditions };
+    });
+    const ids = rules.map((rule) => rule.id).filter(Boolean);
+    if (new Set(ids).size !== ids.length) fail('invalid_block_rules');
+    for (const rule of rules) if (!rule.id) rule.id = `r${Math.random().toString(36).slice(2, 10)}`;
+    blockHits = Object.fromEntries(Object.entries(blockHits).filter(([id]) => rules.some((rule) => rule.id === id)));
+    blockRules = rules;
+    return blockRulesResponse();
   }
   if (path === '/api/v1/security/second-factor' && method === 'PUT') {
     const enabled = Boolean((input as { enabled?: boolean }).enabled);
@@ -543,7 +736,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     if (state.connectors.some((connector) => connector.name === name)) fail('connector_name_taken');
     const description = (input.description ?? '').trim();
     if (description.length > 500) fail('invalid_description');
-    const connector: Connector = { id: id('connector'), name, description, status: 'draft', created_at: now() };
+    const connector: Connector = { id: id(), name, description, status: 'draft', created_at: now() };
     state.connectors.unshift(connector);
     return { ...connector };
   }
@@ -595,7 +788,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
       if (state.services.some((item) => item.connector_id === connectorId && item.name === name)) fail('service_name_taken');
       if (state.services.some((item) => item.connector_id === connectorId && item.target.host.toLowerCase() === host.toLowerCase() && item.target.port === port)) fail('service_target_taken');
       const service: Service = {
-        id: id('service'), connector_id: connectorId, name, protocol: input.protocol || 'http',
+        id: id(), connector_id: connectorId, name, protocol: input.protocol || 'http',
         target: { host, port }, enabled: true, observed_status: 'unknown', created_at: now(), updated_at: now(),
       };
       state.services.push(service);
@@ -649,7 +842,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
       const hostname = input.hostname?.trim().toLowerCase();
       if (!hostname || hostname === adminHostname(state.outlet.domain) || !state.outlet.domains.some((domain) => hostname.endsWith(`.${domain}`))) fail('invalid_route');
       if (state.routes.some((route) => route.hostname === hostname)) fail('hostname_taken');
-      const route: Route = { id: id('route'), service_id: serviceId, kind: 'http', hostname, enabled: true, desired_revision: 1, applied_revision: 0, created_at: now(), updated_at: now() };
+      const route: Route = { id: id(), service_id: serviceId, kind: 'http', hostname, enabled: true, desired_revision: 1, applied_revision: 0, created_at: now(), updated_at: now() };
       state.routes.push(route);
       return { ...route };
     }

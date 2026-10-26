@@ -15,7 +15,7 @@
   import { toast } from 'svelte-sonner';
   import { api, errorMessage } from '../api';
   import { translations } from '../i18n.svelte';
-  import { Add, ArrowUndo, Delete, Save, Shield20, Warning } from '../icons';
+  import { Add12, ArrowUndo, Delete, Save, Shield20, Warning } from '../icons';
   import type { RateBucket, RateLimitSettings } from '../types';
   import IconButton from './IconButton.svelte';
   import InfoTooltip from './InfoTooltip.svelte';
@@ -28,7 +28,7 @@
     perIp: 'Per IP',
     perIpHint: 'One client address.',
     perSubnet: 'Per network',
-    perSubnetHint: 'IPv4 /24 or IPv6 /64, so many addresses from one network count together.',
+    perSubnetHint: 'IPv4 /24 or IPv6 /56, so many addresses from one network count together.',
     perAddress: 'Per public address',
     perAddressHint: 'All clients of one hostname together. 0 turns it off.',
     rps: 'Requests per second',
@@ -58,13 +58,13 @@
     perIp: 'IP별',
     perIpHint: '클라이언트 주소 하나 기준입니다.',
     perSubnet: '대역별',
-    perSubnetHint: 'IPv4 /24, IPv6 /64 단위로 묶어 여러 주소에서 오는 요청을 함께 셉니다.',
+    perSubnetHint: 'IPv4 /24, IPv6 /56 단위로 묶어 여러 주소에서 오는 요청을 함께 셉니다.',
     perAddress: '공개 주소별',
     perAddressHint: '한 호스트로 오는 모든 요청을 합쳐 셉니다. 0이면 끕니다.',
     rps: '초당 요청',
-    burst: '순간 허용',
+    burst: '버스트',
     perSecond: '/초',
-    burstShort: '순간',
+    burstShort: '버스트',
     endpoints: '엔드포인트 규칙',
     endpointsTip: '특정 경로에 더 엄격한 기준을 둡니다. 가장 길게 일치하는 경로가 적용됩니다. "전체 합산"은 출발지와 관계없이 그 엔드포인트 전체를 제한합니다.',
     host: '호스트',
@@ -78,7 +78,7 @@
     save: '저장',
     saving: '저장 중…',
     saved: '저장했습니다',
-    invalid: '값을 확인하세요. 초당 요청은 1–10,000, 순간 허용은 그 이상 100,000 이하입니다(둘 다 0이면 끔). 호스트는 도메인 이름 또는 *, 경로는 /로 시작해야 합니다.',
+    invalid: '값을 확인하세요. 초당 요청은 1–10,000, 버스트는 그 이상 100,000 이하입니다(둘 다 0이면 끔). 호스트는 도메인 이름 또는 *, 경로는 /로 시작해야 합니다.',
     failed: (code: string) => `저장하지 못했습니다: ${code}`,
     loadFailed: (code: string) => `요청 제한을 불러오지 못했습니다: ${code}`,
   });
@@ -168,7 +168,7 @@
       <div class="grid gap-2">
         <div class="flex items-center justify-between gap-2">
           <h3 class="flex items-center gap-1 text-sm font-medium">{t().endpoints}<InfoTooltip id="rate-endpoints-tip" label={t().endpoints} description={t().endpointsTip} /></h3>
-          <Button variant="outline" size="sm" disabled={!draft.enabled || draft.endpoints.length >= 50} onclick={() => draft?.endpoints.push({ host: '*', path_prefix: '/', rps: 10, burst: 20, per: 'ip' })}><Add aria-hidden="true" />{t().add}</Button>
+          <Button variant="outline" size="sm" disabled={!draft.enabled || draft.endpoints.length >= 50} onclick={() => draft?.endpoints.push({ host: '*', path_prefix: '/', rps: 10, burst: 20, per: 'ip' })}><Add12 aria-hidden="true" />{t().add}</Button>
         </div>
         {#if draft.endpoints.length}
           <div class="overflow-x-auto border">

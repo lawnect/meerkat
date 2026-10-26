@@ -149,7 +149,7 @@ func TestBucketStoreIsSafeUnderContention(t *testing.T) {
 func TestSubnetOf(t *testing.T) {
 	for ip, want := range map[string]string{
 		"203.0.113.7": "203.0.113.0/24", "203.0.113.250": "203.0.113.0/24", "::ffff:203.0.113.7": "203.0.113.0/24",
-		"2001:db8:0:1::1": "2001:db8:0:1::/64", "2001:db8:0:1:ffff::9": "2001:db8:0:1::/64", "garbage": "",
+		"2001:db8:0:1::1": "2001:db8::/56", "2001:db8:0:ff:ffff::9": "2001:db8::/56", "2001:db8:0:100::1": "2001:db8:0:100::/56", "garbage": "",
 	} {
 		if got := subnetOf(ip); got != want {
 			t.Errorf("subnetOf(%q) = %q, want %q", ip, got, want)
@@ -286,7 +286,7 @@ func TestLocalAdminPortIsNeverRateLimited(t *testing.T) {
 	}
 }
 
-func TestPerSubnetLimitSharesIPv4Slash24AndIPv6Slash64(t *testing.T) {
+func TestPerSubnetLimitSharesIPv4Slash24AndIPv6Slash56(t *testing.T) {
 	a := limitedFixture(t)
 	a.setLimits(t, map[string]any{"per_subnet": capacity(1, 3)})
 	codes := statuses(a, 5, a.host, "/healthz", func(i int) string { return fmt.Sprintf("198.51.100.%d", i+1) })
@@ -299,13 +299,14 @@ func TestPerSubnetLimitSharesIPv4Slash24AndIPv6Slash64(t *testing.T) {
 	if w := a.get(a.host, "/healthz", "198.51.101.1"); w.Code != 200 {
 		t.Fatalf("next /24: %d", w.Code)
 	}
-	v6 := []string{"2001:db8:0:1::1", "2001:db8:0:1::2", "2001:db8:0:1:ffff::3", "2001:db8:0:1:1::4"}
+	// Different /64s of one /56 share the bucket.
+	v6 := []string{"2001:db8:0:1::1", "2001:db8:0:2::2", "2001:db8:0:ff:ffff::3", "2001:db8:0:1:1::4"}
 	codes = statuses(a, 4, a.host, "/healthz", func(i int) string { return v6[i] })
 	if countOf(codes, 200) != 3 || codes[3] != 429 {
-		t.Fatalf("one /64: %v", codes)
+		t.Fatalf("one /56: %v", codes)
 	}
-	if w := a.get(a.host, "/healthz", "2001:db8:0:2::1"); w.Code != 200 {
-		t.Fatalf("next /64: %d", w.Code)
+	if w := a.get(a.host, "/healthz", "2001:db8:0:100::1"); w.Code != 200 {
+		t.Fatalf("next /56: %d", w.Code)
 	}
 }
 
@@ -408,28 +409,45 @@ func TestDefaultLimitsProtectLoginOnTheManagementHost(t *testing.T) {
 	}
 }
 
-func TestCertificateAskAndACMEPathsAreExempt(t *testing.T) {
+func TestOnlyTheCertificateAskIsExempt(t *testing.T) {
 	a := limitedFixture(t)
 	a.setLimits(t, map[string]any{"per_ip": capacity(1, 1), "per_subnet": capacity(1, 1), "per_address": capacity(1, 1),
 		"endpoints": []any{map[string]any{"host": "*", "path_prefix": "/", "rps": 1, "burst": 1, "per": "total"}}})
 	for i := 0; i < 20; i++ {
 		r := httptest.NewRequest("GET", certificateAskPath+"?domain="+a.host, nil)
 		r.Host = "outlet:8080"
-		r.Header.Set("X-Forwarded-For", "203.0.113.7")
 		w := httptest.NewRecorder()
 		a.store.PublicHandler().ServeHTTP(w, r)
 		if w.Code != http.StatusNoContent {
 			t.Fatalf("cert-ask %d: %d", i, w.Code)
 		}
-		if w := a.get(a.host, "/.well-known/acme-challenge/token", "203.0.113.7"); w.Code == 429 {
-			t.Fatalf("ACME path %d limited", i)
-		}
 	}
-	if !exemptFromRateLimit(certificateAskPath) || !exemptFromRateLimit("/.well-known/acme-challenge/x") || exemptFromRateLimit("/.well-known/other") {
-		t.Fatal("exempt paths are wrong")
+	ask := httptest.NewRequest("GET", certificateAskPath, nil)
+	ask.Host = "outlet:8080"
+	public := httptest.NewRequest("GET", certificateAskPath, nil)
+	public.Host = a.host
+	// A client can send Host: outlet:8080 through Caddy, but Caddy then adds
+	// X-Forwarded-For, which its own ask never carries.
+	spoofed := httptest.NewRequest("GET", certificateAskPath+"?domain="+a.host, nil)
+	spoofed.Host = "outlet:8080"
+	spoofed.Header.Set("X-Forwarded-For", "203.0.113.7")
+	if !exemptFromRateLimit(ask) || exemptFromRateLimit(public) || exemptFromRateLimit(spoofed) || exemptFromRateLimit(httptest.NewRequest("GET", "/.well-known/acme-challenge/x", nil)) {
+		t.Fatal("exemptions are wrong")
 	}
-	// The same client is limited everywhere else.
-	a.get(a.host, "/healthz", "203.0.113.7")
+	w := httptest.NewRecorder()
+	a.store.PublicHandler().ServeHTTP(w, spoofed)
+	if w.Code == http.StatusNoContent {
+		t.Fatalf("forwarded cert-ask answered: %d", w.Code)
+	}
+	// Caddy answers ACME challenges itself: here they are ordinary requests,
+	// and so is the ask path on a public host.
+	a.get(a.host, "/.well-known/acme-challenge/token", "203.0.113.7")
+	if w := a.get(a.host, "/.well-known/acme-challenge/token", "203.0.113.7"); w.Code != 429 {
+		t.Fatalf("ACME path: %d", w.Code)
+	}
+	if w := a.get(a.host, certificateAskPath, "203.0.113.7"); w.Code != 429 {
+		t.Fatalf("ask path on a public host: %d", w.Code)
+	}
 	if w := a.get(a.host, "/healthz", "203.0.113.7"); w.Code != 429 {
 		t.Fatalf("ordinary path: %d", w.Code)
 	}

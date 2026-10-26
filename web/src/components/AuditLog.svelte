@@ -22,7 +22,7 @@
   const t = translations({
     search: 'Search by user, target or detail',
     category: 'Category',
-    categories: { '': 'All actions', 'session.': 'Sign-in', 'connector.': 'Tunnels', 'service.': 'Services', 'route.': 'Public addresses', 'domain.': 'Domains', 'tunnel.': 'Tunnel address', 'telegram.': 'Telegram', 'alerts.': 'Alerts', 'security.': 'Security' } as Record<string, string>,
+    categories: { '': 'All actions', 'session.': 'Sign-in', 'setup.': 'Setup', 'connector.': 'Tunnels', 'service.': 'Services', 'route.': 'Public addresses', 'domain.': 'Domains', 'tunnel.': 'Tunnel address', 'telegram.': 'Telegram', 'alert_rules.': 'Alert rules', 'second_factor.': 'Two-step verification', 'security.': 'Security limits' } as Record<string, string>,
     reset: 'Reset filters',
     colTime: 'Time',
     colActor: 'User',
@@ -31,42 +31,42 @@
     colSource: 'From',
     local: 'Local port',
     actions: {
-      'session.login': 'Signed in', 'session.login_failed': 'Sign-in failed', 'session.second_factor': 'Passed two-step verification', 'session.second_factor_failed': 'Two-step verification failed', 'session.logout': 'Signed out', 'setup.admin': 'Created administrator',
-      'connector.create': 'Created tunnel', 'connector.delete': 'Deleted tunnel', 'connector.description': 'Changed tunnel description', 'connector.token': 'Issued tunnel token', 'connector.token_reset': 'Replaced tunnel token',
+      'session.login': 'Signed in', 'session.login_failed': 'Sign-in failed', 'session.second_factor': 'Passed two-step verification', 'session.second_factor_failed': 'Two-step verification failed', 'session.logout': 'Signed out', 'setup.admin_create': 'Created administrator',
+      'connector.create': 'Created tunnel', 'connector.delete': 'Deleted tunnel', 'connector.rename': 'Renamed tunnel', 'connector.describe': 'Changed tunnel description', 'connector.token_issue': 'Issued tunnel token', 'connector.token_reset': 'Replaced tunnel token', 'connector.enroll': 'Tunnel connected for the first time', 'connector.enroll_failed': 'Tunnel connection refused',
       'service.create': 'Added service', 'service.update': 'Changed service target', 'service.delete': 'Deleted service',
       'route.create': 'Added public address', 'route.delete': 'Deleted public address',
       'domain.set': 'Set primary domain', 'domain.add': 'Added domain', 'domain.remove': 'Deleted domain', 'domain.mode': 'Changed DNS records mode',
-      'tunnel.address': 'Changed tunnel address',
-      'telegram.save': 'Saved Telegram settings', 'telegram.test': 'Sent Telegram test', 'telegram.delete': 'Disconnected Telegram', 'alerts.rules': 'Changed alert rules', 'security.second_factor': 'Changed two-step verification',
+      'tunnel.update': 'Changed tunnel address',
+      'telegram.update': 'Saved Telegram settings', 'telegram.test': 'Sent Telegram test', 'telegram.delete': 'Disconnected Telegram', 'alert_rules.update': 'Changed alert rules', 'second_factor.update': 'Changed two-step verification', 'security.rate_limit': 'Changed rate limits', 'security.connection_limits': 'Changed connection limits', 'security.block_rules': 'Changed block rules', 'security.sso': 'Changed SSO settings',
     } as Record<string, string>,
     empty: 'No matching records',
     loadFailed: (code: string) => `Couldn't load the audit log: ${code}`,
   }, {
     search: '사용자, 대상, 내용 검색',
     category: '분류',
-    categories: { '': '모든 작업', 'session.': '로그인', 'connector.': '터널', 'service.': '서비스', 'route.': '공개 주소', 'domain.': '도메인', 'tunnel.': '터널 주소', 'telegram.': '텔레그램', 'alerts.': '알림', 'security.': '보안' },
+    categories: { '': '모든 작업', 'session.': '로그인', 'setup.': '초기 설정', 'connector.': '터널', 'service.': '서비스', 'route.': '공개 주소', 'domain.': '도메인', 'tunnel.': '터널 주소', 'telegram.': '텔레그램', 'alert_rules.': '알림 규칙', 'second_factor.': '2단계 인증', 'security.': '보안 제한' },
     reset: '필터 초기화',
     colTime: '시각',
     colActor: '사용자',
     colAction: '작업',
     colTarget: '대상',
-    colSource: '접속',
+    colSource: '접속 위치',
     local: '로컬 포트',
     actions: {
-      'session.login': '로그인', 'session.login_failed': '로그인 실패', 'session.second_factor': '2단계 인증 통과', 'session.second_factor_failed': '2단계 인증 실패', 'session.logout': '로그아웃', 'setup.admin': '관리자 생성',
-      'connector.create': '터널 만들기', 'connector.delete': '터널 삭제', 'connector.description': '터널 설명 변경', 'connector.token': '터널 토큰 발급', 'connector.token_reset': '터널 토큰 교체',
+      'session.login': '로그인', 'session.login_failed': '로그인 실패', 'session.second_factor': '2단계 인증 통과', 'session.second_factor_failed': '2단계 인증 실패', 'session.logout': '로그아웃', 'setup.admin_create': '관리자 생성',
+      'connector.create': '터널 생성', 'connector.delete': '터널 삭제', 'connector.rename': '터널 이름 변경', 'connector.describe': '터널 설명 변경', 'connector.token_issue': '터널 토큰 발급', 'connector.token_reset': '터널 토큰 교체', 'connector.enroll': '터널 최초 연결', 'connector.enroll_failed': '터널 연결 거부',
       'service.create': '서비스 추가', 'service.update': '서비스 대상 변경', 'service.delete': '서비스 삭제',
       'route.create': '공개 주소 추가', 'route.delete': '공개 주소 삭제',
       'domain.set': '대표 도메인 설정', 'domain.add': '도메인 추가', 'domain.remove': '도메인 삭제', 'domain.mode': 'DNS 방식 변경',
-      'tunnel.address': '터널 주소 변경',
-      'telegram.save': '텔레그램 설정 저장', 'telegram.test': '텔레그램 테스트', 'telegram.delete': '텔레그램 연결 해제', 'alerts.rules': '알림 규칙 변경', 'security.second_factor': '2단계 인증 설정 변경',
+      'tunnel.update': '터널 주소 변경',
+      'telegram.update': '텔레그램 설정 저장', 'telegram.test': '텔레그램 테스트', 'telegram.delete': '텔레그램 연결 해제', 'alert_rules.update': '알림 규칙 변경', 'second_factor.update': '2단계 인증 설정 변경', 'security.rate_limit': '요청 제한 변경', 'security.connection_limits': '연결 제한 변경', 'security.block_rules': '차단 규칙 변경', 'security.sso': 'SSO 설정 변경',
     },
     empty: '조건에 맞는 기록이 없습니다',
     loadFailed: (code: string) => `감사 로그를 불러오지 못했습니다: ${code}`,
   });
 
   const perPage = 20;
-  const categories = ['', 'session.', 'connector.', 'service.', 'route.', 'domain.', 'tunnel.', 'telegram.', 'alerts.', 'security.'];
+  const categories = ['', 'session.', 'setup.', 'connector.', 'service.', 'route.', 'domain.', 'tunnel.', 'telegram.', 'alert_rules.', 'second_factor.', 'security.'];
   // 검색어·분류·페이지는 주소(?q=&category=&page=)가 단일 출처입니다. 입력칸은 잠시 멈춘 뒤에 주소에 반영합니다.
   const page = $derived(intParam('page', 1));
   const action = $derived(oneOf('category', categories, ''));
@@ -163,7 +163,7 @@
                   <Tooltip.Trigger class="inline-flex outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
                     <Badge variant={failed(event.action) ? 'destructive' : 'secondary'} class="cursor-default select-none">{t().actions[event.action] ?? event.action}</Badge>
                   </Tooltip.Trigger>
-                  <Tooltip.Content class="max-w-sm font-mono">{event.action}{event.detail && event.detail !== '{}' ? ` ${event.detail}` : ''}</Tooltip.Content>
+                  <Tooltip.Content class="max-w-sm font-mono">{event.action}{event.detail && Object.keys(event.detail).length ? ` ${JSON.stringify(event.detail)}` : ''}</Tooltip.Content>
                 </Tooltip.Root>
               </Table.Cell>
               <Table.Cell class="max-w-56 font-mono"><TruncateText text={event.resource_id} /></Table.Cell>

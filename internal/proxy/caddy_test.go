@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -25,5 +27,16 @@ func TestEmptyCaddyfileHasNoPublicHost(t *testing.T) {
 	config := string(EmptyCaddyfile())
 	if !strings.Contains(config, ":9090 {\n\tmetrics /metrics") || strings.Contains(config, "issuer acme") {
 		t.Fatalf("invalid pre-domain config: %q", config)
+	}
+}
+
+// The example shipped for operators is the configuration the Outlet writes.
+func TestCaddyfileExampleMatchesGenerated(t *testing.T) {
+	example, err := os.ReadFile(filepath.Join("..", "..", "deploy", "Caddyfile.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(example) != string(DynamicCaddyfile()) {
+		t.Fatalf("deploy/Caddyfile.example differs from DynamicCaddyfile():\n%s", DynamicCaddyfile())
 	}
 }

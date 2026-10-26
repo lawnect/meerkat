@@ -14,6 +14,8 @@
 
 Connector는 항상 연결을 먼저 시작한다. 공인 Outlet은 외부 HTTP/HTTPS와 등록 endpoint를 제외하고 Connector 관리 포트를 직접 공개하지 않는다.
 
+모든 공개 주소는 관리 호스트와 같은 사이트(same-site)이므로 `SameSite=Strict` 쿠키만으로는 터널로 연결한 앱이 관리 API에 보내는 폼 요청을 막지 못한다. 그래서 `GET`, `HEAD`, `OPTIONS`가 아닌 브라우저 요청은 `Sec-Fetch-Site`가 `same-origin`이나 `none`이어야 하고, 이 헤더가 없으면 `Origin`의 호스트가 `Host`와 같아야 한다. 어긋나면 `403 cross_origin_request`다. 두 헤더가 모두 없는 요청(Connector, CLI)은 그대로 처리한다. 공개 경로로 들어온 응답에는 `Strict-Transport-Security: max-age=31536000`을 붙인다.
+
 ## 2. 관리자 API
 
 ### Outlet과 Connector
@@ -39,7 +41,7 @@ Outlet 응답의 `tunnel`은 Connector가 데이터 터널에 접속하는 `addr
 
 Outlet 응답의 `modes`는 도메인마다 DNS 방식을 담는다. `wildcard`는 `*` 레코드 하나, `hosts`는 관리 주소와 공개 주소마다 레코드를 만드는 방식이며 기본값은 `wildcard`다. `PUT /api/v1/outlet`과 `POST /api/v1/outlet/domains`에 `mode`를 함께 보낼 수 있고(대표 도메인을 바꿀 때 생략하면 기존 방식을 유지), `PUT /api/v1/outlet/domains/{domain}/mode`에 `{"mode":"hosts"}`를 보내 바꾼다. 잘못된 값은 `400 invalid_domain_mode`, 등록되지 않은 도메인은 `404 domain_not_found`다. 방식은 DNS 안내와 확인 대상만 바꾸며 라우팅과 인증서 발급은 같다. `POST /api/v1/outlet/domains/{domain}/check-dns`는 대표 도메인이면 관리 주소, `wildcard`면 임의의 하위 주소 하나, `hosts`면 그 도메인의 공개 주소마다, 그리고 그 도메인에 속한 터널 주소를 조회한다. 루트는 터널 주소일 때만 조회한다.
 
-`POST /api/v1/outlet/tunnel/check`는 `{"address":"..."}`의 주소를, 비어 있으면 현재 터널 주소를 Outlet에서 DNS 조회한 뒤 조회된 IP마다(최대 8개) TCP 연결을 시도해 `reachable`과 IP별 `results`(`latency_ms`, `error`: `connection_refused`, `timeout`, `unreachable`, `connection_failed`)를 반환한다. DNS 조회 실패는 `error: dns_lookup_failed`로 표시한다. 응답한 서버가 이 Outlet인지와 Connector 쪽 방화벽은 확인하지 않는다. 터널 주소가 없으면 `409 tunnel_address_unset`을 반환한다.
+`POST /api/v1/outlet/tunnel/check`는 `{"address":"..."}`의 주소를, 비어 있으면 현재 터널 주소를 Outlet에서 DNS 조회한 뒤 조회된 IP마다(최대 8개) TCP 연결을 시도해 `reachable`과 IP별 `results`(`latency_ms`, `error`: `connection_refused`, `timeout`, `unreachable`, `connection_failed`, `address_not_allowed`)를 반환한다. 루프백, 링크 로컬, 멀티캐스트 주소는 Connector가 접속할 수 없는 주소이므로 연결하지 않고 `address_not_allowed`로 표시한다. DNS 조회 실패는 `error: dns_lookup_failed`로 표시한다. 응답한 서버가 이 Outlet인지와 Connector 쪽 방화벽은 확인하지 않는다. 터널 주소가 없으면 `409 tunnel_address_unset`을 반환한다.
 
 `POST /api/v1/connectors`는 `name`과 선택 항목 `description`(관리자 메모, 줄바꿈을 제외한 제어 문자 없이 최대 500자)을 받는다. `PATCH /api/v1/connectors/{id}`에 `{"description":"..."}`나 `{"display_name":"..."}`(관리 화면에 보일 이름, 64자까지, 비우면 `name`을 보여줌)를 보내 바꾼다. 둘 다 없으면 `400 invalid_request`, 형식이 잘못되면 `400 invalid_description`/`invalid_display_name`, 없는 Connector면 `404 connector_not_found`다. `name`은 Connector 등록과 설치 명령·컨테이너 이름에 쓰이므로 바꿀 수 없다. 메모는 관리 화면에만 쓰이고 Connector 설정에는 포함되지 않는다.
 
@@ -117,6 +119,15 @@ PUT    /api/v1/alerts/rules
 PUT    /api/v1/security/second-factor
 GET    /api/v1/security/rate-limit
 PUT    /api/v1/security/rate-limit
+GET    /api/v1/security/connection-limits
+PUT    /api/v1/security/connection-limits
+GET    /api/v1/security/block-rules
+PUT    /api/v1/security/block-rules
+GET    /api/v1/security/sso
+PUT    /api/v1/security/sso
+POST   /api/v1/security/sso/test
+GET    /api/v1/session/sso/start
+GET    /api/v1/session/sso/callback
 GET    /api/v1/audit
 ~~~
 
@@ -158,7 +169,7 @@ GET    /api/v1/audit
 
 Telegram 메시지는 HTML(`parse_mode`)이며 이모지와 굵은 제목 한 줄, `이름: 값` 줄 두세 개, 마지막 줄의 관리 화면 링크(`https://관리주소/connectors/ID`, `/domains/도메인`, `/`)로 통일한다. 모든 동적 값은 이스케이프하고 식별자는 `<code>`로 감싼다.
 
-**로그인 보안 코드.** `login_second_factor`가 켜져 있으면 인터넷(공개 주소)에서 온 `POST /api/v1/session`은 이메일과 비밀번호가 맞아도 세션을 만들지 않는다. 대신 6자리 코드를 Telegram으로 보내고 `202 {"second_factor": "telegram", "challenge": "<id>"}`를 반환한다. 코드는 해시만 메모리에 두며 5분 동안 유효하고 5번까지 입력할 수 있다. Telegram 전송에 실패하면 `502 telegram_unreachable`이다. 이어서 `POST /api/v1/session/second-factor`에 `{"challenge": "...", "code": "123456"}`을 보내면 기존 로그인과 같은 `201`과 세션 쿠키를 받는다. 코드가 틀렸거나 만료·모르는 challenge이면 모두 같은 `401 invalid_second_factor`이고, 다섯 번째 오답은 challenge를 폐기하며 `429 too_many_attempts`다. 두 로그인 경로 모두 클라이언트 주소당 분당 10회로 제한하며 넘으면 `429 rate_limited`와 `Retry-After: 60`을 반환한다.
+**로그인 보안 코드.** `login_second_factor`가 켜져 있으면 인터넷(공개 주소)에서 온 `POST /api/v1/session`은 이메일과 비밀번호가 맞아도 세션을 만들지 않는다. 대신 6자리 코드를 Telegram으로 보내고 `202 {"second_factor": "telegram", "challenge": "<id>"}`를 반환한다. 코드는 해시만 메모리에 두며 5분 동안 유효하고 5번까지 입력할 수 있다. Telegram 전송에 실패하면 `502 telegram_unreachable`이다. 이어서 `POST /api/v1/session/second-factor`에 `{"challenge": "...", "code": "123456"}`을 보내면 기존 로그인과 같은 `201`과 세션 쿠키를 받는다. 코드가 틀렸거나 만료·모르는 challenge이면 모두 같은 `401 invalid_second_factor`이고, 다섯 번째 오답은 challenge를 폐기하며 `429 too_many_attempts`다. 두 로그인 경로 모두 클라이언트 주소(IPv6는 /56 단위)당 분당 10회로 제한하며 넘으면 `429 rate_limited`와 `Retry-After: 60`을 반환한다. 인터넷에서 온 비밀번호 확인은 주소와 관계없이 15분 동안 오답 30회, 동시에 4건까지만 받고, 넘으면 `429 rate_limited`와 남은 시간을 담은 `Retry-After`를 반환한다. 공개 주소에서 로그인에 성공한 브라우저는 신뢰 기기 쿠키(`meerkat_device`, 90일, `Path=/api/v1/session`, HttpOnly·Secure·SameSite=Strict, Outlet만 아는 키로 서명)를 받고, 이 쿠키가 있으면 누구나 채울 수 있는 오답 30회 제한을 받지 않는다. 주소당 제한과 동시 4건 제한, 보안 코드는 그대로 적용되며 쿠키 자체는 아무 권한도 주지 않는다. 로컬 관리 포트는 이 공용 제한을 받지 않아 SSH로는 항상 로그인할 수 있다. 로그아웃은 데이터베이스에서 세션을 폐기한 뒤 메모리 캐시에서 지우며, 폐기 전에 시작된 조회가 세션을 다시 캐시하지 못한다. 등록된 관리자가 없는 이메일도 같은 비밀번호 해시 계산을 거치므로 응답 시간으로 관리자 이메일을 알아낼 수 없다.
 
 SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없이 세션을 만든다. 운영자가 서버에 SSH로 들어갈 수 있으면 언제든 복구할 수 있다는 뜻이다. 요청이 공개 경로를 거쳤는지는 헤더가 아니라 Outlet이 `PublicHandler` 안에서만 요청 컨텍스트에 남기는 표시로 판단하므로 클라이언트가 위조할 수 없다. 접속 주소는 Caddy가 붙인 `X-Forwarded-For`의 마지막 항목만 쓰고, 로컬 포트에서는 어떤 헤더도 믿지 않는다.
 
@@ -171,19 +182,21 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
  "total": 1}
 ~~~
 
-`source`는 `public`(인터넷 경로) 또는 `local`(로컬 관리 포트)이고, `ip`는 `public`일 때만 Caddy가 전달한 접속 주소이며 그 밖에는 `null`이다. `actor_email`은 세션의 관리자이며, 관리자 계정이 생기기 전 설정 토큰으로 한 작업과 알 수 없는 시도에서는 `null`(로그인 실패는 시도한 이메일)이다. `detail`은 비밀이 아닌 필드만 담는다. 토큰, 비밀번호, 인증 코드, 봇 토큰은 기록하지 않는다. 기록은 변경이 끝난 뒤 같은 요청에서 하며, 기록에 실패하면 요청은 `503 audit_failed`가 된다(이미 적용된 변경은 되돌리지 않는다). 로그인은 기록하지 못하면 방금 만든 세션을 바로 폐기한다.
+`source`는 `public`(인터넷 경로) 또는 `local`(로컬 관리 포트)이고, `ip`는 `public`일 때만 Caddy가 전달한 접속 주소이며 그 밖에는 `null`이다. `actor_email`은 세션의 관리자이며, 관리자 계정이 생기기 전 설정 토큰으로 한 작업과 알 수 없는 시도에서는 `null`(로그인 실패는 시도한 이메일)이다. `detail`은 비밀이 아닌 필드만 담는다. 토큰, 비밀번호, 인증 코드, 봇 토큰은 기록하지 않는다. 기록은 요청을 기다리게 하지 않는다. 항목은 작업 시각과 ID를 붙여 메모리 큐에 넣고 백그라운드에서 묶어 쓴다. 데이터베이스가 받지 못하면 메모리에 두고 다시 시도하며, 메모리 한도를 넘으면 데이터 디렉터리의 `spool/audit/`에 파일로 옮겼다가 쓰기 작업이 한가할 때 다시 쓴다. 같은 ID는 한 번만 저장되므로 다시 써도 중복되지 않는다. 큐와 파일 한도까지 모두 넘으면 그 항목은 버리고 개수를 로그에 남기지만 요청은 그대로 처리한다. 종료할 때는 남은 항목을 쓰거나 파일로 옮긴 뒤 데이터베이스를 닫는다. 목록은 작업 시각 순서다.
 
 감사 로그는 추가만 가능하다. SQLite 트리거가 `audit_events`의 모든 `UPDATE`와 `DELETE`(`REPLACE` 포함)를 `audit log is append-only`로 중단하고, 삭제·수정·정리 API와 보관 기간은 없다. 데이터베이스 파일에 직접 접근할 수 있는 사람은 트리거를 지울 수 있으므로 파일 권한(0600)과 서버 접근 통제가 전제다.
+
+인증 없이 들어온 입력은 영구 로그를 채우지 않게 걸러 낸다. 실패한 로그인의 이메일은 올바른 이메일 형식일 때만 남기고, User-Agent의 제어 문자는 지우며, 모르는 challenge로 보낸 2단계 인증 요청과 토큰 없는 Connector 등록 시도는 기록하지 않는다. `connector.enroll`은 실행 토큰을 처음 쓴 등록만 남기고, 재시작 때마다 하는 재등록은 남기지 않는다.
 
 기록하는 동작 이름은 다음과 같다.
 
 | 분류 | 동작 |
 | --- | --- |
 | 세션 | `session.login`, `session.login_failed`, `session.second_factor`, `session.second_factor_failed`, `session.logout`, `setup.admin_create` |
-| 터널 | `connector.create`, `connector.delete`, `connector.describe`, `connector.token_issue`, `connector.token_reset` |
+| 터널 | `connector.create`, `connector.delete`, `connector.describe`, `connector.rename`, `connector.token_issue`, `connector.token_reset`, `connector.enroll`, `connector.enroll_failed` |
 | 서비스·공개 주소 | `service.create`, `service.update`, `service.delete`, `route.create`, `route.delete` |
 | 도메인·터널 주소 | `domain.set`, `domain.add`, `domain.remove`, `domain.mode`, `tunnel.update` |
-| 알림·보안 | `telegram.update`, `telegram.test`, `telegram.delete`, `alert_rules.update`, `second_factor.update`, `security.rate_limit` |
+| 알림·보안 | `telegram.update`, `telegram.test`, `telegram.delete`, `alert_rules.update`, `second_factor.update`, `security.rate_limit`, `security.connection_limits`, `security.block_rules`, `security.sso` |
 
 **요청 제한(rate limit).** 공개 경로(`PublicHandler`)에서 프록시하기 전에, 데이터베이스를 조회하기 전에 토큰 버킷으로 제한한다. `GET`과 `PUT /api/v1/security/rate-limit`은 같은 객체를 주고받으며 `PUT`은 모든 키를 담아야 하고 범위를 벗어나면 `400 invalid_rate_limit`이다. 설정은 재시작 없이 바로 적용한다.
 
@@ -197,12 +210,65 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 }
 ~~~
 
-- `per_ip`는 클라이언트 IP 하나, `per_subnet`은 IPv4 /24 또는 IPv6 /64, `per_address`는 공개 호스트 이름 하나(모든 클라이언트 합계)를 제한한다. `rps`와 `burst`가 모두 0이면 끄는 것이고, 켜려면 `rps` 1–10000, `burst`는 `rps` 이상 100000 이하여야 한다.
+- `per_ip`는 클라이언트 IP 하나, `per_subnet`은 IPv4 /24 또는 IPv6 /56, `per_address`는 공개 호스트 이름 하나(모든 클라이언트 합계)를 제한한다. `rps`와 `burst`가 모두 0이면 끄는 것이고, 켜려면 `rps` 1–10000, `burst`는 `rps` 이상 100000 이하여야 한다.
 - `endpoints`는 최대 50개이며 `host`(호스트 이름 또는 모든 호스트를 뜻하는 `*`)와 `/`로 시작하는 `path_prefix`가 같은 요청에 적용된다. 가장 긴 접두사가 이기고, 길이가 같으면 이름이 있는 호스트가 `*`보다 우선한다. 경로는 `//`, `.`, `..`을 정리하고 소문자로 바꿔 비교한다. `per`가 `total`이면 모든 클라이언트를 합쳐, `ip`이면 클라이언트 IP마다 제한한다. 같은 `host`와 `path_prefix`는 한 번만 쓸 수 있다.
 - 저장된 설정이 없으면 위 값이 기본이며 관리 호스트의 로그인 경로 규칙도 목록에 포함된다. 대표 도메인을 바꾸면 저장된 규칙의 관리 호스트도 새 이름으로 바뀐다.
 - 요청은 해당하는 모든 버킷에 토큰이 있어야 통과하고, 하나라도 비어 있으면 거부한다. 거부된 요청은 다른 버킷의 토큰을 쓰지 않는다. 거부는 `429 Too Many Requests`, `Retry-After: 1`, 본문 `Too many requests (ip limit)` 형태이며 `ip`, `subnet`, `address`, `endpoint` 중 어느 제한인지 알려 준다. 프록시하지 않는다.
-- 접속 주소는 Caddy가 붙인 `X-Forwarded-For`의 마지막 항목이다. 없으면 IP·서브넷·IP별 엔드포인트 제한은 건너뛴다(모든 클라이언트가 한 버킷을 나누는 일을 피한다). `/.well-known/meerkat/cert-ask`와 `/.well-known/acme-challenge/`는 제한하지 않으며 로컬 관리 포트는 이 제한을 거치지 않는다.
+- 접속 주소는 Caddy가 붙인 `X-Forwarded-For`의 마지막 항목이다. 없으면 IP·서브넷·IP별 엔드포인트 제한은 건너뛴다(모든 클라이언트가 한 버킷을 나누는 일을 피한다). Caddy가 내부 주소(Host `outlet:8080`, `X-Forwarded-For` 없음)로 보내는 `/.well-known/meerkat/cert-ask` 확인은 제한하지 않는다. 클라이언트가 Caddy를 거쳐 같은 Host를 보내면 `X-Forwarded-For`가 붙으므로 인증서 확인으로 취급하지 않는다. ACME HTTP-01 응답(`/.well-known/acme-challenge/`)은 Caddy가 직접 처리하므로 Outlet에 도달한 같은 경로는 일반 요청이다. 로컬 관리 포트는 이 제한을 거치지 않는다.
 - 버킷은 10분 동안 쓰지 않으면 지우고 전체 약 10만 개를 넘으면 가장 오래 쓰지 않은 것부터 지운다.
+
+**연결 제한(connection limits).** 요청 하나나 클라이언트 하나가 붙잡을 수 있는 자원을 제한한다. `GET`과 `PUT /api/v1/security/connection-limits`는 같은 객체를 주고받으며 `PUT`은 모든 키를 담아야 하고 범위를 벗어나면 `400 invalid_connection_limits`이다. 설정은 재시작 없이 바로 적용하고, 값이 0이면 그 제한은 꺼진다. 아래가 기본값이다.
+
+~~~
+{
+  "max_upload_mb": 100,
+  "per_ip_concurrent": 512,
+  "total_concurrent": 4096,
+  "idle_timeout_seconds": 30,
+  "min_upload_kb_per_second": 1,
+  "hosts": [{"host": "files.example.com", "max_upload_mb": 4096}]
+}
+~~~
+
+- `max_upload_mb`(0–102400, MiB)는 서비스로 전달하는 요청 본문의 상한이다. `hosts`(최대 50개, 호스트 이름 하나와 그 상한, 0이면 제한 없음)에 있는 호스트는 그 값을 따른다. `Content-Length`가 상한을 넘으면 본문을 받기 전에 `413`과 `Connection: close`로 거부하고, 길이를 미리 알 수 없는 본문은 상한을 넘는 순간 끊고 `413`을 반환한다.
+- `per_ip_concurrent`(0–1000000)는 클라이언트 주소(IPv6는 /56 단위)당 처리 중인 공개 요청 수다. 관리 호스트와 커넥터 API를 포함한 모든 공개 요청에 적용하며, 넘으면 `429`, `Retry-After: 1`, 본문 `Too many requests in progress from this address`다.
+- `total_concurrent`(0–1000000)는 모든 클라이언트를 합쳐 서비스로 전달 중인 요청 수다. 처리 중인 요청 하나에 Outlet 메모리 약 170KB가 들므로 기본값 4096이면 최대 약 700MB다. 넘으면 `503`, `Retry-After: 5`다. 관리 호스트와 커넥터 API 요청은 세지 않으므로 프록시가 가득 차도 관리 화면과 터널 상태 보고는 계속 동작한다.
+- `idle_timeout_seconds`(0 또는 5–3600)는 클라이언트가 보내는 본문 읽기와 클라이언트로의 응답 쓰기 각각에 주는 시간이다. 그동안 진행이 없으면 연결을 끊고, 업로드 중이었다면 `408`을 반환한다. 서비스의 응답을 기다리는 시간, 스트림 응답 중간의 쉼, keep-alive 연결의 다음 요청 대기, 업그레이드(WebSocket) 이후의 연결은 포함하지 않는다.
+- `min_upload_kb_per_second`(0–100000)는 요청이 시작된 뒤 평균 업로드 속도의 하한이다. 처음 유휴 시간(유휴 제한이 꺼져 있으면 30초)을 유예한 뒤 이보다 느리면 `408`로 끊는다. 응답(다운로드)에는 적용하지 않는다.
+- 본문을 끝까지 받지 않고 답한 요청(404, 429, 413, 서비스의 조기 응답 등)은 남은 본문을 기다려 비우지 않고, 응답 뒤 연결을 닫는다. 본문 일부만 보내고 멈춘 클라이언트가 제한에 잡히지 않은 채 연결을 붙잡지 못하게 하기 위해서다.
+- 동시 요청 제한으로 거부한 요청은 요청 제한 거부와 함께 `rate_limited`로 집계하며 `rate_limit` 알림에는 `concurrent`(IP별)와 `capacity`(전체)로 나타난다.
+- Caddy는 16KB를 넘는 요청 헤더를 거부하고 헤더를 10초 안에 받아야 한다. Caddy 자체의 본문·응답 유휴 제한은 1시간으로 두어 Outlet 설정이 먼저 적용된다.
+
+**차단 규칙(block rules).** 공개 주소(서비스로 연결된 호스트)로 온 요청의 경로가 규칙의 조건 중 하나라도 일치하면 서비스로 보내기 전에 `403 Forbidden`(본문 `Forbidden`)으로 거부한다. 관리 호스트와 대표 도메인의 커넥터 API에는 적용하지 않는다. `GET /api/v1/security/block-rules`는 `{"rules": [...], "hits": {"<id>": 12}, "addresses": ["app.example.com"]}`를 반환한다. `hits`는 Outlet 시작 이후 규칙별로 차단한 요청 수, `addresses`는 규칙을 한정할 수 있는 공개 주소 목록이다. `PUT`은 `{"rules": [...]}`만 받고(본문 256KiB 이하) 같은 형태로 답하며, 형식이 맞지 않으면 `400 invalid_block_rules`다. 설정은 재시작 없이 바로 적용한다.
+
+~~~
+{"rules": [{"id": "scanners", "name": "Vulnerability scanners", "enabled": true, "hosts": ["inc.example.com"],
+            "conditions": [{"operator": "matches", "value": "\\.(php|env)$"}, {"operator": "starts_with", "value": "/cgi-bin/"}]}]}
+~~~
+
+- 규칙은 최대 50개, 규칙마다 조건 1–50개다. `name`은 1–64자, `id`는 영문·숫자·`-`·`_` 32자 이하이며 비워 보내면 서버가 정한다. `hosts`는 호스트 이름 또는 `*.example.com` 형태의 와일드카드이며(규칙마다 200개까지), `*.example.com`은 그 아래 모든 깊이의 이름에 맞고 `example.com` 자체에는 맞지 않는다. 비어 있으면 모든 공개 주소에 적용한다.
+- `operator`는 `equals`(같음), `starts_with`(다음으로 시작), `ends_with`(다음으로 끝남), `contains`(포함), `matches`(정규식과 일치)다. 값은 512바이트 이하이고 제어 문자를 쓸 수 없다. `equals`와 `starts_with`는 `/`로 시작해야 한다. `matches`는 RE2 문법이며 대소문자를 구분하지 않는다(전후방 탐색과 역참조는 지원하지 않는다). 저장할 때 값의 앞뒤 공백을 지우고, 정규식이 아닌 값은 소문자로 바꾸며, `equals`는 요청 경로와 같은 방식으로 정리하고, 같은 조건은 하나만 남긴다.
+- 요청 경로는 디코딩된 경로에서 `\`를 `/`로 읽고, 각 부분의 `;` 뒤와 NUL 뒤를 버리고, `//`·`.`·`..`을 정리하고, 소문자로 바꾸고, 끝의 점과 공백을 지운 뒤 비교한다(끝의 `/`는 없다). `starts_with`, `ends_with`, `contains`는 끝에 `/`를 붙인 경로로도 비교하므로 `/cgi-bin/`은 `/cgi-bin`에도 맞는다. 순서상 처음 맞는 규칙이 횟수를 센다.
+- `/.well-known` 아래 경로는 어떤 규칙으로도 차단하지 않는다.
+- 저장된 설정이 없으면 세 규칙이 기본이다. 루트의 숨김 파일(`/.` 시작)을 막는 `hidden-files`만 켜져 있고, 취약점 스캐너 경로(`.php` 등)를 막는 `scanners`와 사이트가 쓰지 않는 경로의 예시인 `unused-paths`는 실제 앱(예: Nextcloud의 `.php`)을 깨뜨릴 수 있어 꺼져 있다.
+- 감사 로그에는 켜진 규칙과 꺼진 규칙의 이름만 남긴다.
+
+**SSO(OpenID Connect).** 관리 콘솔에 OpenID Connect 공급자(Google Workspace, Microsoft Entra ID, Okta, Keycloak, Authentik 등)로 로그인한다. 공개 관리 호스트에서만 동작하고, SSH로 여는 로컬 관리 포트는 항상 비밀번호를 쓴다. 첫 관리자가 만들어지기 전에는 동작하지 않는다.
+
+~~~
+{"enabled": true, "label": "Google", "issuer": "https://accounts.google.com", "client_id": "…", "client_secret": "…",
+ "scopes": ["openid", "email", "profile"], "groups_claim": "groups",
+ "allowed_users": ["admin@example.com", "@example.com"], "allowed_groups": ["meerkat-admins"], "password_login": true}
+~~~
+
+- `GET /api/v1/security/sso`는 위 객체에서 `client_secret` 대신 `client_secret_set`, `client_secret_hint`(끝 4자)와, 공급자에 등록할 `redirect_uri`(`https://<관리 호스트>/api/v1/session/sso/callback`)를 반환한다. `PUT`은 `client_secret`을 빼거나 비우면 저장된 값을 유지한다. 형식이 맞지 않으면 `400 invalid_sso`다. `POST /api/v1/security/sso/test`에 `{"issuer": "…"}`를 보내면 discovery 문서를 받아 확인하며, 실패하면 `502 provider_unreachable`이다.
+- `issuer`는 https URL이어야 하고 끝의 `/`는 지운다. `scopes`에는 `openid`가 항상 들어간다. 켜려면 `issuer`, `client_id`와 함께 `allowed_users` 또는 `allowed_groups`가 하나 이상 있어야 한다. 목록이 비어 있으면 공급자의 모든 계정이 들어올 수 있기 때문이다.
+- 허용 판단: 채워진 목록은 모두 충족해야 한다(AND). `allowed_users`가 있으면 ID 토큰의 `email`(소문자)이 그 목록에 있거나 `@도메인` 항목과 도메인이 같아야 하고, `allowed_groups`가 있으면 `groups_claim` 클레임(문자열 또는 문자열 목록)에 그 목록의 그룹이 하나 이상 있어야 한다. 목록 안에서는 하나만 맞으면 된다. `email_verified`가 `false`이거나 `email`이 없으면 거부한다. Google은 ID 토큰에 그룹을 넣지 않으므로 사용자나 도메인으로 제한해야 하고, Entra ID는 테넌트 ID가 들어간 issuer(`/common`이 아닌 것)를 써야 한다.
+- 흐름: 로그인 화면의 SSO 버튼은 `GET /api/v1/session/sso/start?return=/ko/`로 이동한다. Outlet은 state, nonce, PKCE(S256) 값을 만들어 state 해시를 메모리에 10분간 두고, state를 `meerkat_sso` 쿠키(HttpOnly, Secure, SameSite=Lax, `Path=/api/v1/session/sso`)에 넣은 뒤 공급자로 보낸다. 콜백은 쿠키와 `state`가 같고 한 번도 쓰이지 않았을 때만 code를 교환하고, ID 토큰의 서명(공급자 JWKS)·issuer·audience·만료·nonce를 확인한다.
+- 허용된 이메일에 관리자가 없으면 비밀번호 없는 관리자를 만든다. 이 관리자는 비밀번호로 로그인할 수 없고, 비밀번호 확인은 모르는 이메일과 같은 시간이 걸린다. 성공하면 비밀번호 로그인과 같은 세션·신뢰 기기 쿠키를 주고 `session.login`(`"method": "sso"`)을 남긴다. 텔레그램 보안 코드는 묻지 않는다(공급자의 다단계 인증을 쓴다). 세션 쿠키가 SameSite=Strict라서 리디렉션 대신 곧바로 `return` 경로로 이동하는 작은 페이지를 반환한다.
+- 실패하면 `return` 경로에 `?sso_error=<code>`를 붙여 `303`으로 돌려보낸다. `code`는 `sso_unavailable`, `provider_unreachable`, `invalid_state`, `provider_denied`, `token_failed`, `not_allowed`이다. 공급자 오류, 토큰 오류, 허용되지 않은 계정은 `session.login_failed`(`"method": "sso"`)로 남긴다.
+- `password_login`이 `false`이면 공개 주소의 `POST /api/v1/session`은 비밀번호를 확인하지 않고 `403 password_login_disabled`다. SSO를 끄면 `password_login`은 항상 `true`가 된다.
+- `GET /api/v1/setup/status`는 `sign_in: {"password": bool, "sso": bool, "sso_label": "…"}`를 함께 반환해 로그인 화면이 SSO 버튼과 비밀번호 양식을 고르게 한다. 로컬 관리 포트에서는 항상 비밀번호만이다.
 
 ### Outlet 사용량
 

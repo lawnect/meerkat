@@ -19,8 +19,11 @@
   import { Alert12, Alert20, ArrowUndo, Clock12, Delete, Key, NumberSymbol, Save, Send, Shield12, Warning } from '../icons';
   import type { AlertRules, AlertSettings } from '../types';
   import AuditLog from '../components/AuditLog.svelte';
+  import BlockRuleSettings from '../components/BlockRuleSettings.svelte';
+  import ConnectionLimitSettings from '../components/ConnectionLimitSettings.svelte';
   import RateLimitSettings from '../components/RateLimitSettings.svelte';
   import InfoTooltip from '../components/InfoTooltip.svelte';
+  import SsoSettings from '../components/SsoSettings.svelte';
   import PageHead from '../components/PageHead.svelte';
   import Status from '../components/Status.svelte';
   import TruncateText from '../components/TruncateText.svelte';
@@ -52,23 +55,24 @@
     save: 'Save',
     saving: 'Saving…',
     saved: 'Saved',
-    rules: 'Alerts',
+    rules: 'Alert rules',
     rulesNeedTelegram: 'Connect Telegram to receive these alerts.',
     tunnelDown: 'Tunnel disconnected',
-    tunnelDownHint: 'When a tunnel stays disconnected, and again when it reconnects.',
+    tunnelDownHint: 'After this long disconnected, and again on reconnect.',
     afterMinutes: 'Wait',
     minutes: 'min',
     routeError: 'Public address error',
-    routeErrorHint: 'When a certificate or proxy error stops a public address, and when it clears.',
     dnsFailure: 'DNS failure',
-    dnsFailureHint: 'Checked every 15 minutes. When a required record stops resolving, and when it resolves again.',
+    dnsFailureHint: 'Checked every 15 minutes.',
     errorSpike: '5xx spike',
-    errorSpikeHint: 'When the share of 5xx responses in an hour crosses the threshold.',
+    errorSpikeHint: 'Hourly 5xx share over the threshold, with at least the minimum requests.',
     threshold: 'Threshold',
     minRequests: 'Minimum requests',
     requestsUnit: 'req',
     login: 'Admin login',
-    loginHint: 'Every successful sign-in, with the address it came from.',
+    rateLimit: 'Requests blocked',
+    rateLimitHint: 'More requests than this blocked within 10 minutes.',
+    minBlocked: 'Blocked requests in 10 minutes',
     security: 'Sign-in security',
     secondFactor: 'Telegram two-step verification',
     secondFactorHint: 'After the password, enter the 6-digit code sent to Telegram.',
@@ -120,23 +124,24 @@
     save: '저장',
     saving: '저장 중…',
     saved: '저장했습니다',
-    rules: '알림',
+    rules: '알림 규칙',
     rulesNeedTelegram: '텔레그램을 연결하면 아래 알림을 받습니다.',
     tunnelDown: '터널 연결 끊김',
-    tunnelDownHint: '터널이 계속 끊겨 있을 때와 다시 연결됐을 때 알립니다.',
+    tunnelDownHint: '설정한 시간 이상 끊기면 알리고, 복구되면 다시 알립니다.',
     afterMinutes: '대기',
     minutes: '분',
     routeError: '공개 주소 오류',
-    routeErrorHint: '인증서나 프록시 오류로 공개 주소가 멈췄을 때와 해결됐을 때 알립니다.',
     dnsFailure: 'DNS 연결 오류',
-    dnsFailureHint: '15분마다 확인합니다. 필요한 레코드가 조회되지 않을 때와 다시 조회될 때 알립니다.',
+    dnsFailureHint: '15분마다 확인합니다.',
     errorSpike: '5xx 급증',
-    errorSpikeHint: '한 시간 동안의 5xx 응답 비율이 기준을 넘으면 알립니다.',
+    errorSpikeHint: '1시간 동안 5xx 비율이 기준을 넘고 요청 수가 최소 건수 이상이면 알립니다.',
     threshold: '기준',
     minRequests: '최소 요청 수',
     requestsUnit: '건',
     login: '관리자 로그인',
-    loginHint: '로그인할 때마다 접속한 주소와 함께 알립니다.',
+    rateLimit: '요청 차단',
+    rateLimitHint: '10분 동안 차단된 요청이 설정한 건수를 넘으면 알립니다.',
+    minBlocked: '10분간 차단된 요청 수',
     security: '로그인 보안',
     secondFactor: '텔레그램 2단계 인증',
     secondFactorHint: '비밀번호 다음에 텔레그램으로 받은 6자리 코드를 입력합니다.',
@@ -169,7 +174,7 @@
   const tabs = ['alerts', 'security', 'audit'] as const;
   const tab = $derived(oneOf('tab', tabs, 'alerts'));
 
-  const ruleKeys: RuleKey[] = ['tunnel_down', 'route_error', 'dns_failure', 'error_spike', 'login'];
+  const ruleKeys: RuleKey[] = ['tunnel_down', 'route_error', 'dns_failure', 'error_spike', 'rate_limit', 'login'];
 
   let settings = $state<AlertSettings | null>(null);
   let loadError = $state('');
@@ -253,10 +258,11 @@
 
   const ruleText: Record<RuleKey, () => { title: string; hint: string }> = {
     tunnel_down: () => ({ title: t().tunnelDown, hint: t().tunnelDownHint }),
-    route_error: () => ({ title: t().routeError, hint: t().routeErrorHint }),
+    route_error: () => ({ title: t().routeError, hint: '' }),
     dns_failure: () => ({ title: t().dnsFailure, hint: t().dnsFailureHint }),
     error_spike: () => ({ title: t().errorSpike, hint: t().errorSpikeHint }),
-    login: () => ({ title: t().login, hint: t().loginHint }),
+    login: () => ({ title: t().login, hint: '' }),
+    rate_limit: () => ({ title: t().rateLimit, hint: t().rateLimitHint }),
   };
   const kindLabel = (kind: string) => (ruleKeys.includes(kind as RuleKey) ? ruleText[kind as RuleKey]().title : kind);
   const timeLabel = (value: string) => new Date(value).toLocaleString(intlLocale(), { dateStyle: 'medium', timeStyle: 'short' });
@@ -350,7 +356,8 @@
                 {#if index}<Field.Separator class="my-3" />{/if}
                 <Field.Field orientation="horizontal" class="flex-wrap items-center gap-y-2">
                   <Field.Content class="min-w-48">
-                    <div class="flex items-center gap-1"><Field.Label for={`rule-${key}`}>{text.title}</Field.Label><InfoTooltip id={`rule-${key}-tip`} label={text.title} description={text.hint} /></div>
+                    <Field.Label for={`rule-${key}`}>{text.title}</Field.Label>
+                    {#if text.hint}<Field.Description>{text.hint}</Field.Description>{/if}
                   </Field.Content>
                   {#if key === 'tunnel_down'}
                     <InputGroup.Root class="w-28">
@@ -372,6 +379,18 @@
                         {/snippet}
                       </Tooltip.Trigger>
                       <Tooltip.Content>{t().minRequests}</Tooltip.Content>
+                    </Tooltip.Root>
+                  {:else if key === 'rate_limit'}
+                    <Tooltip.Root>
+                      <Tooltip.Trigger>
+                        {#snippet child({ props })}
+                          <InputGroup.Root {...props} class="w-28">
+                            <InputGroup.Input type="number" min="1" max="1000000" aria-label={t().minBlocked} bind:value={rules!.rate_limit.min_blocked} disabled={!rules!.rate_limit.enabled} class="tabular-nums" />
+                            <InputGroup.Addon align="inline-end"><InputGroup.Text>{t().requestsUnit}</InputGroup.Text></InputGroup.Addon>
+                          </InputGroup.Root>
+                        {/snippet}
+                      </Tooltip.Trigger>
+                      <Tooltip.Content>{t().minBlocked}</Tooltip.Content>
                     </Tooltip.Root>
                   {/if}
                   <Switch id={`rule-${key}`} bind:checked={rules[key].enabled} />
@@ -452,7 +471,10 @@
           {@render footerActions(securityDirty, busy.security, resetSecurity, saveSecurity)}
         </Card.Root>
 
+      <SsoSettings />
       <RateLimitSettings />
+      <ConnectionLimitSettings />
+      <BlockRuleSettings />
     </Tabs.Content>
     <Tabs.Content value="audit" class="grid min-w-0 gap-4">
       <AuditLog />

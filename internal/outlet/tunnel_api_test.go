@@ -29,6 +29,7 @@ func controlStore(t *testing.T, f fixture) (*Store, *control.Database) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Close)
 	return store, db
 }
 

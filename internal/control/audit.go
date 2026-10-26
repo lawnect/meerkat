@@ -17,7 +17,11 @@ const MaxAuditLimit = 200
 
 // AuditEntry is one administrator action. Empty strings are stored as NULL.
 // Detail holds only non-secret fields: never tokens, passwords or codes.
+// ID and At are fixed when the action happens, so an entry written late
+// still sorts by its own time and a retried write cannot store it twice.
 type AuditEntry struct {
+	ID           string
+	At           time.Time
 	ActorID      string
 	ActorEmail   string
 	Action       string
@@ -59,28 +63,63 @@ func nullable(s string) any {
 	return s
 }
 
-// AppendAudit adds one entry. Timestamps have a fixed width so they sort as text.
+// Valid reports whether the log accepts the entry.
+func (e AuditEntry) Valid() bool {
+	return e.Action != "" && e.ResourceType != "" && (e.Source == "public" || e.Source == "local")
+}
+
+// NewAuditID returns an ID for an entry that is written later.
+func NewAuditID() (string, error) { return randomID() }
+
+// AppendAudit adds one entry at now.
 func (d *Database) AppendAudit(ctx context.Context, e AuditEntry, now time.Time) error {
-	if e.Action == "" || e.ResourceType == "" || (e.Source != "public" && e.Source != "local") {
-		return ErrInvalidAudit
-	}
-	var detail any
-	if len(e.Detail) != 0 {
-		raw, err := json.Marshal(e.Detail)
-		if err != nil {
-			return err
+	e.At = now
+	return d.AppendAudits(ctx, []AuditEntry{e})
+}
+
+// AppendAudits adds entries in one transaction. An entry whose ID is already
+// stored is skipped, so a batch can be retried or replayed safely. Missing IDs
+// and times are filled in. Timestamps have a fixed width so they sort as text.
+func (d *Database) AppendAudits(ctx context.Context, entries []AuditEntry) error {
+	for _, e := range entries {
+		if !e.Valid() {
+			return ErrInvalidAudit
 		}
-		detail = string(raw)
 	}
-	id, err := randomID()
+	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	_, err = d.db.ExecContext(ctx, `INSERT INTO audit_events(id, actor_id, actor_email, action, resource_type, resource_id, source, ip, user_agent, detail, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, nullable(e.ActorID), nullable(e.ActorEmail), e.Action, e.ResourceType, e.ResourceID, e.Source, nullable(e.IP), nullable(e.UserAgent), detail,
-		now.UTC().Format("2006-01-02T15:04:05.000Z"))
-	return err
+	defer tx.Rollback()
+	insert, err := tx.PrepareContext(ctx, `INSERT INTO audit_events(id, actor_id, actor_email, action, resource_type, resource_id, source, ip, user_agent, detail, created_at)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM audit_events WHERE id = ?)`)
+	if err != nil {
+		return err
+	}
+	defer insert.Close()
+	for _, e := range entries {
+		if e.ID == "" {
+			if e.ID, err = randomID(); err != nil {
+				return err
+			}
+		}
+		if e.At.IsZero() {
+			e.At = time.Now()
+		}
+		var detail any
+		if len(e.Detail) != 0 {
+			raw, err := json.Marshal(e.Detail)
+			if err != nil {
+				return err
+			}
+			detail = string(raw)
+		}
+		if _, err := insert.ExecContext(ctx, e.ID, nullable(e.ActorID), nullable(e.ActorEmail), e.Action, e.ResourceType, e.ResourceID, e.Source, nullable(e.IP), nullable(e.UserAgent), detail,
+			e.At.UTC().Format("2006-01-02T15:04:05.000Z"), e.ID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // likePattern escapes LIKE wildcards so user text matches literally.
@@ -105,7 +144,7 @@ func (d *Database) Audit(ctx context.Context, f AuditFilter) ([]AuditEvent, int,
 		return nil, 0, err
 	}
 	rows, err := d.db.QueryContext(ctx, `SELECT id, created_at, actor_email, action, resource_type, resource_id, COALESCE(source, ''), ip, user_agent, detail
-		FROM audit_events`+where+" ORDER BY rowid DESC LIMIT ? OFFSET ?", append(args, f.Limit, f.Offset)...)
+		FROM audit_events`+where+" ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?", append(args, f.Limit, f.Offset)...)
 	if err != nil {
 		return nil, 0, err
 	}

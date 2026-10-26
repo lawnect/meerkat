@@ -7,7 +7,7 @@
   // 값 자체를 눌러 복사합니다. 결과는 토스트로 알립니다.
   let { value, class: className = '' }: { value: string; class?: string } = $props();
 
-  const t = translations({ copy: 'Click to copy' }, { copy: '눌러서 복사' });
+  const t = translations({ copy: 'Click to copy' }, { copy: '클릭하여 복사' });
 </script>
 
 <Tooltip.Root>

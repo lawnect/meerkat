@@ -2,16 +2,92 @@ package outlet
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/lawnect/meerkat/internal/validation"
 )
 
 const certificateAskPath = "/.well-known/meerkat/cert-ask"
+
+// upstreamHeaderTimeout bounds the wait for an application's response
+// headers, like nginx's proxy_read_timeout; the body may stream for longer.
+// Tests shorten it before building a handler.
+var upstreamHeaderTimeout = 60 * time.Second
+
+// upstreamIdlePerService keeps an idle connection for every request that was
+// in flight at once, so a burst never closes connections it will need again.
+const upstreamIdlePerService = 16384
+
+// upstreamTransport reaches services through their tunnel ports on loopback.
+// Each new connection there opens a tunnel channel to the Connector. A pool
+// smaller than the concurrency (net/http keeps two per host by default)
+// closes and redials on almost every request, and the closed sockets wait in
+// TIME_WAIT until loopback runs out of ports and requests fail with 502.
+func upstreamTransport() *http.Transport {
+	return &http.Transport{
+		Proxy:                 nil,
+		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		MaxIdleConnsPerHost:   upstreamIdlePerService,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: upstreamHeaderTimeout,
+		ExpectContinueTimeout: time.Second,
+		// A proxy passes encodings through; transparent gzip would make the
+		// Outlet decompress responses the client did not ask to compress.
+		DisableCompression:     true,
+		MaxResponseHeaderBytes: 1 << 20,
+	}
+}
+
+type bufferPool struct{ pool sync.Pool }
+
+func (b *bufferPool) Get() []byte {
+	if buf, ok := b.pool.Get().(*[]byte); ok {
+		return *buf
+	}
+	return make([]byte, 32<<10)
+}
+
+func (b *bufferPool) Put(buf []byte) { b.pool.Put(&buf) }
+
+// proxyBuffers reuses the body copy buffers of proxied requests.
+var proxyBuffers = &bufferPool{}
+
+// noteServed records that a service answered proxied traffic. A heartbeat
+// probe can time out on a busy Outlet while real requests flow, and such
+// answers prove the tunnel works without another round trip.
+func (s *Store) noteServed(serviceID string) {
+	now := s.now().UnixNano()
+	v, ok := s.served.Load(serviceID)
+	if !ok {
+		v, _ = s.served.LoadOrStore(serviceID, new(atomic.Int64))
+	}
+	// Once a second is precise enough, and spares the shared cache line.
+	if last := v.(*atomic.Int64); now-last.Load() >= int64(time.Second) {
+		last.Store(now)
+	}
+}
+
+// servedSince reports whether the service answered proxied traffic after t.
+func (s *Store) servedSince(serviceID string, t time.Time) bool {
+	v, ok := s.served.Load(serviceID)
+	return ok && !t.IsZero() && v.(*atomic.Int64).Load() > t.UnixNano()
+}
+
+// isCertificateAsk reports whether r is Caddy's own on-demand TLS check.
+// Caddy calls it directly, without X-Forwarded-For; every request Caddy
+// proxies for a client carries that header, so a client that sets
+// Host: outlet:8080 still cannot ask which names the Outlet would certify.
+func isCertificateAsk(r *http.Request) bool {
+	return r.URL.Path == certificateAskPath && r.Host == "outlet:8080" && len(r.Header.Values("X-Forwarded-For")) == 0
+}
 
 func publicHostname(raw string) string {
 	host := strings.ToLower(raw)
@@ -30,10 +106,11 @@ func (s *Store) certificateAllowed(ctx context.Context, hostname string) (bool, 
 	if s.control == nil || !validation.Hostname(hostname) {
 		return false, nil
 	}
-	outlet, err := s.control.Outlet(ctx)
+	routing, err := s.control.Routing(ctx)
 	if err != nil {
 		return false, err
 	}
+	outlet := routing.Outlet
 	if outlet.Domain == "" {
 		return false, nil
 	}
@@ -45,18 +122,18 @@ func (s *Store) certificateAllowed(ctx context.Context, hostname string) (bool, 
 			return true, nil
 		}
 	}
-	_, found, err := s.control.PublicRoute(ctx, hostname)
-	return found, err
+	_, found := routing.Route(hostname)
+	return found, nil
 }
 
 // PublicHandler is served only on the internal Compose network. It does not
 // expose the administrator API for arbitrary public hostnames.
 func (s *Store) PublicHandler() http.Handler {
 	admin := s.Handler()
-	transport := &http.Transport{Proxy: nil}
+	transport := upstreamTransport()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(context.WithValue(r.Context(), originKey{}, publicOrigin{ip: forwardedClient(r)}))
-		if r.URL.Path == certificateAskPath && r.Host == "outlet:8080" {
+		if isCertificateAsk(r) {
 			if r.Method != http.MethodGet {
 				w.WriteHeader(http.StatusMethodNotAllowed)
 				return
@@ -71,6 +148,9 @@ func (s *Store) PublicHandler() http.Handler {
 			}
 			return
 		}
+		limits := s.connectionLimits()
+		w, body := guardTransfer(w, r, limits)
+		defer finishTransfer(w, body)
 		host := publicHostname(r.Host)
 		if host == "" || s.control == nil {
 			http.NotFound(w, r)
@@ -79,11 +159,19 @@ func (s *Store) PublicHandler() http.Handler {
 		if s.limitRequest(w, r, host) {
 			return
 		}
-		outlet, err := s.control.Outlet(r.Context())
+		client, ok := s.admitClient(w, r, limits)
+		if !ok {
+			return
+		}
+		if client != "" {
+			defer s.connections.inflight.release(client)
+		}
+		routing, err := s.control.Routing(r.Context())
 		if err != nil {
 			http.Error(w, "route unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		outlet := routing.Outlet
 		if host == outlet.AdminHostname {
 			admin.ServeHTTP(w, r)
 			return
@@ -96,27 +184,51 @@ func (s *Store) PublicHandler() http.Handler {
 			}
 			return
 		}
-		plan, found, err := s.control.PublicRoute(r.Context(), host)
-		if err != nil {
-			http.Error(w, "route unavailable", http.StatusServiceUnavailable)
-			return
-		}
+		plan, found := routing.Route(host)
 		if !found {
 			http.NotFound(w, r)
 			return
 		}
-		s.mu.Lock()
+		if rule := s.blockedBy(host, r.URL.Path); rule != nil {
+			rule.hits.Add(1)
+			blocked(w)
+			return
+		}
+		s.mu.RLock()
 		record, ok := s.managed[plan.ConnectorID]
 		address := record.probeFor(plan.ServiceID)
 		connected := ok && record.Enrolled && managedConnectorStatus(record, s.now()) == "connected" && record.ServiceStatuses[plan.ServiceID] == "connected" && isLoopbackAddress(address)
-		s.mu.Unlock()
+		s.mu.RUnlock()
 		if !connected {
 			http.NotFound(w, r)
 			return
 		}
+		// A tunnel is not an HTTP proxy for other destinations.
+		if r.Method == http.MethodConnect {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if limit := limits.uploadLimit(host); limit > 0 {
+			if r.ContentLength > limit {
+				w.Header().Set("Connection", "close")
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			if body != nil {
+				body.limit = limit
+			}
+		}
+		held, ok := s.admitProxy(w, r, limits)
+		if !ok {
+			return
+		}
+		if held {
+			defer s.connections.inflight.total.Add(-1)
+		}
 		upstream := &url.URL{Scheme: "http", Host: address}
 		proxy := &httputil.ReverseProxy{
-			Transport: transport,
+			Transport:  transport,
+			BufferPool: proxyBuffers,
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.SetURL(upstream)
 				pr.Out.Host = pr.In.Host
@@ -137,7 +249,42 @@ func (s *Store) PublicHandler() http.Handler {
 					pr.Out.Header.Set("X-Forwarded-For", forwardedFor)
 				}
 			},
-			ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
+			ModifyResponse: func(res *http.Response) error {
+				if res.StatusCode < 500 {
+					s.noteServed(plan.ServiceID)
+				}
+				return nil
+			},
+			ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+				// A malformed, abandoned, stalled or oversized upload is the
+				// client's error, and must not count as an upstream failure in
+				// error alerts. A failed read of the client's connection
+				// cancels the request before the body records why, so a
+				// cancelled request with its upload unfinished is the client's
+				// too.
+				clientGone := r.Context().Err() != nil
+				switch {
+				case body != nil && body.tooLarge.Load():
+					w.Header().Set("Connection", "close")
+					http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+					return
+				case body != nil && (body.timedOut.Load() || clientGone && !body.complete.Load()):
+					w.Header().Set("Connection", "close")
+					http.Error(w, "request body timed out", http.StatusRequestTimeout)
+					return
+				case body != nil && body.failed.Load():
+					http.Error(w, "invalid request body", http.StatusBadRequest)
+					return
+				case clientGone:
+					// nginx's "client closed request"; nobody reads it.
+					w.WriteHeader(499)
+					return
+				}
+				var timeout net.Error
+				if errors.As(err, &timeout) && timeout.Timeout() {
+					http.Error(w, "upstream timed out", http.StatusGatewayTimeout)
+					return
+				}
 				http.Error(w, "upstream unavailable", http.StatusBadGateway)
 			},
 		}

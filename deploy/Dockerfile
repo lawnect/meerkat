@@ -25,11 +25,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 # Stable v0.5.0 provides Noise on both platforms. ARM64's embedded build does
 # not include TLS; the control API still uses Go TLS on both architectures.
 RUN case "$TARGETARCH" in \
-      amd64) target=x86_64-unknown-linux-gnu ;; \
-      arm64) target=aarch64-unknown-linux-musl ;; \
+      amd64) target=x86_64-unknown-linux-gnu sha=3e7d0d0f365120cd3cd351d147d1a12ee960c8068b464d4dd533a3821873b80e ;; \
+      arm64) target=aarch64-unknown-linux-musl sha=fa4a6fc63d86f8f1faa7c103a845e4715ce79a048455c0eec897b27237576564 ;; \
       *) exit 1 ;; \
     esac && \
     curl --fail --location --retry 3 -o /tmp/rathole.zip "https://github.com/rathole-org/rathole/releases/download/v0.5.0/rathole-${target}.zip" && \
+    echo "${sha}  /tmp/rathole.zip" | sha256sum -c - && \
     unzip /tmp/rathole.zip -d /out && chmod 0755 /out/rathole && \
     /out/rathole --version && \
     /out/rathole --version | grep -q hot_reload
