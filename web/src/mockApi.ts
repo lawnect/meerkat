@@ -170,8 +170,7 @@ let sso: SsoSettings = {
   source: 'environment',
   environment: true,
 };
-// 데모의 SSO는 환경 변수에서 온 것으로 둡니다. 저장하면 덮어쓰고, DELETE로 되돌립니다.
-const ssoEnvironment: SsoSettings = structuredClone(sso);
+// 데모의 SSO는 환경 변수에서 온 것으로 둡니다. 실제 Outlet처럼 저장·초기화를 거부합니다.
 let connectionLimits: ConnectionLimits = {
   max_upload_mb: 100,
   per_ip_concurrent: 512,
@@ -550,6 +549,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
   }
   if (path === '/api/v1/security/sso' && method === 'GET') return ssoResponse();
   if (path === '/api/v1/security/sso' && method === 'PUT') {
+    if (sso.source === 'environment') fail('sso_from_environment');
     const body = input as unknown as Partial<Record<keyof SsoSettings | 'client_secret', unknown>>;
     const strings = (value: unknown): string[] | null => (Array.isArray(value) && value.every((item) => typeof item === 'string') ? value as string[] : null);
     const list = (value: unknown, fold: boolean): string[] | null => {
@@ -587,10 +587,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     };
     return ssoResponse();
   }
-  if (path === '/api/v1/security/sso' && method === 'DELETE') {
-    sso = structuredClone(ssoEnvironment);
-    return ssoResponse();
-  }
+  if (path === '/api/v1/security/sso' && method === 'DELETE') fail('sso_from_environment');
   if (path === '/api/v1/security/sso/test' && method === 'POST') {
     const issuer = issuerOf((input as { issuer?: unknown }).issuer);
     if (!issuer) fail('invalid_issuer');

@@ -319,7 +319,7 @@ The admin console can sign in with an OpenID Connect provider (Google Workspace,
 
 ### Settings from environment variables
 
-The Outlet also reads these settings from its environment, so a deployment can set them without the admin console. A value saved in the console overrides the environment; the console marks such settings **Set by environment** or **Overrides environment**, and **Revert to environment** drops the saved value.
+The Outlet also reads these settings from its environment, so a deployment can set them without the admin console. For Telegram, a value saved in the console overrides the environment; the console marks it **Set by environment** or **Overrides environment**, and **Revert to environment** drops the saved value. Single sign-on, the primary domain and the admin address set in the environment can't be edited in the console, so a wrong save can't lock administrators out.
 
 | Variable | Setting |
 |---|---|

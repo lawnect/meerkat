@@ -150,21 +150,30 @@ func (d *Database) SSOSource(ctx context.Context) (string, error) {
 	return source, err
 }
 
-// ResetSSO forgets the settings saved from the admin console, so the
-// environment's apply again.
+// ErrSSOFromEnvironment refuses console changes to single sign-on the
+// environment sets: a wrong save there would lock every administrator out.
+var ErrSSOFromEnvironment = errors.New("single sign-on is set by the environment")
+
+// ResetSSO forgets the settings saved from the admin console.
 func (d *Database) ResetSSO(ctx context.Context) error {
+	if d.environment().SSO != nil {
+		return ErrSSOFromEnvironment
+	}
 	return deleteSettings(ctx, d.db, settingSSO)
 }
 
+// ssoWithSource prefers the environment: unlike other settings, single
+// sign-on set there can't be overridden from the console, which also ignores
+// a value saved before the environment set it.
 func (d *Database) ssoWithSource(ctx context.Context) (SSO, string, error) {
+	if env := d.environment().SSO; env != nil {
+		return *env, SourceEnvironment, nil
+	}
 	raw, err := getSetting(ctx, d.db, settingSSO)
 	if err != nil {
 		return DefaultSSO(), SourceDefault, err
 	}
 	if raw == "" {
-		if env := d.environment().SSO; env != nil {
-			return *env, SourceEnvironment, nil
-		}
 		return DefaultSSO(), SourceDefault, nil
 	}
 	return decodeSSO(raw), SourceDatabase, nil
@@ -183,6 +192,9 @@ func decodeSSO(raw string) SSO {
 
 // SetSSO stores the settings. An empty ClientSecret keeps the stored one.
 func (d *Database) SetSSO(ctx context.Context, settings SSO, now time.Time) (SSO, error) {
+	if d.environment().SSO != nil {
+		return settings, ErrSSOFromEnvironment
+	}
 	if settings.ClientSecret == "" {
 		stored, err := d.SSO(ctx)
 		if err != nil {

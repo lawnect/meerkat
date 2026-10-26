@@ -504,6 +504,10 @@ func (s *Store) putSSO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	saved, err := s.control.SetSSO(r.Context(), control.SSO(req), s.now())
+	if errors.Is(err, control.ErrSSOFromEnvironment) {
+		fail(w, r, 409, "sso_from_environment")
+		return
+	}
 	if errors.Is(err, control.ErrInvalidSSO) {
 		fail(w, r, 400, "invalid_sso")
 		return
@@ -519,13 +523,15 @@ func (s *Store) putSSO(w http.ResponseWriter, r *http.Request) {
 	reply(w, 200, s.ssoSettingsView(r.Context(), saved))
 }
 
-// resetSSO forgets the settings saved from the admin console, so the
-// environment's apply again.
+// resetSSO forgets the settings saved from the admin console.
 func (s *Store) resetSSO(w http.ResponseWriter, r *http.Request) {
 	if !s.alertsAdmin(w, r) {
 		return
 	}
-	if err := s.control.ResetSSO(r.Context()); err != nil {
+	if err := s.control.ResetSSO(r.Context()); errors.Is(err, control.ErrSSOFromEnvironment) {
+		fail(w, r, 409, "sso_from_environment")
+		return
+	} else if err != nil {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}

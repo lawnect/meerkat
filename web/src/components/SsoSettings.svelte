@@ -10,6 +10,7 @@
   import { Skeleton } from '$lib/components/ui/skeleton/index.js';
   import { Spinner } from '$lib/components/ui/spinner/index.js';
   import { Switch } from '$lib/components/ui/switch/index.js';
+  import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import { toast } from 'svelte-sonner';
   import { api, errorMessage } from '../api';
   import { translations } from '../i18n.svelte';
@@ -24,9 +25,8 @@
     title: 'SSO',
     tip: 'Sign in to the admin console with an OpenID Connect provider such as Google Workspace, Entra ID, Okta or Keycloak. Sign-ins through SSO skip the Telegram code; use the provider\'s multi-factor authentication.',
     fromEnvironment: 'Set by environment',
-    overridesEnvironment: 'Overrides environment',
-    revertToEnvironment: 'Revert to environment',
-    reverted: 'Reverted to the environment settings',
+    lockedHint: 'Managed by environment variables. Can\'t be edited in the console.',
+    lockedVariables: 'MEERKAT_OIDC_*, MEERKAT_ADMIN_EMAILS, MEERKAT_ADMIN_GROUPS, MEERKAT_PASSWORD_LOGIN',
     enabled: 'Use SSO',
     label: 'Provider name',
     labelHint: 'Shown on the sign-in button.',
@@ -39,6 +39,7 @@
     clientSecret: 'Client secret',
     secretKeep: (hint: string) => `Saved (…${hint}). Enter a new secret to replace it.`,
     secretKeepShort: 'Saved. Enter a new secret to replace it.',
+    secretFromEnvironment: (hint: string) => hint ? `Set by environment (…${hint})` : 'Set by environment',
     redirectUri: 'Redirect URI',
     redirectHint: 'Register this URI with the provider.',
     redirectPending: 'Appears after you add a domain.',
@@ -56,14 +57,14 @@
     saved: 'Saved',
     invalid: 'Check the values: turning SSO on needs an https issuer URL, a client ID, and at least one allowed user or group.',
     failed: (code: string) => `Couldn't save: ${code}`,
+    fromEnvironmentError: 'SSO is managed by environment variables and can\'t be edited.',
     loadFailed: (code: string) => `Couldn't load SSO settings: ${code}`,
   }, {
     title: 'SSO',
     tip: 'Google Workspace, Entra ID, Okta, Keycloak 등 OpenID Connect 공급자를 통해 관리 콘솔에 로그인합니다. SSO 로그인 시에는 Telegram 인증 코드를 요구하지 않으므로 공급자의 다단계 인증을 사용하십시오.',
     fromEnvironment: '환경 변수로 구성됨',
-    overridesEnvironment: '환경 변수 재정의됨',
-    revertToEnvironment: '환경 변수 값으로 복원',
-    reverted: '환경 변수 값으로 복원되었습니다',
+    lockedHint: '환경 변수로 관리되는 설정으로, 콘솔에서 수정할 수 없습니다.',
+    lockedVariables: 'MEERKAT_OIDC_*, MEERKAT_ADMIN_EMAILS, MEERKAT_ADMIN_GROUPS, MEERKAT_PASSWORD_LOGIN',
     enabled: 'SSO 활성화',
     label: '공급자 표시 이름',
     labelHint: '로그인 버튼에 표시',
@@ -76,6 +77,7 @@
     clientSecret: '클라이언트 시크릿',
     secretKeep: (hint: string) => `저장됨(…${hint}). 변경하려면 새 시크릿을 입력하십시오.`,
     secretKeepShort: '저장됨. 변경하려면 새 시크릿을 입력하십시오.',
+    secretFromEnvironment: (hint: string) => hint ? `환경 변수로 구성됨(…${hint})` : '환경 변수로 구성됨',
     redirectUri: '리디렉션 URI',
     redirectHint: '공급자의 유효한 리디렉션 URI로 등록',
     redirectPending: '도메인 등록 후 표시',
@@ -93,6 +95,7 @@
     saved: '저장되었습니다',
     invalid: '입력값이 올바르지 않습니다. SSO를 활성화하려면 https 발급자 URL, 클라이언트 ID, 허용 사용자 또는 허용 그룹이 1개 이상 필요합니다.',
     failed: (code: string) => `저장 중 오류가 발생했습니다: ${code}`,
+    fromEnvironmentError: 'SSO 설정은 환경 변수로 관리되어 수정할 수 없습니다.',
     loadFailed: (code: string) => `SSO 설정을 불러오는 중 오류가 발생했습니다: ${code}`,
   });
 
@@ -146,6 +149,8 @@
   let testing = $state(false);
 
   const adopt = (next: SsoSettings) => { saved = next; draft = toDraft(next); };
+  // 환경 변수로 구성한 SSO는 읽기 전용입니다. 잘못 저장해 모든 관리자가 로그인하지 못하는 일을 막습니다.
+  const locked = $derived(saved?.source === 'environment');
   const dirty = $derived(Boolean(saved && draft) && JSON.stringify(toBody($state.snapshot(draft!))) !== JSON.stringify(toBody(toDraft(saved!))));
 
   onMount(() => {
@@ -162,22 +167,7 @@
       toast.success(t().saved);
     } catch (cause) {
       const code = errorMessage(cause);
-      error = code === 'invalid_sso' ? t().invalid : t().failed(code);
-    } finally {
-      busy = false;
-    }
-  }
-
-  // 관리 화면에서 저장한 값을 지워 환경 변수 값을 다시 씁니다.
-  async function resetToEnvironment(): Promise<void> {
-    if (busy) return;
-    busy = true;
-    error = '';
-    try {
-      adopt(await api<SsoSettings>('/api/v1/security/sso', { method: 'DELETE' }));
-      toast.success(t().reverted);
-    } catch (cause) {
-      error = t().failed(errorMessage(cause));
+      error = code === 'invalid_sso' ? t().invalid : code === 'sso_from_environment' ? t().fromEnvironmentError : t().failed(code);
     } finally {
       busy = false;
     }
@@ -209,19 +199,20 @@
     <Card.Header>
       <Card.Title id="sso-title" class="flex items-center gap-2">
         <span class="flex items-center gap-1">{t().title}<InfoTooltip id="sso-tip" label={t().title} description={t().tip} /></span>
-        {#if saved?.source === 'environment'}
-          <Badge variant="outline" class="select-none">{t().fromEnvironment}</Badge>
-        {:else if saved?.source === 'database' && saved.environment}
-          <Badge variant="outline" class="select-none">{t().overridesEnvironment}</Badge>
+        {#if locked}
+          <Tooltip.Root>
+            <Tooltip.Trigger>
+              {#snippet child({ props })}<Badge {...props} variant="outline" tabindex={0} class="cursor-default select-none">{t().fromEnvironment}</Badge>{/snippet}
+            </Tooltip.Trigger>
+            <Tooltip.Content class="max-w-xs font-mono text-xs">{t().lockedVariables}</Tooltip.Content>
+          </Tooltip.Root>
         {/if}
       </Card.Title>
+      {#if locked}<Card.Description class="break-keep">{t().lockedHint}</Card.Description>{/if}
       {#if draft}
         <Card.Action class="flex items-center gap-2">
-          {#if saved?.source === 'database' && saved.environment}
-            <Button variant="outline" size="sm" disabled={busy} onclick={resetToEnvironment}><ArrowUndo aria-hidden="true" />{t().revertToEnvironment}</Button>
-          {/if}
           <Field.Label for="sso-enabled" class="text-muted-foreground">{t().enabled}</Field.Label>
-          <Switch id="sso-enabled" bind:checked={draft.enabled} />
+          <Switch id="sso-enabled" bind:checked={draft.enabled} disabled={locked} />
         </Card.Action>
       {/if}
     </Card.Header>
@@ -235,24 +226,24 @@
         <Field.Group class="grid grid-cols-1 gap-4 md:grid-cols-2">
           <Field.Field>
             <Field.Label for="sso-label">{t().label}</Field.Label>
-            <Input id="sso-label" bind:value={draft.label} maxlength={32} autocomplete="off" placeholder="Google" />
+            <Input id="sso-label" bind:value={draft.label} disabled={locked} maxlength={32} autocomplete="off" placeholder="Google" />
             <Field.Description>{t().labelHint}</Field.Description>
           </Field.Field>
           <Field.Field>
             <Field.Label for="sso-issuer">{t().issuer}</Field.Label>
             <ButtonGroup.Root class="w-full">
-              <Input id="sso-issuer" inputmode="url" bind:value={draft.issuer} oninput={() => { issuerError = ''; }} autocomplete="off" autocapitalize="off" spellcheck={false} placeholder="https://accounts.google.com" aria-invalid={issuerError ? true : undefined} aria-describedby={issuerError ? 'sso-issuer-error' : undefined} class="font-mono" />
+              <Input id="sso-issuer" inputmode="url" bind:value={draft.issuer} disabled={locked} oninput={() => { issuerError = ''; }} autocomplete="off" autocapitalize="off" spellcheck={false} placeholder="https://accounts.google.com" aria-invalid={issuerError ? true : undefined} aria-describedby={issuerError ? 'sso-issuer-error' : undefined} class="font-mono" />
               <Button variant="outline" disabled={testing || !draft.issuer.trim()} onclick={testIssuer}>{#if testing}<Spinner aria-hidden="true" />{:else}<PlugConnected aria-hidden="true" />{/if}{t().test}</Button>
             </ButtonGroup.Root>
             {#if issuerError}<Field.Error id="sso-issuer-error">{issuerError}</Field.Error>{/if}
           </Field.Field>
           <Field.Field>
             <Field.Label for="sso-client-id">{t().clientId}</Field.Label>
-            <Input id="sso-client-id" bind:value={draft.client_id} autocomplete="off" autocapitalize="off" spellcheck={false} class="font-mono" />
+            <Input id="sso-client-id" bind:value={draft.client_id} disabled={locked} autocomplete="off" autocapitalize="off" spellcheck={false} class="font-mono" />
           </Field.Field>
           <Field.Field>
             <Field.Label for="sso-client-secret">{t().clientSecret}</Field.Label>
-            <Input id="sso-client-secret" type="password" bind:value={draft.client_secret} autocomplete="off" spellcheck={false} placeholder={saved.client_secret_set ? (saved.client_secret_hint ? t().secretKeep(saved.client_secret_hint) : t().secretKeepShort) : ''} />
+            <Input id="sso-client-secret" type="password" bind:value={draft.client_secret} disabled={locked} autocomplete="off" spellcheck={false} placeholder={locked ? t().secretFromEnvironment(saved.client_secret_hint ?? '') : saved.client_secret_set ? (saved.client_secret_hint ? t().secretKeep(saved.client_secret_hint) : t().secretKeepShort) : ''} />
           </Field.Field>
           <Field.Field class="md:col-span-2">
             <Field.Label id="sso-redirect-label">{t().redirectUri}</Field.Label>
@@ -277,12 +268,12 @@
           {/if}
           <Field.Field>
             <Field.Label for="sso-users">{t().allowedUsers}</Field.Label>
-            <TagInput id="sso-users" ariaLabel={t().allowedUsers} bind:values={draft.allowed_users} lowercase mono placeholder="admin@example.com, @example.com" />
+            <TagInput id="sso-users" ariaLabel={t().allowedUsers} bind:values={draft.allowed_users} disabled={locked} lowercase mono placeholder={locked ? '' : 'admin@example.com, @example.com'} />
             <Field.Description>{t().allowedUsersHint}</Field.Description>
           </Field.Field>
           <Field.Field>
             <Field.Label for="sso-groups">{t().allowedGroups}</Field.Label>
-            <TagInput id="sso-groups" ariaLabel={t().allowedGroups} bind:values={draft.allowed_groups} mono placeholder="meerkat-admins" />
+            <TagInput id="sso-groups" ariaLabel={t().allowedGroups} bind:values={draft.allowed_groups} disabled={locked} mono placeholder={locked ? '' : 'meerkat-admins'} />
             <Field.Description>{t().allowedGroupsHint}</Field.Description>
           </Field.Field>
         </Field.Group>
@@ -291,11 +282,11 @@
             <Field.Label for="sso-password-login">{t().passwordLogin}</Field.Label>
             <Field.Description>{t().passwordLoginHint}</Field.Description>
           </Field.Content>
-          <Switch id="sso-password-login" bind:checked={draft.password_login} disabled={!draft.enabled} />
+          <Switch id="sso-password-login" bind:checked={draft.password_login} disabled={locked || !draft.enabled} />
         </Field.Field>
       {/if}
     </Card.Content>
-    {#if dirty || busy}
+    {#if !locked && (dirty || busy)}
       <Card.Footer class="justify-end gap-2">
         <Button variant="outline" disabled={busy} onclick={revert}><ArrowUndo aria-hidden="true" />{t().revert}</Button>
         <Button type="submit" disabled={busy}>{#if busy}<Spinner aria-hidden="true" />{t().saving}{:else}<Save aria-hidden="true" />{t().save}{/if}</Button>

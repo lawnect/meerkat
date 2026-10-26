@@ -60,13 +60,13 @@ func TestEnvironmentSettingsYieldToSavedOnes(t *testing.T) {
 		t.Fatalf("verification kept for another chat: %+v", tg)
 	}
 
-	// Saving from the console overrides; removing the saved value falls back.
-	saved, err := db.SetSSO(ctx, SSO{Enabled: true, Issuer: "https://login.example.org", ClientID: "console", Scopes: []string{"openid"}, AllowedGroups: []string{"admins"}, PasswordLogin: true}, now)
-	if err != nil || saved.ClientSecret != "env-secret-1234" {
-		t.Fatalf("saved = %+v, %v", saved, err)
+	// Single sign-on from the environment can't be changed from the console:
+	// a wrong save would lock every administrator out. Telegram can.
+	if _, err := db.SetSSO(ctx, SSO{Enabled: true, Issuer: "https://login.example.org", ClientID: "console", Scopes: []string{"openid"}, AllowedGroups: []string{"admins"}, PasswordLogin: true}, now); !errors.Is(err, ErrSSOFromEnvironment) {
+		t.Fatalf("saving over the environment: %v", err)
 	}
-	if source, _ := db.SSOSource(ctx); source != SourceDatabase {
-		t.Fatalf("source after saving = %s", source)
+	if err := db.ResetSSO(ctx); !errors.Is(err, ErrSSOFromEnvironment) {
+		t.Fatalf("resetting the environment: %v", err)
 	}
 	if err := db.SetTelegram(ctx, "", "-1001111111111", false, now); err != nil {
 		t.Fatal(err)
@@ -74,14 +74,11 @@ func TestEnvironmentSettingsYieldToSavedOnes(t *testing.T) {
 	if tg, _ := db.Telegram(ctx); tg.Source != SourceDatabase || tg.Enabled || tg.BotToken != envTelegram.BotToken {
 		t.Fatalf("saved telegram = %+v", tg)
 	}
-	if err := db.ResetSSO(ctx); err != nil {
-		t.Fatal(err)
-	}
 	if err := db.DeleteTelegram(ctx, now); err != nil {
 		t.Fatal(err)
 	}
 	if sso, _ := db.SSO(ctx); sso.Issuer != "https://idp.example.com" {
-		t.Fatalf("sso after reset = %+v", sso)
+		t.Fatalf("sso = %+v", sso)
 	}
 	if tg, _ := db.Telegram(ctx); tg.Source != SourceEnvironment || !tg.Enabled {
 		t.Fatalf("telegram after reset = %+v", tg)
@@ -233,5 +230,28 @@ func TestPendingEnvironmentDomain(t *testing.T) {
 	}
 	if _, err := db.AddDomain(ctx, "new.com", ""); !errors.Is(err, ErrDomainFromEnvironment) {
 		t.Fatalf("adding the waiting domain: %v", err)
+	}
+}
+
+// A value saved before the environment set single sign-on is ignored while
+// the environment sets it, and applies again once it no longer does.
+func TestEnvironmentSSOWinsOverASavedValue(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.SetSSO(ctx, SSO{Enabled: true, Issuer: "https://login.example.org", ClientID: "console", ClientSecret: "console-secret", Scopes: []string{"openid"}, AllowedGroups: []string{"admins"}, PasswordLogin: true}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	env, _ := SSO{Enabled: true, Issuer: "https://idp.example.com", ClientID: "meerkat", ClientSecret: "env-secret-1234", Scopes: []string{"openid"}, AllowedUsers: []string{"a@example.com"}}.Normalize()
+	db.SetDefaults(Defaults{SSO: &env})
+	if sso, source, _ := db.ssoWithSource(ctx); source != SourceEnvironment || sso.Issuer != "https://idp.example.com" {
+		t.Fatalf("with the environment: %s %+v", source, sso)
+	}
+	db.SetDefaults(Defaults{})
+	if sso, source, _ := db.ssoWithSource(ctx); source != SourceDatabase || sso.Issuer != "https://login.example.org" {
+		t.Fatalf("without the environment: %s %+v", source, sso)
 	}
 }

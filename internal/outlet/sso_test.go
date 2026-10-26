@@ -396,16 +396,25 @@ func TestSSOFromTheEnvironment(t *testing.T) {
 	if view := call("GET", "/api/v1/security/sso", nil); view["source"] != "environment" || view["environment"] != true || view["client_secret_hint"] != "1234" {
 		t.Fatalf("environment view: %v", view)
 	}
-	view := call("PUT", "/api/v1/security/sso", map[string]any{"enabled": true, "label": "Console", "issuer": idp.server.URL, "client_id": "meerkat",
-		"scopes": []string{"openid"}, "groups_claim": "groups", "allowed_users": []string{"admin@corp.example.com"}, "allowed_groups": []string{}, "password_login": true})
-	if view["source"] != "database" || view["label"] != "Console" {
-		t.Fatalf("saved view: %v", view)
+	// The console can't change it: a wrong save would lock everyone out.
+	for _, c := range []struct {
+		method string
+		body   any
+	}{
+		{"PUT", map[string]any{"enabled": true, "label": "Console", "issuer": idp.server.URL, "client_id": "meerkat",
+			"scopes": []string{"openid"}, "groups_claim": "groups", "allowed_users": []string{"admin@corp.example.com"}, "allowed_groups": []string{}, "password_login": true}},
+		{"DELETE", nil},
+	} {
+		r := jsonRequest(c.method, "/api/v1/security/sso", c.body)
+		r.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		a.store.Handler().ServeHTTP(w, r)
+		if w.Code != 409 || errorCode(t, w) != "sso_from_environment" {
+			t.Fatalf("%s: %d %s", c.method, w.Code, w.Body.String())
+		}
 	}
-	if view := call("DELETE", "/api/v1/security/sso", nil); view["source"] != "environment" || view["label"] != "Env" {
-		t.Fatalf("reset view: %v", view)
-	}
-	if event := a.lastAudit(t); event.Action != "security.sso_reset" {
-		t.Fatalf("audit: %s", event.Action)
+	if view := call("GET", "/api/v1/security/sso", nil); view["source"] != "environment" || view["label"] != "Env" {
+		t.Fatalf("after refused changes: %v", view)
 	}
 }
 
