@@ -33,13 +33,13 @@ func TestUpgradeConfigPreservesExistingNoiseKey(t *testing.T) {
 	if err := securefs.WriteJSON(filepath.Join(configs, "outlet.json"), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if err := upgradeConfig(dir, "saeoo.com"); err != nil {
+	if err := upgradeConfig(dir, "example.com"); err != nil {
 		t.Fatal(err)
 	}
 	if err := securefs.ReadJSON(filepath.Join(configs, "outlet.json"), &cfg); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Domain != "saeoo.com" || cfg.TunnelServerPrivateKey != base64.StdEncoding.EncodeToString(private.Bytes()) || cfg.TunnelRemoteAddress != "saeoo.com:2333" {
+	if cfg.Domain != "example.com" || cfg.TunnelServerPrivateKey != base64.StdEncoding.EncodeToString(private.Bytes()) || cfg.TunnelRemoteAddress != "example.com:2333" {
 		t.Fatalf("config = %#v", cfg)
 	}
 }

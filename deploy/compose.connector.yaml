@@ -24,7 +24,7 @@ services:
   connector:
     <<: *runtime
     environment:
-      MEERKAT_OUTLET: https://meerkat.saeoo.com
+      MEERKAT_OUTLET: https://meerkat.example.com
       MEERKAT_NAME: coolify-test
       MEERKAT_DATA_DIR: /var/lib/meerkat
       MEERKAT_TARGET: app:80

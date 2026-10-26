@@ -178,7 +178,7 @@ docker run --rm --user "$(id -u):$(id -g)" \
   --entrypoint /usr/local/bin/outlet-init \
   -v /opt/meerkat-outlet:/out \
   ghcr.io/lawnect/meerkat:latest \
-  -upgrade -dir /out -domain saeoo.com
+  -upgrade -dir /out -domain example.com
 ```
 
 ### 로컬 PoC 확인

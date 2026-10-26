@@ -136,7 +136,7 @@ func TestTraceRequiresAdminAndReportsForwardedCloudflareData(t *testing.T) {
 	r.Header.Set("CF-Ray", "a1b2c3-NRT")
 	r.Header.Set("CF-IPCountry", "KR")
 	r.Header.Set("X-Forwarded-For", "203.0.113.10")
-	r.Header.Set("X-Forwarded-Host", "saeoo.com")
+	r.Header.Set("X-Forwarded-Host", "example.com")
 	r.Header.Set("X-Forwarded-Proto", "https")
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, r)

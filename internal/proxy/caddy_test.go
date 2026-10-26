@@ -15,7 +15,7 @@ func TestCaddyfileUsesStableOnDemandRouting(t *testing.T) {
 	if !strings.Contains(config, "on_demand_tls {") || !strings.Contains(config, "ask http://outlet:8080/.well-known/meerkat/cert-ask") || !strings.Contains(config, "reverse_proxy http://outlet:8080") {
 		t.Fatalf("dynamic certificate authorization or routing missing: %q", config)
 	}
-	if strings.Contains(config, "*.saeoo.com") || strings.Contains(config, "dns cloudflare") || strings.Contains(config, "app.saeoo.com") {
+	if strings.Contains(config, "*.example.com") || strings.Contains(config, "dns cloudflare") || strings.Contains(config, "app.example.com") {
 		t.Fatalf("route-specific or DNS-provider config remains: %q", config)
 	}
 	if count := strings.Count(config, "disable_tlsalpn_challenge"); count != 1 {
