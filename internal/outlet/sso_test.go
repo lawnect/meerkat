@@ -611,3 +611,45 @@ func TestEnvironmentDomainCannotBeReplaced(t *testing.T) {
 		t.Fatalf("outlet: %s", w.Body.String())
 	}
 }
+
+// Over SSH, the bootstrap token gives an administrator created by single
+// sign-on a password, so a broken provider doesn't lock everyone out. The
+// internet never reaches it.
+func TestRecoveryOverSSHSetsAPassword(t *testing.T) {
+	a := newAlertFixture(t)
+	if _, err := a.db.SSOAdmin(context.Background(), "https://idp.example.com", "subject-1", "admin@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	body := map[string]any{"email": "admin@example.com", "password": "correct horse battery staple"}
+	if w := request(a.store.Handler(), "POST", "/api/v1/session", "", body); w.Code != 401 {
+		t.Fatalf("password before recovery: %d", w.Code)
+	}
+	w := httptest.NewRecorder()
+	r := jsonRequest("POST", "/api/v1/setup/recover", body)
+	r.Host = a.host
+	r.Header.Set("X-Forwarded-For", "198.51.100.20")
+	r.Header.Set("Authorization", "Bearer "+a.admin)
+	a.store.PublicHandler().ServeHTTP(w, r)
+	if w.Code != 404 {
+		t.Fatalf("recovery from the internet: %d %s", w.Code, w.Body.String())
+	}
+	if w := request(a.store.Handler(), "POST", "/api/v1/setup/recover", "wrong-token", body); w.Code != 401 {
+		t.Fatalf("wrong token: %d", w.Code)
+	}
+	if w := request(a.store.Handler(), "POST", "/api/v1/setup/recover", a.admin, body); w.Code != 200 {
+		t.Fatalf("recovery: %d %s", w.Code, w.Body.String())
+	}
+	if w := request(a.store.Handler(), "POST", "/api/v1/session", "", body); w.Code != 201 {
+		t.Fatalf("password after recovery: %d %s", w.Code, w.Body.String())
+	}
+	if a.lastAudit(t).Action != "session.login" {
+		t.Fatalf("audit = %+v", a.lastAudit(t))
+	}
+	found := false
+	for _, event := range a.auditLog(t) {
+		found = found || event.Action == "setup.admin_recover"
+	}
+	if !found {
+		t.Fatal("recovery not audited")
+	}
+}

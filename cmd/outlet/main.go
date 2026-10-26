@@ -57,7 +57,7 @@ func run() error {
 		} else if before.AdminHostname != "" && before.AdminHostname != after.AdminHostname {
 			// Saved limits follow the management host, as when the console changes it.
 			if err := controlDB.RenameRateLimitHost(context.Background(), before.AdminHostname, after.AdminHostname, time.Now()); err != nil {
-				return err
+				slog.Warn("rate limits saved for the old management host weren't moved", "error", err.Error())
 			}
 			slog.Warn("management host changed; Connectors set up with the old address need a new enrollment", "from", before.AdminHostname, "to", after.AdminHostname)
 		}

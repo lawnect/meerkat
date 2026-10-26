@@ -41,3 +41,17 @@ func TestTunnelAddress(t *testing.T) {
 		}
 	}
 }
+
+// Addresses are only accepted in the canonical form a URL can carry.
+func TestEndpointIsCanonical(t *testing.T) {
+	for _, ok := range []string{"outlet:8080", "tunnel.example.com:2333", "10.0.0.5:9090", "[fd00::1]:2333"} {
+		if Endpoint(ok) != nil {
+			t.Fatalf("%q refused", ok)
+		}
+	}
+	for _, bad := range []string{"outlet:+8080", "outlet:08080", "[outlet]:8080", "[10.0.0.5]:9090", "outlet:0", "outlet:65536", "outlet"} {
+		if Endpoint(bad) == nil {
+			t.Fatalf("%q accepted", bad)
+		}
+	}
+}

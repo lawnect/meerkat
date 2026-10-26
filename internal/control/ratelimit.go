@@ -154,12 +154,26 @@ func (d *Database) RenameRateLimitHost(ctx context.Context, from, to string, now
 	if json.Unmarshal([]byte(raw), &settings) != nil {
 		return nil
 	}
-	changed := false
-	for i := range settings.Endpoints {
-		if settings.Endpoints[i].Host == from {
-			settings.Endpoints[i].Host, changed = to, true
+	// A rule already saved for the new name wins over the renamed one.
+	taken := map[string]bool{}
+	for _, endpoint := range settings.Endpoints {
+		if endpoint.Host == to {
+			taken[endpoint.PathPrefix] = true
 		}
 	}
+	changed := false
+	kept := settings.Endpoints[:0]
+	for _, endpoint := range settings.Endpoints {
+		if endpoint.Host == from {
+			changed = true
+			if taken[endpoint.PathPrefix] {
+				continue
+			}
+			endpoint.Host = to
+		}
+		kept = append(kept, endpoint)
+	}
+	settings.Endpoints = kept
 	if !changed {
 		return nil
 	}

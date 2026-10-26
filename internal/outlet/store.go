@@ -295,10 +295,11 @@ func (s *Store) reconcileTunnel() error {
 				s.mu.Unlock()
 				return err
 			}
-			// The Outlet probes through loopback, while Caddy reaches the same
-			// Outlet container over the Compose network. Bind internally on all
-			// interfaces; this port is deliberately not published on the host.
-			bindAddress := net.JoinHostPort("0.0.0.0", port)
+			// rathole shares the Outlet's network namespace and the Outlet
+			// reaches services over loopback, so only loopback listens:
+			// another container on a shared network (Coolify) can't reach an
+			// app around the Outlet's routing, block rules and limits.
+			bindAddress := net.JoinHostPort("127.0.0.1", port)
 			services = append(services, rathole.ServerService{Name: service.Tunnel.ServiceName, Token: service.Tunnel.ServiceToken, BindAddress: bindAddress})
 		}
 	}

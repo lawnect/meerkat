@@ -13,6 +13,7 @@ function seedId(name: string): string {
 
 interface MockInput {
   address?: string;
+  password?: string;
   description?: string;
   display_name?: string;
   domain?: string;
@@ -470,8 +471,13 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
   const parts = path.split('/').filter(Boolean).map(decodeURIComponent);
   const input = bodyOf(options.body);
 
-  if (path === '/api/v1/setup/status' && method === 'GET') return { setup_complete: true, version: '0.1.0', sign_in: { password: true, sso: true, sso_label: 'Google Workspace' } };
+  // 미리보기 서버는 로컬 관리 포트처럼 계정 복구 링크도 보여 줍니다.
+  if (path === '/api/v1/setup/status' && method === 'GET') return { setup_complete: true, version: '0.1.0', sign_in: { password: true, sso: true, sso_label: 'Google Workspace', recovery: true } };
   if (path === '/api/v1/setup/admin' && method === 'POST') return { status: 'created' };
+  if (path === '/api/v1/setup/recover' && method === 'POST') {
+    if ((input.password ?? '').length < 12) fail('invalid_setup_credential');
+    return { status: 'recovered' };
+  }
   if (path === '/api/v1/session' && method === 'POST') {
     if (alerts.login_second_factor) {
       loginChallenge = id();

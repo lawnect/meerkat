@@ -103,6 +103,7 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("POST /connector/v1/heartbeat", s.heartbeat)
 	mux.HandleFunc("GET /api/v1/setup/status", s.setupStatus)
 	mux.HandleFunc("POST /api/v1/setup/admin", s.setupAdmin)
+	mux.HandleFunc("POST /api/v1/setup/recover", s.recoverAdmin)
 	mux.HandleFunc("POST /api/v1/session", s.login)
 	mux.HandleFunc("POST /api/v1/session/second-factor", s.secondFactor)
 	mux.HandleFunc("DELETE /api/v1/session", s.logout)
@@ -515,9 +516,11 @@ func (s *Store) setupStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The sign-in page shows the single sign-on button and hides the password
-	// form where it is off. The local port over SSH always offers passwords.
-	signIn := map[string]any{"password": true, "sso": false, "sso_label": ""}
-	if _, public := requestOrigin(r); public && complete {
+	// form where it is off. The local port over SSH always offers passwords,
+	// and recovery with the bootstrap token.
+	_, public := requestOrigin(r)
+	signIn := map[string]any{"password": true, "sso": false, "sso_label": "", "recovery": !public}
+	if public && complete {
 		if sso, err := s.control.SSO(r.Context()); err == nil && sso.Enabled {
 			signIn = map[string]any{"password": sso.PasswordLogin, "sso": true, "sso_label": sso.Label}
 		}
@@ -547,6 +550,39 @@ func (s *Store) setupAdmin(w http.ResponseWriter, r *http.Request) {
 	s.setupDone.Store(true)
 	s.audit(r, "setup.admin_create", control.AuditEntry{ActorID: admin.ID, ActorEmail: admin.Email, ResourceType: "admin", ResourceID: admin.ID})
 	reply(w, 201, map[string]string{"status": "created"})
+}
+
+// recoverAdmin sets an administrator's password with the bootstrap token. It
+// exists only on the local admin port, reached over SSH, so an Outlet whose
+// administrators all sign in with a broken provider can still be entered.
+func (s *Store) recoverAdmin(w http.ResponseWriter, r *http.Request) {
+	if _, public := requestOrigin(r); public {
+		http.NotFound(w, r)
+		return
+	}
+	if s.control == nil {
+		fail(w, r, 503, "control_database_unavailable")
+		return
+	}
+	if !s.allowLogin(w, r) {
+		return
+	}
+	var req adminCredentials
+	if !decode(w, r, &req, "email", "password") {
+		return
+	}
+	admin, err := s.control.RecoverAdmin(r.Context(), s.config.AdminTokenHash, bearer(r), req.Email, req.Password)
+	if errors.Is(err, control.ErrInvalidCredentials) {
+		fail(w, r, 401, "invalid_setup_credential")
+		return
+	}
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	s.setupDone.Store(true)
+	s.audit(r, "setup.admin_recover", control.AuditEntry{ActorID: admin.ID, ActorEmail: admin.Email, ResourceType: "admin", ResourceID: admin.ID})
+	reply(w, 200, map[string]string{"status": "recovered"})
 }
 
 // login checks the password. A request from the internet then needs the
@@ -824,6 +860,10 @@ func (s *Store) updateOutlet(w http.ResponseWriter, r *http.Request) {
 	outlet, err := s.control.SetDomain(r.Context(), req.Domain, req.Mode)
 	if errors.Is(err, control.ErrDomainFromEnvironment) {
 		fail(w, r, 409, "domain_from_environment")
+		return
+	}
+	if errors.Is(err, control.ErrAdminHostnameTaken) {
+		fail(w, r, 409, "admin_hostname_taken")
 		return
 	}
 	if errors.Is(err, control.ErrInvalidDomain) {

@@ -8,7 +8,7 @@
   import * as InputOTP from '$lib/components/ui/input-otp/index.js';
   import { REGEXP_ONLY_DIGITS } from 'bits-ui';
   import { Spinner } from '$lib/components/ui/spinner/index.js';
-  import { ArrowEnter, ArrowLeft, Key, LockClosed, Mail, PersonAdd, ShieldKeyhole, Warning } from '../icons';
+  import { ArrowEnter, ArrowLeft, CheckmarkCircle, Key, LockClosed, Mail, PersonAdd, ShieldKeyhole, Warning } from '../icons';
   import { api, errorMessage } from '../api';
   import { pageHref } from '../navigation';
   import { localizePath, translations } from '../i18n.svelte';
@@ -54,6 +54,13 @@
     ssoNotAllowed: 'This account isn\'t allowed to sign in.',
     ssoBusy: 'Try again in a moment.',
     passwordLoginDisabled: 'Password sign-in is disabled. Sign in with SSO.',
+    recoverLink: 'Recover admin access',
+    recoverTitle: 'Recover admin access',
+    recoverIntro: 'Set an administrator\'s password with the server\'s admin.token. Available on the local admin port only.',
+    newPasswordPlaceholder: 'New password',
+    setPassword: 'Set password',
+    recovered: 'Password set. Sign in with the new password.',
+    recoverFailed: (code: string) => `Recovery failed: ${code}`,
   }, {
     setupTitle: '초기 설정',
     loginTitle: '로그인',
@@ -90,20 +97,32 @@
     ssoNotAllowed: '이 계정에는 접근 권한이 없습니다.',
     ssoBusy: '잠시 후 다시 시도하십시오.',
     passwordLoginDisabled: '비밀번호 로그인이 비활성화되어 있습니다. SSO로 로그인하십시오.',
+    recoverLink: '관리자 계정 복구',
+    recoverTitle: '관리자 계정 복구',
+    recoverIntro: '서버의 admin.token으로 관리자 비밀번호를 설정합니다. 로컬 관리 포트에서만 사용할 수 있습니다.',
+    newPasswordPlaceholder: '새 비밀번호',
+    setPassword: '비밀번호 설정',
+    recovered: '비밀번호가 설정되었습니다. 새 비밀번호로 로그인하십시오.',
+    recoverFailed: (code: string) => `계정 복구 중 오류가 발생했습니다: ${code}`,
   });
 
   let { mode, signIn = { password: true, sso: false, sso_label: '' }, onLogin, onSetup }: { mode: 'setup' | 'login'; signIn?: SignInOptions; onLogin: () => Promise<void>; onSetup: () => void } = $props();
   let code = $state('');
   let email = $state('');
   let password = $state('');
-  type FailureKind = 'invalidSetup' | 'setupFailed' | 'loginFailed' | 'rateLimited' | 'codeInvalid' | 'codeLocked' | 'telegramUnreachable'
+  // 로컬 관리 포트에서 admin.token으로 관리자 비밀번호를 설정하는 복구 양식입니다.
+  let recovering = $state(false);
+  let notice = $state('');
+  // 설정 코드(admin.token)를 묻는 양식: 초기 설정과 계정 복구.
+  const askCode = $derived(mode === 'setup' || recovering);
+  type FailureKind = 'invalidSetup' | 'setupFailed' | 'recoverFailed' | 'loginFailed' | 'rateLimited' | 'codeInvalid' | 'codeLocked' | 'telegramUnreachable'
     | 'ssoUnavailable' | 'ssoProviderUnreachable' | 'ssoInvalidState' | 'ssoProviderDenied' | 'ssoTokenFailed' | 'ssoNotAllowed' | 'ssoBusy' | 'passwordLoginDisabled';
   let failure = $state<{ kind: FailureKind; code: string } | null>(null);
   // 2단계 인증을 켜 둔 Outlet은 비밀번호 확인 뒤 텔레그램 코드를 한 번 더 받습니다.
   let challenge = $state('');
   let otp = $state('');
   let busy = $state(false);
-  const error = $derived(!failure ? '' : failure.kind === 'setupFailed' ? t().setupFailed(failure.code) : t()[failure.kind]);
+  const error = $derived(!failure ? '' : failure.kind === 'setupFailed' ? t().setupFailed(failure.code) : failure.kind === 'recoverFailed' ? t().recoverFailed(failure.code) : t()[failure.kind]);
 
   // SSO는 주소 이동으로 시작하고, 돌아올 때는 언어별 앱 루트('/' 또는 '/ko/')로 옵니다. 실패하면 ?sso_error=코드가 붙습니다.
   const ssoHref = $derived(`/api/v1/session/sso/start?return=${encodeURIComponent(localizePath('/').replace(/\/?$/, '/'))}`);
@@ -116,8 +135,8 @@
     not_allowed: 'ssoNotAllowed',
     sso_busy: 'ssoBusy',
   };
-  const showPassword = $derived(mode === 'setup' || signIn.password || !signIn.sso);
-  const ssoFirst = $derived(mode === 'login' && signIn.sso);
+  const showPassword = $derived(askCode || signIn.password || !signIn.sso);
+  const ssoFirst = $derived(mode === 'login' && signIn.sso && !recovering);
 
   onMount(() => {
     if (mode !== 'login') return;
@@ -134,9 +153,20 @@
   async function submit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     failure = null;
+    notice = '';
     busy = true;
     try {
-      if (mode === 'setup') {
+      if (recovering) {
+        await api<{ status: string }>('/api/v1/setup/recover', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${code.trim()}` },
+          body: JSON.stringify({ email, password }),
+        });
+        recovering = false;
+        code = '';
+        password = '';
+        notice = t().recovered;
+      } else if (mode === 'setup') {
         await api<{ status: string }>('/api/v1/setup/admin', {
           method: 'POST',
           headers: { Authorization: `Bearer ${code.trim()}` },
@@ -157,7 +187,13 @@
       }
     } catch (cause) {
       const reason = errorMessage(cause);
-      if (mode === 'setup' && reason === 'invalid_setup_credential') {
+      if (askCode && reason === 'invalid_setup_credential') {
+        failure = { kind: 'invalidSetup', code: reason };
+      } else if (askCode && reason === 'rate_limited') {
+        failure = { kind: 'rateLimited', code: reason };
+      } else if (recovering) {
+        failure = { kind: 'recoverFailed', code: reason };
+      } else if (mode === 'setup' && reason === 'invalid_setup_credential') {
         failure = { kind: 'invalidSetup', code: reason };
       } else if (mode === 'setup') {
         failure = { kind: 'setupFailed', code: reason };
@@ -199,6 +235,14 @@
     }
   }
 
+  function toggleRecovery(next: boolean): void {
+    recovering = next;
+    code = '';
+    password = '';
+    failure = null;
+    notice = '';
+  }
+
   function restart(): void {
     challenge = '';
     otp = '';
@@ -209,6 +253,7 @@
 
 {#snippet errorAlert()}
   {#if error}<Alert.Root variant="destructive"><Warning aria-hidden="true" /><Alert.Description class="break-keep">{error}</Alert.Description></Alert.Root>{/if}
+  {#if notice}<Alert.Root><CheckmarkCircle aria-hidden="true" /><Alert.Description class="break-keep">{notice}</Alert.Description></Alert.Root>{/if}
 {/snippet}
 
 <main class="relative flex min-h-svh flex-col items-center justify-center gap-6 bg-muted p-6 md:p-10">
@@ -223,8 +268,8 @@
     </a>
     <Card.Root>
       <Card.Header class="text-center">
-        <Card.Title class="text-xl" role="heading" aria-level={1}>{challenge ? t().codeTitle : mode === 'setup' ? t().setupTitle : t().loginTitle}</Card.Title>
-        {#if challenge}<Card.Description>{t().codeIntro}</Card.Description>{:else if mode === 'setup'}<Card.Description>{t().setupIntro}</Card.Description>{/if}
+        <Card.Title class="text-xl" role="heading" aria-level={1}>{challenge ? t().codeTitle : recovering ? t().recoverTitle : mode === 'setup' ? t().setupTitle : t().loginTitle}</Card.Title>
+        {#if challenge}<Card.Description>{t().codeIntro}</Card.Description>{:else if recovering}<Card.Description class="break-keep">{t().recoverIntro}</Card.Description>{:else if mode === 'setup'}<Card.Description>{t().setupIntro}</Card.Description>{/if}
       </Card.Header>
       <Card.Content>
         {#if challenge}
@@ -266,7 +311,7 @@
               {#if signIn.password}<Field.Separator class="*:data-[slot=field-separator-content]:bg-card">{t().or}</Field.Separator>{/if}
             {/if}
             {#if showPassword}
-              {#if mode === 'setup'}
+              {#if askCode}
                 <Field.Field>
                   <Field.Label for="setup-code" class="sr-only">{t().setupCode}</Field.Label>
                   <InputGroup.Root>
@@ -286,21 +331,28 @@
                 <Field.Label for="password" class="sr-only">{t().password}</Field.Label>
                 <InputGroup.Root>
                   <InputGroup.Addon><LockClosed aria-hidden="true" /></InputGroup.Addon>
-                  <InputGroup.Input id="password" bind:value={password} type="password" placeholder={t().passwordPlaceholder} autocomplete={mode === 'setup' ? 'new-password' : 'current-password'} minlength={mode === 'setup' ? 12 : undefined} aria-describedby={mode === 'setup' ? 'password-hint' : undefined} required />
+                  <InputGroup.Input id="password" bind:value={password} type="password" placeholder={recovering ? t().newPasswordPlaceholder : t().passwordPlaceholder} autocomplete={askCode ? 'new-password' : 'current-password'} minlength={askCode ? 12 : undefined} aria-describedby={askCode ? 'password-hint' : undefined} required />
                 </InputGroup.Root>
-                {#if mode === 'setup'}<Field.Description id="password-hint">{t().passwordHint}</Field.Description>{/if}
+                {#if askCode}<Field.Description id="password-hint">{t().passwordHint}</Field.Description>{/if}
               </Field.Field>
               {#if !ssoFirst}{@render errorAlert()}{/if}
               <Field.Field>
                 <Button type="submit" disabled={busy}>
                   {#if busy}
                     <Spinner aria-hidden="true" />{t().busy}
+                  {:else if recovering}
+                    <Key aria-hidden="true" />{t().setPassword}
                   {:else if mode === 'setup'}
                     <PersonAdd aria-hidden="true" />{t().createAdmin}
                   {:else}
                     <ArrowEnter aria-hidden="true" />{t().submitLogin}
                   {/if}
                 </Button>
+                {#if recovering}
+                  <Button variant="outline" disabled={busy} onclick={() => toggleRecovery(false)}><ArrowLeft aria-hidden="true" />{t().backToLogin}</Button>
+                {:else if mode === 'login' && signIn.recovery}
+                  <Button variant="link" class="text-muted-foreground" disabled={busy} onclick={() => toggleRecovery(true)}>{t().recoverLink}</Button>
+                {/if}
               </Field.Field>
             {/if}
           </Field.Group>

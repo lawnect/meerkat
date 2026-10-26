@@ -53,11 +53,13 @@ func Address(t contract.Target) string { return net.JoinHostPort(t.Host, strconv
 
 func Endpoint(s string) error {
 	host, port, err := net.SplitHostPort(s)
-	if err != nil || host == "" || strings.ContainsAny(host, "\n\r\t\"\\ /@") {
+	// Only the canonical form: brackets only around an IPv6 literal, so the
+	// value also works inside a URL.
+	if err != nil || host == "" || strings.ContainsAny(host, "\n\r\t\"\\ /@") || net.JoinHostPort(host, port) != s {
 		return errors.New("invalid tunnel endpoint")
 	}
 	p, err := strconv.Atoi(port)
-	if err != nil || p < 1 || p > 65535 {
+	if err != nil || p < 1 || p > 65535 || strconv.Itoa(p) != port {
 		return errors.New("invalid tunnel port")
 	}
 	return nil

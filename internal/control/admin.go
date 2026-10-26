@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -169,6 +170,43 @@ func (d *Database) Setup(ctx context.Context, bootstrapCodeHash, code, email, pa
 		return Admin{}, err
 	}
 	return Admin{ID: id, Email: email}, nil
+}
+
+// RecoverAdmin sets the password of the administrator with email, or adds
+// one, when the bootstrap token matches. The Outlet offers it only on the
+// local admin port: it is the way back in over SSH when single sign-on is
+// broken and no administrator has a password. A provider binding stays, so
+// the administrator keeps signing in with single sign-on too.
+func (d *Database) RecoverAdmin(ctx context.Context, bootstrapCodeHash, code, email, password string) (Admin, error) {
+	if !validEmail(email) || !validPassword(password) || len(bootstrapCodeHash) != 64 {
+		return Admin{}, ErrInvalidCredentials
+	}
+	if subtle.ConstantTimeCompare([]byte(hashToken(code)), []byte(bootstrapCodeHash)) != 1 {
+		return Admin{}, ErrInvalidCredentials
+	}
+	hash, err := hashPassword(password)
+	if err != nil {
+		return Admin{}, err
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Admin{}, err
+	}
+	defer tx.Rollback()
+	admin := Admin{Email: email}
+	err = tx.QueryRowContext(ctx, "SELECT id, email FROM admins WHERE email = ?", email).Scan(&admin.ID, &admin.Email)
+	switch {
+	case err == nil:
+		_, err = tx.ExecContext(ctx, "UPDATE admins SET password_hash = ? WHERE id = ?", hash, admin.ID)
+	case errors.Is(err, sql.ErrNoRows):
+		if admin.ID, err = randomID(); err == nil {
+			_, err = tx.ExecContext(ctx, "INSERT INTO admins(id, email, password_hash, created_at) VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))", admin.ID, email, hash)
+		}
+	}
+	if err != nil {
+		return Admin{}, err
+	}
+	return admin, tx.Commit()
 }
 
 // VerifyCredentials checks an email and password without starting a session,

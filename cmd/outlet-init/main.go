@@ -28,6 +28,9 @@ import (
 	"github.com/lawnect/meerkat/internal/securefs"
 )
 
+// outlet.json is written last and names the admin token's hash and the
+// tunnel keys, so it marks a finished bootstrap. Without it, files left by
+// an interrupted run belong to nothing and are written again.
 func writeNew(path string, data []byte) error {
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("refusing to overwrite %s", path)
@@ -65,13 +68,13 @@ func certificate(dir string) error {
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
-	if err := writeNew(filepath.Join(dir, "root-ca.pem"), certPEM); err != nil {
+	if err := securefs.Write(filepath.Join(dir, "root-ca.pem"), certPEM); err != nil {
 		return err
 	}
-	if err := writeNew(filepath.Join(dir, "api-cert.pem"), certPEM); err != nil {
+	if err := securefs.Write(filepath.Join(dir, "api-cert.pem"), certPEM); err != nil {
 		return err
 	}
-	return writeNew(filepath.Join(dir, "api-key.pem"), keyPEM)
+	return securefs.Write(filepath.Join(dir, "api-key.pem"), keyPEM)
 }
 
 func run() error {
@@ -101,6 +104,9 @@ func run() error {
 	}
 	if err := securefs.Directory(filepath.Join(*dir, "caddy-config")); err != nil {
 		return err
+	}
+	if _, err := os.Stat(filepath.Join(configDir, "outlet.json")); err == nil {
+		return fmt.Errorf("refusing to overwrite %s", filepath.Join(configDir, "outlet.json"))
 	}
 	if err := certificate(configDir); err != nil {
 		return err
@@ -134,26 +140,26 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if err := writeNew(filepath.Join(configDir, "outlet.json"), append(configJSON, '\n')); err != nil {
-		return err
-	}
 	server, err := rathole.Server("0.0.0.0:2333", base64.StdEncoding.EncodeToString(noise.Bytes()), nil)
 	if err != nil {
 		return err
 	}
-	if err := writeNew(filepath.Join(configDir, "server.toml"), server); err != nil {
+	if err := securefs.Write(filepath.Join(configDir, "server.toml"), server); err != nil {
 		return err
 	}
-	if err := writeNew(filepath.Join(configDir, "admin.token"), []byte(admin+"\n")); err != nil {
+	if err := securefs.Write(filepath.Join(configDir, "admin.token"), []byte(admin+"\n")); err != nil {
 		return err
 	}
-	if err := writeNew(filepath.Join(*dir, "outlet-data", "caddy", "Caddyfile"), proxy.EmptyCaddyfile()); err != nil {
+	if err := securefs.Write(filepath.Join(*dir, "outlet-data", "caddy", "Caddyfile"), proxy.EmptyCaddyfile()); err != nil {
 		return err
 	}
 	if *domain != "" {
-		if err := writeNew(filepath.Join(configDir, "Caddyfile"), proxy.DynamicCaddyfile(proxy.DefaultUpstream)); err != nil {
+		if err := securefs.Write(filepath.Join(configDir, "Caddyfile"), proxy.DynamicCaddyfile(proxy.DefaultUpstream)); err != nil {
 			return err
 		}
+	}
+	if err := writeNew(filepath.Join(configDir, "outlet.json"), append(configJSON, '\n')); err != nil {
+		return err
 	}
 	fmt.Println("Outlet bootstrap files created.")
 	fmt.Println("Admin token: /configs/admin.token")

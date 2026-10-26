@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/lawnect/meerkat/internal/contract"
 )
 
 func TestEnvironmentSettingsYieldToSavedOnes(t *testing.T) {
@@ -125,5 +127,69 @@ func TestEnvironmentOwnsThePrimaryDomain(t *testing.T) {
 	db.SetDefaults(Defaults{})
 	if outlet, err = db.Outlet(ctx); err != nil || outlet.DomainSource != SourceDatabase {
 		t.Fatalf("source: %+v %v", outlet, err)
+	}
+}
+
+// A management host from the environment can't take over a public address,
+// and saved rate limits move to it even when the new name has its own.
+func TestEnvironmentAdminHostnameChanges(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetDefaults(Defaults{Domain: "example.com", AdminLabel: "console"})
+	if _, err := db.ApplyEnvironmentDomain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	connector, err := db.CreateConnector(ctx, "edge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := db.CreateService(ctx, connector.ID, "web", "http", contract.Target{Host: "app", Port: 3000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateHTTPRoute(ctx, service.ID, "app.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	db.SetDefaults(Defaults{Domain: "example.com", AdminLabel: "app"})
+	if _, err := db.ApplyEnvironmentDomain(ctx); !errors.Is(err, ErrAdminHostnameTaken) {
+		t.Fatalf("taking a public address: %v", err)
+	}
+	if outlet, _ := db.Outlet(ctx); outlet.AdminHostname != "console.example.com" || outlet.DomainSource != SourceEnvironment {
+		t.Fatalf("outlet = %+v", outlet)
+	}
+
+	now := time.Now()
+	settings, err := db.RateLimit(ctx, "console.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Endpoints = []EndpointLimit{
+		{Host: "console.example.com", PathPrefix: "/api/", RPS: 5, Burst: 10, Per: "ip"},
+		{Host: "console.example.com", PathPrefix: "/login", RPS: 1, Burst: 2, Per: "ip"},
+		{Host: "admin.example.com", PathPrefix: "/api/", RPS: 9, Burst: 9, Per: "ip"},
+	}
+	if _, err := db.SetRateLimit(ctx, settings, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RenameRateLimitHost(ctx, "console.example.com", "admin.example.com", now); err != nil {
+		t.Fatal(err)
+	}
+	moved, err := db.RateLimit(ctx, "admin.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, endpoint := range moved.Endpoints {
+		if endpoint.Host != "admin.example.com" {
+			t.Fatalf("left behind: %+v", endpoint)
+		}
+		got[endpoint.PathPrefix] = endpoint.RPS
+	}
+	if len(got) != 2 || got["/api/"] != 9 || got["/login"] != 1 {
+		t.Fatalf("endpoints = %+v", moved.Endpoints)
 	}
 }

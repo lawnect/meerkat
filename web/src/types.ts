@@ -6,6 +6,7 @@ export interface SignInOptions {
   password: boolean;
   sso: boolean;
   sso_label: string; // 공급자 이름. 비어 있을 수 있습니다
+  recovery?: boolean; // 로컬 관리 포트(SSH)에서만 true: admin.token으로 관리자 비밀번호를 설정할 수 있음
 }
 
 export interface OutletTunnel {

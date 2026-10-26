@@ -21,7 +21,10 @@ var (
 	// ErrDomainFromEnvironment refuses to replace a primary domain the
 	// environment sets.
 	ErrDomainFromEnvironment = errors.New("primary domain is set by the environment")
-	ErrInvalidDomainMode     = errors.New("invalid domain mode")
+	// ErrAdminHostnameTaken refuses a management host that a public address
+	// already uses; the console would take over that app's hostname.
+	ErrAdminHostnameTaken = errors.New("management host is a public address")
+	ErrInvalidDomainMode  = errors.New("invalid domain mode")
 
 	ErrInvalidTunnelAddress = errors.New("invalid tunnel address")
 )
@@ -76,11 +79,14 @@ func (d *Database) Outlet(ctx context.Context) (Outlet, error) {
 	return outlet, nil
 }
 
+// domainSource is SourceEnvironment whenever the environment names a primary
+// domain, even one not applied yet (public addresses still use the old one):
+// the console can't replace it either way.
 func (d *Database) domainSource(domain string) string {
 	switch {
 	case domain == "":
 		return ""
-	case domain == d.environment().Domain:
+	case d.environment().Domain != "":
 		return SourceEnvironment
 	default:
 		return SourceDatabase
@@ -360,8 +366,18 @@ func (d *Database) setDomain(ctx context.Context, domain, mode, label string) (O
 			return Outlet{}, ErrDomainHasRoutes
 		}
 	}
+	admin := contract.AdminHostname(label, domain)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	err = d.changeRouting(ctx, func(tx *sql.Tx) error {
+		if admin != current.AdminHostname {
+			var taken int
+			if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM routes WHERE hostname = ?", admin).Scan(&taken); err != nil {
+				return err
+			}
+			if taken != 0 {
+				return ErrAdminHostnameTaken
+			}
+		}
 		for key, value := range map[string]string{"domain": domain, "admin_label": label} {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO outlet_settings(key, value, updated_at) VALUES (?, ?, ?)
 			ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, key, value, now); err != nil {
