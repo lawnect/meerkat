@@ -43,7 +43,7 @@ func newFakeIdP(t *testing.T) *fakeIdP {
 	t.Cleanup(idp.server.Close)
 	issuer := idp.server.URL
 	mux.HandleFunc("GET /.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": issuer, "authorization_endpoint": issuer + "/auth", "token_endpoint": issuer + "/token", "jwks_uri": issuer + "/jwks",
+		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": issuer, "authorization_endpoint": issuer + "/auth", "token_endpoint": issuer + "/token", "jwks_uri": issuer + "/jwks", "end_session_endpoint": issuer + "/logout",
 			"response_types_supported": []string{"code"}, "subject_types_supported": []string{"public"}, "id_token_signing_alg_values_supported": []string{"RS256"}})
 	})
 	mux.HandleFunc("GET /jwks", func(w http.ResponseWriter, _ *http.Request) {
@@ -405,4 +405,51 @@ func TestSSOFromTheEnvironment(t *testing.T) {
 	if event := a.lastAudit(t); event.Action != "security.sso_reset" {
 		t.Fatalf("audit: %s", event.Action)
 	}
+}
+
+// Logging out of a single sign-on session ends the provider's session too;
+// a password session just ends.
+func TestSSOLogoutEndsTheProviderSession(t *testing.T) {
+	a := newAlertFixture(t)
+	a.adminSession(t)
+	idp := newFakeIdP(t)
+	a.enableSSO(t, idp, nil)
+	w := a.ssoSignIn(t, idp, map[string]any{"email": "alice@corp.example.com", "email_verified": true, "groups": []string{"meerkat-admins"}})
+	var idToken *http.Cookie
+	for _, cookie := range w.Result().Cookies() {
+		if cookie.Name == ssoIDTokenCookie {
+			idToken = cookie
+		}
+	}
+	if idToken == nil || !idToken.HttpOnly || !idToken.Secure || idToken.SameSite != http.SameSiteStrictMode || idToken.Path != "/api/v1/session" {
+		t.Fatalf("ID token cookie: %+v", idToken)
+	}
+	logout := func(cookies ...*http.Cookie) *httptest.ResponseRecorder {
+		r := jsonRequest("DELETE", "/api/v1/session", nil)
+		r.Host = a.host
+		r.Header.Set("X-Forwarded-For", "198.51.100.20")
+		for _, cookie := range cookies {
+			r.AddCookie(cookie)
+		}
+		w := httptest.NewRecorder()
+		a.store.PublicHandler().ServeHTTP(w, r)
+		return w
+	}
+	out := logout(sessionCookie(t, w), idToken)
+	var body struct {
+		LogoutURL string `json:"logout_url"`
+	}
+	if out.Code != 200 || json.Unmarshal(out.Body.Bytes(), &body) != nil {
+		t.Fatalf("SSO logout: %d %s", out.Code, out.Body.String())
+	}
+	target, err := url.Parse(body.LogoutURL)
+	if err != nil || !strings.HasPrefix(body.LogoutURL, idp.server.URL+"/logout?") || target.Query().Get("client_id") != "meerkat" ||
+		target.Query().Get("id_token_hint") != idToken.Value || target.Query().Get("post_logout_redirect_uri") != "https://"+a.host+"/" {
+		t.Fatalf("logout URL: %s", body.LogoutURL)
+	}
+	login := a.publicRequest("POST", "/api/v1/session", "198.51.100.21", chromeOnMac, adminLogin)
+	if out := logout(sessionCookie(t, login)); out.Code != http.StatusNoContent {
+		t.Fatalf("password logout: %d %s", out.Code, out.Body.String())
+	}
+	a.store.background.Wait()
 }

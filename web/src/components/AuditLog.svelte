@@ -44,25 +44,25 @@
   }, {
     search: '사용자, 대상, 내용 검색',
     category: '분류',
-    categories: { '': '모든 작업', 'session.': '로그인', 'setup.': '초기 설정', 'connector.': '터널', 'service.': '서비스', 'route.': '공개 주소', 'domain.': '도메인', 'tunnel.': '터널 주소', 'telegram.': '텔레그램', 'alert_rules.': '알림 규칙', 'second_factor.': '2단계 인증', 'security.': '보안 제한' },
+    categories: { '': '모든 작업', 'session.': '로그인', 'setup.': '초기 설정', 'connector.': '터널', 'service.': '서비스', 'route.': '공개 주소', 'domain.': '도메인', 'tunnel.': '터널 주소', 'telegram.': 'Telegram', 'alert_rules.': '알림 규칙', 'second_factor.': '2단계 인증', 'security.': '보안' },
     reset: '필터 초기화',
     colTime: '시각',
     colActor: '사용자',
     colAction: '작업',
     colTarget: '대상',
-    colSource: '접속 위치',
+    colSource: '접속 경로',
     local: '로컬 포트',
     actions: {
-      'session.login': '로그인', 'session.login_failed': '로그인 실패', 'session.second_factor': '2단계 인증 통과', 'session.second_factor_failed': '2단계 인증 실패', 'session.logout': '로그아웃', 'setup.admin_create': '관리자 생성',
-      'connector.create': '터널 생성', 'connector.delete': '터널 삭제', 'connector.rename': '터널 이름 변경', 'connector.describe': '터널 설명 변경', 'connector.token_issue': '터널 토큰 발급', 'connector.token_reset': '터널 토큰 교체', 'connector.enroll': '터널 최초 연결', 'connector.enroll_failed': '터널 연결 거부',
+      'session.login': '로그인', 'session.login_failed': '로그인 실패', 'session.second_factor': '2단계 인증 성공', 'session.second_factor_failed': '2단계 인증 실패', 'session.logout': '로그아웃', 'setup.admin_create': '관리자 생성',
+      'connector.create': '터널 생성', 'connector.delete': '터널 삭제', 'connector.rename': '터널 이름 변경', 'connector.describe': '터널 설명 변경', 'connector.token_issue': '터널 토큰 발급', 'connector.token_reset': '터널 토큰 재발급', 'connector.enroll': '터널 최초 연결', 'connector.enroll_failed': '터널 연결 거부',
       'service.create': '서비스 추가', 'service.update': '서비스 대상 변경', 'service.delete': '서비스 삭제',
       'route.create': '공개 주소 추가', 'route.delete': '공개 주소 삭제',
       'domain.set': '대표 도메인 설정', 'domain.add': '도메인 추가', 'domain.remove': '도메인 삭제', 'domain.mode': 'DNS 방식 변경',
       'tunnel.update': '터널 주소 변경',
-      'telegram.update': '텔레그램 설정 저장', 'telegram.test': '텔레그램 테스트', 'telegram.delete': '텔레그램 연결 해제', 'alert_rules.update': '알림 규칙 변경', 'second_factor.update': '2단계 인증 설정 변경', 'security.rate_limit': '요청 제한 변경', 'security.connection_limits': '연결 제한 변경', 'security.block_rules': '차단 규칙 변경', 'security.sso': 'SSO 설정 변경', 'security.sso_reset': 'SSO 환경 변수 값으로 되돌림',
+      'telegram.update': 'Telegram 설정 변경', 'telegram.test': 'Telegram 테스트 메시지 전송', 'telegram.delete': 'Telegram 연결 해제', 'alert_rules.update': '알림 규칙 변경', 'second_factor.update': '2단계 인증 설정 변경', 'security.rate_limit': '요청 제한 변경', 'security.connection_limits': '연결 제한 변경', 'security.block_rules': '차단 규칙 변경', 'security.sso': 'SSO 설정 변경', 'security.sso_reset': 'SSO 환경 변수 값 복원',
     },
-    empty: '조건에 맞는 기록이 없습니다',
-    loadFailed: (code: string) => `감사 로그를 불러오지 못했습니다: ${code}`,
+    empty: '조건에 해당하는 기록이 없습니다',
+    loadFailed: (code: string) => `감사 로그를 불러오는 중 오류가 발생했습니다: ${code}`,
   });
 
   const perPage = 20;

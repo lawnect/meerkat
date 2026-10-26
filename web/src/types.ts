@@ -282,6 +282,7 @@ export interface SsoSettings {
   allowed_groups: string[];
   password_login: boolean; // 공개 주소에서 비밀번호 로그인 허용
   redirect_uri: string; // 공급자에 등록할 주소
+  post_logout_redirect_uri: string; // 공급자에 등록할 로그아웃 후 리디렉션 주소
   available: boolean; // 도메인(관리자 호스트)이 생기기 전에는 false(redirect_uri는 '')
   source: SettingSource;
   environment: boolean; // 환경 변수에 SSO 설정이 있는지. 저장한 값을 지우면 이 값으로 돌아갑니다

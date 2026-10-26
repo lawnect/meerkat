@@ -354,6 +354,10 @@ func (s *Store) secondFactor(w http.ResponseWriter, r *http.Request) {
 func (s *Store) finishLogin(w http.ResponseWriter, r *http.Request, admin control.Admin, secondFactor bool) {
 	session, ok := s.startLogin(w, r, admin, map[string]any{"method": "password", "second_factor": secondFactor})
 	if ok {
+		// Logging out of a password session has no provider session to end.
+		if _, err := r.Cookie(ssoIDTokenCookie); err == nil {
+			http.SetCookie(w, &http.Cookie{Name: ssoIDTokenCookie, Value: "", Path: "/api/v1/session", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+		}
 		reply(w, 201, map[string]any{"admin": session.Admin, "expires_at": session.ExpiresAt})
 	}
 }

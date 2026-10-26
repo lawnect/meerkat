@@ -42,12 +42,12 @@
     redirectUri: 'Redirect URI',
     redirectHint: 'Register this URI with the provider.',
     redirectPending: 'Appears after you add a domain.',
-    scopes: 'Scopes',
+    postLogoutUri: 'Post-logout redirect URI',
+    postLogoutHint: 'Register this as a valid post-logout redirect URI with the provider.',
     allowedUsers: 'Allowed users',
     allowedUsersHint: 'Email addresses or @domain.',
     allowedGroups: 'Allowed groups',
     allowedGroupsHint: 'With allowed users also set, both must match.',
-    groupsClaim: 'Groups claim',
     passwordLogin: 'Password sign-in',
     passwordLoginHint: 'When off, public addresses accept only SSO. The local admin port over SSH still accepts passwords.',
     revert: 'Revert',
@@ -59,41 +59,41 @@
     loadFailed: (code: string) => `Couldn't load SSO settings: ${code}`,
   }, {
     title: 'SSO',
-    tip: 'Google Workspace, Entra ID, Okta, Keycloak 같은 OpenID Connect 공급자로 관리 콘솔에 로그인합니다. SSO 로그인에는 텔레그램 코드를 묻지 않으니 공급자의 다단계 인증을 사용하세요.',
-    fromEnvironment: '환경 변수로 설정됨',
-    overridesEnvironment: '환경 변수 덮어씀',
-    revertToEnvironment: '환경 변수 값으로 되돌리기',
-    reverted: '환경 변수 값으로 되돌렸습니다',
-    enabled: 'SSO 사용',
-    label: '공급자 이름',
-    labelHint: '로그인 버튼에 표시됩니다.',
+    tip: 'Google Workspace, Entra ID, Okta, Keycloak 등 OpenID Connect 공급자를 통해 관리 콘솔에 로그인합니다. SSO 로그인 시에는 Telegram 인증 코드를 요구하지 않으므로 공급자의 다단계 인증을 사용하십시오.',
+    fromEnvironment: '환경 변수로 구성됨',
+    overridesEnvironment: '환경 변수 재정의됨',
+    revertToEnvironment: '환경 변수 값으로 복원',
+    reverted: '환경 변수 값으로 복원되었습니다',
+    enabled: 'SSO 활성화',
+    label: '공급자 표시 이름',
+    labelHint: '로그인 버튼에 표시',
     issuer: '발급자 URL',
-    test: '연결 확인',
-    providerFound: '공급자를 확인했습니다',
-    providerUnreachable: '공급자에 연결하지 못했습니다.',
-    issuerInvalid: 'https URL을 입력하세요.',
+    test: '연결 테스트',
+    providerFound: '공급자 연결이 확인되었습니다',
+    providerUnreachable: '공급자에 연결할 수 없습니다.',
+    issuerInvalid: 'https URL을 입력하십시오.',
     clientId: '클라이언트 ID',
     clientSecret: '클라이언트 시크릿',
-    secretKeep: (hint: string) => `저장됨(…${hint}). 바꾸려면 새 시크릿을 입력하세요.`,
-    secretKeepShort: '저장됨. 바꾸려면 새 시크릿을 입력하세요.',
+    secretKeep: (hint: string) => `저장됨(…${hint}). 변경하려면 새 시크릿을 입력하십시오.`,
+    secretKeepShort: '저장됨. 변경하려면 새 시크릿을 입력하십시오.',
     redirectUri: '리디렉션 URI',
-    redirectHint: '공급자에 이 URI를 등록하세요.',
-    redirectPending: '도메인을 등록하면 표시됩니다.',
-    scopes: '범위',
+    redirectHint: '공급자의 유효한 리디렉션 URI로 등록',
+    redirectPending: '도메인 등록 후 표시',
+    postLogoutUri: '로그아웃 후 리디렉션 URI',
+    postLogoutHint: '공급자의 유효한 로그아웃 후 리디렉션 URI로 등록',
     allowedUsers: '허용 사용자',
     allowedUsersHint: '이메일 주소 또는 @도메인',
     allowedGroups: '허용 그룹',
-    allowedGroupsHint: '허용 사용자와 함께 쓰면 둘 다 충족해야 합니다.',
-    groupsClaim: '그룹 클레임',
+    allowedGroupsHint: '허용 사용자와 함께 지정 시 두 조건 모두 충족 필요',
     passwordLogin: '비밀번호 로그인',
-    passwordLoginHint: '끄면 공개 주소에서는 SSO로만 로그인합니다. SSH로 연결한 로컬 관리 포트는 예외입니다.',
-    revert: '되돌리기',
+    passwordLoginHint: '비활성화 시 공개 주소에서는 SSO 로그인만 허용. SSH로 연결한 로컬 관리 포트는 제외',
+    revert: '변경 취소',
     save: '저장',
     saving: '저장 중…',
-    saved: '저장했습니다',
-    invalid: '값을 확인하세요. SSO를 사용하려면 https 발급자 URL, 클라이언트 ID, 허용 사용자나 그룹이 하나 이상 필요합니다.',
-    failed: (code: string) => `저장하지 못했습니다: ${code}`,
-    loadFailed: (code: string) => `SSO 설정을 불러오지 못했습니다: ${code}`,
+    saved: '저장되었습니다',
+    invalid: '입력값이 올바르지 않습니다. SSO를 활성화하려면 https 발급자 URL, 클라이언트 ID, 허용 사용자 또는 허용 그룹이 1개 이상 필요합니다.',
+    failed: (code: string) => `저장 중 오류가 발생했습니다: ${code}`,
+    loadFailed: (code: string) => `SSO 설정을 불러오는 중 오류가 발생했습니다: ${code}`,
   });
 
   // 서버 값과 입력 모양이 다른 칸은 범위(공백으로 구분한 한 줄)와 클라이언트 시크릿(입력했을 때만 보냄)입니다.
@@ -265,14 +265,16 @@
             </div>
             {#if saved.available && saved.redirect_uri}<Field.Description>{t().redirectHint}</Field.Description>{/if}
           </Field.Field>
-          <Field.Field>
-            <Field.Label for="sso-scopes">{t().scopes}</Field.Label>
-            <Input id="sso-scopes" bind:value={draft.scopes} autocomplete="off" autocapitalize="off" spellcheck={false} placeholder="openid email profile" class="font-mono" />
-          </Field.Field>
-          <Field.Field>
-            <Field.Label for="sso-groups-claim">{t().groupsClaim}</Field.Label>
-            <Input id="sso-groups-claim" bind:value={draft.groups_claim} autocomplete="off" autocapitalize="off" spellcheck={false} placeholder="groups" class="font-mono" />
-          </Field.Field>
+          {#if saved.available && saved.post_logout_redirect_uri}
+            <!-- 범위와 그룹 클레임은 기본값(openid email profile, groups)을 쓰며 화면에 두지 않습니다. 환경 변수로만 바꿉니다. -->
+            <Field.Field class="md:col-span-2">
+              <Field.Label id="sso-post-logout-label">{t().postLogoutUri}</Field.Label>
+              <div class="flex min-h-8 min-w-0 items-center text-xs" role="group" aria-labelledby="sso-post-logout-label">
+                <CopyText value={saved.post_logout_redirect_uri} />
+              </div>
+              <Field.Description>{t().postLogoutHint}</Field.Description>
+            </Field.Field>
+          {/if}
           <Field.Field>
             <Field.Label for="sso-users">{t().allowedUsers}</Field.Label>
             <TagInput id="sso-users" ariaLabel={t().allowedUsers} bind:values={draft.allowed_users} lowercase mono placeholder="admin@example.com, @example.com" />

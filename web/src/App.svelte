@@ -167,7 +167,12 @@
   }
 
   async function logout() {
-    await api('/api/v1/session', { method: 'DELETE' });
+    // SSO 세션이면 공급자의 로그아웃 주소를 받아 공급자 세션까지 종료합니다.
+    const result = await api<{ logout_url?: string }>('/api/v1/session', { method: 'DELETE' });
+    if (result.logout_url) {
+      window.location.assign(result.logout_url);
+      return;
+    }
     clearStoredEnrollments();
     connectorState.selectedId = '';
     connectorState.enrollment = null;

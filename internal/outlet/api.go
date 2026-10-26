@@ -620,8 +620,16 @@ func (s *Store) logout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.SetCookie(w, &http.Cookie{Name: "meerkat_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	// A single sign-on session also ends at the provider, or the next
+	// sign-in would go straight through without asking.
+	logoutURL := s.ssoLogoutURL(r)
+	http.SetCookie(w, &http.Cookie{Name: ssoIDTokenCookie, Value: "", Path: "/api/v1/session", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
 	if active {
 		s.audit(r, "session.logout", control.AuditEntry{ActorID: admin.ID, ActorEmail: admin.Email, ResourceType: "admin", ResourceID: admin.ID})
+	}
+	if logoutURL != "" {
+		reply(w, 200, map[string]string{"logout_url": logoutURL})
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

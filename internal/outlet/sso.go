@@ -6,6 +6,7 @@ import (
 	"errors"
 	"html"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -18,11 +19,16 @@ import (
 )
 
 const (
-	ssoCookie       = "meerkat_sso"
-	ssoPath         = "/api/v1/session/sso"
-	ssoCallbackPath = ssoPath + "/callback"
-	ssoStateTTL     = 10 * time.Minute
-	maxSSOPending   = 1024
+	ssoCookie = "meerkat_sso"
+	// ssoIDTokenCookie keeps the ID token of a single sign-on session for
+	// logout: the provider ends its own session only for a request that
+	// presents it (id_token_hint).
+	ssoIDTokenCookie = "meerkat_sso_id_token"
+	maxIDTokenCookie = 3800
+	ssoPath          = "/api/v1/session/sso"
+	ssoCallbackPath  = ssoPath + "/callback"
+	ssoStateTTL      = 10 * time.Minute
+	maxSSOPending    = 1024
 	// ssoProviderTTL bounds how long discovery is trusted; keys are refreshed
 	// by go-oidc on their own when a token names an unknown one.
 	ssoProviderTTL = time.Hour
@@ -125,6 +131,56 @@ func (s *Store) ssoRedirectURI(ctx context.Context) (string, error) {
 		return "", errors.New("no management hostname")
 	}
 	return "https://" + routing.Outlet.AdminHostname + ssoCallbackPath, nil
+}
+
+// ssoPostLogoutURI is where the provider returns the browser after logging
+// it out: the sign-in page of the management host.
+func (s *Store) ssoPostLogoutURI(ctx context.Context) (string, error) {
+	redirect, err := s.ssoRedirectURI(ctx)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(redirect, ssoCallbackPath) + "/", nil
+}
+
+// ssoLogoutURL is the provider's logout address for a session that single
+// sign-on started, or "" when there is none to end there.
+func (s *Store) ssoLogoutURL(r *http.Request) string {
+	cookie, err := r.Cookie(ssoIDTokenCookie)
+	if err != nil || cookie.Value == "" || s.control == nil {
+		return ""
+	}
+	if _, public := requestOrigin(r); !public {
+		return ""
+	}
+	settings, err := s.control.SSO(r.Context())
+	if err != nil || !settings.Enabled {
+		return ""
+	}
+	provider, err := s.discover(r.Context(), settings.Issuer)
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		EndSession string `json:"end_session_endpoint"`
+	}
+	if provider.Claims(&claims) != nil {
+		return ""
+	}
+	endpoint, err := url.Parse(claims.EndSession)
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" {
+		return ""
+	}
+	postLogout, err := s.ssoPostLogoutURI(r.Context())
+	if err != nil {
+		return ""
+	}
+	query := endpoint.Query()
+	query.Set("client_id", settings.ClientID)
+	query.Set("id_token_hint", cookie.Value)
+	query.Set("post_logout_redirect_uri", postLogout)
+	endpoint.RawQuery = query.Encode()
+	return endpoint.String()
 }
 
 func oauthConfig(settings control.SSO, provider *oidc.Provider, redirectURI string) *oauth2.Config {
@@ -301,8 +357,12 @@ func (s *Store) ssoCallback(w http.ResponseWriter, r *http.Request) {
 		ssoFailed(w, r, pending.returnTo, "sso_unavailable")
 		return
 	}
-	if _, ok := s.startLogin(w, r, admin, map[string]any{"method": "sso"}); !ok {
+	session, ok := s.startLogin(w, r, admin, map[string]any{"method": "sso"})
+	if !ok {
 		return
+	}
+	if len(raw) <= maxIDTokenCookie {
+		http.SetCookie(w, &http.Cookie{Name: ssoIDTokenCookie, Value: raw, Path: "/api/v1/session", Expires: session.ExpiresAt, MaxAge: int(time.Until(session.ExpiresAt).Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
 	}
 	// The session cookie is SameSite=Strict, and this response ends a
 	// navigation that began on the provider's site, so a redirect from here
@@ -322,6 +382,7 @@ type ssoView struct {
 	SecretSet       bool   `json:"client_secret_set"`
 	SecretHint      string `json:"client_secret_hint"`
 	RedirectURI     string `json:"redirect_uri"`
+	PostLogoutURI   string `json:"post_logout_redirect_uri"`
 	AvailableAtHost bool   `json:"available"`
 	// Source is where the settings come from: "database", "environment" or
 	// "default"; Environment says whether the environment gives settings,
@@ -337,6 +398,7 @@ func (s *Store) ssoSettingsView(ctx context.Context, settings control.SSO) ssoVi
 	view.SSO.ClientSecret = ""
 	if uri, err := s.ssoRedirectURI(ctx); err == nil {
 		view.RedirectURI, view.AvailableAtHost = uri, true
+		view.PostLogoutURI, _ = s.ssoPostLogoutURI(ctx)
 	}
 	return view
 }

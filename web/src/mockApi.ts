@@ -164,6 +164,7 @@ let sso: SsoSettings = {
   allowed_groups: [],
   password_login: true,
   redirect_uri: 'https://k7m2x9qa.example.test/api/v1/session/sso/callback',
+  post_logout_redirect_uri: 'https://k7m2x9qa.example.test/',
   available: true,
   source: 'environment',
   environment: true,
@@ -249,7 +250,7 @@ const alertsResponse = (): AlertSettings => structuredClone(alerts);
 // 도메인을 모두 지우면 관리자 호스트가 없어 리디렉션 URI도 만들 수 없습니다.
 const ssoResponse = (): SsoSettings => {
   const domain = state.outlet.domain;
-  return structuredClone({ ...sso, redirect_uri: domain ? `https://${adminHostname(domain)}/api/v1/session/sso/callback` : '', available: Boolean(domain) });
+  return structuredClone({ ...sso, redirect_uri: domain ? `https://${adminHostname(domain)}/api/v1/session/sso/callback` : '', post_logout_redirect_uri: domain ? `https://${adminHostname(domain)}/` : '', available: Boolean(domain) });
 };
 
 function fail(code: string): never {
