@@ -96,19 +96,11 @@ func compileBlockRule(hosts []string, conditions []control.BlockCondition) block
 	return b
 }
 
-// rulePath is a request path in the form rules compare: normalized, with
-// trailing dots and spaces dropped from every segment as some servers do
-// ("/admin./x" is "/admin/x" to them), and with a trailing slash so that
+// rulePath is a request path in the form rules compare (see
+// control.NormalizeBlockPath), and with a trailing slash so that
 // "/cgi-bin/" matches "/cgi-bin" as well.
 func rulePath(requestPath string) (p, slashed string) {
-	segments := strings.Split(control.NormalizeBlockPath(requestPath), "/")
-	for i, segment := range segments {
-		segments[i] = strings.TrimRight(segment, ". ")
-	}
-	p = strings.TrimRight(strings.Join(segments, "/"), "/")
-	if p == "" {
-		p = "/"
-	}
+	p = control.NormalizeBlockPath(requestPath)
 	slashed = p
 	if p != "/" {
 		slashed += "/"
@@ -164,7 +156,8 @@ func (rule *blockRule) covers(host string) bool {
 }
 
 // matches reports whether any condition holds for the normalized path p;
-// slashed is p with a trailing slash.
+// slashed is p with a trailing slash, which patterns are tried on too, so
+// "^/admin/" holds for "/admin" as starts_with "/admin/" does.
 func (rule *blockRule) matches(p, slashed string) bool {
 	if rule.equals[p] {
 		return true
@@ -185,7 +178,7 @@ func (rule *blockRule) matches(p, slashed string) bool {
 		}
 	}
 	for _, pattern := range rule.patterns {
-		if pattern.MatchString(p) {
+		if pattern.MatchString(p) || pattern.MatchString(slashed) {
 			return true
 		}
 	}
@@ -245,7 +238,12 @@ func (s *Store) putBlockRules(w http.ResponseWriter, r *http.Request) {
 	if !decodeLimited(w, r, &req, maxBlockRulesBody, "rules") {
 		return
 	}
+	s.saving.Lock()
 	saved, err := s.control.SetBlockRules(r.Context(), req, s.now())
+	if err == nil {
+		s.applyBlockRules(saved)
+	}
+	s.saving.Unlock()
 	if errors.Is(err, control.ErrInvalidBlockRules) {
 		fail(w, r, 400, "invalid_block_rules")
 		return
@@ -254,7 +252,6 @@ func (s *Store) putBlockRules(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	s.applyBlockRules(saved)
 	// The lists can be long; the log keeps which rules exist and are on.
 	var enabled, disabled []string
 	for _, rule := range saved.Rules {

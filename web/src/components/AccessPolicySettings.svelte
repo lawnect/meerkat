@@ -62,7 +62,7 @@
     allowedGroups: 'Allowed groups',
     allowedGroupsHint: 'With allowed users also set, both must match.',
     allowAdmins: 'Allow administrators',
-    allowAdminsTip: 'Anyone who signs in with the email of a Meerkat administrator is let in, whether or not they match the allowed users and groups.',
+    allowAdminsTip: 'Anyone whose email, as verified by the access SSO provider, is a Meerkat administrator\'s is let in, whether or not they match the allowed users and groups.',
     administrators: 'Administrators',
     delete: 'Delete',
     deleteTitle: 'Delete this policy?',
@@ -73,6 +73,7 @@
     saved: 'Saved',
     invalid: 'Check the policy: addresses are hostnames or *.domain, equals and starts with need a leading /, regular expressions must use RE2 syntax, and the policy must allow at least one user, group or administrators.',
     needsWho: 'Add an allowed user or group, or allow administrators.',
+    decodedPaths: 'Enter paths without %-escapes or ;parameters.',
     failed: (code: string) => `Couldn't save: ${code}`,
     loadFailed: (code: string) => `Couldn't load access policies: ${code}`,
   }, {
@@ -109,7 +110,7 @@
     allowedGroups: '허용 그룹',
     allowedGroupsHint: '허용 사용자와 함께 지정 시 두 조건 모두 충족 필요',
     allowAdmins: '관리자 허용',
-    allowAdminsTip: 'Meerkat 관리자의 이메일로 로그인한 사용자는 허용 사용자·그룹 조건과 무관하게 접근할 수 있습니다.',
+    allowAdminsTip: '접근 보호 SSO에서 인증된 이메일이 Meerkat 관리자 이메일과 같은 사용자는 허용 사용자·그룹 조건과 무관하게 접근할 수 있습니다.',
     administrators: '관리자',
     delete: '삭제',
     deleteTitle: '이 정책을 삭제하시겠습니까?',
@@ -120,6 +121,7 @@
     saved: '저장되었습니다',
     invalid: '정책 입력값이 올바르지 않습니다. 주소는 도메인 이름 또는 *.도메인 형식이어야 하며, 같음 및 다음으로 시작 조건은 /로 시작해야 하고, 정규식은 RE2 구문만 지원합니다. 허용 사용자, 허용 그룹, 관리자 허용 중 하나 이상이 필요합니다.',
     needsWho: '허용 사용자, 허용 그룹, 관리자 허용 중 하나 이상을 지정하십시오.',
+    decodedPaths: '경로는 % 인코딩과 ;매개변수 없이 입력하십시오.',
     failed: (code: string) => `저장 중 오류가 발생했습니다: ${code}`,
     loadFailed: (code: string) => `접근 정책을 불러오는 중 오류가 발생했습니다: ${code}`,
   });
@@ -226,6 +228,11 @@
     if (!policies || busy) return;
     if (!form.users.length && !form.groups.length && !form.admins) {
       formError = t().needsWho;
+      return;
+    }
+    // 요청 경로는 디코딩하고 ;매개변수를 뺀 형태로 비교하므로, 그런 값은 어떤 요청과도 일치하지 않습니다.
+    if (form.paths === 'selected' && form.conditions.some((condition) => condition.operator !== 'matches' && /%[0-9a-f]{2}|;/i.test(condition.value))) {
+      formError = t().decodedPaths;
       return;
     }
     const current = editing;

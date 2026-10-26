@@ -301,7 +301,6 @@ export interface SsoSettings {
 // 접근 보호용 OpenID Connect 공급자(GET/PUT /api/v1/security/access-provider). 관리자 SSO와 별개이며, 클라이언트 시크릿은 응답에 없고 PUT에서 비우거나 생략하면 저장된 값을 유지합니다.
 export interface AccessProviderView {
   enabled: boolean;
-  label: string; // 32자 이하
   issuer: string; // https URL, 끝에 / 없음
   client_id: string;
   client_secret_set: boolean;

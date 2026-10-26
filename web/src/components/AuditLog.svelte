@@ -22,7 +22,7 @@
   const t = translations({
     search: 'Search by user, target or detail',
     category: 'Category',
-    categories: { '': 'All actions', 'session.': 'Sign-in', 'setup.': 'Setup', 'connector.': 'Tunnels', 'service.': 'Services', 'route.': 'Public addresses', 'domain.': 'Domains', 'tunnel.': 'Tunnel address', 'telegram.': 'Telegram', 'alert_rules.': 'Alert rules', 'second_factor.': 'Two-step verification', 'security.': 'Security limits' } as Record<string, string>,
+    categories: { '': 'All actions', 'session.': 'Sign-in', 'setup.': 'Setup', 'connector.': 'Tunnels', 'service.': 'Services', 'route.': 'Public addresses', 'domain.': 'Domains', 'tunnel.': 'Tunnel address', 'telegram.': 'Telegram', 'alert_rules.': 'Alert rules', 'second_factor.': 'Two-step verification', 'security.': 'Security limits', 'access.': 'Access protection' } as Record<string, string>,
     reset: 'Reset filters',
     colTime: 'Time',
     colActor: 'User',
@@ -37,14 +37,15 @@
       'route.create': 'Added public address', 'route.delete': 'Deleted public address', 'address.update': 'Changed shared address',
       'domain.set': 'Set primary domain', 'domain.add': 'Added domain', 'domain.remove': 'Deleted domain', 'domain.mode': 'Changed DNS records mode',
       'tunnel.update': 'Changed tunnel address',
-      'telegram.update': 'Saved Telegram settings', 'telegram.test': 'Sent Telegram test', 'telegram.delete': 'Disconnected Telegram', 'alert_rules.update': 'Changed alert rules', 'second_factor.update': 'Changed two-step verification', 'security.rate_limit': 'Changed rate limits', 'security.connection_limits': 'Changed connection limits', 'security.block_rules': 'Changed block rules', 'security.sso': 'Changed SSO settings', 'security.sso_reset': 'Reverted SSO to environment',
+      'telegram.update': 'Saved Telegram settings', 'telegram.test': 'Sent Telegram test', 'telegram.delete': 'Disconnected Telegram', 'alert_rules.update': 'Changed alert rules', 'second_factor.update': 'Changed two-step verification', 'security.rate_limit': 'Changed rate limits', 'security.connection_limits': 'Changed connection limits', 'security.block_rules': 'Changed block rules', 'security.sso': 'Changed SSO settings', 'security.sso_reset': 'Reverted SSO to environment', 'security.access_provider': 'Changed access SSO settings', 'security.access_policies': 'Changed access policies', 'security.access_sessions_revoke': 'Signed everyone out of protected addresses',
+      'access.login': 'Signed in to a protected address', 'access.login_failed': 'Protected address sign-in failed',
     } as Record<string, string>,
     empty: 'No matching records',
     loadFailed: (code: string) => `Couldn't load the audit log: ${code}`,
   }, {
     search: '사용자, 대상, 내용 검색',
     category: '분류',
-    categories: { '': '모든 작업', 'session.': '로그인', 'setup.': '초기 설정', 'connector.': '터널', 'service.': '서비스', 'route.': '공개 주소', 'domain.': '도메인', 'tunnel.': '터널 주소', 'telegram.': 'Telegram', 'alert_rules.': '알림 규칙', 'second_factor.': '2단계 인증', 'security.': '보안' },
+    categories: { '': '모든 작업', 'session.': '로그인', 'setup.': '초기 설정', 'connector.': '터널', 'service.': '서비스', 'route.': '공개 주소', 'domain.': '도메인', 'tunnel.': '터널 주소', 'telegram.': 'Telegram', 'alert_rules.': '알림 규칙', 'second_factor.': '2단계 인증', 'security.': '보안', 'access.': '접근 보호' },
     reset: '필터 초기화',
     colTime: '시각',
     colActor: '사용자',
@@ -59,14 +60,15 @@
       'route.create': '공개 주소 추가', 'route.delete': '공개 주소 삭제', 'address.update': '주소 공유 설정 변경',
       'domain.set': '대표 도메인 설정', 'domain.add': '도메인 추가', 'domain.remove': '도메인 삭제', 'domain.mode': 'DNS 방식 변경',
       'tunnel.update': '터널 주소 변경',
-      'telegram.update': 'Telegram 설정 변경', 'telegram.test': 'Telegram 테스트 메시지 전송', 'telegram.delete': 'Telegram 연결 해제', 'alert_rules.update': '알림 규칙 변경', 'second_factor.update': '2단계 인증 설정 변경', 'security.rate_limit': '요청 제한 변경', 'security.connection_limits': '연결 제한 변경', 'security.block_rules': '차단 규칙 변경', 'security.sso': 'SSO 설정 변경', 'security.sso_reset': 'SSO 환경 변수 값 복원',
+      'telegram.update': 'Telegram 설정 변경', 'telegram.test': 'Telegram 테스트 메시지 전송', 'telegram.delete': 'Telegram 연결 해제', 'alert_rules.update': '알림 규칙 변경', 'second_factor.update': '2단계 인증 설정 변경', 'security.rate_limit': '요청 제한 변경', 'security.connection_limits': '연결 제한 변경', 'security.block_rules': '차단 규칙 변경', 'security.sso': 'SSO 설정 변경', 'security.sso_reset': 'SSO 환경 변수 값 복원', 'security.access_provider': '접근 보호 SSO 설정 변경', 'security.access_policies': '접근 정책 변경', 'security.access_sessions_revoke': '접근 보호 세션 전체 종료',
+      'access.login': '보호 주소 로그인', 'access.login_failed': '보호 주소 로그인 실패',
     },
     empty: '조건에 해당하는 기록이 없습니다',
     loadFailed: (code: string) => `감사 로그를 불러오는 중 오류가 발생했습니다: ${code}`,
   });
 
   const perPage = 20;
-  const categories = ['', 'session.', 'setup.', 'connector.', 'service.', 'route.', 'domain.', 'tunnel.', 'telegram.', 'alert_rules.', 'second_factor.', 'security.'];
+  const categories = ['', 'session.', 'setup.', 'connector.', 'service.', 'route.', 'domain.', 'tunnel.', 'telegram.', 'alert_rules.', 'second_factor.', 'security.', 'access.'];
   // 검색어·분류·페이지는 주소(?q=&category=&page=)가 단일 출처입니다. 입력칸은 잠시 멈춘 뒤에 주소에 반영합니다.
   const page = $derived(intParam('page', 1));
   const action = $derived(oneOf('category', categories, ''));

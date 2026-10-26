@@ -105,7 +105,11 @@ type Store struct {
 	limiter      *rateLimiter
 	connections  *connectionLimiter
 	blocks       blockState
-	sso          ssoState
+	// saving serializes saving a setting the Outlet keeps in memory with
+	// putting it in place, so when two saves cross, the one in use can't
+	// end up older than the one saved.
+	saving sync.Mutex
+	sso    ssoState
 	// ssoHTTP talks to the OpenID provider; nil uses a client with a timeout.
 	ssoHTTP *http.Client
 	// deviceKey signs trusted-device cookies; empty without a control database.
@@ -189,6 +193,7 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 		return nil, err
 	}
 	s := &Store{path: filepath.Join(dir, "state.json"), managedPath: filepath.Join(dir, "managed-state.json"), proxyPath: filepath.Join(dir, "caddy", "Caddyfile"), tunnelPath: filepath.Join(dir, "rathole", "server.toml"), records: records, managed: map[string]Record{}, config: config, control: controlDB, now: time.Now}
+	s.access.login.perClient, s.access.starts.attempts = maxAccessPerClient, accessStarts
 	if controlDB != nil && config.Domain != "" {
 		outlet, err := controlDB.Outlet(context.Background())
 		if err != nil {

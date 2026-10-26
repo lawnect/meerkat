@@ -42,6 +42,10 @@
     sessionHours: 'Session length',
     sessionHoursHint: '1–720 hours',
     hours: 'hours',
+    scopes: 'Scopes',
+    scopesHint: 'Separated by spaces',
+    groupsClaim: 'Groups claim',
+    groupsClaimHint: 'ID token claim for group conditions',
     sessions: 'Sign-in sessions',
     sessionsTip: 'Ends every sign-in on all protected addresses. People have to sign in again on their next request.',
     revoke: 'Sign everyone out',
@@ -54,7 +58,7 @@
     save: 'Save',
     saving: 'Saving…',
     saved: 'Saved',
-    invalid: 'Check the values: turning access SSO on needs an https issuer URL and a client ID, and the session length must be 1–720 hours.',
+    invalid: 'Check the values: turning access SSO on needs an https issuer URL and a client ID, the session length must be 1–720 hours, and scopes and the groups claim can\'t contain spaces or control characters.',
     failed: (code: string) => `Couldn't save: ${code}`,
     loadFailed: (code: string) => `Couldn't load access SSO settings: ${code}`,
   }, {
@@ -76,6 +80,10 @@
     sessionHours: '세션 유지 시간',
     sessionHoursHint: '1~720시간',
     hours: '시간',
+    scopes: '범위',
+    scopesHint: '공백으로 구분',
+    groupsClaim: '그룹 클레임',
+    groupsClaimHint: '그룹 조건에 사용할 ID 토큰 클레임',
     sessions: '로그인 세션',
     sessionsTip: '모든 보호 대상 주소에서 로그인한 사용자의 세션을 종료합니다. 종료된 사용자는 다음 요청 시 다시 로그인해야 합니다.',
     revoke: '모든 세션 종료',
@@ -88,7 +96,7 @@
     save: '저장',
     saving: '저장 중…',
     saved: '저장되었습니다',
-    invalid: '입력값이 올바르지 않습니다. 접근 보호 SSO를 활성화하려면 https 발급자 URL과 클라이언트 ID가 필요하며, 세션 유지 시간은 1~720시간이어야 합니다.',
+    invalid: '입력값이 올바르지 않습니다. 접근 보호 SSO를 활성화하려면 https 발급자 URL과 클라이언트 ID가 필요하며, 세션 유지 시간은 1~720시간이어야 합니다. 범위와 그룹 클레임에는 공백이나 제어 문자를 사용할 수 없습니다.',
     failed: (code: string) => `저장 중 오류가 발생했습니다: ${code}`,
     loadFailed: (code: string) => `접근 보호 SSO 설정을 불러오는 중 오류가 발생했습니다: ${code}`,
   });
@@ -96,7 +104,6 @@
   // 서버 값과 입력 모양이 다른 칸은 범위(공백으로 구분한 한 줄), 클라이언트 시크릿(입력했을 때만 보냄), 세션 시간(비우면 null)입니다.
   interface Draft {
     enabled: boolean;
-    label: string;
     issuer: string;
     client_id: string;
     client_secret: string;
@@ -107,7 +114,6 @@
 
   const toDraft = (view: AccessProviderView): Draft => ({
     enabled: view.enabled,
-    label: view.label,
     issuer: view.issuer,
     client_id: view.client_id,
     client_secret: '',
@@ -119,7 +125,6 @@
   // PUT 본문. 시크릿은 입력했을 때만 넣습니다.
   const toBody = (value: Draft) => ({
     enabled: value.enabled,
-    label: value.label.trim(),
     issuer: value.issuer.trim(),
     client_id: value.client_id.trim(),
     ...(value.client_secret.trim() ? { client_secret: value.client_secret.trim() } : {}),
@@ -233,6 +238,24 @@
             <Field.Label for="access-provider-client-secret">{t().clientSecret}</Field.Label>
             <Input id="access-provider-client-secret" type="password" bind:value={draft.client_secret} autocomplete="off" spellcheck={false} placeholder={saved.client_secret_set ? (saved.client_secret_hint ? t().secretKeep(saved.client_secret_hint) : t().secretKeepShort) : ''} />
           </Field.Field>
+          <Field.Field>
+            <Field.Label for="access-provider-session-hours">{t().sessionHours}</Field.Label>
+            <InputGroup.Root>
+              <InputGroup.Input id="access-provider-session-hours" type="number" inputmode="numeric" min="1" max="720" step="1" required bind:value={draft.session_hours} class="tabular-nums" />
+              <InputGroup.Addon align="inline-end"><InputGroup.Text>{t().hours}</InputGroup.Text></InputGroup.Addon>
+            </InputGroup.Root>
+            <Field.Description>{t().sessionHoursHint}</Field.Description>
+          </Field.Field>
+          <Field.Field>
+            <Field.Label for="access-provider-scopes">{t().scopes}</Field.Label>
+            <Input id="access-provider-scopes" bind:value={draft.scopes} autocomplete="off" autocapitalize="off" spellcheck={false} placeholder="openid email profile" class="font-mono" />
+            <Field.Description>{t().scopesHint}</Field.Description>
+          </Field.Field>
+          <Field.Field>
+            <Field.Label for="access-provider-groups-claim">{t().groupsClaim}</Field.Label>
+            <Input id="access-provider-groups-claim" bind:value={draft.groups_claim} autocomplete="off" autocapitalize="off" spellcheck={false} placeholder="groups" class="font-mono" />
+            <Field.Description>{t().groupsClaimHint}</Field.Description>
+          </Field.Field>
           <Field.Field class="md:col-span-2">
             <Field.Label id="access-provider-redirect-label">{t().redirectUri}</Field.Label>
             <div class="flex min-h-8 min-w-0 items-center text-xs" role="group" aria-labelledby="access-provider-redirect-label">
@@ -243,15 +266,6 @@
               {/if}
             </div>
             {#if saved.available && saved.redirect_uri}<Field.Description>{t().redirectHint}</Field.Description>{/if}
-          </Field.Field>
-          <!-- 범위와 그룹 클레임은 기본값(openid email profile, groups)을 그대로 보내며 화면에 두지 않습니다. -->
-          <Field.Field>
-            <Field.Label for="access-provider-session-hours">{t().sessionHours}</Field.Label>
-            <InputGroup.Root>
-              <InputGroup.Input id="access-provider-session-hours" type="number" inputmode="numeric" min="1" max="720" step="1" required bind:value={draft.session_hours} class="tabular-nums" />
-              <InputGroup.Addon align="inline-end"><InputGroup.Text>{t().hours}</InputGroup.Text></InputGroup.Addon>
-            </InputGroup.Root>
-            <Field.Description>{t().sessionHoursHint}</Field.Description>
           </Field.Field>
         </Field.Group>
         <Field.Field orientation="horizontal">

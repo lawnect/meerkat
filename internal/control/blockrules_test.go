@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -78,9 +79,43 @@ func TestNormalizeBlockPath(t *testing.T) {
 		"/x.php;jsessionid": "/x.php",
 		"/x.php\x00.jpg":    "/x.php",
 		"/setup/":           "/setup",
+		"/Admin./x":         "/admin/x",
+		"/admin. . /":       "/admin",
+		"/x/..;/admin":      "/admin",
 	} {
 		if got := NormalizeBlockPath(in); got != want {
 			t.Errorf("NormalizeBlockPath(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// Conditions take the form request paths are compared in, where the form
+// keeps their meaning: a segment surely ends before a slash, and at the
+// end of an equals or ends_with value.
+func TestConditionsMatchHowRequestsCompare(t *testing.T) {
+	for _, c := range []struct{ in, want BlockCondition }{
+		{BlockCondition{BlockEquals, "/Secret."}, BlockCondition{BlockEquals, "/secret"}},
+		{BlockCondition{BlockStartsWith, "/Private./"}, BlockCondition{BlockStartsWith, "/private/"}},
+		{BlockCondition{BlockStartsWith, `/a\b`}, BlockCondition{BlockStartsWith, "/a/b"}},
+		{BlockCondition{BlockStartsWith, "/adm."}, BlockCondition{BlockStartsWith, "/adm."}},
+		{BlockCondition{BlockStartsWith, "/."}, BlockCondition{BlockStartsWith, "/."}},
+		{BlockCondition{BlockEndsWith, ".PHP."}, BlockCondition{BlockEndsWith, ".php"}},
+		{BlockCondition{BlockEndsWith, "."}, BlockCondition{BlockEndsWith, "."}},
+		{BlockCondition{BlockContains, "/.env"}, BlockCondition{BlockContains, "/.env"}},
+		{BlockCondition{BlockContains, "a. /b"}, BlockCondition{BlockContains, "a/b"}},
+		{BlockCondition{BlockMatches, `^/Admin\.$`}, BlockCondition{BlockMatches, `^/Admin\.$`}},
+	} {
+		got, ok := normalizeCondition(c.in)
+		if !ok || got != c.want {
+			t.Errorf("%+v = %+v %v, want %+v", c.in, got, ok, c.want)
+		}
+		if again, _ := normalizeCondition(got); again != got {
+			t.Errorf("%+v again = %+v", got, again)
+		}
+	}
+	// Saved rules keep loading as they were, once normalized.
+	defaults, ok := DefaultBlockRules().Normalize()
+	if again, _ := defaults.Normalize(); !ok || fmt.Sprint(again) != fmt.Sprint(DefaultBlockRules()) {
+		t.Fatalf("defaults changed: %+v", again)
 	}
 }

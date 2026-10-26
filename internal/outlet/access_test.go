@@ -3,6 +3,7 @@ package outlet
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -36,7 +37,7 @@ func newAccessFixture(t *testing.T, policies ...control.AccessPolicy) accessFixt
 	f.route(t, 0, "app.example.com")
 	f.route(t, 1, "other.example.com")
 	f.store.ssoHTTP = f.idp.server.Client()
-	if _, err := f.db.SetAccessProvider(context.Background(), control.AccessProvider{Enabled: true, Label: "Corp", Issuer: f.idp.server.URL, ClientID: "access", ClientSecret: "access-secret-1234",
+	if _, err := f.db.SetAccessProvider(context.Background(), control.AccessProvider{Enabled: true, Issuer: f.idp.server.URL, ClientID: "access", ClientSecret: "access-secret-1234",
 		Scopes: []string{"openid", "email", "groups"}, GroupsClaim: "groups", SessionHours: 8}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -82,15 +83,40 @@ func cookieNamed(w *httptest.ResponseRecorder, name string) *http.Cookie {
 	return nil
 }
 
+// bindCookie is the binding cookie a challenge set.
+func bindCookie(w *httptest.ResponseRecorder) *http.Cookie {
+	for _, cookie := range w.Result().Cookies() {
+		if strings.HasPrefix(cookie.Name, accessBindCookie+"_") && cookie.MaxAge > 0 {
+			return cookie
+		}
+	}
+	return nil
+}
+
+// flight is a sign-in sent to the provider and not back yet: the cookies
+// the browser holds for it and the authorization request.
+type flight struct {
+	host        string
+	bind, state *http.Cookie
+	query       url.Values
+}
+
 // signIn follows a whole sign-in from a request for path on host to the
 // response of the provider's callback. claims are the ID token's.
 func (f accessFixture) signIn(t *testing.T, host, path string, claims map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	fl := f.depart(t, host, path)
+	f.binds[host] = fl.bind
+	return f.land(t, fl, claims)
+}
+
+// depart sends a browser from path on host to the provider.
+func (f accessFixture) depart(t *testing.T, host, path string) flight {
 	t.Helper()
 	challenge := f.visit(host, path)
 	if challenge.Code != http.StatusFound {
 		t.Fatalf("challenge: %d %s", challenge.Code, challenge.Body.String())
 	}
-	f.binds[host] = cookieNamed(challenge, accessBindCookie)
 	start, err := url.Parse(challenge.Header().Get("Location"))
 	if err != nil || start.Host != f.adminHost || start.Path != accessStartPath || start.Query().Get("host") != host {
 		t.Fatalf("challenge location: %s", challenge.Header().Get("Location"))
@@ -104,14 +130,20 @@ func (f accessFixture) signIn(t *testing.T, host, path string, claims map[string
 	if query.Get("redirect_uri") != "https://"+f.adminHost+accessCallbackPath || query.Get("client_id") != "access" || query.Get("code_challenge_method") != "S256" {
 		t.Fatalf("authorization request: %s", location)
 	}
-	full := map[string]any{"iss": f.idp.server.URL, "aud": "access", "sub": fmt.Sprint("subject-", claims["email"]), "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(), "nonce": query.Get("nonce")}
+	return flight{host: host, bind: bindCookie(challenge), state: cookieNamed(begin, accessStateName(query.Get("state"))), query: query}
+}
+
+// land brings a browser back from the provider, signed in with claims.
+func (f accessFixture) land(t *testing.T, fl flight, claims map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	full := map[string]any{"iss": f.idp.server.URL, "aud": "access", "sub": fmt.Sprint("subject-", claims["email"]), "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(), "nonce": fl.query.Get("nonce")}
 	for key, value := range claims {
 		full[key] = value
 	}
 	f.idp.mu.Lock()
-	f.idp.challenge, f.idp.claims = query.Get("code_challenge"), full
+	f.idp.challenge, f.idp.claims = fl.query.Get("code_challenge"), full
 	f.idp.mu.Unlock()
-	return f.visit(f.adminHost, accessCallbackPath+"?code=good-code&state="+url.QueryEscape(query.Get("state")), cookieNamed(begin, accessStateCookie))
+	return f.visit(f.adminHost, accessCallbackPath+"?code=good-code&state="+url.QueryEscape(fl.query.Get("state")), fl.state)
 }
 
 // finish swaps the callback's ticket for the session cookie.
@@ -368,7 +400,7 @@ func TestAccessTicketsBelongToTheirBrowser(t *testing.T) {
 	callback := f.signIn(t, "app.example.com", "/", verified("mallory@corp.example.com"))
 	next, _ := url.Parse(callback.Header().Get("Location"))
 	victim := f.visit("app.example.com", "/")
-	for _, cookies := range [][]*http.Cookie{nil, {cookieNamed(victim, accessBindCookie)}} {
+	for _, cookies := range [][]*http.Cookie{nil, {bindCookie(victim)}} {
 		if w := f.visit("app.example.com", next.RequestURI(), cookies...); w.Code != http.StatusBadRequest || cookieNamed(w, accessCookie) != nil {
 			t.Fatalf("ticket in another browser: %d", w.Code)
 		}
@@ -392,20 +424,31 @@ func TestAccessStartStaysOnProtectedAddresses(t *testing.T) {
 	if local.Code != http.StatusNotFound {
 		t.Fatalf("start on the local port: %d", local.Code)
 	}
-	for _, back := range []string{"//evil.example.org/", "https://evil.example.org/", "/\\evil", "/x#frag"} {
+	for _, back := range []string{"//evil.example.org/", "https://evil.example.org/", "/\\evil", "/x#frag", "/x\x00y", "/x\x7f", "/x\ny"} {
 		if got := accessReturn(back); got != "/" {
 			t.Fatalf("return %q kept as %q", back, got)
 		}
 	}
-	// With the provider off, protected addresses stay closed.
-	if _, err := f.db.SetAccessProvider(context.Background(), control.AccessProvider{Enabled: false, SessionHours: 8}, time.Now()); err != nil {
-		t.Fatal(err)
+	// A binding that isn't a hash, which would name a cookie, is refused.
+	if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+strings.Repeat("a;", 32)); w.Code != http.StatusNotFound {
+		t.Fatalf("start with a bad binding: %d", w.Code)
 	}
+	// With the provider off, protected addresses stay closed.
+	f.provider(t, false)
 	if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash("browser")); w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("start with the provider off: %d", w.Code)
 	}
-	if w := f.visit("app.example.com", "/"); w.Code != http.StatusFound {
+	if w := f.visit("app.example.com", "/"); w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("protected address with the provider off: %d", w.Code)
+	}
+}
+
+// provider turns access SSO on or off through the API, as the console does.
+func (f accessFixture) provider(t *testing.T, enabled bool) {
+	t.Helper()
+	body := map[string]any{"enabled": enabled, "issuer": f.idp.server.URL, "client_id": "access", "scopes": []string{"openid", "email", "groups"}, "groups_claim": "groups", "session_hours": 8}
+	if w := request(f.store.Handler(), "PUT", "/api/v1/security/access-provider", f.admin, body); w.Code != 200 {
+		t.Fatalf("provider: %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -420,7 +463,7 @@ func TestAccessCallbackNeedsItsState(t *testing.T) {
 	if w := f.visit(f.adminHost, accessCallbackPath+"?code=good-code&state="+url.QueryEscape(state)); w.Code != http.StatusBadRequest {
 		t.Fatalf("without the state cookie: %d", w.Code)
 	}
-	if w := f.visit(f.adminHost, accessCallbackPath+"?code=good-code&state=other", &http.Cookie{Name: accessStateCookie, Value: "other"}); w.Code != http.StatusBadRequest {
+	if w := f.visit(f.adminHost, accessCallbackPath+"?code=good-code&state=other", &http.Cookie{Name: accessStateName("other"), Value: "other"}); w.Code != http.StatusBadRequest {
 		t.Fatalf("unknown state: %d", w.Code)
 	}
 }
@@ -479,7 +522,7 @@ func TestAccessSettingsAPI(t *testing.T) {
 	if w.Code != 200 || strings.Contains(w.Body.String(), "access-secret-1234") || !strings.Contains(w.Body.String(), `"client_secret_hint":"1234"`) || !strings.Contains(w.Body.String(), `"redirect_uri":"https://`+f.adminHost+accessCallbackPath+`"`) {
 		t.Fatalf("provider view: %d %s", w.Code, w.Body.String())
 	}
-	if w := request(h, "PUT", "/api/v1/security/access-provider", f.admin, map[string]any{"enabled": true, "label": "", "issuer": "http://x", "client_id": "a", "scopes": []string{}, "groups_claim": "", "session_hours": 8}); w.Code != 400 {
+	if w := request(h, "PUT", "/api/v1/security/access-provider", f.admin, map[string]any{"enabled": true, "issuer": "http://x", "client_id": "a", "scopes": []string{}, "groups_claim": "", "session_hours": 8}); w.Code != 400 {
 		t.Fatalf("bad provider: %d", w.Code)
 	}
 	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []map[string]any{{"name": "x", "enabled": true, "hosts": []string{"app.example.com"}, "all_paths": true}}}); w.Code != 400 {
@@ -499,4 +542,324 @@ func TestAccessSettingsAPI(t *testing.T) {
 	if event := f.lastAuditAction(t); event != "security.access_policies" {
 		t.Fatalf("audit: %s", event)
 	}
+}
+
+// With access SSO off, protected addresses let nobody in, sessions from
+// before included, and a ticket issued before can't start one.
+func TestAccessClosedWhileProviderOff(t *testing.T) {
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
+	callback := f.signIn(t, "app.example.com", "/", verified("bob@corp.example.com"))
+	f.provider(t, false)
+	if w := f.visit("app.example.com", "/", session); w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), "email=") {
+		t.Fatalf("session with the provider off: %d %s", w.Code, w.Body.String())
+	}
+	next, _ := url.Parse(callback.Header().Get("Location"))
+	if w := f.visit("app.example.com", next.RequestURI(), f.binds["app.example.com"]); w.Code != http.StatusServiceUnavailable || cookieNamed(w, accessCookie) != nil {
+		t.Fatalf("ticket with the provider off: %d", w.Code)
+	}
+	if w := f.visit("other.example.com", "/"); w.Code != 200 {
+		t.Fatalf("unprotected address: %d", w.Code)
+	}
+	f.provider(t, true)
+	if w := f.visit("app.example.com", "/", session); w.Code != 200 {
+		t.Fatalf("session with the provider back on: %d", w.Code)
+	}
+}
+
+// Saves that cross leave the saved policies in force; run with -race.
+func TestAccessPolicySavesLeaveTheSavedOneInForce(t *testing.T) {
+	f := newAccessFixture(t)
+	h := f.store.Handler()
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Go(func() {
+			body := map[string]any{"policies": []map[string]any{{"name": fmt.Sprint("policy ", i), "enabled": true, "hosts": []string{"app.example.com"}, "all_paths": true, "allowed_users": []string{"@corp.example.com"}}}}
+			if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, body); w.Code != 200 {
+				t.Errorf("save %d: %d %s", i, w.Code, w.Body.String())
+			}
+		})
+	}
+	wg.Wait()
+	saved, err := f.db.AccessPolicies(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rules := f.store.access.config.Load().rules; len(rules) != 1 || rules[0].policy.Name != saved.Policies[0].Name {
+		t.Fatalf("in force %+v, saved %+v", rules, saved.Policies)
+	}
+}
+
+// A condition protects the path it names as requests are compared, a
+// pattern holds with or without the trailing slash, and a path an app may
+// read differently counts as every path.
+func TestAccessPathsAppsMayReadDifferently(t *testing.T) {
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{
+		{Operator: control.BlockEquals, Value: "/secret."},
+		{Operator: control.BlockStartsWith, Value: "/private./"},
+		{Operator: control.BlockMatches, Value: "^/(admin|reports)/"},
+	}, AllowedUsers: []string{"@corp.example.com"}})
+	for _, path := range []string{
+		"/secret", "/secret.", "/private/x", "/private./x", "/admin", "/admin/", "/ADMIN", "/admin.", "/reports", "/admin/users",
+		// Decoded again, overlong, or dots and spaces servers read their own ways.
+		"/%2561dmin/x", "/x%252fy", "/public/..%20/admin/x", "/admin%c0%afx", "/a/.../b", "/a/%20/b", "/a/.%20/b",
+	} {
+		if w := f.visit("app.example.com", path); w.Code != http.StatusFound {
+			t.Errorf("%s: %d", path, w.Code)
+		}
+	}
+	for _, path := range []string{"/", "/public/page", "/administrator", "/secrets", "/100%25", "/%EA%B2%8C%EC%8B%9C%ED%8C%90/1", "/a..b/c", "/a/../public"} {
+		if w := f.visit("app.example.com", path); w.Code != 200 {
+			t.Errorf("%s: %d", path, w.Code)
+		}
+	}
+}
+
+// The Outlet's cookies never reach the app, however the name is spaced or
+// cased.
+func TestAccessCookiesNeverReachTheApp(t *testing.T) {
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
+	for _, name := range []string{accessCookie + " ", accessCookie + "\t", " " + accessCookie} {
+		r := httptest.NewRequest("GET", "https://app.example.com/", nil)
+		r.Host = "app.example.com"
+		r.Header.Set("X-Forwarded-For", "198.51.100.30")
+		r.Header.Set("Cookie", "app=kept; "+name+"="+session.Value+"; "+strings.ToUpper(accessBindCookie)+"_x=bind; "+strings.ToLower(accessCookie)+"=other")
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, r)
+		if body := w.Body.String(); w.Code != 200 || !strings.Contains(body, "email=alice@corp.example.com") || !strings.Contains(body, "cookie=app=kept path") {
+			t.Fatalf("%q: %d %s", name, w.Code, body)
+		}
+	}
+	header := http.Header{"Cookie": {"a=1; " + accessCookie + " =x", accessBindCookie + "_1234=y; b=2"}}
+	if stripAccessCookie(header); strings.Join(header.Values("Cookie"), "|") != "a=1|b=2" {
+		t.Fatalf("stripped: %q", header.Values("Cookie"))
+	}
+}
+
+// A session carries the groups its address's policies name and, when they
+// don't fit in a cookie, one that each policy allows, so the person still
+// gets in.
+func TestAccessSessionGroupsFitTheAddress(t *testing.T) {
+	var many []string
+	for i := range 30 {
+		many = append(many, fmt.Sprintf("team-%02d-%s", i, strings.Repeat("x", 150)))
+	}
+	f := newAccessFixture(t,
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedGroups: many},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/finance/"}}, AllowedGroups: []string{"finance"}},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"other.example.com"}, AllPaths: true, AllowedGroups: []string{"elsewhere"}},
+	)
+	groups := append(append([]string{}, many...), "finance", "elsewhere")
+	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("carol@corp.example.com", "groups", groups)))
+	for _, path := range []string{"/", "/finance/q3"} {
+		if w := f.visit("app.example.com", path, session); w.Code != 200 {
+			t.Fatalf("%s: %d", path, w.Code)
+		}
+	}
+	payload, _, _ := strings.Cut(session.Value, ".")
+	raw, _ := base64.RawURLEncoding.DecodeString(payload)
+	if len(session.Value) > maxAccessCookie || strings.Contains(string(raw), "elsewhere") || strings.Count(string(raw), "team-") != 1 {
+		t.Fatalf("cookie of %d bytes carries %s", len(session.Value), raw)
+	}
+	// Few enough groups all ride along.
+	session, _ = f.finish(t, f.signIn(t, "app.example.com", "/", verified("dan@corp.example.com", "groups", []string{many[0], many[1], "finance"})))
+	payload, _, _ = strings.Cut(session.Value, ".")
+	if raw, _ = base64.RawURLEncoding.DecodeString(payload); strings.Count(string(raw), "team-") != 2 {
+		t.Fatalf("cookie carries %s", raw)
+	}
+}
+
+// One client address can begin only so many sign-ins a minute.
+func TestAccessStartsAreLimited(t *testing.T) {
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	for i := range accessStarts + 1 {
+		w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash(fmt.Sprint("browser ", i)))
+		if want := http.StatusFound; i == accessStarts {
+			if w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") == "" {
+				t.Fatalf("start %d: %d", i, w.Code)
+			}
+		} else if w.Code != want {
+			t.Fatalf("start %d: %d", i, w.Code)
+		}
+	}
+}
+
+// Sign-ins started at once in several tabs of one browser don't undo each
+// other, whichever comes back first. The browser keeps the newest cookie of
+// each name, per host.
+func TestAccessSignInsInFlightTogether(t *testing.T) {
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com", "other.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	jar := map[string]map[string]*http.Cookie{}
+	keep := func(host string, cookies ...*http.Cookie) {
+		if jar[host] == nil {
+			jar[host] = map[string]*http.Cookie{}
+		}
+		for _, cookie := range cookies {
+			if cookie.MaxAge < 0 {
+				delete(jar[host], cookie.Name)
+			} else {
+				jar[host][cookie.Name] = cookie
+			}
+		}
+	}
+	held := func(host string) []*http.Cookie {
+		var out []*http.Cookie
+		for _, cookie := range jar[host] {
+			out = append(out, cookie)
+		}
+		return out
+	}
+	var flights []flight
+	for i := range 6 {
+		fl := f.depart(t, []string{"app.example.com", "other.example.com"}[i%2], fmt.Sprint("/tab/", i))
+		keep(fl.host, fl.bind)
+		keep(f.adminHost, fl.state)
+		flights = append(flights, fl)
+	}
+	for i := len(flights) - 1; i >= 0; i-- {
+		fl := flights[i]
+		f.idp.mu.Lock()
+		f.idp.challenge, f.idp.claims = fl.query.Get("code_challenge"), map[string]any{"iss": f.idp.server.URL, "aud": "access", "sub": "alice", "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(), "nonce": fl.query.Get("nonce"), "email": "alice@corp.example.com", "email_verified": true}
+		f.idp.mu.Unlock()
+		callback := f.visit(f.adminHost, accessCallbackPath+"?code=good-code&state="+url.QueryEscape(fl.query.Get("state")), held(f.adminHost)...)
+		keep(f.adminHost, callback.Result().Cookies()...)
+		next, _ := url.Parse(callback.Header().Get("Location"))
+		if callback.Code != http.StatusSeeOther || next.Host != fl.host {
+			t.Fatalf("tab %d callback: %d %s", i, callback.Code, callback.Body.String())
+		}
+		done := f.visit(fl.host, next.RequestURI(), held(fl.host)...)
+		keep(fl.host, done.Result().Cookies()...)
+		if done.Code != http.StatusSeeOther || done.Header().Get("Location") != fmt.Sprint("/tab/", i) || cookieNamed(done, accessCookie) == nil {
+			t.Fatalf("tab %d finish: %d %s", i, done.Code, done.Body.String())
+		}
+	}
+	// Nothing of the sign-ins is left behind.
+	for host, cookies := range jar {
+		for name := range cookies {
+			if name != accessCookie {
+				t.Fatalf("%s keeps %s", host, name)
+			}
+		}
+	}
+}
+
+// Saved policies that no longer pass the checks keep closed what they may
+// have protected, without keeping the Outlet down, and show in the console
+// to be fixed.
+func TestAccessSavedPoliciesThatFailTheChecksStayClosed(t *testing.T) {
+	f := newAccessFixture(t)
+	ctx := context.Background()
+	store := func(raw string) {
+		t.Helper()
+		if _, err := f.db.SQL().ExecContext(ctx, "UPDATE outlet_settings SET value = ? WHERE key = 'access_policies'", raw); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.store.reloadAccess(ctx); err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+	}
+	store(`{"policies":[{"id":"old","name":"Old","enabled":true,"hosts":["App.Example.com"],"conditions":[{"operator":"matches","value":"("}],"allowed_users":["@corp.example.com"]}]}`)
+	if w := f.visit("app.example.com", "/anything"); w.Code != http.StatusFound {
+		t.Fatalf("named address: %d", w.Code)
+	}
+	if w := f.visit("other.example.com", "/"); w.Code != 200 {
+		t.Fatalf("other address: %d", w.Code)
+	}
+	// Whom it names still gets in.
+	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
+	if w := f.visit("app.example.com", "/", session); w.Code != 200 {
+		t.Fatalf("allowed person: %d", w.Code)
+	}
+	if w := request(f.store.Handler(), "GET", "/api/v1/security/access-policies", f.admin, nil); w.Code != 200 || !strings.Contains(w.Body.String(), `"name":"Old"`) {
+		t.Fatalf("console: %d %s", w.Code, w.Body.String())
+	}
+	for _, raw := range []string{`not json`, `{"policies":[{"name":"No hosts","enabled":true,"all_paths":true}]}`} {
+		store(raw)
+		if w := f.visit("other.example.com", "/"); w.Code != http.StatusFound {
+			t.Fatalf("%s: every address: %d", raw, w.Code)
+		}
+	}
+	f.setPolicies(t)
+	if w := f.visit("other.example.com", "/"); w.Code != 200 {
+		t.Fatalf("after saving again: %d", w.Code)
+	}
+}
+
+// The pages a protected address shows are never stored, and a sign-out
+// that comes from another site only asks.
+func TestAccessPagesAndSignOut(t *testing.T) {
+	f := newAccessFixture(t,
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/finance/"}}, AllowedGroups: []string{"finance"}},
+	)
+	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
+	if w := f.visit("app.example.com", "/finance/q3", session); w.Code != http.StatusForbidden || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("denied: %d %v", w.Code, w.Header())
+	}
+	send := func(method, site string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, "https://app.example.com"+accessPathPrefix+"logout", nil)
+		r.Host = "app.example.com"
+		r.Header.Set("X-Forwarded-For", "198.51.100.30")
+		r.Header.Set("Sec-Fetch-Site", site)
+		r.AddCookie(session)
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, r)
+		return w
+	}
+	for _, method := range []string{"GET", "POST"} {
+		if w := send(method, "cross-site"); w.Code != 200 || cookieNamed(w, accessCookie) != nil || !strings.Contains(w.Body.String(), `<form method="post">`) {
+			t.Fatalf("%s from another site: %d %s", method, w.Code, w.Body.String())
+		}
+	}
+	w := send("POST", "same-origin")
+	if cookie := cookieNamed(w, accessCookie); w.Code != 200 || cookie == nil || cookie.MaxAge >= 0 || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("sign-out: %d %+v %v", w.Code, cookie, w.Header())
+	}
+}
+
+// Administrators pass a policy that lets them in, by their email; the
+// database is asked only when the session alone doesn't settle it.
+func TestAccessAdminsByEmail(t *testing.T) {
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}, AllowAdmins: true})
+	if _, err := f.db.SSOAdmin(context.Background(), "https://idp.example.com", "admin-subject", "Boss@Example.com"); err != nil {
+		t.Fatal(err)
+	}
+	admin, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("boss@example.com")))
+	staff, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
+	f.db.Close()
+	if w := f.visit("app.example.com", "/", staff); w.Code != 200 {
+		t.Fatalf("staff without the database: %d", w.Code)
+	}
+	if w := f.visit("app.example.com", "/", admin); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("administrator without the database: %d", w.Code)
+	}
+}
+
+// The audit log says who could get in after a change, and as whom a
+// person signed in.
+func TestAccessAuditDetail(t *testing.T) {
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}, AllowedGroups: []string{"staff"}, AllowAdmins: true})
+	f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com", "groups", []string{"staff"})))
+	var login map[string]any
+	if event := f.lastAudit(t); event.Action != "access.login" || json.Unmarshal(event.Detail, &login) != nil || login["subject"] != "subject-alice@corp.example.com" || login["issuer"] != f.idp.server.URL {
+		t.Fatalf("login: %s %s", event.Action, event.Detail)
+	}
+	body := map[string]any{"policies": []map[string]any{{"name": "Staff", "enabled": true, "hosts": []string{"app.example.com"}, "all_paths": true, "allowed_users": []string{"@corp.example.com"}, "allowed_groups": []string{"staff"}, "allow_admins": true}}}
+	if w := request(f.store.Handler(), "PUT", "/api/v1/security/access-policies", f.admin, body); w.Code != 200 {
+		t.Fatalf("save: %d", w.Code)
+	}
+	if event := f.lastAudit(t); event.Action != "security.access_policies" || string(event.Detail) != `{"policies":[{"name":"Staff","enabled":true,"hosts":["app.example.com"],"allowed_users":["@corp.example.com"],"allowed_groups":["staff"],"allow_admins":true}]}` {
+		t.Fatalf("policies: %s %s", event.Action, event.Detail)
+	}
+}
+
+func (f accessFixture) lastAudit(t *testing.T) control.AuditEvent {
+	t.Helper()
+	f.store.journal.flush()
+	events, _, err := f.db.Audit(context.Background(), control.AuditFilter{Limit: 1})
+	if err != nil || len(events) == 0 {
+		t.Fatalf("audit: %+v %v", events, err)
+	}
+	return events[0]
 }

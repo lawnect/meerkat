@@ -1,6 +1,7 @@
 package outlet
 
 import (
+	"cmp"
 	"context"
 	"crypto/subtle"
 	"errors"
@@ -60,9 +61,12 @@ type ssoProvider struct {
 // the last discovered provider. Both live in memory: a restart only asks
 // people to start signing in again.
 type ssoState struct {
-	mu       sync.Mutex
-	pending  map[string]ssoPending
-	provider *ssoProvider
+	mu      sync.Mutex
+	pending map[string]ssoPending
+	// perClient is how many sign-ins one client address may have in
+	// flight; zero is maxSSOPerClient.
+	perClient int
+	provider  *ssoProvider
 	// discovering serializes discovery, so a burst of starts makes one
 	// request to the provider; failedAt delays the next after a failure.
 	discovering sync.Mutex
@@ -71,7 +75,7 @@ type ssoState struct {
 }
 
 // put admits a sign-in, or reports false when there is no room. An address
-// with maxSSOPerClient sign-ins in flight replaces its own oldest; sign-ins
+// with perClient sign-ins in flight replaces its own oldest; sign-ins
 // of others that have not expired are never evicted, so a flood of starts
 // cannot cancel an administrator's sign-in in progress.
 func (st *ssoState) put(state string, p ssoPending, now time.Time) bool {
@@ -92,7 +96,7 @@ func (st *ssoState) put(state string, p ssoPending, now time.Time) bool {
 			}
 		}
 	}
-	if mine >= maxSSOPerClient {
+	if mine >= cmp.Or(st.perClient, maxSSOPerClient) {
 		delete(st.pending, oldest)
 	} else if len(st.pending) >= maxSSOPending {
 		return false

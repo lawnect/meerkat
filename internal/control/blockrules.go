@@ -86,21 +86,52 @@ func DefaultBlockRules() BlockRules {
 
 // NormalizeBlockPath is the form of a path that rules compare: decoded by
 // the caller, backslashes read as slashes and ";parameters" and anything
-// after a NUL dropped from each segment, as some servers do, then cleaned
-// and lowercased.
+// after a NUL dropped from each segment, cleaned, then trailing dots and
+// spaces dropped from every segment, as some servers do ("/admin./x" is
+// "/admin/x" to them), and lowercased, with no trailing slash.
 func NormalizeBlockPath(p string) string {
 	p = strings.ToLower(strings.ReplaceAll(p, `\`, "/"))
 	if i := strings.IndexByte(p, 0); i >= 0 {
 		p = p[:i]
 	}
-	if strings.IndexByte(p, ';') >= 0 {
-		segments := strings.Split(p, "/")
-		for i, segment := range segments {
-			segments[i], _, _ = strings.Cut(segment, ";")
-		}
-		p = strings.Join(segments, "/")
+	segments := strings.Split(path.Clean("/"+cutParameters(p)), "/")
+	for i, segment := range segments {
+		segments[i] = strings.TrimRight(segment, ". ")
 	}
-	return path.Clean("/" + p)
+	if p = strings.TrimRight(strings.Join(segments, "/"), "/"); p == "" {
+		return "/"
+	}
+	return p
+}
+
+// cutParameters drops ";parameters" from each segment of p.
+func cutParameters(p string) string {
+	if strings.IndexByte(p, ';') < 0 {
+		return p
+	}
+	segments := strings.Split(p, "/")
+	for i, segment := range segments {
+		segments[i], _, _ = strings.Cut(segment, ";")
+	}
+	return strings.Join(segments, "/")
+}
+
+// conditionFragment puts part of a path in the form NormalizeBlockPath
+// gives whole ones: lowercased, backslashes read as slashes, and trailing
+// dots and spaces dropped where a segment surely ends, before a slash, and
+// at the end of the value when whole says it ends a segment there too. A
+// value that would be left empty stays as it was.
+func conditionFragment(value string, whole bool) string {
+	parts := strings.Split(strings.ToLower(strings.ReplaceAll(value, `\`, "/")), "/")
+	for i := range parts {
+		if i < len(parts)-1 || whole {
+			parts[i] = strings.TrimRight(parts[i], ". ")
+		}
+	}
+	if fragment := strings.Join(parts, "/"); fragment != "" {
+		return fragment
+	}
+	return strings.ToLower(value)
 }
 
 // CompileBlockPattern compiles a "matches" value. Patterns are RE2, so
@@ -125,9 +156,11 @@ func normalizeCondition(c BlockCondition) (BlockCondition, bool) {
 		if !strings.HasPrefix(value, "/") {
 			return c, false
 		}
-		value = strings.ToLower(value)
-	case BlockEndsWith, BlockContains:
-		value = strings.ToLower(value)
+		value = conditionFragment(value, false)
+	case BlockEndsWith:
+		value = conditionFragment(value, true)
+	case BlockContains:
+		value = conditionFragment(value, false)
 	case BlockMatches:
 		if _, err := CompileBlockPattern(value); err != nil {
 			return c, false

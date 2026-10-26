@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -21,26 +22,31 @@ const (
 	settingAccessPolicies = "access_policies"
 	settingAccessKey      = "access_key"
 
-	MaxAccessPolicies      = 100
-	maxAccessPolicyName    = 64
-	maxAccessHosts         = 100
-	maxAccessConditions    = 50
-	defaultAccessSession   = 24
-	maxAccessSessionHours  = 720
-	maxAccessProviderLabel = 32
+	MaxAccessPolicies     = 100
+	maxAccessPolicyName   = 64
+	maxAccessHosts        = 100
+	maxAccessConditions   = 50
+	defaultAccessSession  = 24
+	maxAccessSessionHours = 720
 )
 
 var (
 	ErrInvalidAccessProvider = errors.New("invalid access provider")
 	ErrInvalidAccessPolicies = errors.New("invalid access policies")
+	// ErrStoredAccessPolicies means the saved policies no longer pass the
+	// checks; AccessPolicies returns what it could read along with it.
+	ErrStoredAccessPolicies = errors.New("stored access policies are invalid")
 )
+
+// percentEscape finds an escape left in a path condition: request paths are
+// compared decoded, so a condition written encoded would never match.
+var percentEscape = regexp.MustCompile(`%[0-9a-fA-F]{2}`)
 
 // AccessProvider is the OpenID Connect client that signs people in to
 // protected addresses. It is separate from the administrators' single
 // sign-on, so the people it lets in never reach the console.
 type AccessProvider struct {
 	Enabled bool   `json:"enabled"`
-	Label   string `json:"label"`
 	Issuer  string `json:"issuer"`
 	// ClientSecret is write-only: an API response shows SecretHint.
 	ClientID     string   `json:"client_id"`
@@ -64,9 +70,8 @@ func (p AccessProvider) SecretHint() string {
 // Normalize trims and checks the provider. Turning it on needs an issuer
 // and a client ID.
 func (p AccessProvider) Normalize() (AccessProvider, bool) {
-	p.Label, p.Issuer, p.ClientID, p.GroupsClaim = strings.TrimSpace(p.Label), strings.TrimSuffix(strings.TrimSpace(p.Issuer), "/"), strings.TrimSpace(p.ClientID), strings.TrimSpace(p.GroupsClaim)
-	if len([]rune(p.Label)) > maxAccessProviderLabel || strings.IndexFunc(p.Label, unicode.IsControl) >= 0 ||
-		(p.Issuer != "" && !ValidIssuer(p.Issuer)) || (p.ClientID != "" && !plainSSOValue(p.ClientID, maxSSOEntryBytes)) ||
+	p.Issuer, p.ClientID, p.GroupsClaim = strings.TrimSuffix(strings.TrimSpace(p.Issuer), "/"), strings.TrimSpace(p.ClientID), strings.TrimSpace(p.GroupsClaim)
+	if (p.Issuer != "" && !ValidIssuer(p.Issuer)) || (p.ClientID != "" && !plainSSOValue(p.ClientID, maxSSOEntryBytes)) ||
 		(p.ClientSecret != "" && !plainSSOValue(p.ClientSecret, maxSSOSecret)) || (p.GroupsClaim != "" && !plainSSOValue(p.GroupsClaim, 64)) {
 		return p, false
 	}
@@ -164,7 +169,8 @@ func (a AccessPolicies) Normalize() (AccessPolicies, bool) {
 			}
 			for _, c := range policy.Conditions {
 				normalized, ok := normalizeCondition(c)
-				if !ok {
+				// A path the policy could never match would leave it open.
+				if !ok || normalized.Operator != BlockMatches && (percentEscape.MatchString(normalized.Value) || strings.Contains(normalized.Value, ";")) {
 					return a, false
 				}
 				if !containsCondition(conditions, normalized) {
@@ -254,18 +260,24 @@ func (d *Database) SetAccessProvider(ctx context.Context, provider AccessProvide
 	return provider, putSetting(ctx, d.db, settingAccessProvider, string(raw), now)
 }
 
-// AccessPolicies returns the saved policies.
+// AccessPolicies returns the saved policies, normalized. Saved policies
+// that no longer pass the checks come back as read, possibly none, with
+// ErrStoredAccessPolicies.
 func (d *Database) AccessPolicies(ctx context.Context) (AccessPolicies, error) {
 	raw, err := getSetting(ctx, d.db, settingAccessPolicies)
 	if err != nil || raw == "" {
 		return AccessPolicies{Policies: []AccessPolicy{}}, err
 	}
-	var policies AccessPolicies
-	if json.Unmarshal([]byte(raw), &policies) != nil {
-		return AccessPolicies{}, fmt.Errorf("stored access policies are invalid")
+	var stored AccessPolicies
+	if json.Unmarshal([]byte(raw), &stored) != nil {
+		return AccessPolicies{Policies: []AccessPolicy{}}, ErrStoredAccessPolicies
 	}
-	if policies.Policies == nil {
-		policies.Policies = []AccessPolicy{}
+	if stored.Policies == nil {
+		stored.Policies = []AccessPolicy{}
+	}
+	policies, ok := stored.Normalize()
+	if !ok {
+		return stored, ErrStoredAccessPolicies
 	}
 	return policies, nil
 }

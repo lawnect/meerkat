@@ -1,6 +1,7 @@
 package outlet
 
 import (
+	"cmp"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -158,6 +159,9 @@ func (c *challenges) verify(id, secret string, now time.Time) (control.Admin, er
 // publicFailureWindow and passwordChecks password checks at a time; the local
 // admin port is exempt so the operator can always get in over SSH.
 type attemptLimiter struct {
+	// attempts is what one key may do per loginWindow; zero is
+	// loginAttempts.
+	attempts int
 	mu       sync.Mutex
 	hits     map[string][]time.Time
 	failures []time.Time
@@ -188,7 +192,7 @@ func (l *attemptLimiter) allow(key string, now time.Time) bool {
 			recent = append(recent, at)
 		}
 	}
-	if len(recent) >= loginAttempts {
+	if len(recent) >= cmp.Or(l.attempts, loginAttempts) {
 		l.hits[key] = recent
 		return false
 	}

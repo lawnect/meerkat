@@ -234,7 +234,6 @@ const blockRulesResponse = (): BlockRulesView => structuredClone({
 // 접근 보호 데모 상태. 공급자는 꺼져 있고, 정책 하나가 vault 주소 전체를 보호합니다.
 let accessProvider: Omit<AccessProviderView, 'redirect_uri' | 'available'> = {
   enabled: false,
-  label: '',
   issuer: '',
   client_id: '',
   client_secret_set: false,
@@ -326,7 +325,13 @@ function normalizeCondition(raw: unknown): BlockCondition | null {
   if (typeof entry.operator !== 'string' || !BLOCK_OPERATORS.includes(entry.operator) || typeof entry.value !== 'string') return null;
   const operator = entry.operator as BlockOperator;
   let value = entry.value.trim();
-  if (operator !== 'matches') value = value.toLowerCase();
+  if (operator !== 'matches') {
+    // 요청 경로처럼 조각 끝의 점과 공백을 지웁니다. 조각이 끝나는 곳이 확실한 / 앞과, 같음·다음으로 끝남 값의 끝에서만 지웁니다.
+    const whole = operator === 'equals' || operator === 'ends_with';
+    const parts = value.toLowerCase().replaceAll('\\', '/').split('/');
+    const trimmed = parts.map((part, index) => (index < parts.length - 1 || whole ? part.replace(/[. ]+$/, '') : part)).join('/');
+    value = trimmed || value.toLowerCase();
+  }
   if (operator === 'equals') value = value.replace(/\/{2,}/g, '/').replace(/(.)\/$/, '$1');
   if (!value || new TextEncoder().encode(value).length > 512 || /[\u0000-\u001f\u007f]/.test(value)) return null;
   if ((operator === 'equals' || operator === 'starts_with') && !value.startsWith('/')) return null;
@@ -706,7 +711,6 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     const body = input as unknown as Partial<Record<keyof AccessProviderView | 'client_secret', unknown>>;
     const strings = (value: unknown): string[] | null => (Array.isArray(value) && value.every((item) => typeof item === 'string') ? value as string[] : null);
     const scopes = strings(body.scopes)?.map((scope) => scope.trim()).filter(Boolean);
-    const label = typeof body.label === 'string' ? body.label.trim() : null;
     const clientId = typeof body.client_id === 'string' ? body.client_id.trim() : null;
     const claim = typeof body.groups_claim === 'string' ? body.groups_claim.trim() : null;
     const secret = typeof body.client_secret === 'string' ? body.client_secret.trim() : body.client_secret === undefined ? '' : null;
@@ -714,11 +718,10 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     const issuer = rawIssuer === '' ? '' : issuerOf(rawIssuer);
     // 0 또는 생략은 기본값(24시간)입니다.
     const hours = body.session_hours === undefined || body.session_hours === 0 ? 24 : body.session_hours;
-    if (typeof body.enabled !== 'boolean' || !scopes || scopes.length > 200 || scopes.some((scope) => scope.length > 64) || label === null || label.length > 32 || clientId === null || clientId.length > 200 || claim === null || claim.length > 64 || secret === null || secret.length > 1024 || issuer === null || typeof hours !== 'number' || !Number.isInteger(hours) || hours < 1 || hours > 720) fail('invalid_access_provider');
+    if (typeof body.enabled !== 'boolean' || !scopes || scopes.length > 200 || scopes.some((scope) => scope.length > 64) || clientId === null || clientId.length > 200 || claim === null || claim.length > 64 || secret === null || secret.length > 1024 || issuer === null || typeof hours !== 'number' || !Number.isInteger(hours) || hours < 1 || hours > 720) fail('invalid_access_provider');
     if (body.enabled && (!issuer || !clientId)) fail('invalid_access_provider');
     accessProvider = {
       enabled: body.enabled,
-      label,
       issuer,
       client_id: clientId,
       client_secret_set: secret ? true : accessProvider.client_secret_set,
@@ -759,7 +762,8 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
       if (!policy.all_paths) {
         if (!Array.isArray(policy.conditions) || policy.conditions.length < 1 || policy.conditions.length > 50) fail('invalid_access_policies');
         const seen = new Set<string>();
-        conditions = policy.conditions.map((raw) => normalizeCondition(raw) ?? fail('invalid_access_policies')).filter((entry) => {
+        // 요청 경로는 디코딩하고 ;매개변수를 뺀 형태로 비교하므로, 그런 값은 거부합니다.
+        conditions = policy.conditions.map((raw) => normalizeCondition(raw) ?? fail('invalid_access_policies')).map((entry) => (entry.operator !== 'matches' && /%[0-9a-f]{2}|;/i.test(entry.value) ? fail('invalid_access_policies') : entry)).filter((entry) => {
           const key = `${entry.operator}\0${entry.value}`;
           if (seen.has(key)) return false;
           seen.add(key);

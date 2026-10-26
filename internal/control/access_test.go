@@ -24,6 +24,10 @@ func TestAccessPoliciesNormalize(t *testing.T) {
 		"bad user":            func(p *AccessPolicy) { p.AllowedUsers = []string{"not an email"} },
 		"duplicate id":        func(p *AccessPolicy) { p.ID = "same" },
 		"control in the name": func(p *AccessPolicy) { p.Name = "a\nb" },
+		// Request paths are compared decoded and without ";parameters".
+		"encoded path": func(p *AccessPolicy) { p.Conditions = []BlockCondition{{Operator: BlockEquals, Value: "/%61dmin"}} },
+		"encoded part": func(p *AccessPolicy) { p.Conditions = []BlockCondition{{Operator: BlockContains, Value: "%2F"}} },
+		"parameter":    func(p *AccessPolicy) { p.Conditions = []BlockCondition{{Operator: BlockStartsWith, Value: "/a;b/"}} },
 	} {
 		policy := ok
 		change(&policy)
@@ -34,6 +38,11 @@ func TestAccessPoliciesNormalize(t *testing.T) {
 		if _, valid := (AccessPolicies{Policies: policies}).Normalize(); valid {
 			t.Fatalf("%s accepted", name)
 		}
+	}
+	pattern := ok
+	pattern.Conditions = []BlockCondition{{Operator: BlockMatches, Value: "^/files/100%$"}, {Operator: BlockEquals, Value: "/100%"}}
+	if _, valid := (AccessPolicies{Policies: []AccessPolicy{pattern}}).Normalize(); !valid {
+		t.Fatal("a percent sign that isn't an escape refused")
 	}
 	all := AccessPolicy{Name: "All", Hosts: []string{"app.example.com"}, AllPaths: true, Conditions: []BlockCondition{{Operator: BlockStartsWith, Value: "/x/"}}, AllowAdmins: true}
 	if normalized, valid := (AccessPolicies{Policies: []AccessPolicy{all}}).Normalize(); !valid || len(normalized.Policies[0].Conditions) != 0 {
@@ -80,5 +89,29 @@ func TestAccessProviderNormalizeAndStorage(t *testing.T) {
 	}
 	if again, _ := db.AccessKey(ctx, time.Now()); string(again) != string(rotated) {
 		t.Fatal("rotation not kept")
+	}
+}
+
+// Saved policies that no longer pass the checks come back as read, with an
+// error saying so; unreadable ones come back as none.
+func TestAccessPoliciesSavedInvalid(t *testing.T) {
+	ctx := context.Background()
+	db := openRouting(t)
+	if _, err := db.SetAccessPolicies(ctx, AccessPolicies{Policies: []AccessPolicy{{Name: "Staff", Enabled: true, Hosts: []string{"App.example.com"}, AllPaths: true, AllowAdmins: true}}}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if policies, err := db.AccessPolicies(ctx); err != nil || policies.Policies[0].Hosts[0] != "app.example.com" {
+		t.Fatalf("valid = %+v %v", policies, err)
+	}
+	for raw, names := range map[string]int{
+		`{"policies":[{"id":"old","name":"Old","enabled":true,"hosts":["app.example.com"],"conditions":[{"operator":"matches","value":"("}],"allow_admins":true}]}`: 1,
+		`not json`: 0,
+	} {
+		if err := putSetting(ctx, db.db, settingAccessPolicies, raw, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if policies, err := db.AccessPolicies(ctx); !errors.Is(err, ErrStoredAccessPolicies) || len(policies.Policies) != names || policies.Policies == nil {
+			t.Fatalf("%s = %+v %v", raw, policies, err)
+		}
 	}
 }

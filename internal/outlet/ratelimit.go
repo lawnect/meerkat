@@ -502,6 +502,8 @@ func (s *Store) putRateLimit(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req, "enabled", "per_ip", "per_subnet", "per_address", "endpoints") {
 		return
 	}
+	s.saving.Lock()
+	defer s.saving.Unlock()
 	saved, err := s.control.SetRateLimit(r.Context(), req, s.now())
 	if errors.Is(err, control.ErrInvalidRateLimit) {
 		fail(w, r, 400, "invalid_rate_limit")

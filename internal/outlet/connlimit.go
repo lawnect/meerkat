@@ -347,6 +347,8 @@ func (s *Store) putConnectionLimits(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req, "max_upload_mb", "per_ip_concurrent", "total_concurrent", "idle_timeout_seconds", "min_upload_kb_per_second", "hosts") {
 		return
 	}
+	s.saving.Lock()
+	defer s.saving.Unlock()
 	saved, err := s.control.SetConnectionLimits(r.Context(), req, s.now())
 	if errors.Is(err, control.ErrInvalidConnectionLimits) {
 		fail(w, r, 400, "invalid_connection_limits")

@@ -262,8 +262,8 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 ~~~
 
 - 규칙은 최대 50개, 규칙마다 조건 1–50개다. `name`은 1–64자, `id`는 영문·숫자·`-`·`_` 32자 이하이며 비워 보내면 서버가 정한다. `hosts`는 호스트 이름 또는 `*.example.com` 형태의 와일드카드이며(규칙마다 200개까지), `*.example.com`은 그 아래 모든 깊이의 이름에 맞고 `example.com` 자체에는 맞지 않는다. 비어 있으면 모든 공개 주소에 적용한다.
-- `operator`는 `equals`(같음), `starts_with`(다음으로 시작), `ends_with`(다음으로 끝남), `contains`(포함), `matches`(정규식과 일치)다. 값은 512바이트 이하이고 제어 문자를 쓸 수 없다. `equals`와 `starts_with`는 `/`로 시작해야 한다. `matches`는 RE2 문법이며 대소문자를 구분하지 않는다(전후방 탐색과 역참조는 지원하지 않는다). 저장할 때 값의 앞뒤 공백을 지우고, 정규식이 아닌 값은 소문자로 바꾸며, `equals`는 요청 경로와 같은 방식으로 정리하고, 같은 조건은 하나만 남긴다.
-- 요청 경로는 디코딩된 경로에서 `\`를 `/`로 읽고, 각 부분의 `;` 뒤와 NUL 뒤를 버리고, `//`·`.`·`..`을 정리하고, 소문자로 바꾸고, 끝의 점과 공백을 지운 뒤 비교한다(끝의 `/`는 없다). `starts_with`, `ends_with`, `contains`는 끝에 `/`를 붙인 경로로도 비교하므로 `/cgi-bin/`은 `/cgi-bin`에도 맞는다. 순서상 처음 맞는 규칙이 횟수를 센다.
+- `operator`는 `equals`(같음), `starts_with`(다음으로 시작), `ends_with`(다음으로 끝남), `contains`(포함), `matches`(정규식과 일치)다. 값은 512바이트 이하이고 제어 문자를 쓸 수 없다. `equals`와 `starts_with`는 `/`로 시작해야 한다. `matches`는 RE2 문법이며 대소문자를 구분하지 않는다(전후방 탐색과 역참조는 지원하지 않는다). 저장할 때 값의 앞뒤 공백을 지우고, 정규식이 아닌 값은 소문자로 바꾸고 `\`를 `/`로 읽으며, `equals`는 요청 경로와 같은 방식으로 정리하고, 나머지는 `/` 앞 조각 끝의 점과 공백을(`ends_with`는 값 끝의 것도) 지우며, 같은 조건은 하나만 남긴다.
+- 요청 경로는 디코딩된 경로에서 `\`를 `/`로 읽고, 각 부분의 `;` 뒤와 NUL 뒤를 버리고, `//`·`.`·`..`을 정리하고, 소문자로 바꾸고, 끝의 점과 공백을 지운 뒤 비교한다(끝의 `/`는 없다). 모든 연산자는 끝에 `/`를 붙인 경로로도 비교하므로 `/cgi-bin/`과 `^/cgi-bin/`은 `/cgi-bin`에도 맞는다. 순서상 처음 맞는 규칙이 횟수를 센다.
 - `/.well-known` 아래 경로는 어떤 규칙으로도 차단하지 않는다.
 - 저장된 설정이 없으면 세 규칙이 기본이다. 루트의 숨김 파일(`/.` 시작)을 막는 `hidden-files`만 켜져 있고, 취약점 스캐너 경로(`.php` 등)를 막는 `scanners`와 사이트가 쓰지 않는 경로의 예시인 `unused-paths`는 실제 앱(예: Nextcloud의 `.php`)을 깨뜨릴 수 있어 꺼져 있다.
 - 감사 로그에는 켜진 규칙과 꺼진 규칙의 이름만 남긴다.
@@ -301,37 +301,45 @@ POST   /api/v1/security/access-provider/test
 POST   /api/v1/security/access/sessions/revoke
 GET    /api/v1/security/access-policies
 PUT    /api/v1/security/access-policies
-GET    /api/v1/access/start?host=<주소>&return=<경로>
+GET    /api/v1/access/start?host=<주소>&return=<경로>&bind=<해시>
 GET    /api/v1/access/callback
 GET    https://<보호 주소>/.meerkat/access/finish?ticket=<티켓>
 GET    https://<보호 주소>/.meerkat/access/logout
+POST   https://<보호 주소>/.meerkat/access/logout
 ~~~
 
 **공급자 설정**
 - `GET`은 `{"enabled", "issuer", "client_id", "client_secret_set", "client_secret_hint", "scopes", "groups_claim", "session_hours", "redirect_uri", "available"}`를 반환한다. `redirect_uri`는 `https://<관리 호스트>/api/v1/access/callback` 하나이며, 모든 보호 대상 주소가 이 URI를 쓴다.
-- `PUT`은 `client_secret`을 비우면 저장된 값을 유지한다. 켜려면 https 발급자와 클라이언트 ID가 필요하다. `session_hours`는 1~720(기본 24)이다. 맞지 않으면 `400 invalid_access_provider`이다.
+- `PUT`은 `client_secret`을 비우면 저장된 값을 유지한다. 켜려면 https 발급자와 클라이언트 ID가 필요하다. `session_hours`는 1~720(기본 24)이다. 맞지 않으면 `400 invalid_access_provider`이다. 저장하면 바로 적용하고 `security.access_provider`를 남긴다.
 - `test`는 discovery 문서를 확인한다(`400 invalid_issuer`, `502 provider_unreachable`).
 - `sessions/revoke`는 세션 서명 키를 바꿔 모든 보호 주소의 세션을 끝낸다(`204`, `security.access_sessions_revoke`).
 
 **정책**
 - `GET`/`PUT /api/v1/security/access-policies`는 `{"policies": [...], "addresses": [공개 주소]}`이다. 정책은 `{"id", "name", "enabled", "hosts", "all_paths", "conditions", "allowed_users", "allowed_groups", "allow_admins"}`이다.
 - `hosts`는 하나 이상의 주소 또는 `*.도메인`이다.
-- `all_paths`가 `false`이면 `conditions`가 필요하다. 조건은 차단 규칙과 같은 연산자와 경로 정규화를 쓰며, 경로의 각 조각 끝의 점과 공백도 지운다.
-- 허용 판단: 사용자(이메일 또는 `@도메인`)와 그룹은 둘 다 지정하면 둘 다 맞아야 한다. `allow_admins`는 Meerkat 관리자 이메일을 추가로 허용한다. 아무도 허용하지 않는 정책은 `400 invalid_access_policies`이다.
-- 저장하면 바로 적용하고 `security.access_policies`를 남긴다.
+- `all_paths`가 `false`이면 `conditions`가 필요하다. 조건은 차단 규칙과 같은 연산자와 경로 정규화를 쓴다. 요청 경로는 한 번 디코딩하고 `;` 매개변수를 뺀 형태로 비교하므로, 정규식이 아닌 값에 `%XX` 인코딩이나 `;`가 있으면 `400 invalid_access_policies`이다.
+- 앱마다 다르게 읽을 수 있는 경로, 곧 디코딩 뒤에도 `%XX`가 남은 경로(이중 인코딩), UTF-8이 아닌 경로, `.`·`..`이 아니면서 점과 공백으로만 된 조각이 있는 경로는 모든 경로로 본다. 그 주소의 조건 정책이 모두 적용된다.
+- 허용 판단: 사용자(이메일 또는 `@도메인`)와 그룹은 둘 다 지정하면 둘 다 맞아야 한다. `allow_admins`는 접근 보호 SSO가 인증한 이메일이 Meerkat 관리자 이메일과 같으면 추가로 허용한다(관리자 SSO의 발급자·subject와는 대조하지 않는다). 아무도 허용하지 않는 정책은 `400 invalid_access_policies`이다.
+- 저장하면 바로 적용하고 `security.access_policies`에 정책마다 이름, 활성화, 주소, 허용 사용자·그룹, 관리자 허용을 남긴다. 동시에 저장해도 마지막으로 저장된 정책이 적용된다.
+- 저장된 정책이 검사를 통과하지 못하면(손상, 업그레이드로 바뀐 검사) Outlet은 그대로 시작하고, 활성화된 정책이 지정한 주소의 전체 경로를 닫은 채로 저장된 허용 대상만 들인다. 유효한 주소가 없거나 읽을 수 없으면 모든 공개 주소를 닫는다. `GET`은 읽은 그대로 보여 주며, 다시 저장하면 풀린다.
 
 **요청 처리**
 - 공개 요청이 활성화된 정책에 걸리면, 걸린 정책을 모두 충족하는 세션이 있어야 앱으로 전달한다.
 - 세션 쿠키는 `__Host-meerkat_access`(HttpOnly, Secure, SameSite=Lax)이다. 이메일, 정책에 쓰인 그룹, 주소, 만료를 Outlet 키로 HMAC 서명하며, 발급된 주소에서만 유효하다.
 - 세션이 없을 때 브라우저 탐색(GET/HEAD, `Sec-Fetch-Mode: navigate` 또는 HTML 요청)은 `302`로 관리 호스트의 `access/start`로 보낸다. 그 밖의 요청은 `401`이다.
-- 세션은 있지만 정책이 허용하지 않으면 `403`이다. 공급자가 꺼져 있으면 시작이 `503`이어서 보호 주소는 닫힌 채로 남는다.
-- 앱에는 `X-Meerkat-Access-Email`로 이메일을 전달한다. 클라이언트가 보낸 같은 헤더와 세션 쿠키는 지운다.
+- 세션은 있지만 정책이 허용하지 않으면 `403`이다. 관리자 허용 확인 중 DB 오류는 `503`이다.
+- 공급자가 꺼져 있으면 보호 대상 요청은 기존 세션이 있어도 `503`이고, 시작과 `finish`도 `503`이다.
+- Outlet이 보여 주는 페이지(`401`, `403`, `503`, 로그아웃 등)는 모두 `Cache-Control: no-store`다.
+- 앱에는 `X-Meerkat-Access-Email`로 이메일을 전달한다. 클라이언트가 보낸 같은 헤더는 지우고, `__Host-meerkat_access`로 시작하는 쿠키(세션과 진행 중 로그인의 바인딩)는 이름의 앞뒤 공백과 대소문자에 관계없이 지운다.
 
 **로그인 흐름**
-- 보호 주소는 로그인으로 보낼 때 그 브라우저에 `__Host-meerkat_access_bind` 쿠키를 두고, 그 해시를 `bind`로 `start`에 넘긴다. 티켓은 이 쿠키를 가진 브라우저에서만 세션으로 바뀌므로, 다른 사람의 로그인으로 받은 티켓 링크로는 로그인되지 않는다(로그인 CSRF 방지).
-- `start`는 공개 관리 호스트에서, 정책이 보호하는 주소와 `bind`가 있을 때만 동작한다(그 밖은 `404`). state(Lax 쿠키 `__Host-meerkat_access_state`), nonce, PKCE로 공급자에 보낸다. 진행 중 로그인 수 제한은 관리자 SSO와 같다.
-- `callback`은 ID 토큰을 검증한다. `email_verified`가 `true`이고 ASCII 이메일이어야 한다. 그 주소의 정책 중 하나라도 허용해야 1분짜리 일회용 티켓을 발급하고, 보호 주소의 `/.meerkat/access/finish`로 보낸다(`access.login`, 실패는 `access.login_failed`).
+- 보호 주소는 로그인으로 보낼 때 그 브라우저에 바인딩 쿠키 `__Host-meerkat_access_bind_<해시 앞 16자>`를 두고, 그 해시(소문자 hex 64자)를 `bind`로 `start`에 넘긴다. 티켓은 이 쿠키를 가진 브라우저에서만 세션으로 바뀌므로, 다른 사람의 로그인으로 받은 티켓 링크로는 로그인되지 않는다(로그인 CSRF 방지).
+- `start`는 공개 관리 호스트에서, 정책이 보호하는 주소와 올바른 `bind`가 있을 때만 동작한다(그 밖은 `404`). state(Lax 쿠키 `__Host-meerkat_access_state_<state 해시 앞 16자>`), nonce, PKCE로 공급자에 보낸다. 로그인마다 쿠키 이름이 달라 여러 탭에서 동시에 로그인해도 서로 끊지 않는다.
+- `start`는 클라이언트 주소마다 분당 30회(`429`, `Retry-After`), 진행 중 로그인은 32개까지이며 넘으면 가장 오래된 것을 버린다. 관리자 SSO와 따로 센다.
+- `callback`은 ID 토큰을 검증한다. `email_verified`가 `true`이고 ASCII 이메일이어야 한다. 그 주소의 정책 중 하나라도 허용해야 1분짜리 일회용 티켓을 발급하고, 보호 주소의 `/.meerkat/access/finish`로 보낸다(`access.login`에 발급자와 subject를 남기고, 실패는 `access.login_failed`).
+- 세션에는 그 주소의 정책이 지정한 그룹만 담는다. 쿠키 크기(3800바이트)를 넘으면 정책마다 허용하는 그룹 하나씩만 남긴다.
 - `finish`는 그 주소에 발급된 티켓만 받아 세션 쿠키로 바꾸고 원래 경로로 보낸다.
+- `logout`은 세션 쿠키를 지운다. 다른 사이트에서 온 요청(`Sec-Fetch-Site: cross-site`)은 지우지 않고 확인 버튼(같은 주소로 `POST`)만 보여 준다.
 - `/.meerkat/access/` 아래 경로는 Outlet이 처리하며, 기본 차단 규칙보다 먼저 확인한다.
 
 ### Outlet 사용량
