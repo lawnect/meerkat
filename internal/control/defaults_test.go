@@ -22,7 +22,7 @@ func TestEnvironmentSettingsYieldToSavedOnes(t *testing.T) {
 		t.Fatal("setup complete with nothing configured")
 	}
 	envSSO, _ := SSO{Enabled: true, Issuer: "https://idp.example.com", ClientID: "meerkat", ClientSecret: "env-secret-1234", Scopes: []string{"openid"}, AllowedUsers: []string{"a@example.com"}, PasswordLogin: true}.Normalize()
-	envTelegram, err := NewTelegram("123456789:AAEhBOweik6ad9r_QXMENQjcrGbqCr4K-ab", "-1001234567890", true)
+	envTelegram, err := NewTelegram("123456789:AAExampleExampleExampleExample_ab-cd", "-1001234567890", true)
 	if err != nil {
 		t.Fatal(err)
 	}

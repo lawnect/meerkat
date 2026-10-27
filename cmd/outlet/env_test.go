@@ -23,7 +23,7 @@ func TestEnvironmentDefaults(t *testing.T) {
 		"MEERKAT_ADMIN_EMAILS":       "Admin@Example.com, ops@example.org",
 		"MEERKAT_ADMIN_GROUPS":       "/platform-admins",
 		"MEERKAT_PASSWORD_LOGIN":     "false",
-		"MEERKAT_TELEGRAM_BOT_TOKEN": "123456789:AAEhBOweik6ad9r_QXMENQjcrGbqCr4K-ab",
+		"MEERKAT_TELEGRAM_BOT_TOKEN": "123456789:AAExampleExampleExampleExample_ab-cd",
 		"MEERKAT_TELEGRAM_CHAT_ID":   "-1001234567890",
 	}))
 	if len(warnings) != 0 {
@@ -44,8 +44,8 @@ func TestEnvironmentDefaults(t *testing.T) {
 		"http issuer":             {"MEERKAT_OIDC_ISSUER": "http://idp.example.com", "MEERKAT_OIDC_CLIENT_ID": "m", "MEERKAT_ADMIN_EMAILS": "a@example.com"},
 		"bad email":               {"MEERKAT_OIDC_ISSUER": "https://idp.example.com", "MEERKAT_OIDC_CLIENT_ID": "m", "MEERKAT_ADMIN_EMAILS": "not-an-email"},
 		"bad password flag":       {"MEERKAT_OIDC_ISSUER": "https://idp.example.com", "MEERKAT_OIDC_CLIENT_ID": "m", "MEERKAT_ADMIN_EMAILS": "a@example.com", "MEERKAT_PASSWORD_LOGIN": "nope"},
-		"telegram token only":     {"MEERKAT_TELEGRAM_BOT_TOKEN": "123456789:AAEhBOweik6ad9r_QXMENQjcrGbqCr4K-ab"},
-		"telegram malformed chat": {"MEERKAT_TELEGRAM_BOT_TOKEN": "123456789:AAEhBOweik6ad9r_QXMENQjcrGbqCr4K-ab", "MEERKAT_TELEGRAM_CHAT_ID": "chat 1"},
+		"telegram token only":     {"MEERKAT_TELEGRAM_BOT_TOKEN": "123456789:AAExampleExampleExampleExample_ab-cd"},
+		"telegram malformed chat": {"MEERKAT_TELEGRAM_BOT_TOKEN": "123456789:AAExampleExampleExampleExample_ab-cd", "MEERKAT_TELEGRAM_CHAT_ID": "chat 1"},
 	} {
 		// The setting is left out with a warning naming the variable; the
 		// Outlet still starts.
