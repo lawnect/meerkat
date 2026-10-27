@@ -9,6 +9,7 @@
   import * as Empty from '$lib/components/ui/empty/index.js';
   import * as Field from '$lib/components/ui/field/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
+  import * as Item from '$lib/components/ui/item/index.js';
   import * as NativeSelect from '$lib/components/ui/native-select/index.js';
   import * as RadioGroup from '$lib/components/ui/radio-group/index.js';
   import { Separator } from '$lib/components/ui/separator/index.js';
@@ -316,11 +317,11 @@
     <Field.Label for={`${prefix}-name`}>{t().tokenName}</Field.Label>
     <Input id={`${prefix}-name`} bind:value={form.name} maxlength={64} pattern=".*\S.*" autocomplete="off" required />
   </Field.Field>
-  <!-- 적용 주소와 허용 IP는 함께 토큰의 이용 범위라 한 카드로 묶습니다. -->
-  <Card.Root size="sm">
-    <Card.Header><Card.Title>{t().scope}</Card.Title></Card.Header>
-    <Card.Content>
-      <Field.Group>
+  <!-- 적용 주소와 허용 IP는 함께 토큰의 이용 범위라 한데 묶고, 항목마다 상자로 둡니다. -->
+  <Field.Set>
+    <Field.Legend>{t().scope}</Field.Legend>
+    <Item.Group>
+      <Item.Root variant="outline" size="sm" class="flex-col items-stretch bg-muted/50">
         <Field.Set>
           <Field.Legend variant="label">{t().addresses}</Field.Legend>
           <div class="grid gap-2">
@@ -347,10 +348,12 @@
           <datalist id={`${prefix}-addresses`}>
             {#each addresses as address (address)}<option value={address}></option>{/each}
           </datalist>
-          <div>
+          <div class="flex justify-end">
             <Button variant="outline" size="sm" disabled={form.hosts.length >= maxHosts} onclick={() => addHost(prefix)}><Add12 aria-hidden="true" />{t().addAddress}</Button>
           </div>
         </Field.Set>
+      </Item.Root>
+      <Item.Root variant="outline" size="sm" class="flex-col items-stretch bg-muted/50">
         <Field.Set>
           <Field.Legend variant="label">{t().allowedIps}</Field.Legend>
           <RadioGroup.Root value={form.scope} onValueChange={(value) => { form.scope = value === 'selected' ? 'selected' : 'any'; rangeMissing = false; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
@@ -372,9 +375,9 @@
             {/if}
           {/if}
         </Field.Set>
-      </Field.Group>
-    </Card.Content>
-  </Card.Root>
+      </Item.Root>
+    </Item.Group>
+  </Field.Set>
 {/snippet}
 
 <Card.Root size="sm" role="region" aria-labelledby="access-tokens-title">

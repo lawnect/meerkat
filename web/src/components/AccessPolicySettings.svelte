@@ -10,6 +10,7 @@
   import * as Empty from '$lib/components/ui/empty/index.js';
   import * as Field from '$lib/components/ui/field/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
+  import * as Item from '$lib/components/ui/item/index.js';
   import * as NativeSelect from '$lib/components/ui/native-select/index.js';
   import * as RadioGroup from '$lib/components/ui/radio-group/index.js';
   import { Skeleton } from '$lib/components/ui/skeleton/index.js';
@@ -638,11 +639,11 @@
           <Switch id="access-policy-enabled" bind:checked={form.enabled} />
         </Field.Field>
       </Field.Group>
-      <!-- 어떤 요청에 적용할지(주소, 경로, 메서드, 토큰)와 그 요청에 무엇을 할지(동작, 허용 대상)를 카드로 나눕니다. -->
-      <Card.Root size="sm">
-        <Card.Header><Card.Title>{t().conditions}</Card.Title></Card.Header>
-        <Card.Content>
-          <Field.Group>
+      <!-- 어떤 요청에 적용할지(주소, 경로, 메서드, 토큰)와 그 요청에 무엇을 할지(동작, 허용 대상)를 나누고, 항목마다 상자로 묶습니다. -->
+      <Field.Set>
+        <Field.Legend>{t().conditions}</Field.Legend>
+        <Item.Group>
+          <Item.Root variant="outline" size="sm" class="flex-col items-stretch bg-muted/50">
             <Field.Set>
               <Field.Legend variant="label">{t().addresses}</Field.Legend>
               <div class="grid gap-2">
@@ -669,10 +670,12 @@
               <datalist id="access-policy-addresses">
                 {#each addresses as address (address)}<option value={address}></option>{/each}
               </datalist>
-              <div>
+              <div class="flex justify-end">
                 <Button variant="outline" size="sm" disabled={form.hosts.length >= maxHosts} onclick={addHost}><Add12 aria-hidden="true" />{t().addAddress}</Button>
               </div>
             </Field.Set>
+          </Item.Root>
+          <Item.Root variant="outline" size="sm" class="flex-col items-stretch bg-muted/50">
             <Field.Set>
               <Field.Legend variant="label" class="flex items-center gap-1">{t().paths}<InfoTooltip id="access-policy-paths-tip" label={t().paths} description={t().pathsTip} /></Field.Legend>
               <RadioGroup.Root value={form.paths} onValueChange={(value) => { form.paths = value === 'selected' ? 'selected' : 'all'; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
@@ -712,11 +715,13 @@
                   {/each}
                 </div>
                 {#if form.action === 'bypass'}<Field.Description>{t().bypassNote}</Field.Description>{:else if hasRegex}<Field.Description>{t().regexNote}</Field.Description>{/if}
-                <div>
+                <div class="flex justify-end">
                   <Button variant="outline" size="sm" disabled={form.conditions.length >= maxConditions} onclick={addCondition}><Add12 aria-hidden="true" />{t().addCondition}</Button>
                 </div>
               {/if}
             </Field.Set>
+          </Item.Root>
+          <Item.Root variant="outline" size="sm" class="flex-col items-stretch bg-muted/50">
             <Field.Set>
               <Field.Legend variant="label" class="flex items-center gap-1">{t().methods}<InfoTooltip id="access-policy-methods-tip" label={t().methods} description={t().methodsHint} /></Field.Legend>
               <RadioGroup.Root value={form.methods} onValueChange={(value) => { form.methods = value === 'selected' ? 'selected' : 'all'; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
@@ -744,6 +749,8 @@
                 </div>
               {/if}
             </Field.Set>
+          </Item.Root>
+          <Item.Root variant="outline" size="sm" class="flex-col items-stretch bg-muted/50">
             <Field.Set>
               <Field.Legend variant="label" class="flex items-center gap-1">{t().token}<InfoTooltip id="access-policy-token-tip" label={t().token} description={t().tokenHint} /></Field.Legend>
               <RadioGroup.Root value={form.token} onValueChange={(value) => { form.token = value === 'any' || value === 'selected' ? value : 'none'; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
@@ -776,13 +783,13 @@
                 {/if}
               {/if}
             </Field.Set>
-          </Field.Group>
-        </Card.Content>
-      </Card.Root>
-      <Card.Root size="sm">
-        <Card.Header><Card.Title id="access-policy-action-title">{t().action}</Card.Title></Card.Header>
-        <Card.Content>
-          <Field.Group>
+          </Item.Root>
+        </Item.Group>
+      </Field.Set>
+      <Field.Set>
+        <Field.Legend id="access-policy-action-title">{t().action}</Field.Legend>
+        <Item.Group>
+          <Item.Root variant="outline" size="sm" class="flex-col items-stretch bg-muted/50">
             <!-- 선택지는 한 줄로 두고, 각 동작의 뜻은 마우스를 올리면 툴팁으로, 화면 낭독기에는 설명으로 알립니다. -->
             <RadioGroup.Root aria-labelledby="access-policy-action-title" value={form.action} onValueChange={(value) => { if (actions.includes(value as AccessAction)) form.action = value as AccessAction; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
               {#each actions as action (action)}
@@ -801,7 +808,9 @@
                 </Tooltip.Root>
               {/each}
             </RadioGroup.Root>
-            {#if form.action === 'allow'}
+          </Item.Root>
+          {#if form.action === 'allow'}
+            <Item.Root variant="outline" size="sm" class="flex-col items-stretch bg-muted/50">
               <Field.Set>
                 <Field.Legend variant="label">{t().who}</Field.Legend>
                 <Field.Field orientation="horizontal">
@@ -829,10 +838,10 @@
                   </Field.Field>
                 {/if}
               </Field.Set>
-            {/if}
-          </Field.Group>
-        </Card.Content>
-      </Card.Root>
+            </Item.Root>
+          {/if}
+        </Item.Group>
+      </Field.Set>
       {#if formError}<Alert.Root variant="destructive"><Warning aria-hidden="true" /><Alert.Description>{formError}</Alert.Description></Alert.Root>{/if}
       <Dialog.Footer>
         {#if editingId}

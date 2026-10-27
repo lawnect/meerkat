@@ -8,6 +8,7 @@
   import * as Empty from '$lib/components/ui/empty/index.js';
   import * as Field from '$lib/components/ui/field/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
+  import * as Item from '$lib/components/ui/item/index.js';
   import * as NativeSelect from '$lib/components/ui/native-select/index.js';
   import * as RadioGroup from '$lib/components/ui/radio-group/index.js';
   import { Skeleton } from '$lib/components/ui/skeleton/index.js';
@@ -329,80 +330,87 @@
           <Field.Label for="block-rule-name">{t().ruleName}</Field.Label>
           <Input id="block-rule-name" bind:value={form.name} maxlength={64} pattern=".*\S.*" autocomplete="off" required />
         </Field.Field>
-        <Field.Set>
-          <Field.Legend variant="label">{t().appliesTo}</Field.Legend>
-          <RadioGroup.Root value={form.scope} onValueChange={chooseScope} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
-            <Field.Field orientation="horizontal" class="w-auto">
-              <RadioGroup.Item value="all" id="block-rule-scope-all" />
-              <Field.Label for="block-rule-scope-all" class="font-normal">{t().allAddresses}</Field.Label>
-            </Field.Field>
-            <Field.Field orientation="horizontal" class="w-auto">
-              <RadioGroup.Item value="selected" id="block-rule-scope-selected" />
-              <Field.Label for="block-rule-scope-selected" class="font-normal">{t().selectedAddresses}</Field.Label>
-            </Field.Field>
-          </RadioGroup.Root>
-          {#if form.scope === 'selected'}
-            <div class="grid gap-2">
-              {#each form.hosts as row, index (row.key)}
-                <div class="flex items-center gap-2">
-                  <Input
-                    id={`block-rule-host-${row.key}`}
-                    class="min-w-0 flex-1 font-mono"
-                    list="block-rule-addresses"
-                    bind:value={row.value}
-                    placeholder={t().hostPlaceholder}
-                    aria-label={`${t().address} ${index + 1}`}
-                    autocomplete="off"
-                    autocapitalize="none"
-                    spellcheck={false}
-                    pattern=".*\S.*"
-                    required
-                  />
-                  <IconButton label={t().removeAddress} icon={Dismiss} disabled={form.hosts.length <= 1} onclick={() => form.hosts.splice(index, 1)} />
-                </div>
-              {/each}
-            </div>
-            <!-- 등록된 공개 주소를 자동 완성 후보로 보여 줍니다. 직접 입력과 와일드카드도 받습니다. -->
-            <datalist id="block-rule-addresses">
-              {#each addresses as address (address)}<option value={address}></option>{/each}
-            </datalist>
-            <div>
-              <Button variant="outline" size="sm" disabled={form.hosts.length >= maxHosts} onclick={addHost}><Add12 aria-hidden="true" />{t().addAddress}</Button>
-            </div>
-          {/if}
-        </Field.Set>
-        <Field.Set>
-          <Field.Legend variant="label">{t().conditions}</Field.Legend>
-          <Field.Description>{t().conditionsHint}</Field.Description>
-          <div class="grid gap-2">
-            {#each form.conditions as condition, index (condition.key)}
-              <div class="flex flex-wrap items-center gap-2">
-                <NativeSelect.Root class="w-44" aria-label={`${t().operator} ${index + 1}`} bind:value={condition.operator}>
-                  {#each operators as operator (operator)}
-                    <NativeSelect.Option value={operator}>{operatorLabel(operator)}</NativeSelect.Option>
+        <!-- 적용 대상과 조건은 항목마다 상자로 묶습니다. -->
+        <Item.Group>
+          <Item.Root variant="outline" size="sm" class="flex-col items-stretch bg-muted/50">
+            <Field.Set>
+              <Field.Legend variant="label">{t().appliesTo}</Field.Legend>
+              <RadioGroup.Root value={form.scope} onValueChange={chooseScope} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
+                <Field.Field orientation="horizontal" class="w-auto">
+                  <RadioGroup.Item value="all" id="block-rule-scope-all" />
+                  <Field.Label for="block-rule-scope-all" class="font-normal">{t().allAddresses}</Field.Label>
+                </Field.Field>
+                <Field.Field orientation="horizontal" class="w-auto">
+                  <RadioGroup.Item value="selected" id="block-rule-scope-selected" />
+                  <Field.Label for="block-rule-scope-selected" class="font-normal">{t().selectedAddresses}</Field.Label>
+                </Field.Field>
+              </RadioGroup.Root>
+              {#if form.scope === 'selected'}
+                <div class="grid gap-2">
+                  {#each form.hosts as row, index (row.key)}
+                    <div class="flex items-center gap-2">
+                      <Input
+                        id={`block-rule-host-${row.key}`}
+                        class="min-w-0 flex-1 font-mono"
+                        list="block-rule-addresses"
+                        bind:value={row.value}
+                        placeholder={t().hostPlaceholder}
+                        aria-label={`${t().address} ${index + 1}`}
+                        autocomplete="off"
+                        autocapitalize="none"
+                        spellcheck={false}
+                        pattern=".*\S.*"
+                        required
+                      />
+                      <IconButton label={t().removeAddress} icon={Dismiss} disabled={form.hosts.length <= 1} onclick={() => form.hosts.splice(index, 1)} />
+                    </div>
                   {/each}
-                </NativeSelect.Root>
-                <Input
-                  id={`block-rule-value-${condition.key}`}
-                  class="min-w-40 flex-1 font-mono"
-                  bind:value={condition.value}
-                  placeholder={t().placeholders[condition.operator]}
-                  aria-label={`${t().value} ${index + 1}`}
-                  autocomplete="off"
-                  autocapitalize="none"
-                  spellcheck={false}
-                  pattern=".*\S.*"
-                  required
-                />
-                <IconButton label={t().removeCondition} icon={Dismiss} disabled={form.conditions.length <= 1} onclick={() => form.conditions.splice(index, 1)} />
+                </div>
+                <!-- 등록된 공개 주소를 자동 완성 후보로 보여 줍니다. 직접 입력과 와일드카드도 받습니다. -->
+                <datalist id="block-rule-addresses">
+                  {#each addresses as address (address)}<option value={address}></option>{/each}
+                </datalist>
+                <div class="flex justify-end">
+                  <Button variant="outline" size="sm" disabled={form.hosts.length >= maxHosts} onclick={addHost}><Add12 aria-hidden="true" />{t().addAddress}</Button>
+                </div>
+              {/if}
+            </Field.Set>
+          </Item.Root>
+          <Item.Root variant="outline" size="sm" class="flex-col items-stretch bg-muted/50">
+            <Field.Set>
+              <Field.Legend variant="label">{t().conditions}</Field.Legend>
+              <Field.Description>{t().conditionsHint}</Field.Description>
+              <div class="grid gap-2">
+                {#each form.conditions as condition, index (condition.key)}
+                  <div class="flex flex-wrap items-center gap-2">
+                    <NativeSelect.Root class="w-44" aria-label={`${t().operator} ${index + 1}`} bind:value={condition.operator}>
+                      {#each operators as operator (operator)}
+                        <NativeSelect.Option value={operator}>{operatorLabel(operator)}</NativeSelect.Option>
+                      {/each}
+                    </NativeSelect.Root>
+                    <Input
+                      id={`block-rule-value-${condition.key}`}
+                      class="min-w-40 flex-1 font-mono"
+                      bind:value={condition.value}
+                      placeholder={t().placeholders[condition.operator]}
+                      aria-label={`${t().value} ${index + 1}`}
+                      autocomplete="off"
+                      autocapitalize="none"
+                      spellcheck={false}
+                      pattern=".*\S.*"
+                      required
+                    />
+                    <IconButton label={t().removeCondition} icon={Dismiss} disabled={form.conditions.length <= 1} onclick={() => form.conditions.splice(index, 1)} />
+                  </div>
+                {/each}
               </div>
-            {/each}
-          </div>
-          {#if hasRegex}<Field.Description>{t().regexNote}</Field.Description>{/if}
-          <div>
-            <Button variant="outline" size="sm" disabled={form.conditions.length >= maxConditions} onclick={addCondition}><Add12 aria-hidden="true" />{t().addCondition}</Button>
-          </div>
-        </Field.Set>
+              {#if hasRegex}<Field.Description>{t().regexNote}</Field.Description>{/if}
+              <div class="flex justify-end">
+                <Button variant="outline" size="sm" disabled={form.conditions.length >= maxConditions} onclick={addCondition}><Add12 aria-hidden="true" />{t().addCondition}</Button>
+              </div>
+            </Field.Set>
+          </Item.Root>
+        </Item.Group>
       </Field.Group>
       {#if formError}<Alert.Root variant="destructive"><Warning aria-hidden="true" /><Alert.Description>{formError}</Alert.Description></Alert.Root>{/if}
       <Dialog.Footer>
