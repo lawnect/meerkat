@@ -20,6 +20,7 @@
   import { intlLocale, translations } from '../i18n.svelte';
   import { Add12, Dismiss, Shield20, Warning } from '../icons';
   import type { BlockCondition, BlockOperator, BlockRule, BlockRulesView } from '../types';
+  import AddressSelect from './AddressSelect.svelte';
   import IconButton from './IconButton.svelte';
   import InfoTooltip from './InfoTooltip.svelte';
 
@@ -43,7 +44,6 @@
     address: 'Address',
     addAddress: 'Add address',
     removeAddress: 'Remove address',
-    hostPlaceholder: 'app.example.com or *.example.com',
     conditionsHint: 'Blocked when any condition matches',
     operator: 'Operator',
     value: 'Value',
@@ -81,7 +81,6 @@
     address: '주소',
     addAddress: '주소 추가',
     removeAddress: '주소 삭제',
-    hostPlaceholder: 'app.example.com 또는 *.example.com',
     conditionsHint: '조건 중 하나 이상 일치 시 차단',
     operator: '연산자',
     value: '값',
@@ -349,27 +348,11 @@
                 <div class="grid gap-2">
                   {#each form.hosts as row, index (row.key)}
                     <div class="flex items-center gap-2">
-                      <Input
-                        id={`block-rule-host-${row.key}`}
-                        class="min-w-0 flex-1 font-mono"
-                        list="block-rule-addresses"
-                        bind:value={row.value}
-                        placeholder={t().hostPlaceholder}
-                        aria-label={`${t().address} ${index + 1}`}
-                        autocomplete="off"
-                        autocapitalize="none"
-                        spellcheck={false}
-                        pattern=".*\S.*"
-                        required
-                      />
+                      <AddressSelect id={`block-rule-host-${row.key}`} class="min-w-0 flex-1" bind:value={row.value} {addresses} taken={form.hosts.map((other) => other.value)} ariaLabel={`${t().address} ${index + 1}`} />
                       <IconButton label={t().removeAddress} icon={Dismiss} variant="outline" size="icon" disabled={form.hosts.length <= 1} onclick={() => form.hosts.splice(index, 1)} />
                     </div>
                   {/each}
                 </div>
-                <!-- 등록된 공개 주소를 자동 완성 후보로 보여 줍니다. 직접 입력과 와일드카드도 받습니다. -->
-                <datalist id="block-rule-addresses">
-                  {#each addresses as address (address)}<option value={address}></option>{/each}
-                </datalist>
                 <div class="flex justify-end">
                   <Button variant="outline" size="sm" disabled={form.hosts.length >= maxHosts} onclick={addHost}><Add12 aria-hidden="true" />{t().addAddress}</Button>
                 </div>

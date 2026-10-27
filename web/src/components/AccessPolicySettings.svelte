@@ -23,6 +23,7 @@
   import { intlLocale, translations } from '../i18n.svelte';
   import { Add12, Dismiss, ReOrder, Shield20, Warning } from '../icons';
   import { accessMethods, type AccessAction, type AccessMethod, type AccessPoliciesView, type AccessPolicy, type AccessToken, type BlockCondition, type BlockOperator } from '../types';
+  import AddressSelect from './AddressSelect.svelte';
   import IconButton from './IconButton.svelte';
   import InfoTooltip from './InfoTooltip.svelte';
   import TagInput from './TagInput.svelte';
@@ -67,7 +68,6 @@
     address: 'Address',
     addAddress: 'Add address',
     removeAddress: 'Remove address',
-    hostPlaceholder: 'app.example.com or *.example.com',
     allPaths: 'All paths',
     selectedPaths: 'Selected paths',
     conditionsHint: 'Applies when any condition matches',
@@ -85,6 +85,7 @@
     tokenHint: 'Applies only to requests whose X-Meerkat-Access-Token header carries a token valid for the address and client; others go to the policies below.',
     noToken: 'Not required',
     anyToken: 'Any token',
+    tokenShort: 'Token',
     selectedTokens: 'Selected tokens',
     needsToken: 'Choose at least one token.',
     bypassNote: 'Compared with the path exactly as the app gets it, case included',
@@ -147,7 +148,6 @@
     address: '주소',
     addAddress: '주소 추가',
     removeAddress: '주소 삭제',
-    hostPlaceholder: 'app.example.com 또는 *.example.com',
     allPaths: '전체 경로',
     selectedPaths: '선택한 경로',
     conditionsHint: '조건 중 하나 이상 일치 시 적용',
@@ -165,6 +165,7 @@
     tokenHint: 'X-Meerkat-Access-Token 헤더의 토큰이 주소와 클라이언트에 유효한 요청에만 적용되며, 다른 요청은 아래 정책이 판단합니다.',
     noToken: '조건 없음',
     anyToken: '모든 토큰',
+    tokenShort: '토큰',
     selectedTokens: '선택한 토큰',
     needsToken: '토큰을 하나 이상 선택하십시오.',
     bypassNote: '앱이 받는 경로와 대소문자까지 그대로 비교',
@@ -510,10 +511,7 @@
                 <Table.Head class="w-16 pl-2"><span class="sr-only">{t().order}</span></Table.Head>
                 <Table.Head class="w-12"><span class="sr-only">{t().enabled}</span></Table.Head>
                 <Table.Head>{t().name}</Table.Head>
-                <Table.Head>{t().addresses}</Table.Head>
-                <Table.Head>{t().paths}</Table.Head>
-                <Table.Head>{t().methods}</Table.Head>
-                <Table.Head>{t().token}</Table.Head>
+                <Table.Head>{t().conditions}</Table.Head>
                 <Table.Head class="pr-4">{t().action}</Table.Head>
               </Table.Row>
             </Table.Header>
@@ -578,43 +576,42 @@
                       {/if}
                     </span>
                   </Table.Cell>
+                  <!-- 적용 조건은 주소를 위에, 경로와 기본값이 아닌 메서드·토큰을 아래에 흐리게 보여 줍니다. -->
                   <Table.Cell>
-                    <span class="flex items-center gap-1.5">
-                      <span class="max-w-48 truncate font-mono">{policy.hosts[0]}</span>
-                      {#if policy.hosts.length > 1}<span class="text-muted-foreground tabular-nums">+{(policy.hosts.length - 1).toLocaleString(intlLocale())}</span>{/if}
-                    </span>
-                  </Table.Cell>
-                  <Table.Cell>
-                    {#if policy.all_paths}
-                      {t().allPaths}
-                    {:else if policy.conditions.length}
+                    <div class="grid gap-0.5">
                       <span class="flex items-center gap-1.5">
-                        <span class="text-muted-foreground">{operatorLabel(policy.conditions[0].operator)}</span>
-                        <span class="max-w-48 truncate font-mono">{policy.conditions[0].value}</span>
-                        {#if policy.conditions.length > 1}<span class="text-muted-foreground tabular-nums">+{(policy.conditions.length - 1).toLocaleString(intlLocale())}</span>{/if}
+                        <span class="max-w-56 truncate font-mono">{policy.hosts[0]}</span>
+                        {#if policy.hosts.length > 1}<span class="text-muted-foreground tabular-nums">+{(policy.hosts.length - 1).toLocaleString(intlLocale())}</span>{/if}
                       </span>
-                    {/if}
-                  </Table.Cell>
-                  <Table.Cell>
-                    {#if policy.methods.length}<span class="font-mono">{policy.methods.join(', ')}</span>{:else}{t().allMethods}{/if}
-                  </Table.Cell>
-                  <Table.Cell>
-                    {#if !policy.require_token}
-                      <span class="text-muted-foreground">{t().noToken}</span>
-                    {:else if !policy.tokens.length}
-                      {t().anyToken}
-                    {:else}
-                      <span class="flex items-center gap-1.5">
-                        <span class="max-w-40 truncate">{tokenName(policy.tokens[0])}</span>
-                        {#if policy.tokens.length > 1}<span class="text-muted-foreground tabular-nums">+{(policy.tokens.length - 1).toLocaleString(intlLocale())}</span>{/if}
+                      <span class="flex flex-wrap items-center gap-x-3 text-muted-foreground">
+                        <span class="flex items-center gap-1.5">
+                          {#if policy.all_paths}
+                            {t().allPaths}
+                          {:else if policy.conditions.length}
+                            {operatorLabel(policy.conditions[0].operator)}
+                            <span class="max-w-40 truncate font-mono text-foreground">{policy.conditions[0].value}</span>
+                            {#if policy.conditions.length > 1}<span class="tabular-nums">+{(policy.conditions.length - 1).toLocaleString(intlLocale())}</span>{/if}
+                          {/if}
+                        </span>
+                        {#if policy.methods.length}<span class="font-mono">{policy.methods.join(', ')}</span>{/if}
+                        {#if policy.require_token}
+                          <span class="flex items-center gap-1.5">
+                            {#if policy.tokens.length}
+                              <span class="max-w-40 truncate">{t().tokenShort} {tokenName(policy.tokens[0])}</span>
+                              {#if policy.tokens.length > 1}<span class="tabular-nums">+{(policy.tokens.length - 1).toLocaleString(intlLocale())}</span>{/if}
+                            {:else}
+                              {t().anyToken}
+                            {/if}
+                          </span>
+                        {/if}
                       </span>
-                    {/if}
+                    </div>
                   </Table.Cell>
                   <Table.Cell class="pr-4">
                     <span class="flex items-center gap-1.5">
                       <Badge variant={policy.action === 'block' ? 'destructive' : policy.action === 'bypass' ? 'secondary' : 'outline'} class="select-none">{t().actions[policy.action]}</Badge>
                       {#if policy.action === 'allow' && entries.length}
-                        <span class={['max-w-48 truncate', entries[0].mono && 'font-mono']}>{entries[0].text}</span>
+                        <span class={['max-w-40 truncate', entries[0].mono && 'font-mono']}>{entries[0].text}</span>
                         {#if entries.length > 1}<span class="text-muted-foreground tabular-nums">+{(entries.length - 1).toLocaleString(intlLocale())}</span>{/if}
                       {/if}
                     </span>
@@ -664,27 +661,11 @@
               <div class="grid gap-2">
                 {#each form.hosts as row, index (row.key)}
                   <div class="flex items-center gap-2">
-                    <Input
-                      id={`access-policy-host-${row.key}`}
-                      class="min-w-0 flex-1 font-mono"
-                      list="access-policy-addresses"
-                      bind:value={row.value}
-                      placeholder={t().hostPlaceholder}
-                      aria-label={`${t().address} ${index + 1}`}
-                      autocomplete="off"
-                      autocapitalize="none"
-                      spellcheck={false}
-                      pattern=".*\S.*"
-                      required
-                    />
+                    <AddressSelect id={`access-policy-host-${row.key}`} class="min-w-0 flex-1" bind:value={row.value} {addresses} taken={form.hosts.map((other) => other.value)} ariaLabel={`${t().address} ${index + 1}`} />
                     <IconButton label={t().removeAddress} icon={Dismiss} variant="outline" size="icon" disabled={form.hosts.length <= 1} onclick={() => form.hosts.splice(index, 1)} />
                   </div>
                 {/each}
               </div>
-              <!-- 등록된 공개 주소를 자동 완성 후보로 보여 줍니다. 직접 입력과 와일드카드도 받습니다. -->
-              <datalist id="access-policy-addresses">
-                {#each addresses as address (address)}<option value={address}></option>{/each}
-              </datalist>
               <div class="flex justify-end">
                 <Button variant="outline" size="sm" disabled={form.hosts.length >= maxHosts} onclick={addHost}><Add12 aria-hidden="true" />{t().addAddress}</Button>
               </div>
