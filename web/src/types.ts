@@ -2,10 +2,10 @@ export type PageKey = 'overview' | 'connectors' | 'domains' | 'access' | 'observ
 export type AuthMode = 'loading' | 'setup' | 'login' | 'unavailable' | 'dashboard';
 
 // 로그인 화면이 보여 줄 방식(GET /api/v1/setup/status의 sign_in). 공개 관리자 주소에서 SSO가 켜져 있을 때만 sso가 true입니다.
+// 누구나 읽는 응답이라 버전과 SSO 공급자 이름은 담지 않습니다.
 export interface SignInOptions {
   password: boolean;
   sso: boolean;
-  sso_label: string; // 공급자 이름. 비어 있을 수 있습니다
   recovery?: boolean; // 로컬 관리 포트(SSH)에서만 true: admin.token으로 관리자 비밀번호를 설정할 수 있음
 }
 

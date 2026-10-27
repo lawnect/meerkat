@@ -285,7 +285,7 @@ func TestSSOCanReplacePasswordsOnPublicAddresses(t *testing.T) {
 		t.Fatalf("sign-in methods without SSO: %v", got)
 	}
 	a.enableSSO(t, idp, func(s *control.SSO) { s.PasswordLogin = false })
-	if got := status(); got["sso"] != true || got["password"] != false || got["sso_label"] != "Corp" {
+	if got := status(); got["sso"] != true || got["password"] != false || got["sso_label"] != nil {
 		t.Fatalf("sign-in methods with SSO only: %v", got)
 	}
 	if w := a.publicRequest("POST", "/api/v1/session", "198.51.100.22", chromeOnMac, adminLogin); w.Code != http.StatusForbidden || errorCode(t, w) != "password_login_disabled" {
@@ -374,7 +374,7 @@ func TestSSOFromTheEnvironment(t *testing.T) {
 		SignIn        map[string]any `json:"sign_in"`
 	}
 	w := a.publicRequest("GET", "/api/v1/setup/status", "198.51.100.30", chromeOnMac, nil)
-	if json.Unmarshal(w.Body.Bytes(), &status) != nil || !status.SetupComplete || status.SignIn["sso"] != true || status.SignIn["sso_label"] != "Env" {
+	if json.Unmarshal(w.Body.Bytes(), &status) != nil || !status.SetupComplete || status.SignIn["sso"] != true || status.SignIn["sso_label"] != nil {
 		t.Fatalf("setup status: %s", w.Body.String())
 	}
 	w = a.ssoSignIn(t, idp, map[string]any{"email": "admin@corp.example.com", "email_verified": true})

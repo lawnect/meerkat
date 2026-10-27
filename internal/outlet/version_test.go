@@ -2,18 +2,20 @@ package outlet
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/lawnect/meerkat/internal/contract"
 )
 
-func TestOutletVersionIsExposed(t *testing.T) {
+// Administrators see the version; the sign-in page, which anyone can read,
+// doesn't, so a probe can't match it against release notes.
+func TestOutletVersionIsShownOnlyToAdministrators(t *testing.T) {
 	a := newAlertFixture(t)
 	h := a.store.Handler()
-	// The login page shows the version before anyone has logged in.
 	w := request(h, "GET", "/api/v1/setup/status", "", nil)
 	var status map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil || w.Code != 200 || status["version"] != contract.Version || status["setup_complete"] != false || len(status) != 3 || status["sign_in"] == nil {
+	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil || w.Code != 200 || status["setup_complete"] != false || len(status) != 2 || status["sign_in"] == nil || strings.Contains(w.Body.String(), contract.Version) {
 		t.Fatalf("setup status: %d %s", w.Code, w.Body.String())
 	}
 	for _, call := range []struct {

@@ -535,15 +535,16 @@ func (s *Store) setupStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	// The sign-in page shows the single sign-on button and hides the password
 	// form where it is off. The local port over SSH always offers passwords,
-	// and recovery with the bootstrap token.
+	// and recovery with the bootstrap token. Anyone can read this, so it names
+	// neither the version, which would match release notes, nor the provider.
 	_, public := requestOrigin(r)
-	signIn := map[string]any{"password": true, "sso": false, "sso_label": "", "recovery": !public}
+	signIn := map[string]any{"password": true, "sso": false, "recovery": !public}
 	if public && complete {
 		if sso, err := s.control.SSO(r.Context()); err == nil && sso.Enabled {
-			signIn = map[string]any{"password": sso.PasswordLogin, "sso": true, "sso_label": sso.Label}
+			signIn = map[string]any{"password": sso.PasswordLogin, "sso": true, "recovery": false}
 		}
 	}
-	reply(w, 200, map[string]any{"setup_complete": complete, "version": contract.Version, "sign_in": signIn})
+	reply(w, 200, map[string]any{"setup_complete": complete, "sign_in": signIn})
 }
 
 func (s *Store) setupAdmin(w http.ResponseWriter, r *http.Request) {

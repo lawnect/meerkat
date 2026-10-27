@@ -44,7 +44,7 @@
     codeInvalid: 'The code is wrong or has expired.',
     codeLocked: 'Too many attempts. Sign in again to get a new code.',
     telegramUnreachable: 'Couldn\'t send the code to Telegram. Sign in over the SSH-forwarded local admin port instead.',
-    ssoSignIn: (label: string) => (label ? `Sign in with ${label}` : 'Sign in with SSO'),
+    ssoSignIn: 'Sign in with SSO',
     or: 'or',
     ssoUnavailable: 'SSO sign-in is unavailable.',
     ssoProviderUnreachable: 'Couldn\'t reach the SSO provider.',
@@ -87,7 +87,7 @@
     codeInvalid: '인증 코드가 올바르지 않거나 만료되었습니다.',
     codeLocked: '입력 시도 횟수를 초과했습니다. 다시 로그인하여 새 인증 코드를 받으십시오.',
     telegramUnreachable: 'Telegram으로 인증 코드를 전송할 수 없습니다. SSH로 연결한 로컬 관리 포트에서 로그인하십시오.',
-    ssoSignIn: (label: string) => (label ? `${label} 계정으로 로그인` : 'SSO로 로그인'),
+    ssoSignIn: 'SSO로 로그인',
     or: '또는',
     ssoUnavailable: 'SSO 로그인을 사용할 수 없습니다.',
     ssoProviderUnreachable: 'SSO 공급자에 연결할 수 없습니다.',
@@ -106,7 +106,7 @@
     recoverFailed: (code: string) => `계정 복구 중 오류가 발생했습니다: ${code}`,
   });
 
-  let { mode, signIn = { password: true, sso: false, sso_label: '' }, onLogin, onSetup }: { mode: 'setup' | 'login'; signIn?: SignInOptions; onLogin: () => Promise<void>; onSetup: () => void } = $props();
+  let { mode, signIn = { password: true, sso: false }, onLogin, onSetup }: { mode: 'setup' | 'login'; signIn?: SignInOptions; onLogin: () => Promise<void>; onSetup: () => void } = $props();
   let code = $state('');
   let email = $state('');
   let password = $state('');
@@ -306,7 +306,7 @@
             {#if ssoFirst}
               {@render errorAlert()}
               <Field.Field>
-                <Button variant="outline" href={ssoHref}><ShieldKeyhole aria-hidden="true" />{t().ssoSignIn(signIn.sso_label)}</Button>
+                <Button variant="outline" href={ssoHref}><ShieldKeyhole aria-hidden="true" />{t().ssoSignIn}</Button>
               </Field.Field>
               {#if signIn.password}<Field.Separator class="*:data-[slot=field-separator-content]:bg-card">{t().or}</Field.Separator>{/if}
             {/if}

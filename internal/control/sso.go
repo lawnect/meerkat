@@ -34,7 +34,7 @@ const (
 // token's GroupsClaim, and with both set a person needs both.
 type SSO struct {
 	Enabled bool   `json:"enabled"`
-	Label   string `json:"label"` // provider name on the sign-in button, e.g. "Google"
+	Label   string `json:"label"` // provider name for administrators, e.g. "Google"; the sign-in page never shows it
 	Issuer  string `json:"issuer"`
 	// ClientID identifies the Outlet at the provider; ClientSecret must never
 	// reach an API response, use SecretHint.

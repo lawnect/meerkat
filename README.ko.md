@@ -338,7 +338,7 @@ SSH 터널로 여는 **로컬 관리 포트**(`https://localhost:18443`)에서�
 |---|---|
 | `MEERKAT_DOMAIN`, `MEERKAT_ADMIN_HOSTNAME` | 대표 도메인(예: `example.com`)과 그 바로 아래의 관리 주소(예: `console.example.com`, 지정하지 않으면 무작위 8자). Outlet 시작 시 적용되며 관리 화면에서 변경할 수 없습니다. 도메인 추가와 이 도메인의 DNS 레코드 방식 변경은 관리 화면에서 합니다. 대표 도메인은 개별 호스트 방식으로 시작합니다. 관리 주소(443: 관리 콘솔, 2333: 터널 접속)와 공개 주소마다 DNS 레코드를 서버로 지정하거나, 와일드카드 방식으로 변경하십시오. Caddy는 도메인이 있어야 80/443을 엽니다. 관리 화면 주소와 공급자에 등록할 SSO 리디렉션 URI는 로그에 출력됩니다. 관리 주소를 나중에 변경하면 관리 콘솔과 Connector API 주소가 바뀌므로, 기존 Connector를 다시 등록하고 새 리디렉션 URI를 공급자에 등록하십시오. 공개 주소가 있는 동안에는 도메인 변경이 적용되지 않습니다. |
 | `MEERKAT_OIDC_ISSUER`, `MEERKAT_OIDC_CLIENT_ID`, `MEERKAT_OIDC_CLIENT_SECRET` | OpenID Connect 공급자. 발급자 URL을 넣으면 SSO가 켜집니다. |
-| `MEERKAT_OIDC_LABEL`, `MEERKAT_OIDC_SCOPES`, `MEERKAT_OIDC_GROUPS_CLAIM` | 버튼 이름, 범위(기본 `openid email profile`), 그룹 클레임(기본 `groups`). |
+| `MEERKAT_OIDC_LABEL`, `MEERKAT_OIDC_SCOPES`, `MEERKAT_OIDC_GROUPS_CLAIM` | 관리자용 공급자 이름(로그인 화면에는 "SSO로 로그인"으로 표시), 범위(기본 `openid email profile`), 그룹 클레임(기본 `groups`). |
 | `MEERKAT_ADMIN_EMAILS`, `MEERKAT_ADMIN_GROUPS` | 관리자로 로그인할 사람: 이메일이나 `@도메인`, 그룹. 둘 다 쓰면 둘 다 맞아야 합니다. |
 | `MEERKAT_PASSWORD_LOGIN` | `false`면 공개 주소에서는 SSO로만 로그인합니다(SSH로 연결한 로컬 관리 포트는 예외). |
 | `MEERKAT_TELEGRAM_BOT_TOKEN`, `MEERKAT_TELEGRAM_CHAT_ID`, `MEERKAT_TELEGRAM_ENABLED` | 텔레그램 알림(`false`가 아니면 켜짐). |

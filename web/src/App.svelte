@@ -45,7 +45,7 @@
   });
 
   let authMode = $state<AuthMode>('loading');
-  let signIn = $state<SignInOptions>({ password: true, sso: false, sso_label: '' });
+  let signIn = $state<SignInOptions>({ password: true, sso: false });
   let view = $state<PageKey>(currentPage());
   let connectorDetailId = $state<string | null>(connectorIdFromPath(window.location.pathname));
   let domainDetail = $state<string | null>(domainFromPath(window.location.pathname));
