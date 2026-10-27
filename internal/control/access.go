@@ -172,7 +172,7 @@ func (a AccessPolicies) Normalize() (AccessPolicies, bool) {
 				if c.Operator != BlockMatches && (percentEscape.MatchString(c.Value) || strings.Contains(c.Value, ";")) {
 					return a, false
 				}
-				normalized, ok := normalizeCondition(c, true)
+				normalized, ok := normalizeCondition(c)
 				if !ok {
 					return a, false
 				}

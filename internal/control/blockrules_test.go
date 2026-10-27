@@ -69,6 +69,9 @@ func TestBlockRulesAreNormalizedAndChecked(t *testing.T) {
 	}
 }
 
+// Paths are compared decoded, cleaned, lowercased, and with trailing dots
+// and spaces dropped from every segment, save from one of only those; the
+// form stays the same when taken again.
 func TestNormalizeBlockPath(t *testing.T) {
 	for in, want := range map[string]string{
 		"":                  "/",
@@ -80,71 +83,49 @@ func TestNormalizeBlockPath(t *testing.T) {
 		"/x.php\x00.jpg":    "/x.php",
 		"/setup/":           "/setup",
 		"/x/..;/admin":      "/admin",
-		// As released: dots and spaces inside the path stay.
-		"/Admin./x": "/admin./x",
+		"/Admin./x":         "/admin/x",
+		"/admin. . /":       "/admin",
+		"/.env.":            "/.env",
+		"/a..b/c":           "/a..b/c",
+		"/a/.../b":          "/a/.../b",
+		"/a/. /b":           "/a/. /b",
 	} {
-		if got := NormalizeBlockPath(in); got != want {
-			t.Errorf("NormalizeBlockPath(%q) = %q, want %q", in, got, want)
+		got := NormalizeBlockPath(in)
+		if got != want || NormalizeBlockPath(got) != got {
+			t.Errorf("NormalizeBlockPath(%q) = %q (again %q), want %q", in, got, NormalizeBlockPath(got), want)
 		}
 	}
 }
 
-// The trimmed form drops trailing dots and spaces from every segment and
-// stays the same when taken again.
-func TestTrimmedBlockPath(t *testing.T) {
-	for in, want := range map[string]string{
-		"/Admin./x":   "/admin/x",
-		"/admin. . /": "/admin",
-		"/a/.../b":    "/a/b",
-		"/a/.. /b":    "/a/b",
-		"/x/../. /y":  "/y",
-		"/.env.":      "/.env",
-		"/":           "/",
-		"/a..b/c":     "/a..b/c",
-	} {
-		got := TrimmedBlockPath(in)
-		if got != want || TrimmedBlockPath(got) != got {
-			t.Errorf("TrimmedBlockPath(%q) = %q (again %q), want %q", in, got, TrimmedBlockPath(got), want)
-		}
-	}
-}
-
-// Access conditions take the form request paths are compared in, where the
-// form keeps their meaning: a segment surely ends before a slash, and at the
-// end of an equals or ends_with value. Block rules keep the form they were
-// released with.
+// Conditions take the form request paths are compared in, where the form
+// keeps their meaning: a segment surely ends before a slash, and at the end
+// of an equals or ends_with value.
 func TestConditionsMatchHowRequestsCompare(t *testing.T) {
-	for _, c := range []struct{ in, access, block BlockCondition }{
-		{BlockCondition{BlockEquals, "/Secret."}, BlockCondition{BlockEquals, "/secret"}, BlockCondition{BlockEquals, "/secret."}},
-		{BlockCondition{BlockEquals, "/a/.../b"}, BlockCondition{BlockEquals, "/a/b"}, BlockCondition{BlockEquals, "/a/.../b"}},
-		{BlockCondition{BlockStartsWith, "/Private./"}, BlockCondition{BlockStartsWith, "/private/"}, BlockCondition{BlockStartsWith, "/private./"}},
-		{BlockCondition{BlockStartsWith, `/a\b`}, BlockCondition{BlockStartsWith, "/a/b"}, BlockCondition{BlockStartsWith, `/a\b`}},
-		{BlockCondition{BlockStartsWith, "/adm."}, BlockCondition{BlockStartsWith, "/adm."}, BlockCondition{BlockStartsWith, "/adm."}},
-		{BlockCondition{BlockStartsWith, "/."}, BlockCondition{BlockStartsWith, "/."}, BlockCondition{BlockStartsWith, "/."}},
-		{BlockCondition{BlockEndsWith, ".PHP."}, BlockCondition{BlockEndsWith, ".php"}, BlockCondition{BlockEndsWith, ".php."}},
-		{BlockCondition{BlockEndsWith, "."}, BlockCondition{BlockEndsWith, "."}, BlockCondition{BlockEndsWith, "."}},
-		{BlockCondition{BlockEndsWith, "/.."}, BlockCondition{BlockEndsWith, "/.."}, BlockCondition{BlockEndsWith, "/.."}},
-		{BlockCondition{BlockContains, "../"}, BlockCondition{BlockContains, "../"}, BlockCondition{BlockContains, "../"}},
-		{BlockCondition{BlockContains, "/.env"}, BlockCondition{BlockContains, "/.env"}, BlockCondition{BlockContains, "/.env"}},
-		{BlockCondition{BlockContains, "a. /b"}, BlockCondition{BlockContains, "a/b"}, BlockCondition{BlockContains, "a. /b"}},
-		{BlockCondition{BlockMatches, `^/Admin\.$`}, BlockCondition{BlockMatches, `^/Admin\.$`}, BlockCondition{BlockMatches, `^/Admin\.$`}},
+	for _, c := range []struct{ in, want BlockCondition }{
+		{BlockCondition{BlockEquals, "/Secret."}, BlockCondition{BlockEquals, "/secret"}},
+		{BlockCondition{BlockStartsWith, "/Private./"}, BlockCondition{BlockStartsWith, "/private/"}},
+		{BlockCondition{BlockStartsWith, `/a\b`}, BlockCondition{BlockStartsWith, "/a/b"}},
+		{BlockCondition{BlockStartsWith, "/adm."}, BlockCondition{BlockStartsWith, "/adm."}},
+		{BlockCondition{BlockStartsWith, "/."}, BlockCondition{BlockStartsWith, "/."}},
+		{BlockCondition{BlockEndsWith, ".PHP."}, BlockCondition{BlockEndsWith, ".php"}},
+		{BlockCondition{BlockEndsWith, "."}, BlockCondition{BlockEndsWith, "."}},
+		{BlockCondition{BlockEndsWith, "/.."}, BlockCondition{BlockEndsWith, "/.."}},
+		{BlockCondition{BlockContains, "../"}, BlockCondition{BlockContains, "../"}},
+		{BlockCondition{BlockContains, "/.env"}, BlockCondition{BlockContains, "/.env"}},
+		{BlockCondition{BlockContains, "a. /b"}, BlockCondition{BlockContains, "a/b"}},
+		{BlockCondition{BlockMatches, `^/Admin\.$`}, BlockCondition{BlockMatches, `^/Admin\.$`}},
 	} {
-		for _, form := range []struct {
-			trim bool
-			want BlockCondition
-		}{{true, c.access}, {false, c.block}} {
-			got, ok := normalizeCondition(c.in, form.trim)
-			if !ok || got != form.want {
-				t.Errorf("%+v (trim %v) = %+v %v, want %+v", c.in, form.trim, got, ok, form.want)
-			}
-			if again, _ := normalizeCondition(got, form.trim); again != got {
-				t.Errorf("%+v (trim %v) again = %+v", got, form.trim, again)
-			}
+		got, ok := normalizeCondition(c.in)
+		if !ok || got != c.want {
+			t.Errorf("%+v = %+v %v, want %+v", c.in, got, ok, c.want)
+		}
+		if again, _ := normalizeCondition(got); again != got {
+			t.Errorf("%+v again = %+v", got, again)
 		}
 	}
-	// Saved rules keep loading as they were.
+	// The default rules are already in that form.
 	defaults, ok := DefaultBlockRules().Normalize()
-	if again, _ := defaults.Normalize(); !ok || fmt.Sprint(again) != fmt.Sprint(DefaultBlockRules()) {
-		t.Fatalf("defaults changed: %+v", again)
+	if !ok || fmt.Sprint(defaults) != fmt.Sprint(DefaultBlockRules()) {
+		t.Fatalf("defaults changed: %+v", defaults)
 	}
 }

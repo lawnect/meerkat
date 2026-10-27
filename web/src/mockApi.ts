@@ -319,28 +319,28 @@ function validRegex(value: string): boolean {
     return false;
   }
 }
-// 서버의 NormalizeBlockPath: 소문자로 바꾸고, \\를 /로 읽고, NUL 뒤와 조각마다 ; 뒤를 버린 다음 ., .., 빈 조각을 정리합니다.
+// 조각 끝의 점과 공백을 지웁니다. 점과 공백뿐인 조각은 그대로 둡니다.
+const trimSegment = (segment: string): string => segment.replace(/[. ]+$/, '') || segment;
+
+// 서버의 NormalizeBlockPath: 소문자로 바꾸고, \\를 /로 읽고, NUL 뒤와 조각마다 ; 뒤를 버린 다음 ., .., 빈 조각을 정리하고 조각 끝의 점과 공백을 지웁니다.
 function normalizeBlockPath(value: string): string {
-  const segments = value.toLowerCase().replaceAll('\\', '/').split('\0')[0].split('/').map((segment) => segment.split(';')[0]);
   const out: string[] = [];
-  for (const segment of segments) {
+  for (const raw of value.toLowerCase().replaceAll('\\', '/').split('\0')[0].split('/')) {
+    const segment = trimSegment(raw.split(';')[0]);
     if (segment === '..') out.pop();
     else if (segment && segment !== '.') out.push(segment);
   }
   return `/${out.join('/')}`;
 }
 
-// 서버의 TrimmedBlockPath: 조각마다 끝의 점과 공백도 지우고 다시 정리합니다.
-const trimmedBlockPath = (value: string): string => normalizeBlockPath(normalizeBlockPath(value).split('/').map((segment) => segment.replace(/[. ]+$/, '')).join('/'));
-
-// 경로 일부를 trimmedBlockPath의 모양으로: 조각이 끝나는 곳이 확실한 / 앞과, whole이면 값의 끝에서 점과 공백을 지웁니다. 점과 공백뿐인 조각은 그대로 둡니다.
-function trimmedFragment(value: string, whole: boolean): string {
+// 경로 일부를 normalizeBlockPath의 모양으로: 조각이 끝나는 곳이 확실한 / 앞과, whole이면 값의 끝에서 조각을 다듬습니다.
+function conditionFragment(value: string, whole: boolean): string {
   const parts = value.toLowerCase().replaceAll('\\', '/').split('/');
-  return parts.map((part, index) => (index < parts.length - 1 || whole ? part.replace(/[. ]+$/, '') || part : part)).join('/');
+  return parts.map((part, index) => (index < parts.length - 1 || whole ? trimSegment(part) : part)).join('/');
 }
 
-// 서버처럼 값을 정리해 돌려주고, 올바르지 않으면 null입니다. 차단 규칙은 배포된 모양을 유지하고, 접근 정책(trim)은 조각 끝의 점과 공백도 지웁니다.
-function normalizeCondition(raw: unknown, trim = false): BlockCondition | null {
+// 서버처럼 값을 정리해 돌려주고, 올바르지 않으면 null입니다.
+function normalizeCondition(raw: unknown): BlockCondition | null {
   const entry = (raw ?? {}) as Partial<BlockCondition>;
   if (typeof entry.operator !== 'string' || !BLOCK_OPERATORS.includes(entry.operator) || typeof entry.value !== 'string') return null;
   const operator = entry.operator as BlockOperator;
@@ -348,8 +348,8 @@ function normalizeCondition(raw: unknown, trim = false): BlockCondition | null {
   if (!value || new TextEncoder().encode(value).length > 512 || /[\u0000-\u001f\u007f]/.test(value)) return null;
   if ((operator === 'equals' || operator === 'starts_with') && !value.startsWith('/')) return null;
   if (operator === 'matches' && !validRegex(value)) return null;
-  if (operator === 'equals') value = trim ? trimmedBlockPath(value) : normalizeBlockPath(value);
-  else if (operator !== 'matches') value = trim ? trimmedFragment(value, operator === 'ends_with') : value.toLowerCase();
+  if (operator === 'equals') value = normalizeBlockPath(value);
+  else if (operator !== 'matches') value = conditionFragment(value, operator === 'ends_with');
   return { operator, value };
 }
 
@@ -780,7 +780,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
         conditions = policy.conditions.map((raw) => {
           const entry = (raw ?? {}) as Partial<BlockCondition>;
           if (entry.operator !== 'matches' && typeof entry.value === 'string' && /%[0-9a-f]{2}|;/i.test(entry.value)) fail('invalid_access_policies');
-          return normalizeCondition(raw, true) ?? fail('invalid_access_policies');
+          return normalizeCondition(raw) ?? fail('invalid_access_policies');
         }).filter((entry) => {
           const key = `${entry.operator}\0${entry.value}`;
           if (seen.has(key)) return false;

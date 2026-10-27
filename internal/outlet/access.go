@@ -82,13 +82,13 @@ func (c *accessConfig) covering(host string, u *url.URL) []*accessRule {
 	if c == nil || len(c.rules) == 0 {
 		return nil
 	}
-	paths := [][2]rulePath{rulePaths(u.Path)}
+	paths := []rulePath{newRulePath(u.Path)}
 	every := ambiguousPath(u.EscapedPath(), true)
 	if !every && leftEscape.MatchString(u.Path) {
 		if twice, err := url.PathUnescape(u.Path); err != nil || ambiguousPath(u.Path, false) {
 			every = true
 		} else {
-			paths = append(paths, rulePaths(twice))
+			paths = append(paths, newRulePath(twice))
 		}
 	}
 	var out []*accessRule
@@ -231,9 +231,7 @@ func compileAccess(policies control.AccessPolicies) *accessConfig {
 		if !policy.Enabled || len(policy.Hosts) == 0 {
 			continue
 		}
-		rule := accessRule{match: compileBlockRule(policy.Hosts, policy.Conditions), all: policy.AllPaths, policy: policy}
-		rule.match.slashed = true
-		config.rules = append(config.rules, rule)
+		config.rules = append(config.rules, accessRule{match: compileBlockRule(policy.Hosts, policy.Conditions), all: policy.AllPaths, policy: policy})
 	}
 	return config
 }

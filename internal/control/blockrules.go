@@ -86,45 +86,41 @@ func DefaultBlockRules() BlockRules {
 
 // NormalizeBlockPath is the form of a path that rules compare: decoded by
 // the caller, backslashes read as slashes and ";parameters" and anything
-// after a NUL dropped from each segment, as some servers do, then cleaned
-// and lowercased.
+// after a NUL dropped from each segment, as some servers do, cleaned and
+// lowercased, then trailing dots and spaces dropped from every segment, as
+// some servers also do ("/admin./x" is "/admin/x" to them), save from a
+// segment of only those.
 func NormalizeBlockPath(p string) string {
 	p = strings.ToLower(strings.ReplaceAll(p, `\`, "/"))
 	if i := strings.IndexByte(p, 0); i >= 0 {
 		p = p[:i]
 	}
-	if strings.IndexByte(p, ';') >= 0 {
-		segments := strings.Split(p, "/")
-		for i, segment := range segments {
-			segments[i], _, _ = strings.Cut(segment, ";")
-		}
-		p = strings.Join(segments, "/")
-	}
-	return path.Clean("/" + p)
-}
-
-// TrimmedBlockPath is NormalizeBlockPath with trailing dots and spaces also
-// dropped from every segment, as some servers do ("/admin./x" is "/admin/x"
-// to them), and cleaned again. Rules compare a request in both forms.
-func TrimmedBlockPath(p string) string {
-	segments := strings.Split(NormalizeBlockPath(p), "/")
+	segments := strings.Split(path.Clean("/"+p), "/")
 	for i, segment := range segments {
-		segments[i] = strings.TrimRight(segment, ". ")
+		segment, _, _ = strings.Cut(segment, ";")
+		segments[i] = trimSegment(segment)
 	}
 	return path.Clean("/" + strings.Join(segments, "/"))
 }
 
-// trimmedFragment puts part of a path in the form TrimmedBlockPath gives
-// whole ones: lowercased, backslashes read as slashes, and trailing dots and
-// spaces dropped where a segment surely ends, before a slash, and at the end
-// of the value when whole says it ends a segment there too. A part of only
-// dots and spaces stays as it is: emptied, "../" would turn into "/", which
-// every path contains.
-func trimmedFragment(value string, whole bool) string {
+// trimSegment drops trailing dots and spaces from a segment, unless that
+// would leave nothing: "..." and ". " stay as they are.
+func trimSegment(segment string) string {
+	if trimmed := strings.TrimRight(segment, ". "); trimmed != "" {
+		return trimmed
+	}
+	return segment
+}
+
+// conditionFragment puts part of a path in the form NormalizeBlockPath
+// gives whole ones: lowercased, backslashes read as slashes, and segments
+// trimmed where they surely end, before a slash, and at the end of the
+// value when whole says it ends a segment there too.
+func conditionFragment(value string, whole bool) string {
 	parts := strings.Split(strings.ToLower(strings.ReplaceAll(value, `\`, "/")), "/")
 	for i, part := range parts {
-		if trimmed := strings.TrimRight(part, ". "); trimmed != "" && (i < len(parts)-1 || whole) {
-			parts[i] = trimmed
+		if i < len(parts)-1 || whole {
+			parts[i] = trimSegment(part)
 		}
 	}
 	return strings.Join(parts, "/")
@@ -137,9 +133,7 @@ func CompileBlockPattern(pattern string) (*regexp.Regexp, error) {
 }
 
 // normalizeCondition puts a condition in the form requests are compared in.
-// Block rules keep the form they were saved in; access policies, with trim,
-// take the form of TrimmedBlockPath.
-func normalizeCondition(c BlockCondition, trim bool) (BlockCondition, bool) {
+func normalizeCondition(c BlockCondition) (BlockCondition, bool) {
 	value := strings.TrimSpace(c.Value)
 	if value == "" || len(value) > maxBlockValueBytes || strings.IndexFunc(value, unicode.IsControl) >= 0 {
 		return c, false
@@ -149,20 +143,14 @@ func normalizeCondition(c BlockCondition, trim bool) (BlockCondition, bool) {
 		if !strings.HasPrefix(value, "/") {
 			return c, false
 		}
-		if value = NormalizeBlockPath(value); trim {
-			value = TrimmedBlockPath(value)
-		}
+		value = NormalizeBlockPath(value)
 	case BlockStartsWith:
 		if !strings.HasPrefix(value, "/") {
 			return c, false
 		}
-		if value = strings.ToLower(value); trim {
-			value = trimmedFragment(value, false)
-		}
+		value = conditionFragment(value, false)
 	case BlockEndsWith, BlockContains:
-		if value = strings.ToLower(value); trim {
-			value = trimmedFragment(value, c.Operator == BlockEndsWith)
-		}
+		value = conditionFragment(value, c.Operator == BlockEndsWith)
 	case BlockMatches:
 		if _, err := CompileBlockPattern(value); err != nil {
 			return c, false
@@ -241,7 +229,7 @@ func (b BlockRules) Normalize() (BlockRules, bool) {
 		}
 		conditions := make([]BlockCondition, 0, len(rule.Conditions))
 		for _, c := range rule.Conditions {
-			c, ok := normalizeCondition(c, false)
+			c, ok := normalizeCondition(c)
 			if !ok {
 				return b, false
 			}
