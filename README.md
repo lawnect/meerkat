@@ -337,7 +337,7 @@ Lists are separated by commas. With single sign-on from the environment, the pub
 
 ### Access protection
 
-Like Cloudflare Access, public addresses or paths under them can require a sign-in, and the people let in don't have to be Meerkat administrators. On the **Access protection** page in the sidebar, set up **Access SSO**. It is an OpenID Connect client of its own, separate from the administrators' SSO. Register the redirect URI shown there (`https://<admin address>/api/v1/access/callback`) with the provider; that one URI serves every protected address.
+Like Cloudflare Access, public addresses or paths under them can require a sign-in, and the people let in don't have to be Meerkat administrators. On the **Access SSO** tab of the **Access protection** page in the sidebar, set up the provider. It is an OpenID Connect client of its own, separate from the administrators' SSO. Register the redirect URI shown there (`https://<admin address>/api/v1/access/callback`) with the provider; that one URI serves every protected address.
 
 Then add **access policies**. Each one names:
 - the addresses it covers, including `*.domain`;
