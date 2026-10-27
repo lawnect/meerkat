@@ -21,7 +21,7 @@
   import CopyText from './CopyText.svelte';
   import InfoTooltip from './InfoTooltip.svelte';
 
-  // 설정 > 접근 보호의 접근 토큰 카드. 로그인할 수 없는 클라이언트(스크립트, CI, 다른 서비스)가 토큰을 허용한 접근 정책을 통과하는 데 씁니다.
+  // 접근 보호 화면의 접근 토큰 카드. 로그인할 수 없는 클라이언트(스크립트, CI, 다른 서비스)가 토큰을 허용한 접근 정책을 통과하는 데 씁니다.
   // 토큰 값은 만든 직후 대화상자에만 한 번 보여 주고, 대화상자가 닫히면 지웁니다. 서버에도 값은 남지 않아 다시 볼 수 없습니다.
   // tokens는 접근 토큰 목록(불러오기 전에는 null)으로, 만들거나 지울 때마다 갱신해 접근 정책 카드가 허용할 토큰을 고르게 합니다.
   let { tokens = $bindable(null) }: { tokens?: AccessToken[] | null } = $props();

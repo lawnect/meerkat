@@ -1,4 +1,4 @@
-export type PageKey = 'overview' | 'connectors' | 'domains' | 'diagnostics' | 'settings';
+export type PageKey = 'overview' | 'connectors' | 'domains' | 'access' | 'diagnostics' | 'settings';
 export type AuthMode = 'loading' | 'setup' | 'login' | 'unavailable' | 'dashboard';
 
 // 로그인 화면이 보여 줄 방식(GET /api/v1/setup/status의 sign_in). 공개 관리자 주소에서 SSO가 켜져 있을 때만 sso가 true입니다.

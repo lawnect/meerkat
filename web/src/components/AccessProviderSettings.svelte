@@ -19,7 +19,7 @@
   import CopyText from './CopyText.svelte';
   import InfoTooltip from './InfoTooltip.svelte';
 
-  // 설정 > 보안의 접근 보호 SSO 카드. 공개 주소를 보호하는 OpenID Connect 공급자로, 관리자 SSO와 별개입니다.
+  // 접근 보호 화면의 접근 보호 SSO 카드. 공개 주소를 보호하는 OpenID Connect 공급자로, 관리자 SSO와 별개입니다.
   // 고친 값은 되돌리기·저장으로만 반영하고, 저장한 공급자가 켜져 있는지는 `enabled`로 알려 접근 정책 카드가 안내를 띄우게 합니다.
   let { enabled = $bindable(null) }: { enabled?: boolean | null } = $props();
 

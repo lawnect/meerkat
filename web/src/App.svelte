@@ -15,6 +15,7 @@
   import DomainsPage from './pages/DomainsPage.svelte';
   import ConnectorsPage from './pages/ConnectorsPage.svelte';
   import DiagnosticsPage from './pages/DiagnosticsPage.svelte';
+  import AccessPage from './pages/AccessPage.svelte';
   import SettingsPage from './pages/SettingsPage.svelte';
   import { ArrowExit, Warning } from './icons';
   import * as Alert from '$lib/components/ui/alert/index.js';
@@ -261,6 +262,8 @@
             <DomainsPage outlet={data.outlet} records={data.records} onSaved={refresh} detail={domainDetail} onOpenDetail={openDomainDetail} onBack={closeDomainDetail} />
           {:else if view === 'connectors'}
             <ConnectorsPage {data} onChanged={refresh} onCheckConnection={refreshConnectorStatus} detailId={connectorDetailId} onOpenDetail={openConnectorDetail} onBack={closeConnectorDetail} />
+          {:else if view === 'access'}
+            <AccessPage />
           {:else if view === 'diagnostics'}
             <DiagnosticsPage />
           {:else if view === 'settings'}
