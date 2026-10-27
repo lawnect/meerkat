@@ -364,7 +364,10 @@ func (s *Store) PublicHandler() http.Handler {
 					return nil
 				},
 				ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
-					if !responded.Load() && r.Context().Err() == nil {
+					// An upload that went wrong is the client's doing: the service
+					// isn't passed over for it.
+					upload := body != nil && (body.tooLarge.Load() || body.timedOut.Load() || body.failed.Load())
+					if !responded.Load() && r.Context().Err() == nil && !upload {
 						s.failed(target.serviceID)
 					}
 					// After an answer the response is under way, or an

@@ -134,6 +134,36 @@ func NormalizeBlockPath(p string) string {
 	return path.Clean("/" + strings.Join(segments, "/"))
 }
 
+// NormalizeBlockPaths returns the forms a request path takes for rules.
+// Servers differ on a segment with parameters: most keep ".;x" a name, so
+// "/a/.;x/../b" is "/a/b", which NormalizeBlockPath gives; Tomcat and its
+// kin drop the parameters first and read "/b". When the two differ, both
+// are returned, and a rule holds for the path when it holds for either.
+func NormalizeBlockPaths(p string) []string {
+	kept := NormalizeBlockPath(p)
+	if !strings.Contains(p, ";") {
+		return []string{kept}
+	}
+	p = strings.ToLower(strings.ReplaceAll(p, `\`, "/"))
+	if i := strings.IndexByte(p, 0); i >= 0 {
+		p = p[:i]
+	}
+	segments := strings.Split(p, "/")
+	for i, segment := range segments {
+		segment, _, _ = strings.Cut(segment, ";")
+		segments[i] = segment
+	}
+	segments = strings.Split(path.Clean("/"+strings.Join(segments, "/")), "/")
+	for i, segment := range segments {
+		segments[i] = trimSegment(segment)
+	}
+	dropped := path.Clean("/" + strings.Join(segments, "/"))
+	if dropped == kept {
+		return []string{kept}
+	}
+	return []string{kept, dropped}
+}
+
 // trimSegment drops trailing dots and spaces from a segment, unless that
 // would leave nothing: "..." and ". " stay as they are.
 func trimSegment(segment string) string {

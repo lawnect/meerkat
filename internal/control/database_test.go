@@ -128,3 +128,38 @@ func TestDomainModeMigrationKeepsLegacyAdminLabel(t *testing.T) {
 		t.Fatalf("admin label = %q, %v", label, err)
 	}
 }
+
+// The extended result codes the create functions tell apart are the ones
+// SQLite reports for each kind of violation.
+func TestConstraintFailuresAreTold(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	insert := func(id, name string) error {
+		_, err := db.SQL().ExecContext(ctx, "INSERT INTO connectors(id, name, status, created_at) VALUES (?, ?, 'draft', '2026-10-21T00:00:00Z')", id, name)
+		return err
+	}
+	if err := insert("c1", "edge-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := insert("c2", "edge-a"); !constraintFailed(err, sqliteUnique) || !isDuplicate(err) {
+		t.Fatalf("duplicate name: %v", err)
+	}
+	if err := insert("c1", "edge-b"); !constraintFailed(err, sqlitePrimaryKey) || !isDuplicate(err) {
+		t.Fatalf("duplicate id: %v", err)
+	}
+	_, err = db.SQL().ExecContext(ctx, `INSERT INTO services(id, connector_id, name, protocol, target_host, target_port, created_at, updated_at)
+		VALUES ('s1', 'missing', 'web', 'http', 'app', 80, '2026-10-21T00:00:00Z', '2026-10-21T00:00:00Z')`)
+	if !constraintFailed(err, sqliteForeignKey) || isDuplicate(err) {
+		t.Fatalf("missing connector: %v", err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = db.SQL().ExecContext(canceled, "INSERT INTO connectors(id, name, status, created_at) VALUES ('c3', 'edge-c', 'draft', '2026-10-21T00:00:00Z')")
+	if err == nil || isDuplicate(err) || constraintFailed(err, sqliteForeignKey) {
+		t.Fatalf("canceled context: %v", err)
+	}
+}

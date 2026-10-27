@@ -36,6 +36,12 @@ func TestBlockRulesMatchNormalizedPaths(t *testing.T) {
 		{"app.example.com", "/.htaccess", "hidden-files"},
 		{"app.example.com", "/.hidden/x", "hidden-files"},
 		{"app.example.com", "/.well-known/acme-challenge/x", ""},
+		// Servers that drop ";" parameters before resolving dot segments read
+		// these as /.env; others as the path kept. Either reading counts.
+		{"app.example.com", "/.well-known/.;/../.env", "honeypot"},
+		{"app.example.com", "/x/.;x/../.env", "honeypot"},
+		{"app.example.com", "/.env/.;/..", "honeypot"},
+		{"app.example.com", "/.well-known/a;b/x", ""},
 		{"app.example.com", "/.well-known", ""},
 		{"app.example.com", "/index.php", ""},
 		{"app.example.com", "/app.js", ""},

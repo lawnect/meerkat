@@ -62,3 +62,46 @@ func TestCreateServiceRejectsUnsafeTargetAndUnknownConnector(t *testing.T) {
 		t.Fatalf("unsafe target error = %v", err)
 	}
 }
+
+// A service is "exists" only when its name is taken. A connector deleted
+// after it was found is a missing connector, and any other failure of the
+// insert is reported as what it is.
+func TestCreateServiceTellsConstraintFailuresApart(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	connector, err := db.CreateConnector(ctx, "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := contract.Target{Host: "app", Port: 3000}
+	// The connector goes between the lookup and the insert: here, as the
+	// insert starts.
+	if _, err := db.SQL().ExecContext(ctx, `CREATE TRIGGER vanishing BEFORE INSERT ON services BEGIN DELETE FROM connectors WHERE id = NEW.connector_id; END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateService(ctx, connector.ID, "web", "http", target); !errors.Is(err, ErrConnectorNotFound) {
+		t.Fatalf("vanished connector error = %v", err)
+	}
+	if _, err := db.SQL().ExecContext(ctx, `DROP TRIGGER vanishing`); err != nil {
+		t.Fatal(err)
+	}
+	connector, err = db.CreateConnector(ctx, "edge-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SQL().ExecContext(ctx, `CREATE TRIGGER broken BEFORE INSERT ON services BEGIN SELECT RAISE(ABORT, 'disk is full'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateService(ctx, connector.ID, "web", "http", target); err == nil || errors.Is(err, ErrServiceExists) || errors.Is(err, ErrConnectorNotFound) {
+		t.Fatalf("failing insert error = %v", err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := db.CreateService(canceled, connector.ID, "web", "http", target); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled context error = %v", err)
+	}
+}

@@ -52,8 +52,14 @@ func (d *Database) CreateService(ctx context.Context, connectorID, name, protoco
 		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		WHERE NOT EXISTS (SELECT 1 FROM services WHERE connector_id = ? AND target_host = ? COLLATE NOCASE AND target_port = ?)`,
 		s.ID, s.ConnectorID, s.Name, s.Protocol, s.Target.Host, s.Target.Port, 1, s.ObservedStatus, s.CreatedAt.Format(time.RFC3339Nano), s.UpdatedAt.Format(time.RFC3339Nano), connectorID, target.Host, target.Port)
-	if err != nil {
+	switch {
+	case isDuplicate(err):
 		return Service{}, ErrServiceExists
+	case constraintFailed(err, sqliteForeignKey):
+		// The connector was deleted after it was found above.
+		return Service{}, ErrConnectorNotFound
+	case err != nil:
+		return Service{}, err
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {

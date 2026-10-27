@@ -75,3 +75,32 @@ func TestConnectorDisplayName(t *testing.T) {
 		t.Fatalf("connectors = %#v, %v", connectors, err)
 	}
 }
+
+// Only a taken name is "exists": a canceled context or any other failure of
+// the insert is reported as what it is.
+func TestCreateConnectorReportsOnlyDuplicatesAsExisting(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := db.CreateConnector(canceled, "edge-a"); !errors.Is(err, context.Canceled) || errors.Is(err, ErrConnectorExists) {
+		t.Fatalf("canceled context error = %v", err)
+	}
+	if _, err := db.CreateConnector(ctx, "edge-a"); err != nil {
+		t.Fatalf("after the failed create: %v", err)
+	}
+	if _, err := db.CreateConnector(ctx, "edge-a"); !errors.Is(err, ErrConnectorExists) {
+		t.Fatalf("duplicate error = %v", err)
+	}
+	// A failure of the database itself.
+	if _, err := db.SQL().ExecContext(ctx, `CREATE TRIGGER broken BEFORE INSERT ON connectors BEGIN SELECT RAISE(ABORT, 'disk is full'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateConnector(ctx, "edge-b"); err == nil || errors.Is(err, ErrConnectorExists) {
+		t.Fatalf("failing insert error = %v", err)
+	}
+}

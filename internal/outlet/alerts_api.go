@@ -127,8 +127,15 @@ func (s *Store) testTelegram(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 502, telegramCode(err))
 		return
 	}
-	if _, err := s.control.MarkTelegramVerified(r.Context(), telegram.BotToken, telegram.ChatID, now); err != nil {
+	verified, err := s.control.MarkTelegramVerified(r.Context(), telegram.BotToken, telegram.ChatID, now)
+	if err != nil {
 		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	// The settings changed while the message was on its way: what was
+	// tested isn't what is saved.
+	if !verified {
+		fail(w, r, 409, "telegram_changed")
 		return
 	}
 	s.audited(r, "telegram.test", "telegram", "settings", map[string]any{"ok": true})

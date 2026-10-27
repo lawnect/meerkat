@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lawnect/meerkat/internal/contract"
 	"github.com/lawnect/meerkat/internal/validation"
 )
 
@@ -154,6 +155,15 @@ func (d *Database) CreateHTTPRoute(ctx context.Context, serviceID, hostname stri
 		return Route{}, err
 	}
 	defer tx.Rollback()
+	// The domains above come from the cache, which a removed domain or a new
+	// management host may have outrun. RemoveDomain and the domain change
+	// count routes in their transactions, so checking again in this one means
+	// a route is never left under a domain that is gone.
+	if allowed, err := hostnameAllowed(ctx, tx, hostname); err != nil {
+		return Route{}, err
+	} else if !allowed {
+		return Route{}, ErrInvalidRoute
+	}
 	var others, mine, next int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(service_id = ?), 0), COALESCE(MAX(priority) + 1, 0) FROM routes WHERE kind = 'http' AND hostname = ?`, serviceID, hostname).Scan(&others, &mine, &next); err != nil {
 		return Route{}, err
@@ -180,6 +190,32 @@ func (d *Database) CreateHTTPRoute(ctx context.Context, serviceID, hostname stri
 	}
 	d.routingChanged()
 	return route, nil
+}
+
+// hostnameAllowed reports whether, as the transaction sees the database,
+// hostname lies under the primary domain or an additional one and is not the
+// management host. It compares suffixes rather than using LIKE, so no
+// character in a domain acts as a wildcard.
+func hostnameAllowed(ctx context.Context, tx *sql.Tx, hostname string) (bool, error) {
+	var primary string
+	if err := tx.QueryRowContext(ctx, "SELECT value FROM outlet_settings WHERE key = 'domain'").Scan(&primary); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	label := contract.LegacyAdminLabel
+	if err := tx.QueryRowContext(ctx, "SELECT value FROM outlet_settings WHERE key = 'admin_label'").Scan(&label); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	if hostname == contract.AdminHostname(label, primary) {
+		return false, nil
+	}
+	var under bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM (SELECT value AS domain FROM outlet_settings WHERE key = 'domain' UNION ALL SELECT domain FROM outlet_domains)
+		WHERE substr(?, -length(domain) - 1) = '.' || domain)`, hostname).Scan(&under)
+	return under, err
 }
 
 // AddressState is an address's policy and failover order as a caller read

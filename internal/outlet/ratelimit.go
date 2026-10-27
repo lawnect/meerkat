@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"hash/maphash"
 	"io"
 	"log/slog"
 	"net/http"
@@ -23,7 +24,7 @@ const (
 	// Many shards keep one client's bucket from blocking others under load.
 	limiterShards   = 256
 	limiterCapacity = 100_000
-	// An untouched bucket is full again long before this, so dropping it changes nothing.
+	// An untouched bucket is dropped after this, once it is full again.
 	limiterIdle = 10 * time.Minute
 
 	rejectionWindow = 10 * time.Minute
@@ -38,10 +39,11 @@ const (
 // bucket is a token bucket. The rate and burst come from the current
 // settings on every use, so an edit applies at once.
 type bucket struct {
-	key      string
-	tokens   float64
-	refilled time.Time
-	seen     time.Time
+	key        string
+	tokens     float64
+	refilled   time.Time
+	seen       time.Time
+	rps, burst float64 // as last taken, to tell when it is full again
 }
 
 func (b *bucket) refill(now time.Time, rps, burst float64) {
@@ -65,20 +67,38 @@ type bucketStore struct {
 	shards   []bucketShard
 	perShard int
 	idle     time.Duration
+	// seed picks a key's shard, unknown outside the process: a client can't
+	// choose keys that land in another's shard to push its bucket out.
+	seed maphash.Seed
 }
 
 func newBucketStore(shards, capacity int, idle time.Duration) *bucketStore {
-	store := &bucketStore{shards: make([]bucketShard, shards), perShard: max(capacity/shards, 1), idle: idle}
+	store := &bucketStore{shards: make([]bucketShard, shards), perShard: max(capacity/shards, 1), idle: idle, seed: maphash.MakeSeed()}
 	for i := range store.shards {
 		store.shards[i].items, store.shards[i].order = map[string]*list.Element{}, list.New()
 	}
 	return store
 }
 
+// expire drops the buckets idle for idle that are full again, idlest first.
+// Dropping one hands its client a full bucket, so one still refilling, as a
+// slow rate with a large burst leaves one, stays; a call passes over a
+// bounded number of those.
 func (s *bucketShard) expire(now time.Time, idle time.Duration) {
-	for back := s.order.Back(); back != nil && now.Sub(back.Value.(*bucket).seen) >= idle; back = s.order.Back() {
-		delete(s.items, back.Value.(*bucket).key)
-		s.order.Remove(back)
+	kept := 0
+	for e := s.order.Back(); e != nil && kept < 64; {
+		b := e.Value.(*bucket)
+		if now.Sub(b.seen) < idle {
+			return
+		}
+		prev := e.Prev()
+		if b.tokens+now.Sub(b.refilled).Seconds()*b.rps >= b.burst {
+			delete(s.items, b.key)
+			s.order.Remove(e)
+		} else {
+			kept++
+		}
+		e = prev
 	}
 }
 
@@ -106,14 +126,6 @@ type limit struct {
 	rps, burst float64
 }
 
-func shardOf(key string, shards int) int {
-	hash := uint32(2166136261)
-	for i := 0; i < len(key); i++ {
-		hash = (hash ^ uint32(key[i])) * 16777619
-	}
-	return int(hash % uint32(shards))
-}
-
 // take removes one token from every bucket, or from none: a request that one
 // bucket rejects must not drain the others. It returns the index of the first
 // empty bucket, or -1. Shards lock in ascending order, so callers never deadlock.
@@ -122,7 +134,7 @@ func (s *bucketStore) take(now time.Time, limits []limit) int {
 	var locked [4]int
 	held := locked[:0]
 	for i, l := range limits {
-		owner[i] = shardOf(l.key, len(s.shards))
+		owner[i] = int(maphash.String(s.seed, l.key) % uint64(len(s.shards)))
 		at := sort.SearchInts(held, owner[i])
 		if at < len(held) && held[at] == owner[i] {
 			continue
@@ -144,6 +156,7 @@ func (s *bucketStore) take(now time.Time, limits []limit) int {
 	for i, l := range limits {
 		fetched[i] = s.shards[owner[i]].get(l.key, now, l.burst, s)
 		fetched[i].refill(now, l.rps, l.burst)
+		fetched[i].rps, fetched[i].burst = l.rps, l.burst
 		if denied < 0 && fetched[i].tokens < 1 {
 			denied = i
 		}
@@ -505,7 +518,7 @@ func (s *Store) putRateLimit(w http.ResponseWriter, r *http.Request) {
 	s.saving.Lock()
 	saved, err := s.control.SetRateLimit(r.Context(), req, s.now())
 	if err == nil {
-		err = s.reloadRateLimit(r.Context())
+		err = s.reloadRateLimit(context.WithoutCancel(r.Context()))
 	}
 	s.saving.Unlock()
 	if errors.Is(err, control.ErrInvalidRateLimit) {

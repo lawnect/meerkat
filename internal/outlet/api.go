@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"maps"
 	"net"
 	"net/http"
@@ -253,6 +254,10 @@ func (s *Store) trace(w http.ResponseWriter, r *http.Request) {
 	reply(w, http.StatusOK, snapshot)
 }
 
+// heartbeatProbes is how many of a Connector's services a heartbeat probes
+// at once.
+const heartbeatProbes = 16
+
 func (s *Store) enroll(w http.ResponseWriter, r *http.Request) {
 	var req contract.EnrollmentRequest
 	if !decode(w, r, &req, "connector_name", "connector_version", "public_key") {
@@ -460,25 +465,39 @@ func (s *Store) heartbeat(w http.ResponseWriter, r *http.Request) {
 	// An application response through that port confirms the HTTP forwarding
 	// path, and so do proxied answers since the previous heartbeat: under
 	// heavy load the probe alone can time out and take every route down.
-	statuses := map[string]string{}
+	// The services are probed at once, each for up to two seconds: one
+	// after another, a few that hang would outlast the Connector's request
+	// and leave the rest unprobed, their routes down.
+	services := record.Configuration.ActiveServices()
+	statuses := make(map[string]string, len(services))
 	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true}
 	client := &http.Client{Transport: transport, Timeout: 2 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
-	for _, service := range record.Configuration.ActiveServices() {
-		probe := "disconnected"
-		if address := record.probeFor(service.ServiceID); address != "" {
-			probeReq, _ := http.NewRequestWithContext(r.Context(), "GET", "http://"+address+"/", nil)
-			if res, err := client.Do(probeReq); err == nil {
-				if res.StatusCode < 500 {
-					probe = "connected"
+	var probing sync.Mutex
+	var probes sync.WaitGroup
+	slots := make(chan struct{}, heartbeatProbes)
+	for _, service := range services {
+		probes.Go(func() {
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			probe := "disconnected"
+			if address := record.probeFor(service.ServiceID); address != "" {
+				probeReq, _ := http.NewRequestWithContext(r.Context(), "GET", "http://"+address+"/", nil)
+				if res, err := client.Do(probeReq); err == nil {
+					if res.StatusCode < 500 {
+						probe = "connected"
+					}
+					res.Body.Close()
 				}
-				res.Body.Close()
 			}
-		}
-		if probe != "connected" && s.servedSince(service.ServiceID, since) {
-			probe = "connected"
-		}
-		statuses[service.ServiceID] = probe
+			if probe != "connected" && s.servedSince(service.ServiceID, since) {
+				probe = "connected"
+			}
+			probing.Lock()
+			statuses[service.ServiceID] = probe
+			probing.Unlock()
+		})
 	}
+	probes.Wait()
 	transport.CloseIdleConnections()
 	s.mu.Lock()
 	// Re-authenticate after the probe in case a credential was rotated meanwhile.
@@ -929,7 +948,7 @@ func (s *Store) updateOutlet(w http.ResponseWriter, r *http.Request) {
 	s.saving.Lock()
 	err = s.control.RenameRateLimitHost(r.Context(), previous.AdminHostname, outlet.AdminHostname, s.now())
 	if err == nil {
-		err = s.reloadRateLimit(r.Context())
+		err = s.reloadRateLimit(context.WithoutCancel(r.Context()))
 	}
 	s.saving.Unlock()
 	if err != nil {
@@ -1474,6 +1493,13 @@ func (s *Store) issueManagedToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
+	// The services again, under the lock: one created meanwhile, while this
+	// Connector had no configuration to add it to, would be left out.
+	if services, err = s.control.ListServices(r.Context(), id); err != nil {
+		s.mu.Unlock()
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
 	// Resolve under the lock so a concurrent tunnel address change is not lost.
 	outlet, err := s.control.Outlet(r.Context())
 	var tunnel outletTunnel
@@ -1627,6 +1653,14 @@ func (s *Store) updateConnector(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	// A description that would be refused is refused before the name
+	// changes, so a request takes effect whole or not at all.
+	if req.Description != nil {
+		if _, ok := control.NormalizeDescription(*req.Description); !ok {
+			fail(w, r, 400, "invalid_description")
+			return
+		}
+	}
 	result := map[string]string{"id": id}
 	if req.DisplayName != nil {
 		name, err := s.control.SetConnectorDisplayName(r.Context(), id, *req.DisplayName)
@@ -1824,6 +1858,7 @@ func (s *Store) createService(w http.ResponseWriter, r *http.Request) {
 		// An invalid configuration would stop the Connector and the next Outlet start.
 		if validation.Configuration(config) != nil {
 			s.mu.Unlock()
+			s.undoCreateService(r, service)
 			fail(w, r, 503, "tunnel_runtime_unconfigured")
 			return
 		}
@@ -1842,6 +1877,7 @@ func (s *Store) createService(w http.ResponseWriter, r *http.Request) {
 		// heartbeat and probe status so their public routes stay available.
 		if err := s.saveManaged(r.PathValue("id"), record); err != nil {
 			s.mu.Unlock()
+			s.undoCreateService(r, service)
 			fail(w, r, 503, "persistence_failed")
 			return
 		}
@@ -1856,6 +1892,17 @@ func (s *Store) createService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, 201, service)
+}
+
+// undoCreateService deletes a service just created whose Connector
+// configuration couldn't take it, so the database doesn't keep a service
+// the Connector never gets, and the request can be made again.
+func (s *Store) undoCreateService(r *http.Request, service control.Service) {
+	if err := s.control.DeleteService(context.WithoutCancel(r.Context()), service.ConnectorID, service.ID); err != nil {
+		slog.Warn("a service the Connector's configuration couldn't take was kept", "service_id", service.ID, "error", err)
+		return
+	}
+	s.audit(r, "service.delete", control.AuditEntry{ResourceType: "service", ResourceID: service.ID, Detail: map[string]any{"connector_id": service.ConnectorID, "reason": "not_applied"}})
 }
 
 type serviceTargetRequest struct {
@@ -1877,13 +1924,23 @@ func (s *Store) updateServiceTarget(w http.ResponseWriter, r *http.Request) {
 	id, serviceID := r.PathValue("id"), r.PathValue("service_id")
 	s.mu.Lock()
 	record, ok := s.managed[id]
+	if !ok {
+		// A tunnel not issued a token yet has its services only in the
+		// database; the token gives them to the Connector.
+		service, err := s.control.UpdateServiceTarget(r.Context(), id, serviceID, req.Target)
+		s.mu.Unlock()
+		if !serviceTargetOK(w, r, err) {
+			return
+		}
+		s.audit(r, "service.update", control.AuditEntry{ResourceType: "service", ResourceID: serviceID, Detail: map[string]any{"connector_id": id, "target": req.Target}})
+		reply(w, 200, service)
+		return
+	}
 	index := -1
-	if ok {
-		for i, item := range record.Configuration.ActiveServices() {
-			if item.ServiceID == serviceID {
-				index = i
-				break
-			}
+	for i, item := range record.Configuration.ActiveServices() {
+		if item.ServiceID == serviceID {
+			index = i
+			break
 		}
 	}
 	if index < 0 {
@@ -1892,20 +1949,12 @@ func (s *Store) updateServiceTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	services := append([]contract.ServiceConfiguration(nil), record.Configuration.ActiveServices()...)
-	changed := services[index].Target != req.Target
+	previous := services[index].Target
+	changed := previous != req.Target
 	service, err := s.control.UpdateServiceTarget(r.Context(), id, serviceID, req.Target)
 	if err != nil {
 		s.mu.Unlock()
-		switch {
-		case errors.Is(err, control.ErrInvalidService):
-			fail(w, r, 400, "invalid_service")
-		case errors.Is(err, control.ErrServiceNotFound):
-			fail(w, r, 404, "service_not_found")
-		case errors.Is(err, control.ErrServiceTargetExists):
-			fail(w, r, 409, "service_target_taken")
-		default:
-			fail(w, r, 503, "persistence_failed")
-		}
+		serviceTargetOK(w, r, err)
 		return
 	}
 	s.audit(r, "service.update", control.AuditEntry{ResourceType: "service", ResourceID: serviceID, Detail: map[string]any{"connector_id": id, "target": req.Target}})
@@ -1920,6 +1969,10 @@ func (s *Store) updateServiceTarget(w http.ResponseWriter, r *http.Request) {
 		}
 		record.ServiceStatuses[serviceID] = "disconnected"
 		if err := s.saveManaged(id, record); err != nil {
+			// The Connector keeps the old target; so does the database.
+			if _, undo := s.control.UpdateServiceTarget(context.WithoutCancel(r.Context()), id, serviceID, previous); undo != nil {
+				slog.Warn("a service target the Connector didn't get was kept", "service_id", serviceID, "error", undo)
+			}
 			s.mu.Unlock()
 			fail(w, r, 503, "persistence_failed")
 			return
@@ -1935,6 +1988,32 @@ func (s *Store) updateServiceTarget(w http.ResponseWriter, r *http.Request) {
 	reply(w, 200, service)
 }
 
+// configures reports whether a Connector's configuration has a service.
+func (s *Store) configures(connectorID, serviceID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.managed[connectorID]
+	return ok && slices.ContainsFunc(record.Configuration.ActiveServices(), func(service contract.ServiceConfiguration) bool { return service.ServiceID == serviceID })
+}
+
+// serviceTargetOK answers a failed target change, and reports whether err
+// is nil.
+func serviceTargetOK(w http.ResponseWriter, r *http.Request, err error) bool {
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, control.ErrInvalidService):
+		fail(w, r, 400, "invalid_service")
+	case errors.Is(err, control.ErrServiceNotFound):
+		fail(w, r, 404, "service_not_found")
+	case errors.Is(err, control.ErrServiceTargetExists):
+		fail(w, r, 409, "service_target_taken")
+	default:
+		fail(w, r, 503, "persistence_failed")
+	}
+	return false
+}
+
 func (s *Store) deleteService(w http.ResponseWriter, r *http.Request) {
 	if !s.admin(w, r) {
 		return
@@ -1944,6 +2023,12 @@ func (s *Store) deleteService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := s.control.DeleteService(r.Context(), r.PathValue("id"), r.PathValue("service_id"))
+	finishing := errors.Is(err, control.ErrServiceNotFound) && s.configures(r.PathValue("id"), r.PathValue("service_id"))
+	if finishing {
+		// Deleted before, and audited, but the Connector's configuration
+		// couldn't be saved then: finish that.
+		err = nil
+	}
 	switch {
 	case errors.Is(err, control.ErrServiceNotFound):
 		fail(w, r, 404, "service_not_found")
@@ -1952,7 +2037,9 @@ func (s *Store) deleteService(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		fail(w, r, 503, "persistence_failed")
 	default:
-		s.audited(r, "service.delete", "service", r.PathValue("service_id"), map[string]any{"connector_id": r.PathValue("id")})
+		if !finishing {
+			s.audited(r, "service.delete", "service", r.PathValue("service_id"), map[string]any{"connector_id": r.PathValue("id")})
+		}
 		s.mu.Lock()
 		if record, ok := s.managed[r.PathValue("id")]; ok {
 			remaining := []contract.ServiceConfiguration{}

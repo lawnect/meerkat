@@ -74,8 +74,11 @@ func (d *Database) CreateDescribedConnector(ctx context.Context, name, descripti
 	now := time.Now().UTC()
 	c := Connector{ID: id, Name: name, Description: description, Status: "draft", CreatedAt: now}
 	_, err = d.db.ExecContext(ctx, "INSERT INTO connectors(id, name, description, status, created_at) VALUES (?, ?, ?, ?, ?)", c.ID, c.Name, c.Description, c.Status, c.CreatedAt.Format(time.RFC3339Nano))
-	if err != nil {
+	if isDuplicate(err) {
 		return Connector{}, ErrConnectorExists
+	}
+	if err != nil {
+		return Connector{}, err
 	}
 	d.routingChanged()
 	return c, nil

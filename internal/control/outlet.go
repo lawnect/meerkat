@@ -221,6 +221,10 @@ func (d *Database) AddDomain(ctx context.Context, domain, mode string) (Outlet, 
 	}
 	err = d.changeRouting(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, "INSERT INTO outlet_domains(domain, created_at) VALUES (?, ?)", domain, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			// Added by another request since the check above.
+			if isDuplicate(err) {
+				return ErrDomainExists
+			}
 			return err
 		}
 		return setMode(ctx, tx, domain, mode)
@@ -249,14 +253,17 @@ func (d *Database) RemoveDomain(ctx context.Context, domain string) (Outlet, err
 	if !found {
 		return Outlet{}, ErrDomainNotFound
 	}
-	var routes int
-	if err := d.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM routes WHERE hostname = ? OR hostname LIKE ?", domain, "%."+domain).Scan(&routes); err != nil {
-		return Outlet{}, err
-	}
-	if routes != 0 {
-		return Outlet{}, ErrDomainHasRoutes
-	}
 	err = d.changeRouting(ctx, func(tx *sql.Tx) error {
+		// Counted in the transaction, not before it: CreateHTTPRoute checks the
+		// domain in its own, so one of the two always sees the other, and a
+		// route is never left under a domain that is gone.
+		var routes int
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM routes WHERE hostname = ? OR hostname LIKE ?", domain, "%."+domain).Scan(&routes); err != nil {
+			return err
+		}
+		if routes != 0 {
+			return ErrDomainHasRoutes
+		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM outlet_domains WHERE domain = ?", domain); err != nil {
 			return err
 		}
@@ -364,23 +371,28 @@ func (d *Database) setDomain(ctx context.Context, domain, mode, label string) (O
 			mode = DomainHosts
 		}
 	}
-	if current.Domain != "" && current.Domain != domain {
+	changing := current.Domain != "" && current.Domain != domain
+	if changing {
 		for _, existing := range current.Domains[1:] {
 			if overlapsDomain(existing, domain) {
 				return Outlet{}, ErrDomainExists
 			}
 		}
-		var routes int
-		if err := d.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM routes").Scan(&routes); err != nil {
-			return Outlet{}, err
-		}
-		if routes != 0 {
-			return Outlet{}, ErrDomainHasRoutes
-		}
 	}
 	admin := contract.AdminHostname(label, domain)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	err = d.changeRouting(ctx, func(tx *sql.Tx) error {
+		// Counted in the transaction, as RemoveDomain does: a route created
+		// meanwhile under the old domain must not survive the change.
+		if changing {
+			var routes int
+			if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM routes").Scan(&routes); err != nil {
+				return err
+			}
+			if routes != 0 {
+				return ErrDomainHasRoutes
+			}
+		}
 		if admin != current.AdminHostname {
 			var taken int
 			if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM routes WHERE hostname = ?", admin).Scan(&taken); err != nil {
@@ -396,7 +408,7 @@ func (d *Database) setDomain(ctx context.Context, domain, mode, label string) (O
 				return err
 			}
 		}
-		if current.Domain != "" && current.Domain != domain {
+		if changing {
 			if _, err := tx.ExecContext(ctx, "DELETE FROM outlet_domain_modes WHERE domain = ?", current.Domain); err != nil {
 				return err
 			}

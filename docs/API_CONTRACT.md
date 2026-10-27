@@ -172,7 +172,7 @@ GET    /api/v1/audit/export
 ~~~
 
 - `PUT /api/v1/alerts/telegram` 본문은 `{"bot_token"?: string, "chat_id": string, "enabled": bool}`이다. `bot_token`을 생략하거나 비우면 저장된 토큰을 유지한다. 토큰 형식(`123456789:AA…`)이 틀리거나 저장된 토큰도 없으면 `400 invalid_telegram_token`, 채팅 ID가 숫자(`-100…` 포함)나 `@채널이름`이 아니면 `400 invalid_telegram_chat`이다. 토큰이나 채팅 ID를 바꾸면 `verified_at`이 지워지고, 확인된 봇을 전제로 하는 로그인 보안 코드도 함께 꺼진다. 응답은 `GET`과 같다.
-- `POST /api/v1/alerts/telegram/test`는 저장된 설정으로 테스트 메시지를 보낸다. 성공하면 `verified_at`을 기록하고 `GET` 형태를 반환한다. 설정이 없으면 `409 telegram_not_configured`, Telegram이 거부하거나 닿지 않으면 `502`와 `telegram_unauthorized`(토큰이 틀림), `telegram_chat_not_found`(채팅 ID가 틀렸거나 봇이 시작·초대되지 않음), `telegram_unreachable`(네트워크·시간 초과), `telegram_failed` 중 하나를 반환한다.
+- `POST /api/v1/alerts/telegram/test`는 저장된 설정으로 테스트 메시지를 보낸다. 성공하면 `verified_at`을 기록하고 `GET` 형태를 반환한다. 설정이 없으면 `409 telegram_not_configured`, Telegram이 거부하거나 닿지 않으면 `502`와 `telegram_unauthorized`(토큰이 틀림), `telegram_chat_not_found`(채팅 ID가 틀렸거나 봇이 시작·초대되지 않음), `telegram_unreachable`(네트워크·시간 초과), `telegram_failed` 중 하나를 반환한다. 메시지를 보내는 동안 다른 요청이 토큰이나 채팅을 바꾸었으면 테스트한 설정이 저장된 설정이 아니므로 `409 telegram_changed`를 반환하고 확인으로 치지 않는다.
 - `DELETE /api/v1/alerts/telegram`은 토큰과 채팅 ID를 지우고 알림과 로그인 보안 코드를 끄며 열려 있던 알림 이벤트를 조용히 닫는다. 응답은 `GET`과 같다.
 - `PUT /api/v1/alerts/rules`는 규칙 여섯 개를 모두 담은 객체로 설정을 통째로 바꾼다. 범위는 `after_minutes` 1–1440, `threshold_percent` 0.1–100, `min_requests` 1–1,000,000, `min_blocked` 1–1,000,000이며 벗어나면 `400 invalid_alert_rules`다. 키가 빠지면 `400 invalid_request`다. 응답은 `GET`과 같다.
 - `PUT /api/v1/security/second-factor`는 `{"enabled": bool}`을 받아 `{"login_second_factor": bool}`을 반환한다. 켜려면 Telegram이 설정되고 테스트 메시지로 확인되어 있어야 하며 아니면 `409 telegram_not_verified`다.
@@ -490,7 +490,7 @@ GET /api/v1/usage?unit=minute|hour|day|month|year&from=<RFC3339>&to=<RFC3339>&tz
  "connectors": [{"connector_id": "m_…", "name": "home-server", "requests": 120, "request_bytes": 1200, "response_bytes": 9000, "error_responses": 3}]}
 ~~~
 
-터널별 합계는 경로별 시간 집계로 계산하므로 보관 기간(30일)이 지난 구간은 포함되지 않고, 삭제된 공개 주소의 기록은 빠진다. Outlet 전체 합계는 시간별로 10년, 분별로 7일 보관한다. `unit=minute`은 분 단위 구간(최대 1000개)으로 분별 합계를 나누고, 이때 터널별 합계는 범위가 걸친 시간들의 비율로 범위의 합계를 나눈 값이다(합이 그래프와 같다). 접근 판정 지표와 지연 시간은 시간별로만 보관하므로 `minute`이면 `400 invalid_usage_range`이다.
+터널별 합계는 경로별 시간 집계로 계산하므로 보관 기간(30일)이 지난 구간은 포함되지 않고, 삭제된 공개 주소의 기록은 빠진다. Outlet 전체 합계는 시간별로 10년, 분별로 7일 보관한다. 합계는 UTC 정시 단위(분별은 분 단위)로 저장하므로, UTC와 30분·45분 차이가 나는 시간대(인도, 네팔 등)에서는 구간 경계에 걸친 한 시간이 통째로 한쪽 구간에 들어간다. 접근 판정 지표와 지연 시간도 같다. `unit=minute`은 분 단위 구간(최대 1000개)으로 분별 합계를 나누고, 이때 터널별 합계는 범위가 걸친 시간들의 비율로 범위의 합계를 나눈 값이다(합이 그래프와 같다). 접근 판정 지표와 지연 시간은 시간별로만 보관하므로 `minute`이면 `400 invalid_usage_range`이다.
 
 ## 3. Connector 등록
 

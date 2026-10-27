@@ -958,3 +958,18 @@ func TestPruneUsesTheTimeIndex(t *testing.T) {
 		t.Fatalf("plan: %s", text)
 	}
 }
+
+// An export reads entries by the log's own times, not the clock's: entries
+// stamped ahead of it, by a clock set back meanwhile, are still exported.
+func TestLogEachIgnoresTheClock(t *testing.T) {
+	ctx := context.Background()
+	log, _ := openTest(t, Limits{MaxBytes: 64 << 20, Retention: 365 * 24 * time.Hour})
+	ahead := time.Now().Add(24 * time.Hour)
+	if err := log.Append(ctx, []testEntry{{At: ahead, Path: "/a"}, {At: ahead.Add(time.Second), Path: "/b"}}); err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	if err := log.Each(ctx, Query{}, func(e *testEntry) error { seen = append(seen, e.Path); return nil }); err != nil || !slices.Equal(seen, []string{"/b", "/a"}) {
+		t.Fatalf("%v %v", seen, err)
+	}
+}

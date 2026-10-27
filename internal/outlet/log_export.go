@@ -158,6 +158,11 @@ func (o *csvOut) finish(r *http.Request, err error, code string) {
 	case err == nil:
 		o.start()
 		o.csv.Flush()
+		// The last rows were still buffered: a write that fails now has
+		// cut the file short too.
+		if o.csv.Error() != nil {
+			panic(http.ErrAbortHandler)
+		}
 	case o.csv == nil:
 		fail(o.w, r, 503, code)
 	default:

@@ -351,7 +351,7 @@ func (s *Store) createAccessToken(w http.ResponseWriter, r *http.Request) {
 	s.saving.Lock()
 	token, value, err := s.control.CreateAccessToken(r.Context(), req.AccessTokenScope, expires, s.now())
 	if err == nil {
-		err = s.reloadAccessTokens(r.Context())
+		err = s.reloadAccessTokens(context.WithoutCancel(r.Context()))
 	}
 	s.saving.Unlock()
 	if errors.Is(err, control.ErrInvalidAccessToken) {
@@ -384,7 +384,12 @@ func (s *Store) updateAccessToken(w http.ResponseWriter, r *http.Request) {
 	s.saving.Lock()
 	token, err := s.control.UpdateAccessToken(r.Context(), r.PathValue("id"), req, s.now())
 	if err == nil {
-		err = s.reloadAccessTokens(r.Context())
+		// Saved: the tokens are read back even if the request has gone, and
+		// should that fail, the token stops rather than keep its old scope.
+		if err = s.reloadAccessTokens(context.WithoutCancel(r.Context())); err != nil {
+			s.forgetAccessToken(token.ID)
+			s.audited(r, "security.access_token_update", "access_token", token.ID, map[string]any{"name": token.Name, "hosts": token.Hosts, "ranges": token.Ranges})
+		}
 	}
 	s.saving.Unlock()
 	switch {
@@ -415,7 +420,10 @@ func (s *Store) deleteAccessToken(w http.ResponseWriter, r *http.Request) {
 	s.saving.Lock()
 	token, err := s.control.DeleteAccessToken(r.Context(), r.PathValue("id"), s.now())
 	if err == nil {
-		err = s.reloadAccessTokens(r.Context())
+		// Deleted: should the tokens not read back, it still stops at once.
+		if s.reloadAccessTokens(context.WithoutCancel(r.Context())) != nil {
+			s.forgetAccessToken(token.ID)
+		}
 		s.access.used.Delete(token.ID)
 	}
 	s.saving.Unlock()

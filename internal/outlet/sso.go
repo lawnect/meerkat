@@ -81,6 +81,7 @@ type ssoState struct {
 	discovering sync.Mutex
 	failedAt    time.Time
 	failure     error
+	failedFor   string // the issuer failure is for
 }
 
 // ssoEntry is a sign-in in flight, with its places in ssoState's lists.
@@ -198,14 +199,15 @@ func (s *Store) discoverWith(st *ssoState, issuer string) (*oidc.Provider, error
 	if provider := cached(); provider != nil {
 		return provider, nil
 	}
-	if st.failure != nil && s.now().Sub(st.failedAt) < ssoDiscoveryRetry {
+	// A failure delays retries of its own issuer, not one just set instead.
+	if st.failure != nil && st.failedFor == issuer && s.now().Sub(st.failedAt) < ssoDiscoveryRetry {
 		return nil, st.failure
 	}
 	// The provider keeps this context for fetching keys later, so it must
 	// not be the request's.
 	provider, err := oidc.NewProvider(s.oidcContext(context.Background()), issuer)
 	if err != nil {
-		st.failure, st.failedAt = err, s.now()
+		st.failure, st.failedAt, st.failedFor = err, s.now(), issuer
 		return nil, err
 	}
 	st.failure = nil

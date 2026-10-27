@@ -58,10 +58,9 @@ func Load(path string) (Config, error) {
 		c.DevelopmentHTTP = v
 	}
 	c.DataDir, _ = filepath.Abs(c.DataDir)
-	var saved struct {
-		OutletURL string `json:"outlet_url"`
-		Name      string `json:"name"`
-	}
+	// Decode the whole session as run.go saves it: unknown fields are rejected,
+	// so reading only the outlet and name would always fail.
+	var saved session
 	savedErr := securefs.ReadJSON(filepath.Join(c.DataDir, "session.json"), &saved)
 	if c.OutletURL == "" || c.Name == "" {
 		if savedErr == nil {

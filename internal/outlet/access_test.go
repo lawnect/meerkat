@@ -223,7 +223,9 @@ func TestAccessChallengesOnlyProtectedPaths(t *testing.T) {
 // Path tricks that an app might still read as a protected path are caught.
 func TestAccessCatchesPathVariants(t *testing.T) {
 	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/admin/"}}, AllowedUsers: []string{"@corp.example.com"}})
-	for _, path := range []string{"/admin", "/admin/", "/Admin/x", "//admin/x", "/x/../admin/y", "/%61dmin/y", "/admin;jsessionid=1/x", "/admin./x", "/./admin/x"} {
+	for _, path := range []string{"/admin", "/admin/", "/Admin/x", "//admin/x", "/x/../admin/y", "/%61dmin/y", "/admin;jsessionid=1/x", "/admin./x", "/./admin/x",
+		// Read as /admin/x by servers that drop parameters first, as /x/admin/x by others.
+		"/x/.;/../admin/x", "/admin/.;/../x"} {
 		if w := f.visit("app.example.com", path); w.Code != http.StatusFound {
 			t.Fatalf("%s: %d %s", path, w.Code, w.Body.String())
 		}
@@ -1884,5 +1886,40 @@ func TestAccessShadowedPoliciesSignNobodyIn(t *testing.T) {
 		if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash("browser")); w.Code != http.StatusNotFound {
 			t.Fatalf("start behind %+v: %d", block.Conditions, w.Code)
 		}
+	}
+}
+
+// A token whose change was saved but couldn't be read back stops at once,
+// rather than keep letting requests in as before (see forgetAccessToken).
+func TestForgottenAccessTokenLetsNothingIn(t *testing.T) {
+	f := newAccessFixture(t)
+	var created struct {
+		Token accessTokenView `json:"token"`
+		Value string          `json:"value"`
+	}
+	w := request(f.store.Handler(), "POST", "/api/v1/security/access-tokens", f.admin, map[string]any{"name": "CI", "hosts": []string{"app.example.com"}, "ranges": []string{}, "expires_days": 0})
+	if w.Code != http.StatusCreated || json.Unmarshal(w.Body.Bytes(), &created) != nil {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	f.setPolicies(t,
+		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, AllPaths: true, RequireToken: true, Tokens: []string{created.Token.ID}},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
+	)
+	send := func() int {
+		r := httptest.NewRequest("GET", "https://app.example.com/x", nil)
+		r.Host = "app.example.com"
+		r.Header.Set("X-Forwarded-For", "198.51.100.30")
+		r.Header.Set("Accept", "application/json")
+		r.Header.Set(accessTokenHeader, created.Value)
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, r)
+		return w.Code
+	}
+	if code := send(); code != 200 {
+		t.Fatalf("with the token: %d", code)
+	}
+	f.store.forgetAccessToken(created.Token.ID)
+	if code := send(); code == 200 {
+		t.Fatal("a forgotten token still let a request in")
 	}
 }

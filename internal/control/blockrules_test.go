@@ -296,3 +296,20 @@ func TestHoneypotMigration(t *testing.T) {
 		t.Fatalf("after deleting it: %v", got)
 	}
 }
+
+// A path with parameters on a segment has two readings when servers would
+// read it differently; otherwise one.
+func TestNormalizeBlockPaths(t *testing.T) {
+	for in, want := range map[string][]string{
+		"/.env":                   {"/.env"},
+		"/x.php;jsessionid=1":     {"/x.php"},
+		"/x/..;/admin":            {"/admin"},
+		"/.well-known/.;/../.env": {"/.well-known/.env", "/.env"},
+		"/.env/.;/..":             {"/.env", "/"},
+		"/a/.;x/../B":             {"/a/b", "/b"},
+	} {
+		if got := NormalizeBlockPaths(in); !slices.Equal(got, want) {
+			t.Errorf("NormalizeBlockPaths(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

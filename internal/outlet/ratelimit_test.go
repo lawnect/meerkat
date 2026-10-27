@@ -685,3 +685,33 @@ func TestRateLimitAlertCanBeSwitchedOff(t *testing.T) {
 		t.Fatalf("messages = %q", a.texts())
 	}
 }
+
+// An idle bucket is dropped only once it is full again: a slow rate with a
+// large burst doesn't hand a client its whole burst back after the idle
+// time.
+func TestIdleBucketsStayUntilFull(t *testing.T) {
+	store := newBucketStore(1, 100, 10*time.Minute)
+	slow := []limit{{key: "ep|slow", rps: 1, burst: 1000}}
+	now := t0
+	drain := func() int {
+		allowed := 0
+		for store.take(now, slow) < 0 {
+			allowed++
+		}
+		return allowed
+	}
+	if got := drain(); got != 1000 {
+		t.Fatalf("burst %d", got)
+	}
+	now = now.Add(11 * time.Minute)
+	store.sweep(now)
+	if got := drain(); got != 660 {
+		t.Fatalf("after 11 idle minutes %d allowed, want 660", got)
+	}
+	// Full again, it goes.
+	now = now.Add(time.Hour)
+	store.sweep(now)
+	if store.size() != 0 {
+		t.Fatalf("%d buckets kept", store.size())
+	}
+}

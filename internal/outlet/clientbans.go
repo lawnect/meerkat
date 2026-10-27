@@ -309,7 +309,7 @@ func (s *Store) refuseBanned(w http.ResponseWriter, r *http.Request, host string
 		return false
 	}
 	found := s.bans.find(ip, s.now())
-	if found == nil || wellKnownPath(control.NormalizeBlockPath(r.URL.Path)) {
+	if found == nil || wellKnown(rulePaths(r.URL.Path)) {
 		return false
 	}
 	found.hits.Add(1)

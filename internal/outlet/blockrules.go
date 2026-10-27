@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -112,11 +113,37 @@ func compileBlockRule(hosts []string, conditions []control.BlockCondition) block
 type rulePath struct{ p, slashed string }
 
 func newRulePath(requestPath string) rulePath {
-	p := control.NormalizeBlockPath(requestPath)
+	return slashedRulePath(control.NormalizeBlockPath(requestPath))
+}
+
+func slashedRulePath(p string) rulePath {
 	if p == "/" {
 		return rulePath{p, p}
 	}
 	return rulePath{p, p + "/"}
+}
+
+// rulePaths are the forms a request path takes for rules (see
+// control.NormalizeBlockPaths): one, or two where servers read a segment
+// with parameters differently. A rule holds when it holds for any.
+func rulePaths(requestPath string) []rulePath {
+	forms := control.NormalizeBlockPaths(requestPath)
+	paths := make([]rulePath, len(forms))
+	for i, p := range forms {
+		paths[i] = slashedRulePath(p)
+	}
+	return paths
+}
+
+// wellKnown says whether every form of a path is under /.well-known/: one
+// that some server reads elsewhere is not exempt.
+func wellKnown(paths []rulePath) bool {
+	for _, path := range paths {
+		if !wellKnownPath(path.p) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) reloadBlockRules(ctx context.Context) error {
@@ -146,12 +173,25 @@ func (s *Store) blockedBy(host, requestPath string) *blockRule {
 	if config == nil || len(config.rules) == 0 {
 		return nil
 	}
-	path := newRulePath(requestPath)
-	if wellKnownPath(path.p) {
+	// A path without parameters has one reading; most paths have none.
+	if !strings.Contains(requestPath, ";") {
+		path := newRulePath(requestPath)
+		if wellKnownPath(path.p) {
+			return nil
+		}
+		for i := range config.rules {
+			if rule := &config.rules[i]; rule.covers(host) && rule.matches(path) {
+				return rule
+			}
+		}
+		return nil
+	}
+	paths := rulePaths(requestPath)
+	if wellKnown(paths) {
 		return nil
 	}
 	for i := range config.rules {
-		if rule := &config.rules[i]; rule.covers(host) && rule.matches(path) {
+		if rule := &config.rules[i]; rule.covers(host) && slices.ContainsFunc(paths, rule.matches) {
 			return rule
 		}
 	}

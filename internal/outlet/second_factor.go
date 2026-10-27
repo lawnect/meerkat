@@ -379,7 +379,8 @@ func (s *Store) secondFactor(w http.ResponseWriter, r *http.Request) {
 }
 
 // finishLogin starts the session and, without delaying the response, tells
-// Telegram about it. A session that cannot be audited is revoked at once.
+// Telegram about it. The login is audited behind the response, as every
+// entry is (see audit).
 func (s *Store) finishLogin(w http.ResponseWriter, r *http.Request, admin control.Admin, secondFactor bool) {
 	session, ok := s.startLogin(w, r, admin, map[string]any{"method": "password", "second_factor": secondFactor})
 	if ok {

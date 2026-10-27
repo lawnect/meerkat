@@ -681,3 +681,42 @@ func TestHeavyReadsRefuseOtherPages(t *testing.T) {
 		}
 	}
 }
+
+// A client's upload that grows past the limit is refused, and the service
+// it was on its way to isn't passed over for it.
+func TestOversizedUploadLeavesTheServiceTrusted(t *testing.T) {
+	app := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.Copy(io.Discard, r.Body) })
+	f := newProxyFixture(t, app)
+	f.route(t, 0, "big.example.com")
+	f.setConnectionLimits(t, control.ConnectionLimits{MaxUploadMB: 1})
+	payload := bytes.Repeat([]byte("x"), 2<<20)
+	if w := f.post("big.example.com", onlyReader{bytes.NewReader(payload)}, -1, "203.0.113.5"); w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized upload: %d", w.Code)
+	}
+	if _, suspect := f.store.suspect.Load(f.services[0].ID); suspect {
+		t.Fatal("a client's oversized upload marked the service failed")
+	}
+}
+
+// The minimum upload speed counts the time spent waiting on the client: a
+// service that pauses before reading a body sent at once doesn't get the
+// client cut for its own slowness.
+func TestUploadSpeedCountsTheClientNotTheService(t *testing.T) {
+	pause := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+		n, _ := io.Copy(io.Discard, r.Body)
+		_, _ = fmt.Fprint(w, n)
+	})
+	f := newProxyFixture(t, pause)
+	f.route(t, 0, "up.example.com")
+	address := f.guardedServer(t, &connLimits{idle: 500 * time.Millisecond, minRate: 10 << 20})
+	conn, reader := dial(t, address)
+	const size = 8 << 20
+	go func() {
+		_, _ = fmt.Fprintf(conn, "POST /upload HTTP/1.1\r\nHost: up.example.com\r\nContent-Length: %d\r\n\r\n", size)
+		_, _ = conn.Write(bytes.Repeat([]byte("x"), size))
+	}()
+	if code, body := readResponse(t, conn, reader, 15*time.Second); code != 200 || body != fmt.Sprint(size) {
+		t.Fatalf("upload: %d %q", code, body)
+	}
+}

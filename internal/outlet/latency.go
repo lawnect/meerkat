@@ -93,7 +93,9 @@ func (s *Store) flushLatencies(ctx context.Context) {
 		}
 		h.SumUS = c.sum.Swap(0)
 		if h.Count == 0 && h.SumUS == 0 {
-			if key.hour < now.Unix()/3600 {
+			// An hour's histogram goes an hour after it ended: a request
+			// that found it just before the hour turned may still add to it.
+			if key.hour < now.Unix()/3600-1 {
 				s.latency.Delete(key)
 			}
 			return true

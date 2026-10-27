@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -123,5 +124,104 @@ func TestOutletUsageByMinute(t *testing.T) {
 	}
 	if _, err := db.LatencySeries(ctx, "minute", at, at.Add(time.Hour), time.UTC); err == nil {
 		t.Fatal("latency by minute")
+	}
+}
+
+// The tunnels split a range of minutes with the largest-remainder method, so
+// each metric adds up to the range's own total: a request among three equal
+// tunnels goes to one of them rather than rounding to nothing for all.
+func TestOutletUsageByMinuteSharesAddUp(t *testing.T) {
+	ctx, db := context.Background(), openUsageDB(t)
+	for _, statement := range []string{
+		`INSERT INTO connectors(id, name, status, created_at) VALUES ('c2', 'tunnel-b', 'connected', '2026-10-21T00:00:00Z')`,
+		`INSERT INTO connectors(id, name, status, created_at) VALUES ('c3', 'tunnel-c', 'connected', '2026-10-21T00:00:00Z')`,
+		`INSERT INTO services(id, connector_id, name, protocol, target_host, target_port, created_at, updated_at) VALUES ('s2', 'c2', 'app', 'http', 'app', 80, '2026-10-21T00:00:00Z', '2026-10-21T00:00:00Z')`,
+		`INSERT INTO services(id, connector_id, name, protocol, target_host, target_port, created_at, updated_at) VALUES ('s3', 'c3', 'app', 'http', 'app', 80, '2026-10-21T00:00:00Z', '2026-10-21T00:00:00Z')`,
+		`INSERT INTO routes(id, service_id, kind, hostname, created_at, updated_at) VALUES ('r3', 's2', 'http', 'three.example.test', '2026-10-21T00:00:00Z', '2026-10-21T00:00:00Z')`,
+		`INSERT INTO routes(id, service_id, kind, hostname, created_at, updated_at) VALUES ('r4', 's3', 'http', 'four.example.test', '2026-10-21T00:00:00Z', '2026-10-21T00:00:00Z')`,
+	} {
+		if _, err := db.SQL().ExecContext(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Three equal tunnels in each of two hours; the minutes of each hour
+	// hold a total no multiple of three.
+	for _, hour := range []struct {
+		at                               string
+		requests, sent, received, failed int
+		minute                           [4]int
+	}{
+		{"2026-10-21T14:00:00Z", 1, 1, 1, 1, [4]int{1, 2, 3, 0}},
+		{"2026-10-21T15:00:00Z", 2, 1, 1, 1, [4]int{4, 10, 7, 2}},
+	} {
+		for _, route := range []string{"r1", "r3", "r4"} {
+			if _, err := db.SQL().ExecContext(ctx, `INSERT INTO usage_hourly(route_id, hour, requests, request_bytes, response_bytes, error_responses) VALUES (?, ?, ?, ?, ?, ?)`,
+				route, hour.at, hour.requests, hour.sent, hour.received, hour.failed); err != nil {
+				t.Fatal(err)
+			}
+		}
+		at := mustTime(t, hour.at).Add(5 * time.Minute)
+		if _, err := db.SQL().ExecContext(ctx, `INSERT INTO usage_total_minutely(minute, requests, request_bytes, response_bytes, error_responses) VALUES (?, ?, ?, ?, ?)`,
+			at.Format(time.RFC3339), hour.minute[0], hour.minute[1], hour.minute[2], hour.minute[3]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sum := func(connectors []ConnectorTotal) (total [4]int64) {
+		for _, c := range connectors {
+			total[0], total[1], total[2], total[3] = total[0]+c.Requests, total[1]+c.RequestBytes, total[2]+c.ResponseBytes, total[3]+c.ErrorResponses
+		}
+		return total
+	}
+
+	// One request, three tunnels: one of them gets it, the others are left out.
+	series, err := db.OutletUsageSeries(ctx, "minute", mustTime(t, "2026-10-21T14:00:00Z"), mustTime(t, "2026-10-21T15:00:00Z"), time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(series.Connectors) != 1 || series.Connectors[0].ConnectorID != "c1" || series.Connectors[0].Requests != 1 {
+		t.Fatalf("one request: %+v", series.Connectors)
+	}
+
+	// Four requests, 10 bytes, 7 bytes and 2 errors over three tunnels of two
+	// requests each: every metric still adds up.
+	series, err = db.OutletUsageSeries(ctx, "minute", mustTime(t, "2026-10-21T15:00:00Z"), mustTime(t, "2026-10-21T16:00:00Z"), time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(series.Connectors) != 3 || sum(series.Connectors) != [4]int64{4, 10, 7, 2} {
+		t.Fatalf("four requests: %+v", series.Connectors)
+	}
+
+	// Both hours at once.
+	series, err = db.OutletUsageSeries(ctx, "minute", mustTime(t, "2026-10-21T14:00:00Z"), mustTime(t, "2026-10-21T16:00:00Z"), time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(series.Connectors) != 3 || sum(series.Connectors) != [4]int64{5, 12, 10, 2} {
+		t.Fatalf("both hours: %+v", series.Connectors)
+	}
+}
+
+func TestApportion(t *testing.T) {
+	for _, test := range []struct {
+		total   int64
+		weights []int64
+		want    []int64
+	}{
+		{1, []int64{1, 1, 1}, []int64{1, 0, 0}},
+		{4, []int64{2, 2, 2}, []int64{2, 1, 1}},
+		{10, []int64{5, 3, 2}, []int64{5, 3, 2}},
+		{7, []int64{10, 1, 1}, []int64{6, 1, 0}},
+		{5, []int64{0, 0}, []int64{0, 0}},
+		{0, []int64{3, 4}, []int64{0, 0}},
+		{3, []int64{-5, 1}, []int64{0, 3}},
+		{3, nil, []int64{}},
+		// Byte counts whose product with the total passes 64 bits.
+		{1 << 62, []int64{1 << 61, 1 << 61}, []int64{1 << 61, 1 << 61}},
+	} {
+		got := apportion(test.total, test.weights)
+		if !slices.Equal(got, test.want) {
+			t.Errorf("apportion(%d, %v) = %v, want %v", test.total, test.weights, got, test.want)
+		}
 	}
 }

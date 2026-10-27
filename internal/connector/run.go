@@ -140,22 +140,21 @@ func enroll(ctx context.Context, cfg Config, api *transport.Client, token string
 func waitForTargets(ctx context.Context, cfg Config, api *transport.Client, response *contract.EnrollmentResponse, log *slog.Logger) (map[string]string, error) {
 	for {
 		services := response.ActiveServices()
-		addresses := make(map[string]string, len(services))
-		healths := make(map[string]string, len(services))
-		for _, service := range services {
-			address, err := health.Resolve(ctx, service.Target)
-			if err != nil {
-				healths[service.ServiceID] = "unhealthy"
-				log.Warn("connector waiting for local target", "service_id", service.ServiceID)
-				continue
-			}
-			addresses[service.ServiceID] = address
-			healths[service.ServiceID] = health.Check(ctx, service.Target)
-		}
+		// Look at all targets at once: with several of them unreachable, one
+		// after another would delay the heartbeat past the Outlet's staleness window.
+		addresses := health.ResolveAll(ctx, services)
 		if len(addresses) != 0 {
 			return addresses, nil
 		}
-		hb := contract.Heartbeat{ConnectorID: response.ConnectorID, Revision: response.Revision, Version: contract.Version, ProcessState: "not_started", ServiceHealth: "unknown", ServiceHealths: healths, ObservedAt: time.Now().UTC()}
+		// None resolves: the heartbeat reports them all unhealthy.
+		healths := make(map[string]string, len(services))
+		for _, service := range services {
+			healths[service.ServiceID] = "unhealthy"
+			log.Warn("connector waiting for local target", "service_id", service.ServiceID)
+		}
+		// A configuration from before multi-service support is matched on its
+		// service ID, so name it as the main heartbeat does.
+		hb := contract.Heartbeat{ConnectorID: response.ConnectorID, ServiceID: response.ServiceID, Revision: response.Revision, Version: contract.Version, ProcessState: "not_started", ServiceHealth: "unknown", ServiceHealths: healths, ObservedAt: time.Now().UTC()}
 		if err := api.Heartbeat(ctx, response.Credential, hb); err != nil {
 			var httpErr *transport.HTTPError
 			if errors.As(err, &httpErr) && (httpErr.Status == 401 || httpErr.Status == 403) {
@@ -192,6 +191,10 @@ func waitForTargets(ctx context.Context, cfg Config, api *transport.Client, resp
 			response.Configuration = remote
 			if err := securefs.WriteJSON(filepath.Join(cfg.DataDir, "session.json"), session{cfg.OutletURL, cfg.Name, *response}); err != nil {
 				return nil, err
+			}
+			// Its services were all removed meanwhile: Run waits for one.
+			if len(response.ActiveServices()) == 0 {
+				return nil, nil
 			}
 		}
 	}
@@ -275,7 +278,9 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 			if remote.ConnectorID != response.ConnectorID {
 				return errors.New("outlet returned a different connector")
 			}
-			if len(remote.ActiveServices()) != 0 {
+			// A newer revision without services is taken too: heartbeats
+			// name the revision, and an old one is refused.
+			if len(remote.ActiveServices()) != 0 || remote.Revision > response.Revision {
 				if err := allowed(cfg, remote); err != nil {
 					return err
 				}
@@ -292,10 +297,31 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 		if ctx.Err() != nil {
 			return nil
 		}
-		if len(response.ActiveServices()) != 0 {
-			break
+		if len(response.ActiveServices()) == 0 {
+			continue
 		}
+		err = serveTunnel(ctx, cfg, api, &response, addresses, log)
+		if errors.Is(err, errNoReachableServices) {
+			if ctx.Err() != nil {
+				return nil
+			}
+			// The tunnel is already stopped and the new configuration saved. Go
+			// back to waiting, so the Connector comes up again by itself once a
+			// service exists and its target resolves.
+			log.Warn("connector tunnel stopped; waiting for a reachable service")
+			continue
+		}
+		return err
 	}
+}
+
+var errNoReachableServices = errors.New("no reachable services in updated configuration")
+
+// serveTunnel runs rathole for the resolved services and keeps reporting until
+// the context ends or the tunnel can no longer continue. It returns
+// errNoReachableServices, with the child stopped and the new configuration
+// saved, when an update leaves no service to tunnel.
+func serveTunnel(ctx context.Context, cfg Config, api *transport.Client, response *contract.EnrollmentResponse, addresses map[string]string, log *slog.Logger) error {
 	log.Info("connector authenticated", "connector_id", response.ConnectorID, "configured_service_count", len(response.ActiveServices()), "active_service_count", len(addresses))
 	config, err := rathole.ClientsAt(response.Configuration, addresses)
 	if err != nil {
@@ -317,10 +343,7 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 	lastHealth, lastProcess := "", ""
 	report := func(reportCtx context.Context) error {
 		process := supervisor.Snapshot()
-		serviceHealths := map[string]string{}
-		for _, service := range response.ActiveServices() {
-			serviceHealths[service.ServiceID] = health.Check(reportCtx, service.Target)
-		}
+		serviceHealths := health.CheckAll(reportCtx, response.ActiveServices())
 		serviceHealth := "unknown"
 		if len(response.ActiveServices()) == 1 {
 			serviceHealth = serviceHealths[response.ActiveServices()[0].ServiceID]
@@ -353,6 +376,7 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 			previous[service.ServiceID] = service
 		}
 		nextAddresses := make(map[string]string)
+		var changed []contract.ServiceConfiguration
 		for _, service := range remote.ActiveServices() {
 			if old, ok := previous[service.ServiceID]; ok && old.Target == service.Target {
 				if address, ok := addresses[service.ServiceID]; ok {
@@ -360,7 +384,11 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 					continue
 				}
 			}
-			if address, err := health.Resolve(ctx, service.Target); err == nil {
+			changed = append(changed, service)
+		}
+		resolved := health.ResolveAll(ctx, changed)
+		for _, service := range changed {
+			if address, ok := resolved[service.ServiceID]; ok {
 				nextAddresses[service.ServiceID] = address
 			} else {
 				log.Warn("connector waiting for local target", "service_id", service.ServiceID)
@@ -368,7 +396,12 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 		}
 		if len(nextAddresses) == 0 {
 			// No old service can safely remain after removal or target change.
-			return errors.New("no reachable services in updated configuration")
+			// Keep the new configuration so waiting continues from it.
+			response.Configuration = remote
+			if err := securefs.WriteJSON(filepath.Join(cfg.DataDir, "session.json"), session{cfg.OutletURL, cfg.Name, *response}); err != nil {
+				return err
+			}
+			return errNoReachableServices
 		}
 		nextConfig, err := rathole.ClientsAt(remote, nextAddresses)
 		if err != nil {
@@ -379,7 +412,7 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 		}
 		response.Configuration = remote
 		addresses = nextAddresses
-		if err := securefs.WriteJSON(filepath.Join(cfg.DataDir, "session.json"), session{cfg.OutletURL, cfg.Name, response}); err != nil {
+		if err := securefs.WriteJSON(filepath.Join(cfg.DataDir, "session.json"), session{cfg.OutletURL, cfg.Name, *response}); err != nil {
 			return err
 		}
 		log.Info("connector configuration applied", "revision", response.Revision, "active_service_count", len(addresses))
@@ -434,14 +467,13 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 			// Rathole reloads only newly reachable services. Existing control
 			// channels keep running while the generated config is updated.
 			nextAddresses := maps.Clone(addresses)
+			var missing []contract.ServiceConfiguration
 			for _, service := range response.ActiveServices() {
-				if _, present := nextAddresses[service.ServiceID]; present {
-					continue
-				}
-				if address, err := health.Resolve(ctx, service.Target); err == nil {
-					nextAddresses[service.ServiceID] = address
+				if _, present := nextAddresses[service.ServiceID]; !present {
+					missing = append(missing, service)
 				}
 			}
+			maps.Copy(nextAddresses, health.ResolveAll(ctx, missing))
 			if len(nextAddresses) > len(addresses) {
 				nextConfig, err := rathole.ClientsAt(response.Configuration, nextAddresses)
 				if err != nil {

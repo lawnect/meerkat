@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -298,5 +299,45 @@ func TestRestartRequiresNewLivenessObservation(t *testing.T) {
 	w := request(reopened.Handler(), "GET", "/api/v1/connectors", f.admin, nil)
 	if strings.Contains(w.Body.String(), `"status":"connected"`) {
 		t.Fatal("connector appears connected before a new heartbeat")
+	}
+}
+
+// A heartbeat probes a Connector's services at once: several that hang
+// don't hold up the rest, which stay connected.
+func TestHeartbeatProbesServicesAtOnce(t *testing.T) {
+	f := setup(t)
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok") }))
+	defer healthy.Close()
+	hang := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	defer hang.Close()
+	response := registered(t, f)
+	record := f.store.records["connector_a"]
+	record.ProbeAddresses = map[string]string{}
+	services := []contract.ServiceConfiguration{}
+	for i := range 6 {
+		id, address := fmt.Sprintf("service_%d", i), strings.TrimPrefix(hang.URL, "http://")
+		if i == 5 {
+			address = strings.TrimPrefix(healthy.URL, "http://")
+		}
+		record.ProbeAddresses[id] = address
+		base := record.Configuration
+		services = append(services, contract.ServiceConfiguration{ServiceID: id, Target: base.Target, Tunnel: base.Tunnel})
+	}
+	record.Configuration = contract.Configuration{ConnectorID: record.Configuration.ConnectorID, Revision: record.Configuration.Revision, Services: services}
+	f.store.records["connector_a"] = record
+	healths := map[string]string{}
+	for _, service := range services {
+		healths[service.ServiceID] = "healthy"
+	}
+	hb := contract.Heartbeat{ConnectorID: response.ConnectorID, Revision: record.Configuration.Revision, Version: contract.Version, ProcessState: "running", ServiceHealth: "unknown", ServiceHealths: healths, ObservedAt: time.Now().UTC()}
+	start := time.Now()
+	if w := request(f.store.Handler(), "POST", "/connector/v1/heartbeat", response.Credential, hb); w.Code != 200 {
+		t.Fatalf("heartbeat: %d %s", w.Code, w.Body.String())
+	}
+	if took := time.Since(start); took > 4*time.Second {
+		t.Fatalf("heartbeat took %v", took)
+	}
+	if got := f.store.records["connector_a"].ServiceStatuses; got["service_5"] != "connected" || got["service_0"] != "disconnected" {
+		t.Fatalf("statuses %v", got)
 	}
 }

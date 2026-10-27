@@ -241,6 +241,13 @@ func (d *Database) StartSession(ctx context.Context, admin Admin) (Session, erro
 	}
 	now := time.Now().UTC()
 	expiresAt := now.Add(sessionLifetime)
+	// Sessions are only ever added, so each sign-in clears what is of no use
+	// any more: an expired session can't authenticate, and a revoked one is
+	// kept for a month at most. The table stays small enough to scan, which
+	// is why no index is needed. A clean-up that fails waits for the next
+	// sign-in rather than refuse this one.
+	_, _ = d.db.ExecContext(ctx, `DELETE FROM sessions
+		WHERE julianday(expires_at) <= julianday('now') OR julianday(revoked_at) < julianday('now', '-30 days')`)
 	if _, err := d.db.ExecContext(ctx, "INSERT INTO sessions(id, admin_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)", sessionID, admin.ID, hashToken(token), expiresAt.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
 		return Session{}, err
 	}

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"html"
 	"log/slog"
+	"maps"
 	"math/bits"
 	"net/http"
 	"net/netip"
@@ -192,12 +193,12 @@ type requestPath struct {
 }
 
 func readPath(u *url.URL) requestPath {
-	path := requestPath{forms: []rulePath{newRulePath(u.Path)}, unclear: ambiguousPath(u.EscapedPath(), true)}
+	path := requestPath{forms: rulePaths(u.Path), unclear: ambiguousPath(u.EscapedPath(), true)}
 	if !path.unclear && leftEscape.MatchString(u.Path) {
 		if twice, err := url.PathUnescape(u.Path); err != nil || ambiguousPath(u.Path, true) {
 			path.unclear = true
 		} else {
-			path.forms = append(path.forms, newRulePath(twice))
+			path.forms = append(path.forms, rulePaths(twice)...)
 		}
 	}
 	path.plain = !path.unclear && plainPath(u)
@@ -821,7 +822,9 @@ func (s *Store) flushAccessCounts(ctx context.Context) {
 				counts.Denied += n
 			}
 			pending[at] = counts
-		} else if key.hour < now.Unix()/3600 {
+		} else if key.hour < now.Unix()/3600-1 {
+			// An hour's counter goes an hour after it ended: a request that
+			// found it just before the hour turned may still add to it.
 			s.access.counts.Delete(key)
 		}
 		return true
@@ -954,6 +957,18 @@ func (s *Store) reloadAccessTokens(ctx context.Context) error {
 	}
 	s.access.tokens.Store(&byID)
 	return nil
+}
+
+// forgetAccessToken stops a token from letting requests in until the tokens
+// are read again, for a change saved that couldn't be read back.
+func (s *Store) forgetAccessToken(id string) {
+	current := s.access.tokens.Load()
+	if current == nil {
+		return
+	}
+	next := maps.Clone(*current)
+	delete(next, id)
+	s.access.tokens.Store(&next)
 }
 
 // noteTokenUse records that a token let a request in, at most once a second

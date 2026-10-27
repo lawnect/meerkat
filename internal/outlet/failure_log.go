@@ -110,7 +110,7 @@ func (s *Store) logTurnedAway(r *http.Request, host string, began time.Time, cau
 		return
 	}
 	if plans, _ := routing.Routes(host); len(plans) != 0 {
-		s.logFailure(r, host, time.Time{}, cause, status, "")
+		s.logFailure(r, host, began, cause, status, "")
 		s.logRequest(r, host, began, &requestRecord{status: status, cause: cause})
 	}
 }

@@ -133,6 +133,9 @@ type Store struct {
 	// served maps a service ID to an *atomic.Int64: when, in Unix
 	// nanoseconds, it last answered proxied traffic below 500.
 	served sync.Map
+	// tunnelWriting orders reconcileTunnel's writes: a configuration read
+	// earlier is never written over one read later.
+	tunnelWriting sync.Mutex
 	// exports holds a slot for each download under way (see maxExports).
 	exports chan struct{}
 	// latency holds this hour's histograms of forwarded requests' latencies,
@@ -367,6 +370,8 @@ func (s *Store) reconcileTunnel() error {
 	if s.config.TunnelListenAddress == "" || !validation.PublicKey(s.config.TunnelServerPrivateKey) {
 		return nil
 	}
+	s.tunnelWriting.Lock()
+	defer s.tunnelWriting.Unlock()
 	s.mu.Lock()
 	services := make([]rathole.ServerService, 0, len(s.managed))
 	for _, record := range s.managed {

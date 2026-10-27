@@ -1,11 +1,13 @@
 package control
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
-	"math"
+	"math/bits"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -396,29 +398,76 @@ func (d *Database) OutletUsageSeries(ctx context.Context, unit string, from, to 
 	if err != nil {
 		return result, err
 	}
-	var window, hours UsageBucket
+	var window UsageBucket
 	for _, bucket := range result.Buckets {
 		window.Requests, window.RequestBytes, window.ResponseBytes, window.ErrorResponses = window.Requests+bucket.Requests, window.RequestBytes+bucket.RequestBytes, window.ResponseBytes+bucket.ResponseBytes, window.ErrorResponses+bucket.ErrorResponses
 	}
-	for _, c := range result.Connectors {
-		hours.Requests, hours.RequestBytes, hours.ResponseBytes, hours.ErrorResponses = hours.Requests+c.Requests, hours.RequestBytes+c.RequestBytes, hours.ResponseBytes+c.ResponseBytes, hours.ErrorResponses+c.ErrorResponses
-	}
-	share := func(n, part, whole int64) int64 {
-		if whole == 0 {
-			return 0
+	// Each metric is split on its own, so the tunnels add up to the range's
+	// total whatever the rounding: the shares of a single request over three
+	// equal tunnels would each round to nothing.
+	for _, metric := range []struct {
+		total int64
+		field func(*ConnectorTotal) *int64
+	}{
+		{window.Requests, func(c *ConnectorTotal) *int64 { return &c.Requests }},
+		{window.RequestBytes, func(c *ConnectorTotal) *int64 { return &c.RequestBytes }},
+		{window.ResponseBytes, func(c *ConnectorTotal) *int64 { return &c.ResponseBytes }},
+		{window.ErrorResponses, func(c *ConnectorTotal) *int64 { return &c.ErrorResponses }},
+	} {
+		weights := make([]int64, len(result.Connectors))
+		for i := range result.Connectors {
+			weights[i] = *metric.field(&result.Connectors[i])
 		}
-		return int64(math.Round(float64(n) * float64(part) / float64(whole)))
+		for i, part := range apportion(metric.total, weights) {
+			*metric.field(&result.Connectors[i]) = part
+		}
 	}
 	kept := result.Connectors[:0]
 	for _, c := range result.Connectors {
-		c.Requests, c.RequestBytes = share(c.Requests, window.Requests, hours.Requests), share(c.RequestBytes, window.RequestBytes, hours.RequestBytes)
-		c.ResponseBytes, c.ErrorResponses = share(c.ResponseBytes, window.ResponseBytes, hours.ResponseBytes), share(c.ErrorResponses, window.ErrorResponses, hours.ErrorResponses)
 		if c.Requests > 0 {
 			kept = append(kept, c)
 		}
 	}
 	result.Connectors = kept
 	return result, nil
+}
+
+// apportion splits total over the weights in proportion, by the
+// largest-remainder method: each part is its exact share rounded down, and
+// the units left over go one each to the largest remainders (the earlier
+// weight on a tie). The parts add up to total whenever any weight is above
+// zero; with none, nothing can be split and every part is 0.
+func apportion(total int64, weights []int64) []int64 {
+	parts := make([]int64, len(weights))
+	// Counters only grow, but a negative weight would wrap below: it
+	// counts as none.
+	weight := func(i int) int64 { return max(weights[i], 0) }
+	var whole int64
+	for i := range weights {
+		whole += weight(i)
+	}
+	if whole <= 0 || total <= 0 {
+		return parts
+	}
+	type remainder struct {
+		index int
+		rest  uint64
+	}
+	remainders := make([]remainder, len(weights))
+	left := total
+	for i := range weights {
+		// The product can pass 64 bits for byte counts; its quotient by whole
+		// cannot, as a weight is at most whole.
+		high, low := bits.Mul64(uint64(weight(i)), uint64(total))
+		quotient, rest := bits.Div64(high, low, uint64(whole))
+		parts[i], remainders[i] = int64(quotient), remainder{i, rest}
+		left -= int64(quotient)
+	}
+	slices.SortStableFunc(remainders, func(a, b remainder) int { return cmp.Compare(b.rest, a.rest) })
+	for _, r := range remainders[:min(left, int64(len(remainders)))] {
+		parts[r.index]++
+	}
+	return parts
 }
 
 // connectorTotals sums the per-route hours of [from, to) by tunnel. Hours of

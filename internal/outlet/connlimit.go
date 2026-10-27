@@ -23,6 +23,16 @@ const (
 
 var errUploadTooLarge = errors.New("request body too large")
 
+// shardOf picks the shard of a client's in-flight count. The counts are
+// never evicted, so a client choosing its shard gains nothing.
+func shardOf(key string, shards int) int {
+	hash := uint32(2166136261)
+	for i := 0; i < len(key); i++ {
+		hash = (hash ^ uint32(key[i])) * 16777619
+	}
+	return int(hash % uint32(shards))
+}
+
 // connLimits is the compiled, immutable form of control.ConnectionLimits.
 type connLimits struct {
 	control.ConnectionLimits
@@ -188,8 +198,8 @@ type clientBody struct {
 	rc      *http.ResponseController
 	idle    time.Duration
 	minRate float64
-	start   time.Time
-	limit   int64 // bytes; 0 is no limit
+	waited  time.Duration // spent in Read, waiting on the client
+	limit   int64         // bytes; 0 is no limit
 	read    int64
 	done    bool
 
@@ -200,8 +210,10 @@ type clientBody struct {
 }
 
 // deadline is when the next read must have returned: within the idle
-// timeout, and in time to keep the minimum average speed since the request
-// began.
+// timeout, and in time to keep the minimum average speed over the time
+// spent waiting on the client. Time the service took to read the body is
+// not the client's: counted from when the request began, a service that
+// paused reading would see the client cut for its own slowness.
 func (b *clientBody) deadline(now time.Time) time.Time {
 	var at time.Time
 	if b.idle > 0 {
@@ -212,7 +224,7 @@ func (b *clientBody) deadline(now time.Time) time.Time {
 		if grace == 0 {
 			grace = minRateGrace
 		}
-		paced := b.start.Add(grace + time.Duration(float64(b.read)/b.minRate*float64(time.Second)))
+		paced := now.Add(max(grace+time.Duration(float64(b.read)/b.minRate*float64(time.Second))-b.waited, 0))
 		if at.IsZero() || paced.Before(at) {
 			at = paced
 		}
@@ -229,10 +241,12 @@ func (b *clientBody) Read(p []byte) (int, error) {
 	}
 	// Once the body ends net/http reads the connection in the background
 	// and clears the deadline itself; setting one then would cut it.
+	began := time.Now()
 	if !b.done && (b.idle > 0 || b.minRate > 0) {
-		_ = b.rc.SetReadDeadline(b.deadline(time.Now()))
+		_ = b.rc.SetReadDeadline(b.deadline(began))
 	}
 	n, err := b.ReadCloser.Read(p)
+	b.waited += time.Since(began)
 	b.read += int64(n)
 	if b.limit > 0 && b.read > b.limit {
 		n -= int(b.read - b.limit)
@@ -303,7 +317,7 @@ func guardTransfer(w http.ResponseWriter, r *http.Request, limits *connLimits) (
 	rc := http.NewResponseController(w)
 	var body *clientBody
 	if r.Body != nil && r.Body != http.NoBody {
-		body = &clientBody{ReadCloser: r.Body, rc: rc, idle: limits.idle, minRate: limits.minRate, start: time.Now()}
+		body = &clientBody{ReadCloser: r.Body, rc: rc, idle: limits.idle, minRate: limits.minRate}
 		r.Body = body
 	}
 	if limits.idle > 0 {
@@ -350,7 +364,7 @@ func (s *Store) putConnectionLimits(w http.ResponseWriter, r *http.Request) {
 	s.saving.Lock()
 	saved, err := s.control.SetConnectionLimits(r.Context(), req, s.now())
 	if err == nil {
-		err = s.reloadConnectionLimits(r.Context())
+		err = s.reloadConnectionLimits(context.WithoutCancel(r.Context()))
 	}
 	s.saving.Unlock()
 	if errors.Is(err, control.ErrInvalidConnectionLimits) {

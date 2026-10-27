@@ -513,18 +513,22 @@ const eachChunk = 1000
 // Each calls fn with every entry q matches, newest first; q's Offset and
 // Limit don't apply. It reads a chunk at a time and calls fn between reads,
 // so a slow fn, one writing to a client, holds no read open. Entries added
-// meanwhile are left out; fn's error stops it.
+// meanwhile are left out, by their id and by their time, that of the newest
+// entry when it began: ids start over in a log emptied meanwhile. fn's error
+// stops it.
 func (l *Log[E]) Each(ctx context.Context, q Query, fn func(*E) error) error {
 	clause, args := l.filter(q)
 	if clause == "" {
-		clause = " WHERE id < ?"
+		clause = " WHERE at <= ? AND id < ?"
 	} else {
-		clause += " AND id < ?"
+		clause += " AND at <= ? AND id < ?"
 	}
 	var last int64
-	if err := l.read.QueryRowContext(ctx, "SELECT COALESCE(MAX(id), 0) + 1 FROM "+l.kind.Table).Scan(&last); err != nil {
+	var newest string
+	if err := l.read.QueryRowContext(ctx, "SELECT COALESCE(MAX(id), 0) + 1, COALESCE(MAX(at), '') FROM "+l.kind.Table).Scan(&last, &newest); err != nil {
 		return err
 	}
+	args = append(args, newest)
 	query := fmt.Sprintf("SELECT id, at, routine, %s FROM %s%s ORDER BY id DESC LIMIT %d", l.names, l.kind.Table, clause, eachChunk)
 	for {
 		l.gate.RLock()

@@ -139,7 +139,7 @@ func (s *Store) putTunnelGuard(w http.ResponseWriter, r *http.Request) {
 	s.saving.Lock()
 	saved, err := s.control.SetTunnelGuard(r.Context(), req, s.now())
 	if err == nil {
-		err = s.reloadTunnelGuard(r.Context())
+		err = s.reloadTunnelGuard(context.WithoutCancel(r.Context()))
 	}
 	s.saving.Unlock()
 	if errors.Is(err, control.ErrInvalidTunnelGuard) {

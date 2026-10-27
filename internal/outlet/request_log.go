@@ -275,6 +275,12 @@ func (s *Store) getRequestTop(w http.ResponseWriter, r *http.Request) {
 	l.writer.Flush()
 	q.Offset, q.Limit = offset, limit
 	if csv {
+		// A download reads the log in one of maxExports slots.
+		release, slotted := s.exportSlot(r)
+		if !slotted {
+			return
+		}
+		defer release()
 		q.Offset, q.Limit = 0, eventlog.MaxTally
 	}
 	groups, total, err := l.log.Tally(r.Context(), eventlog.Tally{Query: q, By: tally.by, Measures: append(append([]string{}, requestMeasures...), tally.distinct), Sort: order, Ascending: direction == "asc"})
@@ -307,7 +313,8 @@ func (s *Store) getRequestTop(w http.ResponseWriter, r *http.Request) {
 		if by == "client" {
 			keys = []string{cell(row.Client)}
 		}
-		if out.row(append(keys, counts...)) != nil {
+		if err := out.row(append(keys, counts...)); err != nil {
+			out.finish(r, err, "")
 			return
 		}
 	}

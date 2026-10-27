@@ -8,9 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sync/atomic"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 
 	"github.com/lawnect/meerkat/internal/securefs"
 )
@@ -53,6 +54,25 @@ func Open(ctx context.Context, path string) (*Database, error) {
 }
 
 func (d *Database) Close() error { return d.db.Close() }
+
+// SQLite's extended result codes for the constraint failures a create tells
+// apart from every other error.
+const (
+	sqliteForeignKey = 787
+	sqlitePrimaryKey = 1555
+	sqliteUnique     = 2067
+)
+
+// constraintFailed reports whether err is SQLite failing with one of the
+// extended result codes. A canceled context or a disk failure is not, and
+// callers pass those on rather than call them a duplicate.
+func constraintFailed(err error, codes ...int) bool {
+	var e *sqlite.Error
+	return errors.As(err, &e) && slices.Contains(codes, e.Code())
+}
+
+// isDuplicate reports whether err is a unique or primary-key violation.
+func isDuplicate(err error) bool { return constraintFailed(err, sqliteUnique, sqlitePrimaryKey) }
 
 // SQL exposes the connection for the control-plane repositories only. Writes
 // through it to the tables behind Routing, Outlet, TunnelAddress and
