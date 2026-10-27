@@ -1,4 +1,4 @@
-import type { AccessCounts, AccessLogEntry, AccessMetrics, AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, FailureCause, FailureLogEntry, LogSettings, LogView, Outlet, Route, Service, SsoSettings, Target, UsageBucket, UsageSeries, UsageUnit } from './types';
+import type { AccessCounts, AccessLogEntry, AccessMetrics, AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ClientBan, ClientBanSettings, ClientBansView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, FailureCause, FailureLogEntry, LogSettings, LogView, Outlet, Route, Service, SsoSettings, Target, TunnelGuardSettings, TunnelGuardView, UsageBucket, UsageSeries, UsageUnit } from './types';
 import { accessDecisions, accessMethods, accessRequesters, failureCauseGroups, failureCauses, refusedCauses, serviceCauses } from './types';
 
 const now = (): string => new Date().toISOString();
@@ -196,11 +196,25 @@ let connectionLimits: ConnectionLimits = {
   hosts: [{ host: 'photos.example.test', max_upload_mb: 2048 }],
 };
 let blockRules: BlockRule[] = [
-  { id: 'hidden-files', name: 'Hidden files', enabled: true, hosts: [], conditions: [{ operator: 'starts_with', value: '/.' }] },
+  {
+    id: 'honeypot',
+    name: 'Honeypot',
+    enabled: true,
+    ban: true,
+    hosts: [],
+    conditions: [
+      ...['/.env', '/.git/', '/.aws/', '/.ssh/', '/.svn/', '/.hg/', '/.docker/', '/.kube/', '/.htpasswd', '/.ds_store'].map((value): BlockCondition => ({ operator: 'starts_with', value })),
+      { operator: 'matches', value: '/\\.env(\\.[a-z0-9_-]+)?$' },
+      { operator: 'matches', value: '/\\.git/(config|head)$' },
+      { operator: 'contains', value: '/wp-config.php' },
+    ],
+  },
+  { id: 'hidden-files', name: 'Hidden files', enabled: true, ban: false, hosts: [], conditions: [{ operator: 'starts_with', value: '/.' }] },
   {
     id: 'scanners',
     name: 'Vulnerability scanners',
     enabled: false,
+    ban: false,
     hosts: [],
     conditions: [
       { operator: 'matches', value: '\\.(php|phtml|asp|aspx|jsp|cgi|sql|bak|key|log|ya?ml|zip|env)$' },
@@ -214,6 +228,7 @@ let blockRules: BlockRule[] = [
     id: 'unused-paths',
     name: 'Paths this site does not use',
     enabled: false,
+    ban: false,
     hosts: [],
     conditions: [
       { operator: 'starts_with', value: '/assets/' },
@@ -224,7 +239,7 @@ let blockRules: BlockRule[] = [
     ],
   },
 ];
-let blockHits: Record<string, number> = { 'hidden-files': 1284 };
+let blockHits: Record<string, number> = { honeypot: 212, 'hidden-files': 1284 };
 // 규칙·정책을 한정할 수 있는 공개 주소: 지금 있는 경로의 호스트 이름입니다.
 const publicAddresses = (): string[] => [...new Set(state.routes.map((route) => route.hostname))].sort();
 const blockRulesResponse = (): BlockRulesView => structuredClone({
@@ -281,6 +296,20 @@ function normalizeRange(value: string): string | null {
   } catch {
     return null;
   }
+}
+
+// 클라이언트 차단의 제외 대상과 터널 포트 보호의 허용 범위: IP 하나 또는 CIDR을 표준 표기로 정리합니다(단일 주소는 /32·/128 없이).
+function normalizeAddress(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const text = value.trim().toLowerCase();
+  const range = normalizeRange(text);
+  return range === null ? null : text.includes('/') ? range : range.replace(/\/(32|128)$/, '');
+}
+// 최대 50개, 중복은 한 번만. 하나라도 올바르지 않으면 null입니다.
+function normalizeAddresses(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length > 50) return null;
+  const list = value.map(normalizeAddress);
+  return list.every((entry): entry is string => entry !== null) ? [...new Set(list)] : null;
 }
 
 // 서버의 AccessTokenScope.Normalize: 이름, 주소(소문자, 1–100개), IP 대역(CIDR 또는 단일 주소, 0–50개)을 확인합니다.
@@ -716,6 +745,8 @@ const FAILURE_SITES: Array<[host: string, service: string, paths: string[]]> = [
   ['erp.example.com', 'erp', ['/web/login', '/web/dataset/call_kw']],
   ['dns.example.test', 'pihole', ['/admin/api.php', '/admin/']],
 ];
+// Paths no real client asks for: the honeypot rule trips on them (failure log) and they start the demo bans.
+const BAN_PATHS = ['/.env', '/.git/config', '/wp-config.php', '/api/.env', '/.aws/credentials', '/app/.env.production', '/blog/wp-config.php.bak', '/.ssh/id_rsa', '/.docker/config.json', '/laravel/.env', '/admin/.git/config'];
 // cause: [statuses, weight, duration in ms]
 const FAILURE_SHAPES: Record<FailureCause, { statuses: number[]; weight: number; duration: (roll: number) => number }> = {
   app_error: { statuses: [500, 500, 503], weight: 30, duration: (roll) => 20 + Math.round(roll * 900) },
@@ -724,6 +755,8 @@ const FAILURE_SHAPES: Record<FailureCause, { statuses: number[]; weight: number;
   no_service: { statuses: [404], weight: 10, duration: (roll) => Math.round(roll * 3) },
   rate_limited: { statuses: [429], weight: 12, duration: () => 0 },
   blocked: { statuses: [403], weight: 14, duration: () => 0 },
+  trapped: { statuses: [403], weight: 6, duration: () => 0 },
+  banned: { statuses: [403], weight: 9, duration: () => 0 },
   too_long: { statuses: [414], weight: 2, duration: () => 0 },
   too_large: { statuses: [413], weight: 3, duration: (roll) => 100 + Math.round(roll * 2400) },
   busy: { statuses: [503, 429], weight: 3, duration: () => 1 },
@@ -739,8 +772,10 @@ const failureLog: MockLog<FailureLogEntry> = {
     const cause = failureCauses.find((item) => (target -= FAILURE_SHAPES[item].weight) < 0) ?? 'app_error';
     const shape = FAILURE_SHAPES[cause];
     const [host, service, paths] = pick(FAILURE_SITES, roll(5));
-    const refused = cause === 'blocked' || cause === 'too_long' || cause === 'rate_limited';
-    const path = cause === 'blocked' ? pick(['/.env', '/wp-login.php', '/.git/config', '/phpmyadmin/'], roll(6)) : cause === 'too_long' ? `/search/${'a'.repeat(20)}…` : pick(paths, roll(6));
+    const refused = cause === 'blocked' || cause === 'trapped' || cause === 'banned' || cause === 'too_long' || cause === 'rate_limited';
+    const path = cause === 'blocked' ? pick(['/wp-login.php', '/phpmyadmin/', '/xmlrpc.php', '/cgi-bin/luci'], roll(6))
+      : cause === 'trapped' ? pick(BAN_PATHS, roll(6))
+      : cause === 'too_long' ? `/search/${'a'.repeat(20)}…` : pick(paths, roll(6));
     return {
       id: 9000 - index, at, host, path, client: clientIp(roll(7)),
       method: cause === 'too_large' ? 'POST' : pick(['GET', 'GET', 'GET', 'POST', 'PUT'], roll(8)),
@@ -795,6 +830,109 @@ function saveLogSettings<Entry>(kind: 'access' | 'failures', log: MockLog<Entry>
     id: `audit-${auditEvents.length + 1}`, created_at: now(), actor_email: 'dev@example.test', action: 'observe.log_settings', resource_type: 'observe', resource_id: kind,
     detail: { log: kind, ...log.settings }, source: 'public', ip: '203.0.113.7', user_agent: 'Chrome on macOS',
   });
+}
+
+// ---- Security: banned clients (GET/PUT /api/v1/security/client-bans, POST …/release) and the tunnel port guard ----
+
+let clientBanSettings: ClientBanSettings = { minutes: 60, exempt: ['198.51.100.0/24'] };
+// Forty bans, newest first: all but the last started within the past 53 minutes, so a 60-minute ban is still running. Every 9th comes from a rule that was deleted since.
+let clientBans: ClientBan[] = Array.from({ length: 40 }, (_, index): ClientBan => {
+  const roll = (salt: number) => hashUnit(index * 53 + salt + 900);
+  // The last one is an old ban from before the duration was changed: it started yesterday and ends the day after tomorrow.
+  const since = index === 39 ? Date.now() - 26 * 3600000 : Date.now() - (2 + index * 80 + Math.floor(roll(1) * 60)) * 1000;
+  const v6 = index % 7 === 3;
+  return {
+    client: v6 ? `2001:db8:${(0xa100 + index).toString(16)}:${(0x1000 + index * 37).toString(16)}::/64` : `${['203.0.113', '192.0.2', '100.64.8'][index % 3]}.${10 + index * 5}`,
+    rule: index % 9 === 5 ? 'r8f3k2m1' : 'honeypot',
+    host: FAILURE_SITES[index % FAILURE_SITES.length][0],
+    path: index === 7 ? `/${'deeply/nested/'.repeat(14)}.env` : BAN_PATHS[index % BAN_PATHS.length],
+    since: new Date(since).toISOString(),
+    until: new Date(index === 39 ? Date.now() + 46 * 3600000 : since + 60 * 60000).toISOString(),
+    hits: index % 6 === 4 ? 0 : Math.floor(roll(2) ** 3 * 400),
+  };
+});
+
+// Like the server: the search is a substring of client, host or path (at most 128 bytes), per_page 1–200.
+function clientBansView(params: URLSearchParams): ClientBansView {
+  const page = logPageParam(params, 'page', 1, Number.MAX_SAFE_INTEGER);
+  const perPage = logPageParam(params, 'per_page', 20, 200);
+  const q = logSearch(params);
+  const matched = clientBans.filter((ban) => includesText(q, ban.client, ban.host, ban.path));
+  return structuredClone({ settings: clientBanSettings, total: matched.length, bans: matched.slice((page - 1) * perPage, page * perPage) });
+}
+
+function auditSecurity(action: string, detail: Record<string, unknown>): void {
+  auditEvents.unshift({
+    id: `audit-${auditEvents.length + 1}`, created_at: now(), actor_email: 'dev@example.test', action, resource_type: 'security', resource_id: action.slice('security.'.length),
+    detail, source: 'public', ip: '203.0.113.7', user_agent: 'Chrome on macOS',
+  });
+}
+
+function clientBansApi(path: string, method: string, params: URLSearchParams, input: unknown): unknown {
+  if (path === '/api/v1/security/client-bans' && method === 'GET') {
+    try {
+      return clientBansView(params);
+    } catch {
+      return fail('invalid_ban_query');
+    }
+  }
+  if (path === '/api/v1/security/client-bans' && method === 'PUT') {
+    const body = input as { minutes?: unknown; exempt?: unknown };
+    const exempt = normalizeAddresses(body.exempt);
+    if (!Number.isInteger(body.minutes) || (body.minutes as number) < 1 || (body.minutes as number) > 10080 || !exempt) fail('invalid_client_bans');
+    clientBanSettings = { minutes: body.minutes as number, exempt };
+    // Clients that are exempt now are released at once; the others keep their end time.
+    const exemptRanges = exempt.map((entry) => normalizeRange(entry)!);
+    const covered = (client: string): boolean => exemptRanges.some((range) => {
+      const [address, bits] = range.split('/');
+      return !client.includes(':') && !address.includes(':') && ipv4Number(client) >= ipv4Number(address) && ipv4Number(client) < ipv4Number(address) + 2 ** (32 - Number(bits));
+    });
+    clientBans = clientBans.filter((ban) => !covered(ban.client));
+    auditSecurity('security.client_bans', { minutes: clientBanSettings.minutes, exempt });
+    return clientBansView(new URLSearchParams());
+  }
+  if (path === '/api/v1/security/client-bans/release' && method === 'POST') {
+    const body = input as { client?: unknown; all?: unknown };
+    if (body.all === true) {
+      const count = clientBans.length;
+      clientBans = [];
+      auditSecurity('security.client_ban_release', { all: true, count });
+    } else if (typeof body.client === 'string') {
+      if (!clientBans.some((ban) => ban.client === body.client)) fail('ban_not_found');
+      clientBans = clientBans.filter((ban) => ban.client !== body.client);
+      auditSecurity('security.client_ban_release', { client: body.client, count: 1 });
+    } else {
+      fail('invalid_client_bans');
+    }
+    return clientBansView(new URLSearchParams());
+  }
+  return fail('not_found');
+}
+const ipv4Number = (address: string): number => address.split('.').reduce((sum, octet) => sum * 256 + Number(octet), 0);
+
+let tunnelGuard: TunnelGuardSettings = { mode: 'limited', allowed: [] };
+// The addresses connectors made authenticated requests from; newest first.
+const tunnelConnectors = [
+  { client: '203.0.113.7', last_seen: new Date(Date.now() - 40 * 1000).toISOString() },
+  { client: '198.51.100.23', last_seen: new Date(Date.now() - 4 * 60 * 1000).toISOString() },
+  { client: '2001:db8:3c4d:15::/64', last_seen: new Date(Date.now() - 11 * 60 * 1000).toISOString() },
+];
+const tunnelGuardStats = { active: 4, accepted: 18342, refused: { rate: 211, busy: 36, idle: 1274, strict: 0 } };
+function tunnelGuardView(): TunnelGuardView {
+  return structuredClone({ settings: tunnelGuard, stats: tunnelGuardStats, connectors: tunnelConnectors });
+}
+
+function tunnelGuardApi(method: string, input: unknown): unknown {
+  if (method === 'GET') return tunnelGuardView();
+  if (method === 'PUT') {
+    const body = input as { mode?: unknown; allowed?: unknown };
+    const allowed = normalizeAddresses(body.allowed);
+    if ((body.mode !== 'limited' && body.mode !== 'strict') || !allowed) fail('invalid_tunnel_guard');
+    tunnelGuard = { mode: body.mode, allowed };
+    auditSecurity('security.tunnel_guard', { mode: body.mode, allowed });
+    return tunnelGuardView();
+  }
+  return fail('not_found');
 }
 
 function observe(path: string, method: string, params: URLSearchParams, input: unknown): unknown {
@@ -975,6 +1113,8 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     connectionLimits = { ...next, hosts: hosts! };
     return structuredClone(connectionLimits);
   }
+  if (path === '/api/v1/security/tunnel-guard') return tunnelGuardApi(method, input);
+  if (path.startsWith('/api/v1/security/client-bans')) return clientBansApi(path, method, new URL(url, 'http://localhost').searchParams, input);
   if (path === '/api/v1/security/block-rules' && method === 'GET') return blockRulesResponse();
   if (path === '/api/v1/security/block-rules' && method === 'PUT') {
     // 실제 서버처럼 rules만 받고, 값은 공백 제거·소문자 변환(정규식 제외)·정리 후 검사합니다.
@@ -995,7 +1135,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
         seen.add(key);
         return true;
       });
-      return { id: rule.id, name, enabled: rule.enabled, hosts, conditions };
+      return { id: rule.id, name, enabled: rule.enabled, ban: rule.ban === true, hosts, conditions };
     });
     const ids = rules.map((rule) => rule.id).filter(Boolean);
     if (new Set(ids).size !== ids.length) fail('invalid_block_rules');

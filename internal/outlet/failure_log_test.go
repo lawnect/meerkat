@@ -111,7 +111,7 @@ func TestFailureLogCauses(t *testing.T) {
 	expect("an address without a live service", f.hit("GET", "idle.example.com", "/", nil), 404, "no_service 404 [] idle.example.com /")
 	expect("an unknown host", f.hit("GET", "nowhere.example.com", "/", nil), 404, "")
 	expect("the management host", f.hit("GET", f.adminHost, "/no-such-page", nil), 404, "")
-	expect("a block rule", f.hit("GET", "app.example.com", "/.env", nil), 403, "blocked 403 [] app.example.com /.env")
+	expect("a block rule", f.hit("GET", "app.example.com", "/.hidden", nil), 403, "blocked 403 [] app.example.com /.hidden")
 	long := "/" + strings.Repeat("a", maxPublicPath)
 	expect("a long path", f.hit("GET", "app.example.com", long, nil), 414, "too_long 414 [] app.example.com "+long[:512])
 	payload := bytes.Repeat([]byte("x"), 2<<20)
@@ -278,7 +278,7 @@ func TestFailureLogKeepsNothingWhileOff(t *testing.T) {
 		if w := f.hit("GET", "app.example.com", "/", nil); w.Code != 500 {
 			t.Fatalf("app: %d", w.Code)
 		}
-		if w := f.hit("GET", "app.example.com", "/.env", nil); w.Code != 403 {
+		if w := f.hit("GET", "app.example.com", "/.hidden", nil); w.Code != 403 {
 			t.Fatalf("block rule: %d", w.Code)
 		}
 	}
@@ -359,8 +359,8 @@ func TestFailureLogAPI(t *testing.T) {
 		}
 	}
 	for _, c := range []struct{ host, path string }{
-		{"app.example.com", long}, {"other.example.com", "/.env"}, {"app.example.com", long}, {"other.example.com", "/.git/config"},
-		{"app.example.com", "/.env"}, {"other.example.com", long}, {"app.example.com", long},
+		{"app.example.com", long}, {"other.example.com", "/.dotfile"}, {"app.example.com", long}, {"other.example.com", "/.other/config"},
+		{"app.example.com", "/.dotfile"}, {"other.example.com", long}, {"app.example.com", long},
 	} {
 		f.visit(c.host, c.path)
 	}
@@ -382,7 +382,7 @@ func TestFailureLogAPI(t *testing.T) {
 		{"?cause=service", 0},
 		{"?cause=refused&host=other.example.com", 3},
 		{"?q=other", 3},
-		{"?q=.ENV", 2},
+		{"?q=.DOTFILE", 2},
 		{"?q=198.51.100.30", 7},
 		{"?q=%25", 0},
 		{"?cause=blocked&q=other", 2},
@@ -435,7 +435,7 @@ func TestFailureLogSuppressesAFlood(t *testing.T) {
 	f.route(t, 0, "app.example.com")
 	f.failureLogging(t, true)
 	for range 70 {
-		if w := f.hit("GET", "app.example.com", "/.env", nil); w.Code != 403 {
+		if w := f.hit("GET", "app.example.com", "/.hidden", nil); w.Code != 403 {
 			t.Fatalf("a refusal that was not logged: %d", w.Code)
 		}
 	}
@@ -447,7 +447,7 @@ func TestFailureLogSuppressesAFlood(t *testing.T) {
 	if code, _ := f.from("GET", "app.example.com", other, ""); code != 500 {
 		t.Fatalf("app: %d", code)
 	}
-	r := httptest.NewRequest("GET", "/.git/config", nil)
+	r := httptest.NewRequest("GET", "/.hidden", nil)
 	r.Host = "app.example.com"
 	r.Header.Set("X-Forwarded-For", other)
 	f.handler.ServeHTTP(httptest.NewRecorder(), r)

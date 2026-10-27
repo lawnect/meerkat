@@ -20,6 +20,7 @@ const maxBlockRulesBody = 256 << 10
 // blockRule is one enabled control.BlockRule, compiled for matching.
 type blockRule struct {
 	id       string
+	ban      bool            // a match bans the client
 	hosts    map[string]bool // nil with no wildcards: every public address
 	wildcard []string        // ".example.com" for "*.example.com"
 	equals   map[string]bool
@@ -40,8 +41,12 @@ type blockState struct {
 	hits sync.Map
 }
 
+// applyBlockRules compiles the enabled rules. Rules that ban the client are
+// tried first, in their order, then the others: a request for a trap path
+// bans its client whatever broader rule comes before.
 func (s *Store) applyBlockRules(rules control.BlockRules) {
 	compiled := &blockRules{}
+	var others []blockRule
 	known := map[string]bool{}
 	for _, rule := range rules.Rules {
 		known[rule.ID] = true
@@ -50,9 +55,14 @@ func (s *Store) applyBlockRules(rules control.BlockRules) {
 		}
 		hits, _ := s.blocks.hits.LoadOrStore(rule.ID, new(atomic.Int64))
 		b := compileBlockRule(rule.Hosts, rule.Conditions)
-		b.id, b.hits = rule.ID, hits.(*atomic.Int64)
-		compiled.rules = append(compiled.rules, b)
+		b.id, b.ban, b.hits = rule.ID, rule.Ban, hits.(*atomic.Int64)
+		if b.ban {
+			compiled.rules = append(compiled.rules, b)
+		} else {
+			others = append(others, b)
+		}
 	}
+	compiled.rules = append(compiled.rules, others...)
 	s.blocks.hits.Range(func(id, _ any) bool {
 		if !known[id.(string)] {
 			s.blocks.hits.Delete(id)
@@ -121,17 +131,23 @@ func (s *Store) reloadBlockRules(ctx context.Context) error {
 	return nil
 }
 
+// wellKnownPath says whether a path in the form rules compare is under
+// /.well-known/, where certificate checks and service discovery live: block
+// rules and bans never apply there.
+func wellKnownPath(p string) bool {
+	return p == "/.well-known" || strings.HasPrefix(p, "/.well-known/")
+}
+
 // blockedBy returns the first enabled rule that blocks a request for host
 // and path, or nil. The path is compared in the form rules are stored in,
-// and paths under /.well-known/ are never blocked: certificate checks and
-// service discovery live there.
+// and paths under /.well-known/ are never blocked.
 func (s *Store) blockedBy(host, requestPath string) *blockRule {
 	config := s.blocks.config.Load()
 	if config == nil || len(config.rules) == 0 {
 		return nil
 	}
 	path := newRulePath(requestPath)
-	if path.p == "/.well-known" || strings.HasPrefix(path.p, "/.well-known/") {
+	if wellKnownPath(path.p) {
 		return nil
 	}
 	for i := range config.rules {

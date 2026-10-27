@@ -35,15 +35,19 @@ type Seed struct {
 }
 
 type Config struct {
-	ListenAddress          string `json:"listen_address"`
-	TLSCertificate         string `json:"tls_certificate"`
-	TLSKey                 string `json:"tls_key"`
-	AdminTokenHash         string `json:"admin_token_hash"`
-	EnrollmentTTLSeconds   int    `json:"enrollment_ttl_seconds"`
-	CredentialTTLSeconds   int    `json:"credential_ttl_seconds"`
-	Domain                 string `json:"domain,omitempty"`
-	Region                 string `json:"region,omitempty"`
-	TunnelListenAddress    string `json:"tunnel_listen_address,omitempty"`
+	ListenAddress        string `json:"listen_address"`
+	TLSCertificate       string `json:"tls_certificate"`
+	TLSKey               string `json:"tls_key"`
+	AdminTokenHash       string `json:"admin_token_hash"`
+	EnrollmentTTLSeconds int    `json:"enrollment_ttl_seconds"`
+	CredentialTTLSeconds int    `json:"credential_ttl_seconds"`
+	Domain               string `json:"domain,omitempty"`
+	Region               string `json:"region,omitempty"`
+	TunnelListenAddress  string `json:"tunnel_listen_address,omitempty"`
+	// TunnelInternalAddress is where rathole listens, behind the Outlet's
+	// own listener on TunnelListenAddress: a loopback address with another
+	// port. Empty means DefaultTunnelInternalAddress.
+	TunnelInternalAddress  string `json:"tunnel_internal_address,omitempty"`
 	TunnelRemoteAddress    string `json:"tunnel_remote_address,omitempty"`
 	TunnelServerPublicKey  string `json:"tunnel_server_public_key,omitempty"`
 	TunnelServerPrivateKey string `json:"tunnel_server_private_key,omitempty"`
@@ -109,7 +113,11 @@ type Store struct {
 	alerts       alertState
 	limiter      *rateLimiter
 	connections  *connectionLimiter
-	blocks       blockState
+	// guard admits connections to the public tunnel port.
+	guard  *tunnelGuard
+	blocks blockState
+	// bans are the clients a block rule banned, in memory only.
+	bans banState
 	// saving serializes saving a setting the Outlet keeps in memory with
 	// putting it in place, so when two saves cross, the one in use can't
 	// end up older than the one saved.
@@ -173,6 +181,14 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 	// else reaches the Caddyfile.
 	if !validation.ServiceAddress(config.CaddyUpstream) || !validation.ServiceAddress(config.CaddyMetrics) {
 		return nil, errors.New("invalid Caddy address")
+	}
+	if config.TunnelListenAddress != "" {
+		if config.TunnelInternalAddress == "" {
+			config.TunnelInternalAddress = DefaultTunnelInternalAddress
+		}
+		if err := validateTunnelAddresses(config.TunnelListenAddress, config.TunnelInternalAddress); err != nil {
+			return nil, err
+		}
 	}
 	records := make(map[string]Record)
 	services, ports := map[string]bool{}, map[string]bool{}
@@ -276,11 +292,18 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 	if err := s.reloadRateLimit(context.Background()); err != nil {
 		return nil, err
 	}
+	s.guard = newTunnelGuard(config.TunnelListenAddress, config.TunnelInternalAddress, func() time.Time { return s.now() })
+	if err := s.reloadTunnelGuard(context.Background()); err != nil {
+		return nil, err
+	}
 	s.connections = &connectionLimiter{}
 	if err := s.reloadConnectionLimits(context.Background()); err != nil {
 		return nil, err
 	}
 	if err := s.reloadBlockRules(context.Background()); err != nil {
+		return nil, err
+	}
+	if err := s.reloadClientBans(context.Background()); err != nil {
 		return nil, err
 	}
 	if err := s.reloadAccess(context.Background()); err != nil {
@@ -333,7 +356,9 @@ func (s *Store) reconcileTunnel() error {
 		}
 	}
 	s.mu.Unlock()
-	config, err := rathole.Server(s.config.TunnelListenAddress, s.config.TunnelServerPrivateKey, services)
+	// rathole listens on the internal address: the Outlet's guard holds the
+	// public one and proxies the connections it admits.
+	config, err := rathole.Server(s.config.TunnelInternalAddress, s.config.TunnelServerPrivateKey, services)
 	if err != nil {
 		return err
 	}
@@ -400,6 +425,7 @@ func (s *Store) persistLoop(ctx context.Context) {
 		select {
 		case <-ticker.C:
 			s.persist()
+			s.bans.sweep(s.now())
 			s.flushAccessTokenUse(ctx)
 			s.flushAccessCounts(ctx)
 		case <-ctx.Done():
@@ -420,6 +446,7 @@ func (s *Store) Close() {
 			s.stopWorkers()
 		}
 		s.workers.Wait()
+		s.guard.close()
 		s.logs.access.close()
 		s.logs.failures.close()
 	})

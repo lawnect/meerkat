@@ -213,6 +213,13 @@ func (s *Store) PublicHandler() http.Handler {
 			s.logFailure(r, host, began, failTooLong, http.StatusRequestURITooLong, "")
 			return
 		}
+		// A banned client gets nothing from a routed address, not even the
+		// sign-in of access protection. The management host and the Outlet
+		// domain's connector API answered above and are never affected.
+		origin, _ := requestOrigin(r)
+		if s.refuseBanned(w, r, host, began, origin) {
+			return
+		}
 		// Access protection first: its own paths start with "/.", which the
 		// default block rules refuse.
 		next, pass := s.guardAccess(w, r, host, outlet.AdminHostname)
@@ -222,11 +229,15 @@ func (s *Store) PublicHandler() http.Handler {
 		r = next
 		if rule := s.blockedBy(host, r.URL.Path); rule != nil {
 			rule.hits.Add(1)
+			cause := failBlocked
+			if rule.ban && !sentForAPage(r) {
+				s.banClient(origin, rule, host, r.URL.Path)
+				cause = failTrapped
+			}
 			blocked(w)
-			s.logFailure(r, host, began, failBlocked, http.StatusForbidden, "")
+			s.logFailure(r, host, began, cause, http.StatusForbidden, "")
 			return
 		}
-		origin, _ := requestOrigin(r)
 		backends := s.orderBackends(host, origin, s.liveBackends(plans), policy)
 		if len(backends) == 0 {
 			http.NotFound(w, r)

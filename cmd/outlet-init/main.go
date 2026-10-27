@@ -140,7 +140,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	server, err := rathole.Server("0.0.0.0:2333", base64.StdEncoding.EncodeToString(noise.Bytes()), nil)
+	// The Outlet listens on the public port 2333 and passes the connections
+	// it admits to rathole, which listens on a loopback address.
+	server, err := rathole.Server(outlet.DefaultTunnelInternalAddress, base64.StdEncoding.EncodeToString(noise.Bytes()), nil)
 	if err != nil {
 		return err
 	}

@@ -90,6 +90,9 @@ func run() error {
 	go store.RunUsageCollector(ctx)
 	go store.RunAlerts(ctx)
 	go store.RunRateLimits(ctx)
+	// The Outlet admits connections to the public tunnel port itself and
+	// proxies them to rathole; it keeps running if the port can't be bound.
+	go store.RunTunnelGuard(ctx)
 	done := make(chan error, 2)
 	go func() { done <- server.ListenAndServeTLS(cfg.TLSCertificate, cfg.TLSKey) }()
 	go func() { done <- publicServer.ListenAndServe() }()

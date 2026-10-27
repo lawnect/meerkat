@@ -49,15 +49,17 @@ const (
 	failTooLong     = "too_long"     // the path was over maxPublicPath
 	failTooLarge    = "too_large"    // the body was over the upload limit
 	failBusy        = "busy"         // a connection limit refused it
+	failTrapped     = "trapped"      // a block rule that bans refused it, and banned the client
+	failBanned      = "banned"       // the client was banned earlier
 )
 
-var failureCauses = []string{failAppError, failUnreachable, failTimeout, failNoService, failRateLimited, failBlocked, failTooLong, failTooLarge, failBusy}
+var failureCauses = []string{failAppError, failUnreachable, failTimeout, failNoService, failRateLimited, failBlocked, failTooLong, failTooLarge, failBusy, failTrapped, failBanned}
 
 // refused says whether the Outlet turned the request away, which anyone can
 // make it do at will, rather than something being wrong with a service.
 func refused(cause string) bool {
 	switch cause {
-	case failRateLimited, failBlocked, failTooLong, failTooLarge, failBusy:
+	case failRateLimited, failBlocked, failTooLong, failTooLarge, failBusy, failTrapped, failBanned:
 		return true
 	}
 	return false

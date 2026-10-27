@@ -133,8 +133,13 @@ GET    /api/v1/security/rate-limit
 PUT    /api/v1/security/rate-limit
 GET    /api/v1/security/connection-limits
 PUT    /api/v1/security/connection-limits
+GET    /api/v1/security/tunnel-guard
+PUT    /api/v1/security/tunnel-guard
 GET    /api/v1/security/block-rules
 PUT    /api/v1/security/block-rules
+GET    /api/v1/security/client-bans?page=&per_page=&q=
+PUT    /api/v1/security/client-bans
+POST   /api/v1/security/client-bans/release
 GET    /api/v1/security/sso
 PUT    /api/v1/security/sso
 DELETE /api/v1/security/sso
@@ -211,7 +216,7 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 | 터널 | `connector.create`, `connector.delete`, `connector.describe`, `connector.rename`, `connector.token_issue`, `connector.token_reset`, `connector.enroll`, `connector.enroll_failed` |
 | 서비스·공개 주소 | `service.create`, `service.update`, `service.delete`, `route.create`, `route.delete` |
 | 도메인·터널 주소 | `domain.set`, `domain.add`, `domain.remove`, `domain.mode`, `tunnel.update` |
-| 알림·보안 | `telegram.update`, `telegram.test`, `telegram.delete`, `alert_rules.update`, `second_factor.update`, `security.rate_limit`, `security.connection_limits`, `security.block_rules`, `security.sso`, `security.sso_reset` |
+| 알림·보안 | `telegram.update`, `telegram.test`, `telegram.delete`, `alert_rules.update`, `second_factor.update`, `security.rate_limit`, `security.connection_limits`, `security.tunnel_guard`, `security.block_rules`, `security.client_bans`, `security.client_ban_release`, `security.sso`, `security.sso_reset` |
 
 **요청 제한(rate limit).** 공개 경로(`PublicHandler`)에서 프록시하기 전에, 데이터베이스를 조회하기 전에 토큰 버킷으로 제한한다. `GET`과 `PUT /api/v1/security/rate-limit`은 같은 객체를 주고받으며 `PUT`은 모든 키를 담아야 하고 범위를 벗어나면 `400 invalid_rate_limit`이다. 설정은 재시작 없이 바로 적용한다.
 
@@ -254,10 +259,31 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 - 동시 요청 제한으로 거부한 요청은 요청 제한 거부와 함께 `rate_limited`로 집계하며 `rate_limit` 알림에는 `concurrent`(IP별)와 `capacity`(전체)로 나타난다.
 - Caddy는 16KB를 넘는 요청 헤더를 거부하고 헤더를 10초 안에 받아야 한다. Caddy 자체의 본문·응답 유휴 제한은 1시간으로 두어 Outlet 설정이 먼저 적용된다.
 
+**터널 포트 보호(tunnel guard).** rathole 서버(터널 포트, 기본 2333)는 연결한 누구에게나 토큰을 확인하기 전에 Noise 핸드셰이크(X25519)를 해 주고 자체 제한이 없어, 익명 연결이 몰리면 rathole이 마비되어 모든 터널이 끊긴다. 그래서 Outlet이 `outlet.json`의 `tunnel_listen_address`(기본 `0.0.0.0:2333`)를 직접 수신하고, 통과시킨 연결만 `tunnel_internal_address`(선택, 기본 `127.0.0.1:2334`)의 rathole로 전달한다. 내부 주소는 루프백 IP 리터럴이어야 하고 수신 포트와 달라야 하며, 어긋나면 Outlet이 시작하지 않는다. 생성하는 `server.toml`의 `bind_addr`는 내부 주소다. rathole은 Outlet과 같은 네트워크 네임스페이스(`network_mode: service:outlet`)에서 실행하므로 Compose 파일은 그대로다. 수신 포트를 잡지 못하면(업그레이드 직후 이전 rathole이 아직 포트를 쥐고 있는 경우) 경고를 남기고 1초부터 30초까지 간격을 늘려 다시 시도하며, Outlet은 멈추지 않는다. 통과시킨 연결은 내부 주소로 연결하고(제한 5초) 양방향으로 복사한다. 한쪽의 데이터 끝은 `CloseWrite`로 반대쪽에 전달(half-close)하고, 오류가 나면 양쪽을 닫는다. TCP keepalive를 켠다. Outlet을 종료하면 수신을 멈추고 전달 중인 연결을 모두 닫는다.
+
+`GET /api/v1/security/tunnel-guard`(관리자)는 설정, Outlet이 시작한 뒤의 통계, 알고 있는 Connector 주소를 반환한다.
+
+~~~
+{
+  "settings": {"mode": "limited", "allowed": ["203.0.113.0/24"]},
+  "stats": {"active": 3, "accepted": 120, "refused": {"rate": 0, "busy": 0, "idle": 2, "strict": 0}},
+  "connectors": [{"client": "203.0.113.7", "last_seen": "2026-10-27T09:00:00Z"}]
+}
+~~~
+
+- `PUT`은 `{"mode", "allowed"}`를 모두 담아야 하고 같은 객체를 반환한다. `mode`는 `limited`(기본)나 `strict`이며 `allowed`는 IP 주소나 CIDR 범위 최대 50개다. 저장할 때 소문자로 바꾸고, 범위의 호스트 비트는 지우고, 단일 주소(`/32`, `/128`)는 주소로, IPv4-mapped IPv6는 IPv4로 정리하며 중복은 한 번만 남긴다(입력 순서는 유지한다). 형식이 맞지 않거나 보낸 항목이 50개를 넘으면 `400 invalid_tunnel_guard`다. 설정은 재시작 없이 새 연결부터 바로 적용하며 감사 로그 `security.tunnel_guard`에 `{mode, allowed}`를 남긴다.
+- 클라이언트의 단위는 IPv4 주소 하나나 IPv6 /64다. `connectors[].client`는 IPv4 주소 또는 `2001:db8:0:9::/64` 같은 접두사이고 `last_seen`은 RFC 3339(UTC)이며 최근에 본 것이 앞이다.
+- **아는 클라이언트**는 인증된 Connector API 요청(`/connector/v1/enrollment` 성공, `/connector/v1/config`, 자격 증명이 확인된 `/connector/v1/heartbeat`)을 최근 15분 안에 보낸 주소와 `allowed`의 주소·범위다. 인증에 실패한 요청은 주소를 알게 하지 않는다. 주소는 Caddy가 붙인 `X-Forwarded-For`의 마지막 항목이고, 로컬 관리 포트는 TCP 상대 주소다. 아는 주소 표는 4096개로 제한하며 가장 오래전에 본 것부터 지운다. 아는 클라이언트는 한도 없이 통과시키되 클라이언트당 동시 4096개의 안전 상한만 두고, 넘으면 `busy`로 거부한다.
+- **모르는 클라이언트**는 `limited`에서 클라이언트당 분당 새 연결 120개(토큰 버킷, 버스트 120)와 동시 32개, 모두 합쳐 동시 256개와 초당 새 연결 50개(버스트 100)까지 받는다. 어느 한도든 넘으면 연결을 즉시 닫는다(RST). 연결한 뒤 10초 안에 첫 바이트를 보내야 하며, 그러지 않으면 rathole에 연결하지 않고 닫는다. 받은 첫 바이트(최대 4096바이트)는 rathole에 그대로 넘긴다. 아무것도 보내지 않고 닫는 연결(`nc -vz`)은 거부로 세지 않는다.
+- `strict`에서는 모르는 클라이언트를 바로 거부한다. 아는 Connector와 `allowed`만 rathole에 닿는다. 터널 연결이 HTTPS 요청과 다른 주소에서 나가는 Connector(예: 한쪽은 IPv6, 다른 쪽은 IPv4)는 모르는 클라이언트이므로 그 범위를 `allowed`에 넣어야 한다. `limited`에서도 이런 Connector는 모르는 클라이언트의 한도를 받는다.
+- 한도는 동시 연결(클라이언트, 전체), 속도(클라이언트, 전체) 순으로 확인한다. 거부된 연결은 동시 연결 수도 속도 토큰도 쓰지 않는다.
+- `stats.active`는 rathole로 전달 중인 연결 수, `accepted`는 통과해 rathole에 연결을 시도한 수다. `refused`는 `rate`(속도), `busy`(동시 연결), `idle`(첫 바이트가 없음), `strict`(엄격 모드)로 나눈다.
+- SYN flood는 커널의 SYN 쿠키에, 회선을 채우는 공격은 호스팅 업체의 방어에 맡긴다.
+
 **차단 규칙(block rules).** 공개 주소(서비스로 연결된 호스트)로 온 요청의 경로가 규칙의 조건 중 하나라도 일치하면 서비스로 보내기 전에 `403 Forbidden`(본문 `Forbidden`)으로 거부한다. 관리 호스트와 대표 도메인의 커넥터 API에는 적용하지 않는다. 공개 주소로 온 요청의 경로가 앱에 보내는 인코딩된 형태로 8192바이트를 넘으면 차단 규칙과 접근 정책을 확인하기 전에 `414`로 거부한다(쿼리 문자열은 세지 않는다). 조건은 경로 전체와 비교하므로, nginx·Apache 기본값처럼 길이를 묶어 정규식 비교 시간을 제한한다. `GET /api/v1/security/block-rules`는 `{"rules": [...], "hits": {"<id>": 12}, "addresses": ["app.example.com"]}`를 반환한다. `hits`는 Outlet 시작 이후 규칙별로 차단한 요청 수, `addresses`는 규칙을 한정할 수 있는 공개 주소 목록이다. `PUT`은 `{"rules": [...]}`만 받고(본문 256KiB 이하) 같은 형태로 답하며, 형식이 맞지 않으면 `400 invalid_block_rules`다. 설정은 재시작 없이 바로 적용한다.
 
 ~~~
-{"rules": [{"id": "scanners", "name": "Vulnerability scanners", "enabled": true, "hosts": ["inc.example.com"],
+{"rules": [{"id": "scanners", "name": "Vulnerability scanners", "enabled": true, "ban": false, "hosts": ["inc.example.com"],
             "conditions": [{"operator": "matches", "value": "\\.(php|env)$"}, {"operator": "starts_with", "value": "/cgi-bin/"}]}]}
 ~~~
 
@@ -265,8 +291,29 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 - `operator`는 `equals`(같음), `starts_with`(다음으로 시작), `ends_with`(다음으로 끝남), `contains`(포함), `matches`(정규식과 일치)다. 값은 512바이트 이하이고 제어 문자를 쓸 수 없다. `equals`와 `starts_with`는 `/`로 시작해야 한다. `matches`는 RE2 문법이며 대소문자를 구분하지 않는다(전후방 탐색과 역참조는 지원하지 않는다). 저장할 때 값의 앞뒤 공백을 지우고, 정규식이 아닌 값은 소문자로 바꾸고 `\`를 `/`로 읽으며, `equals`는 요청 경로와 같은 방식으로 정리하고, 나머지는 `/` 앞 조각(`ends_with`는 값 끝 조각도)을 요청 경로처럼 다듬고, 같은 조건은 하나만 남긴다.
 - 요청 경로는 디코딩된 경로에서 `\`를 `/`로 읽고, 각 부분의 `;` 뒤와 NUL 뒤를 버리고, `//`·`.`·`..`을 정리하고, 소문자로 바꾸고, 각 조각 끝의 점과 공백을 지운 뒤(`/admin./x`는 `/admin/x`. 점과 공백뿐인 조각은 그대로) 비교한다(끝의 `/`는 없다). 모든 연산자는 끝에 `/`를 붙인 경로로도 비교하므로 `/cgi-bin/`과 `^/cgi-bin/`은 `/cgi-bin`에도 맞는다. 순서상 처음 맞는 규칙이 횟수를 센다.
 - `/.well-known` 아래 경로는 어떤 규칙으로도 차단하지 않는다.
-- 저장된 설정이 없으면 세 규칙이 기본이다. 루트의 숨김 파일(`/.` 시작)을 막는 `hidden-files`만 켜져 있고, 취약점 스캐너 경로(`.php` 등)를 막는 `scanners`와 사이트가 쓰지 않는 경로의 예시인 `unused-paths`는 실제 앱(예: Nextcloud의 `.php`)을 깨뜨릴 수 있어 꺼져 있다.
+- 저장된 설정이 없으면 네 규칙이 기본이다. 스캐너만 찾는 경로로 클라이언트를 차단하는 `honeypot`과 루트의 숨김 파일(`/.` 시작)을 막는 `hidden-files`만 켜져 있고, 취약점 스캐너 경로(`.php` 등)를 막는 `scanners`와 사이트가 쓰지 않는 경로의 예시인 `unused-paths`는 실제 앱(예: Nextcloud의 `.php`)을 깨뜨릴 수 있어 꺼져 있다.
 - 감사 로그에는 켜진 규칙과 꺼진 규칙의 이름만 남긴다.
+
+**클라이언트 차단(허니팟).** 규칙의 `ban`(불리언, 기본 `false`, 빠뜨리면 `false`)이 `true`이면 일치한 요청을 `403`으로 거부하는 데서 그치지 않고 그 클라이언트를 차단한다. 차단된 클라이언트의 요청은 `minutes`분 동안 서비스로 연결된 모든 공개 주소에서 `403`(본문 `Forbidden`)이다. 관리 호스트, 대표 도메인의 커넥터 API, `/.well-known/` 아래 경로(차단 규칙과 같은 비교)에는 적용하지 않는다.
+- 판정 순서: 공개 주소 찾기, 경로 길이(`414`) 확인 다음, 접근 정책보다 먼저 차단 목록을 확인하고, 그다음 차단 규칙이다. 차단 규칙은 `ban` 규칙을 순서대로 먼저, 나머지를 그다음 확인하며 처음 일치한 규칙이 `hits`를 센다. 그러므로 `ban` 규칙은 목록에서 앞선 넓은 규칙(예: 숨김 파일)보다 먼저 일치한다. 이미 차단된 클라이언트는 규칙까지 가지 않으므로 다시 차단하거나 시간을 늘리지 않는다.
+- 클라이언트는 Caddy가 넘긴 주소(`X-Forwarded-For`의 마지막 항목)다. IPv4는 주소 하나, IPv6는 /64 단위다. 주소가 없거나 읽을 수 없는 요청은 규칙에 일치해도 `403`만 받고 차단하지 않는다.
+- 차단 목록은 메모리에만 두므로 재시작하면 비워진다. 최대 65536건이며 가득 차면 가장 오래된 차단부터 지운다. 끝난 차단은 조회할 때, 그리고 30초마다 지운다. 차단 없이 지나가는 요청은 원자적 카운터 하나만 읽는다.
+- 차단마다 `client`(IPv4 주소 또는 `2001:db8:1:2::/64` 같은 /64 접두사), `rule`(규칙 ID), 차단을 부른 요청의 `host`와 `path`(512바이트까지), `since`, `until`, `hits`(그 뒤 거부한 요청 수)를 둔다. 차단을 부른 요청 자체는 `hits`에 세지 않는다.
+- 설정 `client_bans`는 `{"minutes": 60, "exempt": []}`이다. `minutes`는 1–10080(기본 60)이고 새 차단부터 적용하며, 이미 있는 차단은 `until`을 유지한다. `exempt`는 차단하지 않을 IP나 CIDR 범위(IPv4·IPv6) 50개까지다. 범위는 네트워크 주소로(`203.0.113.9/24`는 `203.0.113.0/24`), 주소 하나는 길이 없이(`203.0.113.5/32`와 `::ffff:203.0.113.5`는 `203.0.113.5`) 소문자로 정규화하고 중복을 없앤다. 제외된 클라이언트는 규칙에 일치해도 `403`만 받고, 같은 /64의 다른 주소가 받은 차단에도 걸리지 않는다. 저장하면 제외 범위가 통째로 덮는 차단은 바로 해제한다.
+
+~~~
+GET    /api/v1/security/client-bans?page=&per_page=&q=
+{"settings": {"minutes": 60, "exempt": []}, "total": 1,
+ "bans": [{"client": "203.0.113.9", "rule": "honeypot", "host": "app.example.com", "path": "/.env",
+           "since": "2026-10-27T09:00:00Z", "until": "2026-10-27T10:00:00Z", "hits": 3}]}
+~~~
+
+- `GET`은 차단을 최근 것부터 반환한다. `total`은 `q`에 맞는, 아직 끝나지 않은 차단 수다. `q`는 `client`, `host`, `path`에서 대소문자 없이 찾는다(128바이트 이하). `page`(1부터)와 `per_page`(1–200, 기본 20)가 맞지 않으면 `400 invalid_ban_query`다.
+- `PUT`은 `{"minutes", "exempt"}`를 모두 받아 저장하고 바로 적용하며 `GET`의 첫 쪽으로 답한다. 맞지 않는 값은 `400 invalid_client_bans`다(`security.client_bans`에 `{"minutes", "exempt"}`를 남긴다).
+- `POST .../release`는 `{"client": "<목록의 client>"}`로 차단 하나를, `{"all": true}`로 모든 차단을 해제하고 `GET`의 첫 쪽으로 답한다. 둘 중 하나만 보내야 하며 아니면 `400 invalid_request`다. `client`는 IPv4 주소나 IPv6 /64 접두사(IPv6 주소를 보내면 그 /64)이고, 차단이 없으면 `404 ban_not_found`다(`security.client_ban_release`에 `{"client"|"all", "count"}`를 남긴다).
+- 기본 `honeypot` 규칙은 스캐너만 찾는 경로를 건다: `/.env`, `/.git/`, `/.aws/`, `/.ssh/`, `/.svn/`, `/.hg/`, `/.docker/`, `/.kube/`, `/.htpasswd`, `/.ds_store`로 시작하는 경로, 깊이와 관계없이 `/.env` 또는 `/.env.<이름>`으로 끝나는 경로와 `/.git/config`·`/.git/head`로 끝나는 경로, `/wp-config.php`를 포함한 경로(`.bak`·`.old`·`~` 사본 포함). 마이그레이션 15는 저장된 규칙이 있고 `honeypot` ID가 없으며 50개 미만이면 이 규칙을 맨 앞에 넣는다. 저장된 규칙이 없으면 기본값이 적용되고, 한 번 적용한 뒤에는 지워도 다시 넣지 않는다.
+- 브라우저가 페이지를 위해 보낸 요청(`Sec-Fetch-Site`가 `none`이 아닌 값이거나, 이 헤더 없이 `Referer`가 있는 요청)은 거부(`blocked`)만 하고 차단하지 않는다. 다른 사이트가 이미지나 링크로 방문자의 브라우저에 함정 경로를 요청하게 해 방문자를 차단시키지 못하게 하기 위해서다. 스캐너는 두 헤더를 보내지 않으며, 위조해도 거부는 그대로다.
+- 주소창에 직접 입력한 요청은 차단되므로, 관리자나 사무실처럼 직접 쓰는 주소는 `exempt`에 넣어 둘 수 있다.
 
 **SSO(OpenID Connect).** 관리 콘솔에 OpenID Connect 공급자(Google Workspace, Microsoft Entra ID, Okta, Keycloak, Authentik 등)로 로그인한다. 공개 관리 호스트에서만 동작하고, SSH로 여는 로컬 관리 포트는 항상 비밀번호를 쓴다. 첫 관리자가 만들어지기 전에는 동작하지 않는다.
 
@@ -400,7 +447,7 @@ PUT    /api/v1/observe/failure-log
 
 **실패 요청**
 - 경로가 있는 공개 주소로 온 요청 중 실패했거나 Outlet이 앱에 보내기 전에 막은 요청을 기록한다. 경로가 없는 주소와 접근 보호가 막은 요청(접근 기록)은 남기지 않는다. 다른 서비스로 다시 보낸 요청은 마지막 결과로 한 번만 남긴다.
-- 항목은 `{"id", "at", "host", "method", "path", "client", "cause", "status", "service", "duration_ms", "routine"}`이며 `cause`와 `host`로 거르고, `q`는 `host`, `path`, `client`, `service`에서 찾는다. `cause`는 `app_error`(앱이 5xx로 응답), `unreachable`(서비스에 닿지 못함, `502`), `timeout`(연결이나 응답 헤더 시간 초과, `504`), `no_service`(살아 있는 서비스 없음, `404`), `rate_limited`(요청 제한, `429`), `blocked`(차단 규칙, `403`), `too_long`(경로 길이, `414`), `too_large`(업로드 크기, `413`), `busy`(연결 제한, 클라이언트별 `429`·전체 `503`)이고, `status`는 클라이언트가 받은 상태 코드, `duration_ms`는 요청을 받은 때부터 실패까지(앱의 5xx는 응답 헤더까지)다. `rate_limited`·`blocked`·`too_long`·`too_large`·`busy`(Outlet이 막은 요청)는 일상(`routine: true`), 나머지(서비스에 문제가 있는 요청)는 주목할 만한 항목이다. `cause`는 두 묶음도 받는다. `refused`는 일상 항목 다섯 가지 전체이고 `service`는 `app_error`·`unreachable`·`timeout`·`no_service` 전체다. 클라이언트 쪽 오류(`400`, `408`, `499`)는 남기지 않는다. 요청 제한과 클라이언트별 연결 제한은 주소를 보기 전에 거부하므로, 경로가 있는 주소로 온 요청일 때만 남긴다.
+- 항목은 `{"id", "at", "host", "method", "path", "client", "cause", "status", "service", "duration_ms", "routine"}`이며 `cause`와 `host`로 거르고, `q`는 `host`, `path`, `client`, `service`에서 찾는다. `cause`는 `app_error`(앱이 5xx로 응답), `unreachable`(서비스에 닿지 못함, `502`), `timeout`(연결이나 응답 헤더 시간 초과, `504`), `no_service`(살아 있는 서비스 없음, `404`), `rate_limited`(요청 제한, `429`), `blocked`(차단 규칙, `403`), `too_long`(경로 길이, `414`), `too_large`(업로드 크기, `413`), `busy`(연결 제한, 클라이언트별 `429`·전체 `503`), `trapped`(`ban` 규칙이 거부하고 클라이언트를 차단, `403`), `banned`(이미 차단된 클라이언트, `403`)이고, `status`는 클라이언트가 받은 상태 코드, `duration_ms`는 요청을 받은 때부터 실패까지(앱의 5xx는 응답 헤더까지)다. `rate_limited`·`blocked`·`too_long`·`too_large`·`busy`·`trapped`·`banned`(Outlet이 막은 요청)는 일상(`routine: true`), 나머지(서비스에 문제가 있는 요청)는 주목할 만한 항목이다. `cause`는 두 묶음도 받는다. `refused`는 일상 항목 일곱 가지 전체이고 `service`는 `app_error`·`unreachable`·`timeout`·`no_service` 전체다. 클라이언트 쪽 오류(`400`, `408`, `499`)는 남기지 않는다. 요청 제한과 클라이언트별 연결 제한은 주소를 보기 전에 거부하므로, 경로가 있는 주소로 온 요청일 때만 남긴다.
 
 ### Outlet 사용량
 

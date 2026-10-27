@@ -89,7 +89,7 @@ func run() error {
 	}
 	public := base64.StdEncoding.EncodeToString(noise.PublicKey().Bytes())
 	admin := outlet.Token()
-	cfg := outlet.Config{ListenAddress: "0.0.0.0:8443", TLSCertificate: "/config/api-cert.pem", TLSKey: "/config/api-key.pem", AdminTokenHash: outlet.Hash(admin), EnrollmentTTLSeconds: int(enrollmentTTL.Seconds()), CredentialTTLSeconds: int(credentialTTL.Seconds())}
+	cfg := outlet.Config{ListenAddress: "0.0.0.0:8443", TLSCertificate: "/config/api-cert.pem", TLSKey: "/config/api-key.pem", AdminTokenHash: outlet.Hash(admin), EnrollmentTTLSeconds: int(enrollmentTTL.Seconds()), CredentialTTLSeconds: int(credentialTTL.Seconds()), TunnelListenAddress: "0.0.0.0:2333"}
 	services := []rathole.ServerService{}
 	for i, letter := range []string{"a", "b"} {
 		name, service, id := "connector-"+letter, "service_"+letter, "connector_"+letter
@@ -109,7 +109,8 @@ func run() error {
 			return err
 		}
 	}
-	server, err := rathole.Server("0.0.0.0:2333", base64.StdEncoding.EncodeToString(noise.Bytes()), services)
+	// The Outlet's guard listens on 2333 and proxies to rathole's loopback address.
+	server, err := rathole.Server(outlet.DefaultTunnelInternalAddress, base64.StdEncoding.EncodeToString(noise.Bytes()), services)
 	if err != nil {
 		return err
 	}

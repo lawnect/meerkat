@@ -44,11 +44,14 @@ type BlockCondition struct {
 // BlockRule answers 403 to requests for public addresses whose path matches
 // any of its conditions. Hosts limits it to some hostnames; empty means
 // every public address. "*.example.com" covers every name under
-// example.com, at any depth, but not example.com itself.
+// example.com, at any depth, but not example.com itself. A rule with Ban also
+// bans the client that matched it: for a while every request from that
+// client to any public address is refused (see ClientBanSettings).
 type BlockRule struct {
 	ID         string           `json:"id"`
 	Name       string           `json:"name"`
 	Enabled    bool             `json:"enabled"`
+	Ban        bool             `json:"ban"`
 	Hosts      []string         `json:"hosts"`
 	Conditions []BlockCondition `json:"conditions"`
 }
@@ -57,13 +60,41 @@ type BlockRules struct {
 	Rules []BlockRule `json:"rules"`
 }
 
-// DefaultBlockRules turns on only what no application serves: hidden files
-// at the root such as /.env and /.git. The scanner list blocks paths real
-// applications use (.php for Nextcloud or WordPress, .zip downloads), and the
-// last rule is an example of paths a particular site does not have, so both
-// start off, to be turned on for the addresses that do not need them.
+// HoneypotRuleID is the rule that bans a client for asking for a path only a
+// scanner asks for.
+const HoneypotRuleID = "honeypot"
+
+// honeypotRule is the rule DefaultBlockRules starts with and migration 15
+// adds to saved rules: secrets, repositories and configuration no
+// application serves, which only scanners look for, wherever they look
+// (/.env, /api/.env.production, /.git/config, a copy of wp-config.php).
+func honeypotRule() BlockRule {
+	return BlockRule{ID: HoneypotRuleID, Name: "Honeypot", Enabled: true, Ban: true, Hosts: []string{}, Conditions: []BlockCondition{
+		{BlockStartsWith, "/.env"},
+		{BlockStartsWith, "/.git/"},
+		{BlockStartsWith, "/.aws/"},
+		{BlockStartsWith, "/.ssh/"},
+		{BlockStartsWith, "/.svn/"},
+		{BlockStartsWith, "/.hg/"},
+		{BlockStartsWith, "/.docker/"},
+		{BlockStartsWith, "/.kube/"},
+		{BlockStartsWith, "/.htpasswd"},
+		{BlockStartsWith, "/.ds_store"},
+		{BlockMatches, `/\.env(\.[a-z0-9_-]+)?$`},
+		{BlockMatches, `/\.git/(config|head)$`},
+		{BlockContains, "/wp-config.php"},
+	}}
+}
+
+// DefaultBlockRules starts with the honeypot, which bans the clients that ask
+// for what no application serves, and turns on only that and the hidden
+// files at the root. The scanner list blocks paths real applications use
+// (.php for Nextcloud or WordPress, .zip downloads), and the last rule is an
+// example of paths a particular site does not have, so both start off, to be
+// turned on for the addresses that do not need them.
 func DefaultBlockRules() BlockRules {
 	return BlockRules{Rules: []BlockRule{
+		honeypotRule(),
 		{ID: "hidden-files", Name: "Hidden files", Enabled: true, Hosts: []string{}, Conditions: []BlockCondition{
 			{BlockStartsWith, "/."},
 		}},
@@ -260,6 +291,33 @@ func containsCondition(list []BlockCondition, c BlockCondition) bool {
 		}
 	}
 	return false
+}
+
+// addHoneypotRule is migration 15. Saved rules get the honeypot in front,
+// unless they hold a rule of that ID already (the administrator has one, or
+// deleted it and added it back) or are as many as can be saved. With no
+// saved rules the defaults apply, which start with it. Once applied it is
+// never added again, so deleting the rule sticks.
+func addHoneypotRule(ctx context.Context, q conn) error {
+	raw, err := getSetting(ctx, q, settingBlockRules)
+	if err != nil || raw == "" {
+		return err
+	}
+	var saved BlockRules
+	if json.Unmarshal([]byte(raw), &saved) != nil || len(saved.Rules) >= MaxBlockRules {
+		return nil
+	}
+	for _, rule := range saved.Rules {
+		if rule.ID == HoneypotRuleID {
+			return nil
+		}
+	}
+	saved.Rules = append([]BlockRule{honeypotRule()}, saved.Rules...)
+	updated, err := json.Marshal(saved)
+	if err != nil {
+		return err
+	}
+	return putSetting(ctx, q, settingBlockRules, string(updated), time.Now())
 }
 
 // BlockRules returns the stored rules, or the defaults.

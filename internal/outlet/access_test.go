@@ -1271,7 +1271,9 @@ func TestSettingSavesReleaseTheLockBeforeAnswering(t *testing.T) {
 	for path, body := range map[string]any{
 		"/api/v1/security/rate-limit":        current("/api/v1/security/rate-limit", "enabled", "per_ip", "per_subnet", "per_address", "endpoints"),
 		"/api/v1/security/connection-limits": current("/api/v1/security/connection-limits", "max_upload_mb", "per_ip_concurrent", "total_concurrent", "idle_timeout_seconds", "min_upload_kb_per_second", "hosts"),
+		"/api/v1/security/tunnel-guard":      map[string]any{"mode": "limited", "allowed": []string{}},
 		"/api/v1/security/block-rules":       map[string]any{"rules": []any{}},
+		"/api/v1/security/client-bans":       map[string]any{"minutes": 60, "exempt": []string{}},
 		"/api/v1/security/access-policies":   map[string]any{"policies": []any{}},
 		"/api/v1/security/access-provider":   map[string]any{"enabled": true, "issuer": f.idp.server.URL, "client_id": "access", "scopes": []string{"openid"}, "groups_claim": "groups", "session_hours": 8},
 	} {

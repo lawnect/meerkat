@@ -18,9 +18,11 @@
   import { intlLocale, translations } from '../i18n.svelte';
   import { Alert12, Alert20, ArrowUndo, Delete, Key, NumberSymbol, Save, Send, Shield12, Warning } from '../icons';
   import type { AlertRules, AlertSettings } from '../types';
+  import BannedClients from '../components/BannedClients.svelte';
   import BlockRuleSettings from '../components/BlockRuleSettings.svelte';
   import ConnectionLimitSettings from '../components/ConnectionLimitSettings.svelte';
   import RateLimitSettings from '../components/RateLimitSettings.svelte';
+  import TunnelGuardSettings from '../components/TunnelGuardSettings.svelte';
   import InfoTooltip from '../components/InfoTooltip.svelte';
   import SsoSettings from '../components/SsoSettings.svelte';
   import PageHead from '../components/PageHead.svelte';
@@ -295,7 +297,7 @@
 {:else if !settings || !rules}
   <div class="grid gap-4"><Skeleton class="h-56 w-full" /><Skeleton class="h-72 w-full" /></div>
 {:else}
-  <Tabs.Root bind:value={() => tab, (next) => { setParams({ tab: next }, { tab: 'alerts' }); }} class="min-w-0 gap-4">
+  <Tabs.Root bind:value={() => tab, (next) => { setParams({ tab: next, bans_q: '', bans_page: '' }, { tab: 'alerts' }); }} class="min-w-0 gap-4">
     <Tabs.List aria-label={t().tabsAria}>
       <Tabs.Trigger value="alerts"><Alert12 class="size-3" aria-hidden="true" />{t().tabAlerts}</Tabs.Trigger>
       <Tabs.Trigger value="security"><Shield12 class="size-3" aria-hidden="true" />{t().tabSecurity}</Tabs.Trigger>
@@ -489,7 +491,10 @@
       <SsoSettings />
       <RateLimitSettings />
       <ConnectionLimitSettings />
+      <TunnelGuardSettings />
       <BlockRuleSettings />
+      <!-- 차단된 클라이언트 표는 검색어·페이지를 주소 query(bans_q, bans_page)에 담으므로 고른 탭에서만 그립니다. -->
+      {#if tab === 'security'}<BannedClients />{/if}
     </Tabs.Content>
   </Tabs.Root>
 {/if}

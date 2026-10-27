@@ -12,7 +12,7 @@
   import TruncateText from './TruncateText.svelte';
 
   // 관찰의 실패 요청 탭. 공개 주소로 온 요청 중 실패했거나 앱에 닿기 전에 Outlet이 거부한 요청을 검색어와 원인, 주소로 거르며(?q=&cause=&host=) 보여 줍니다.
-  // 원인은 서비스 오류(앱 오류·연결 실패·응답 시간 초과·서비스 없음)와 Outlet 거부(요청 제한·차단·길이·크기·연결 제한)로 묶어 고를 수 있어,
+  // 원인은 서비스 오류(앱 오류·연결 실패·응답 시간 초과·서비스 없음)와 Outlet 거부(요청 제한·차단·허니팟·차단된 클라이언트·길이·크기·연결 제한)로 묶어 고를 수 있어,
   // 누구나 만들 수 있는 거부 기록 속에서 서비스 문제를 바로 찾습니다.
   // addresses는 콘솔이 이미 불러온 공개 주소이고, 주소에서 온 값이 목록에 없으면(지워진 주소 등) 그 값도 선택지에 남깁니다.
   let { addresses }: { addresses: string[] } = $props();
@@ -35,7 +35,7 @@
     allHosts: 'All addresses',
     causes: {
       app_error: 'App error', unreachable: 'Unreachable', timeout: 'Timeout', no_service: 'No service', rate_limited: 'Rate limited',
-      blocked: 'Blocked', too_long: 'Path too long', too_large: 'Body too large', busy: 'Connection limit',
+      blocked: 'Blocked', trapped: 'Honeypot hit', banned: 'Banned client', too_long: 'Path too long', too_large: 'Body too large', busy: 'Connection limit',
     } as Record<FailureCause, string>,
     meanings: {
       app_error: 'The app answered with a 5xx.',
@@ -44,6 +44,8 @@
       no_service: 'The address has no live service.',
       rate_limited: 'Refused by a rate limit.',
       blocked: 'Refused by a block rule.',
+      trapped: 'Matched a honeypot rule, so the client was banned.',
+      banned: 'Refused because the client is banned.',
       too_long: 'The path was over 8,192 bytes.',
       too_large: 'The request body was over the upload limit.',
       busy: 'Refused by a connection limit.',
@@ -70,7 +72,7 @@
     allHosts: '모든 주소',
     causes: {
       app_error: '앱 오류', unreachable: '연결 실패', timeout: '응답 시간 초과', no_service: '서비스 없음', rate_limited: '요청 제한',
-      blocked: '차단', too_long: '경로 길이 초과', too_large: '본문 크기 초과', busy: '동시 연결 제한',
+      blocked: '차단', trapped: '허니팟 감지', banned: '차단된 클라이언트', too_long: '경로 길이 초과', too_large: '본문 크기 초과', busy: '동시 연결 제한',
     },
     meanings: {
       app_error: '앱이 5xx로 응답했습니다.',
@@ -79,6 +81,8 @@
       no_service: '이 주소에 연결된 활성 서비스가 없습니다.',
       rate_limited: '요청 제한으로 거부되었습니다.',
       blocked: '차단 규칙으로 거부되었습니다.',
+      trapped: '허니팟 규칙에 해당하여 클라이언트를 차단했습니다.',
+      banned: '차단된 클라이언트의 요청을 거부했습니다.',
       too_long: '경로가 8,192바이트를 초과했습니다.',
       too_large: '요청 본문이 업로드 제한을 초과했습니다.',
       busy: '연결 제한으로 거부되었습니다.',

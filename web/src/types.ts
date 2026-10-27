@@ -267,12 +267,52 @@ export interface BlockRule {
   enabled: boolean;
   hosts: string[]; // 호스트 이름. []이면 모든 공개 주소
   conditions: BlockCondition[]; // 1–50개. 하나라도 맞으면 차단합니다
+  ban: boolean; // 맞은 요청을 보낸 클라이언트를 차단 시간(ClientBanSettings.minutes) 동안 모든 요청에서 거부합니다
 }
 
 export interface BlockRulesView {
   rules: BlockRule[];
   hits: Record<string, number>; // 규칙 id별로 Outlet 시작 이후 차단한 요청 수. 없는 id도 있습니다
   addresses: string[]; // 규칙을 한정할 수 있는 공개 주소(호스트 이름), 정렬됨
+}
+
+// 차단된 클라이언트(GET /api/v1/security/client-bans?page&per_page&q, PUT은 설정, POST …/release). 차단은 Outlet 메모리에만 있어 재시작하면 사라집니다.
+// 클라이언트는 IPv4 주소 하나, IPv6는 /64 대역입니다.
+export interface ClientBanSettings {
+  minutes: number; // 1–10080
+  exempt: string[]; // 차단하지 않을 IP 또는 CIDR 범위, 0–50개
+}
+
+export interface ClientBan {
+  client: string; // IPv4 주소 또는 IPv6 /64 대역("2001:db8:1:2::/64"). 해제할 때도 이 값을 그대로 보냅니다
+  rule: string; // 차단한 규칙의 id. 지워진 규칙일 수 있습니다
+  host: string; // 차단하게 된 요청의 주소와 경로(512바이트까지)
+  path: string;
+  since: string; // RFC 3339
+  until: string; // RFC 3339
+  hits: number; // 차단한 뒤 거부한 요청 수
+}
+
+export interface ClientBansView {
+  settings: ClientBanSettings;
+  total: number; // 검색에 맞는 전체 수
+  bans: ClientBan[]; // 최근에 차단한 순서
+}
+
+// 터널 포트 보호(GET/PUT /api/v1/security/tunnel-guard). limited는 알려진 커넥터를 제한 없이, 그 밖의 주소는 한도 안에서 받고,
+// strict는 알려진 커넥터와 허용 범위만 받습니다.
+export type TunnelGuardMode = 'limited' | 'strict';
+
+export interface TunnelGuardSettings {
+  mode: TunnelGuardMode;
+  allowed: string[]; // 항상 받을 IP 또는 CIDR 범위, 0–50개
+}
+
+export interface TunnelGuardView {
+  settings: TunnelGuardSettings;
+  // Outlet 시작 이후의 누계. active는 지금 열린 연결 수입니다
+  stats: { active: number; accepted: number; refused: { rate: number; busy: number; idle: number; strict: number } };
+  connectors: Array<{ client: string; last_seen: string }>; // 인증된 커넥터 API 요청이 최근 15분 안에 있었던 주소, 최근 순서
 }
 
 // OpenID Connect 로그인(GET/PUT /api/v1/security/sso). 클라이언트 시크릿은 응답에 없고, PUT에서 비우면 저장된 값을 유지합니다.
@@ -405,7 +445,7 @@ export interface AccessLogEntry {
 // 공개 주소로 온 요청 중 실패했거나 앱에 닿기 전에 Outlet이 거절한 것.
 // 서비스 쪽 문제(눈여겨볼 기록)와 Outlet이 규칙에 따라 거부한 요청(누구나 만들 수 있는 반복 기록)으로 나뉩니다.
 export const serviceCauses = ['app_error', 'unreachable', 'timeout', 'no_service'] as const;
-export const refusedCauses = ['rate_limited', 'blocked', 'too_long', 'too_large', 'busy'] as const;
+export const refusedCauses = ['rate_limited', 'blocked', 'trapped', 'banned', 'too_long', 'too_large', 'busy'] as const;
 export const failureCauses = [...serviceCauses, ...refusedCauses] as const;
 export type FailureCause = (typeof failureCauses)[number];
 // cause 필터는 원인 하나 외에 묶음 service(서비스 오류 전체), refused(Outlet 거부 전체)도 받습니다.
@@ -421,7 +461,7 @@ export interface FailureLogEntry {
   status: number; // 클라이언트가 받은 상태 코드
   service: string; // 서비스 이름, 없으면 ''
   duration_ms: number;
-  routine: boolean; // Outlet이 거부한 원인(rate_limited·blocked·too_long·too_large·busy)이면 true
+  routine: boolean; // Outlet이 거부한 원인(rate_limited·blocked·trapped·banned·too_long·too_large·busy)이면 true
 }
 
 export interface AccessTokensView {

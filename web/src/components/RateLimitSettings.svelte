@@ -186,16 +186,16 @@
               <Table.Body>
                 {#each draft.endpoints as rule, index (index)}
                   <Table.Row>
-                    <Table.Cell class="pl-4"><Input aria-label={t().host} bind:value={rule.host} disabled={!draft.enabled} class="w-48 font-mono" /></Table.Cell>
-                    <Table.Cell><Input aria-label={t().path} bind:value={rule.path_prefix} disabled={!draft.enabled} class="w-40 font-mono" /></Table.Cell>
+                    <Table.Cell class="pl-4"><Input aria-label={t().host} bind:value={rule.host} disabled={!draft.enabled} class="w-44 font-mono" /></Table.Cell>
+                    <Table.Cell><Input aria-label={t().path} bind:value={rule.path_prefix} disabled={!draft.enabled} class="w-32 font-mono" /></Table.Cell>
                     <Table.Cell>
                       <NativeSelect.Root aria-label={t().scope} bind:value={rule.per} disabled={!draft.enabled}>
                         <NativeSelect.Option value="ip">{t().scopes.ip}</NativeSelect.Option>
                         <NativeSelect.Option value="total">{t().scopes.total}</NativeSelect.Option>
                       </NativeSelect.Root>
                     </Table.Cell>
-                    <Table.Cell><Input type="number" min="1" max="10000" aria-label={t().rps} bind:value={rule.rps} disabled={!draft.enabled} class="w-24 tabular-nums" /></Table.Cell>
-                    <Table.Cell><Input type="number" min="1" max="100000" aria-label={t().burst} bind:value={rule.burst} disabled={!draft.enabled} class="w-24 tabular-nums" /></Table.Cell>
+                    <Table.Cell><Input type="number" min="1" max="10000" aria-label={t().rps} bind:value={rule.rps} disabled={!draft.enabled} class="w-18 tabular-nums" /></Table.Cell>
+                    <Table.Cell><Input type="number" min="1" max="100000" aria-label={t().burst} bind:value={rule.burst} disabled={!draft.enabled} class="w-18 tabular-nums" /></Table.Cell>
                     <Table.Cell class="pr-4 text-right"><IconButton label={t().remove} icon={Delete} side="left" disabled={!draft.enabled} onclick={() => draft?.endpoints.splice(index, 1)} /></Table.Cell>
                   </Table.Row>
                 {/each}

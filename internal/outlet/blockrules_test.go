@@ -14,8 +14,8 @@ import (
 func TestBlockRulesMatchNormalizedPaths(t *testing.T) {
 	s := &Store{}
 	rules := control.DefaultBlockRules()
-	rules.Rules[1].Enabled = true
-	rules.Rules[1].Hosts = []string{"inc.example.com"}
+	rules.Rules[2].Enabled = true
+	rules.Rules[2].Hosts = []string{"inc.example.com"}
 	rules.Rules = append(rules.Rules, control.BlockRule{ID: "ends", Name: "ends", Enabled: true, Hosts: []string{"inc.example.com"},
 		Conditions: []control.BlockCondition{{Operator: control.BlockEndsWith, Value: ".old"}, {Operator: control.BlockEndsWith, Value: "/private/"}}})
 	rules.Rules = append(rules.Rules, control.BlockRule{ID: "wild", Name: "wild", Enabled: true, Hosts: []string{"*.Corp.Example.com"},
@@ -29,10 +29,12 @@ func TestBlockRulesMatchNormalizedPaths(t *testing.T) {
 		host, path string
 		want       string
 	}{
-		{"app.example.com", "/.env", "hidden-files"},
-		{"app.example.com", "/.git/config", "hidden-files"},
-		{"app.example.com", "//.env", "hidden-files"},
-		{"app.example.com", "/a/../.ENV", "hidden-files"},
+		{"app.example.com", "/.env", "honeypot"},
+		{"app.example.com", "/.git/config", "honeypot"},
+		{"app.example.com", "//.env", "honeypot"},
+		{"app.example.com", "/a/../.ENV", "honeypot"},
+		{"app.example.com", "/.htaccess", "hidden-files"},
+		{"app.example.com", "/.hidden/x", "hidden-files"},
 		{"app.example.com", "/.well-known/acme-challenge/x", ""},
 		{"app.example.com", "/.well-known", ""},
 		{"app.example.com", "/index.php", ""},
@@ -102,7 +104,9 @@ func TestBlockRulesCompareTrimmedPaths(t *testing.T) {
 		"/private. /":  "r4",
 		"/.../secret":  "hidden-files",
 		"/. /secret":   "hidden-files",
-		"/.env.":       "hidden-files",
+		"/.env.":       "honeypot",
+		"/.envrc":      "honeypot",
+		"/.htaccess":   "hidden-files",
 	} {
 		got := ""
 		if rule := s.blockedBy("app.example.com", path); rule != nil {
@@ -130,6 +134,9 @@ func TestBlockRulesGuardPublicAddressesOnly(t *testing.T) {
 	if code := get("app.example.com", "/.env"); code != http.StatusForbidden {
 		t.Fatalf("hidden file: %d", code)
 	}
+	if code := get("app.example.com", "/.htaccess"); code != http.StatusForbidden {
+		t.Fatalf("hidden file: %d", code)
+	}
 	if code := get("app.example.com", "/.well-known/security.txt"); code != 200 {
 		t.Fatalf("well-known path: %d", code)
 	}
@@ -142,16 +149,17 @@ func TestBlockRulesGuardPublicAddressesOnly(t *testing.T) {
 
 	w := request(f.store.Handler(), "GET", "/api/v1/security/block-rules", f.admin, nil)
 	var view blockRulesView
-	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &view) != nil || view.Hits["hidden-files"] != 1 || len(view.Rules) != 3 || len(view.Addresses) != 1 || view.Addresses[0] != "app.example.com" {
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &view) != nil || view.Hits["honeypot"] != 1 || view.Hits["hidden-files"] != 1 || len(view.Rules) != 4 || !view.Rules[0].Ban || len(view.Addresses) != 1 || view.Addresses[0] != "app.example.com" {
 		t.Fatalf("rules view: %d %s", w.Code, w.Body.String())
 	}
 	// Turning a rule off lets the path through and keeps its count.
 	view.Rules[0].Enabled = false
+	view.Rules[1].Enabled = false
 	w = request(f.store.Handler(), "PUT", "/api/v1/security/block-rules", f.admin, map[string]any{"rules": view.Rules})
 	if w.Code != 200 || get("app.example.com", "/.env") != 200 {
 		t.Fatalf("disabled rule: %d %s", w.Code, w.Body.String())
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil || view.Hits["hidden-files"] != 1 {
+	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil || view.Hits["honeypot"] != 1 || view.Hits["hidden-files"] != 1 {
 		t.Fatalf("hits after an edit: %s", w.Body.String())
 	}
 	bad := request(f.store.Handler(), "PUT", "/api/v1/security/block-rules", f.admin, map[string]any{"rules": []map[string]any{{"id": "", "name": "x", "enabled": true, "hosts": []string{}, "conditions": []map[string]string{{"operator": "matches", "value": "(?!x)"}}}}})

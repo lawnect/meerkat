@@ -1,6 +1,8 @@
 # rathole v0.5.0: replace all placeholders before running. Keep mode 0600.
+# The Outlet listens on the public tunnel port (2333), admits connections and
+# proxies them to bind_addr, which is loopback in the Outlet's network namespace.
 [server]
-bind_addr = "0.0.0.0:2333"
+bind_addr = "127.0.0.1:2334"
 
 [server.transport]
 type = "noise"

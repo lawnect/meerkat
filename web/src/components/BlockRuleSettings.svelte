@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import * as Alert from '$lib/components/ui/alert/index.js';
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
+  import { Badge } from '$lib/components/ui/badge/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import * as Card from '$lib/components/ui/card/index.js';
   import * as Dialog from '$lib/components/ui/dialog/index.js';
@@ -17,6 +18,7 @@
   import * as Table from '$lib/components/ui/table/index.js';
   import { toast } from 'svelte-sonner';
   import { api, errorMessage } from '../api';
+  import { displayName, shareRules } from '../blockRules.svelte';
   import { intlLocale, translations } from '../i18n.svelte';
   import { Add12, Dismiss, Shield20, Warning } from '../icons';
   import type { BlockCondition, BlockOperator, BlockRule, BlockRulesView } from '../types';
@@ -26,6 +28,7 @@
 
   // 설정 > 보안의 차단 규칙 카드. 경로가 조건과 일치하는 요청을 403으로 거부합니다.
   // 스위치와 대화상자의 저장·삭제는 모두 바로 서버에 저장하고, 응답으로 목록을 다시 채웁니다.
+  // 규칙이 클라이언트 차단(ban)이면 해당 요청을 보낸 클라이언트를 한동안 모든 요청에서 거부하며, 그 목록은 이어지는 차단된 클라이언트 카드에 있습니다.
   const t = translations({
     title: 'Block rules',
     tip: 'Requests for public addresses whose path matches a rule get 403 before they reach a tunnel. Paths are decoded, normalized and lowercased before matching, and /.well-known/ is never blocked. The admin host and Connector API are not affected. Blocked counts are since the Outlet started.',
@@ -50,9 +53,10 @@
     addCondition: 'Add condition',
     removeCondition: 'Remove condition',
     regexNote: 'RE2 syntax, case-insensitive',
+    ban: 'Ban the client',
+    banTip: 'Refuses every request from a client that sends a request matching this rule, for the ban period set in the Banned clients settings. The admin host, Connector API and /.well-known/ paths are excluded, and a browser request triggered by another site\'s page is refused without a ban.',
     operators: { equals: 'equals', starts_with: 'starts with', ends_with: 'ends with', contains: 'contains', matches: 'matches regex' } as Record<BlockOperator, string>,
     placeholders: { equals: '/phpmyadmin', starts_with: '/cgi-bin/', ends_with: '.php', contains: '/wp-', matches: '\\.(php|asp)$' } as Record<BlockOperator, string>,
-    presets: { 'hidden-files': 'Hidden files', scanners: 'Vulnerability scanners', 'unused-paths': 'Paths this site does not use' } as Record<string, string>,
     delete: 'Delete',
     deleteTitle: 'Delete this rule?',
     deleted: 'Deleted',
@@ -87,9 +91,10 @@
     addCondition: '조건 추가',
     removeCondition: '조건 삭제',
     regexNote: 'RE2 구문, 대소문자 구분 없음',
+    ban: '클라이언트 차단',
+    banTip: '이 규칙에 해당하는 요청을 보낸 클라이언트의 모든 요청을 차단 시간 동안 거부합니다. 관리 호스트, 커넥터 API, /.well-known/ 경로는 제외되며, 다른 사이트의 페이지가 유도한 브라우저 요청은 거부만 하고 차단하지 않습니다. 차단 시간은 차단된 클라이언트의 설정에서 지정합니다.',
     operators: { equals: '같음', starts_with: '다음으로 시작', ends_with: '다음으로 끝남', contains: '포함', matches: '정규식과 일치' },
     placeholders: { equals: '/phpmyadmin', starts_with: '/cgi-bin/', ends_with: '.php', contains: '/wp-', matches: '\\.(php|asp)$' },
-    presets: { 'hidden-files': '숨김 파일', scanners: '취약점 스캐너', 'unused-paths': '미사용 경로' },
     delete: '삭제',
     deleteTitle: '이 규칙을 삭제하시겠습니까?',
     deleted: '삭제되었습니다',
@@ -105,9 +110,6 @@
   const maxRules = 50;
   const maxConditions = 50;
   const operators: BlockOperator[] = ['equals', 'starts_with', 'ends_with', 'contains', 'matches'];
-  // 기본 규칙의 이름은 영어로 저장되어 있어, 이름을 바꾸지 않은 기본 규칙만 화면 언어로 보여줍니다.
-  const presetNames: Record<string, string> = { 'hidden-files': 'Hidden files', scanners: 'Vulnerability scanners', 'unused-paths': 'Paths this site does not use' };
-  const displayName = (rule: BlockRule): string => (presetNames[rule.id] === rule.name ? t().presets[rule.id] ?? rule.name : rule.name);
   const operatorLabel = (operator: BlockOperator): string => t().operators[operator] ?? operator;
   const describe = (code: string): string => (code === 'invalid_block_rules' ? t().invalid : t().failed(code));
 
@@ -131,7 +133,7 @@
   let deleteName = $state('');
   let editingId = $state('');
   // 규칙이 이미 가진 호스트는 공개 주소 목록에 없어도 선택지에 남깁니다.
-  let form = $state<{ name: string; scope: 'all' | 'selected'; hosts: HostRow[]; conditions: ConditionRow[] }>({ name: '', scope: 'all', hosts: [], conditions: [] });
+  let form = $state<{ name: string; scope: 'all' | 'selected'; hosts: HostRow[]; conditions: ConditionRow[]; ban: boolean }>({ name: '', scope: 'all', hosts: [], conditions: [], ban: false });
   let formError = $state('');
 
   const editing = $derived(editingId ? rules?.find((rule) => rule.id === editingId) : undefined);
@@ -141,6 +143,7 @@
     rules = view.rules;
     hits = view.hits ?? {};
     addresses = view.addresses ?? [];
+    shareRules(view.rules);
   };
 
   async function put(next: BlockRule[]): Promise<void> {
@@ -172,6 +175,7 @@
       scope: rule?.hosts.length ? 'selected' : 'all',
       hosts: rule ? rule.hosts.map((host) => newHost(host)) : [],
       conditions: rule ? rule.conditions.map((condition) => newRow(condition)) : [newRow()],
+      ban: rule?.ban ?? false,
     };
     formError = '';
     dialogOpen = true;
@@ -210,6 +214,7 @@
       enabled: current?.enabled ?? true,
       hosts: form.scope === 'selected' ? form.hosts.map((row) => row.value.trim().toLowerCase()).filter(Boolean) : [],
       conditions: form.conditions.map((condition) => ({ operator: condition.operator, value: condition.value.trim() })),
+      ban: form.ban,
     };
     const list = $state.snapshot(rules);
     busy = true;
@@ -279,7 +284,10 @@
                     <Switch size="sm" class="z-10" bind:checked={rule.enabled} disabled={busy} aria-label={displayName(rule)} onCheckedChange={(checked) => toggle(rule, checked)} />
                   </Table.Cell>
                   <Table.Cell>
-                    <button type="button" class="block max-w-56 truncate text-left text-sm font-medium outline-none after:absolute after:inset-0 text-link focus-visible:ring-3 focus-visible:ring-ring/50" onclick={() => openRule(rule)}>{displayName(rule)}</button>
+                    <span class="flex items-center gap-2">
+                      <button type="button" class="block max-w-56 min-w-0 truncate text-left text-sm font-medium outline-none after:absolute after:inset-0 text-link focus-visible:ring-3 focus-visible:ring-ring/50" onclick={() => openRule(rule)}>{displayName(rule)}</button>
+                      {#if rule.ban}<Badge variant="outline" class="select-none">{t().ban}</Badge>{/if}
+                    </span>
                   </Table.Cell>
                   <Table.Cell>
                     {#if rule.hosts.length}
@@ -295,7 +303,7 @@
                     {#if rule.conditions.length}
                       <span class="flex items-center gap-1.5">
                         <span class="text-muted-foreground">{operatorLabel(rule.conditions[0].operator)}</span>
-                        <span class="max-w-48 truncate font-mono">{rule.conditions[0].value}</span>
+                        <span class="max-w-32 truncate font-mono">{rule.conditions[0].value}</span>
                         {#if rule.conditions.length > 1}<span class="text-muted-foreground tabular-nums">+{(rule.conditions.length - 1).toLocaleString(intlLocale())}</span>{/if}
                       </span>
                     {/if}
@@ -392,6 +400,14 @@
                 <Button variant="outline" size="sm" disabled={form.conditions.length >= maxConditions} onclick={addCondition}><Add12 aria-hidden="true" />{t().addCondition}</Button>
               </div>
             </Field.Set>
+          </Item.Root>
+          <Item.Root variant="outline" size="sm" class="flex-col items-stretch bg-muted/50">
+            <Field.Field orientation="horizontal">
+              <Field.Content>
+                <div class="flex items-center gap-1"><Field.Label for="block-rule-ban">{t().ban}</Field.Label><InfoTooltip id="block-rule-ban-tip" label={t().ban} description={t().banTip} /></div>
+              </Field.Content>
+              <Switch id="block-rule-ban" bind:checked={form.ban} />
+            </Field.Field>
           </Item.Root>
         </Item.Group>
       </Field.Group>

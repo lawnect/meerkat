@@ -15,36 +15,40 @@ export type UrlTableConfig = {
   sortable: readonly string[];
   defaultSort: SortingState;
   pageSize: number;
+  // 한 화면에 표가 둘 이상일 때 page·sort의 이름 앞에 붙입니다(bans_page, bans_sort). 필터의 param은 표마다 직접 정합니다.
+  prefix?: string;
 };
 
 const apply = <T>(updater: Updater<T>, current: T): T => (updater instanceof Function ? updater(current) : updater);
 
 export function urlTableState(config: UrlTableConfig) {
+  const pageParam = `${config.prefix ?? ''}page`;
+  const sortParam = `${config.prefix ?? ''}sort`;
   const read = {
     columnFilters: (): ColumnFiltersState => config.filters.flatMap((filter) => {
       const allowed = filter.allowed instanceof Function ? filter.allowed() : filter.allowed;
       const value = allowed ? oneOf(filter.param, allowed, '') : (param(filter.param) ?? '');
       return value ? [{ id: filter.column, value }] : [];
     }),
-    sorting: (): SortingState => parseSort(param('sort'), config.sortable, config.defaultSort),
-    pagination: (): PaginationState => ({ pageIndex: intParam('page', 1) - 1, pageSize: config.pageSize }),
+    sorting: (): SortingState => parseSort(param(sortParam), config.sortable, config.defaultSort),
+    pagination: (): PaginationState => ({ pageIndex: intParam(pageParam, 1) - 1, pageSize: config.pageSize }),
   };
   const defaultSort = formatSort(config.defaultSort);
 
   const onColumnFiltersChange: OnChangeFn<ColumnFiltersState> = (updater) => {
     const next = apply(updater, read.columnFilters());
-    const changes: Record<string, string | number> = { page: 1 };
+    const changes: Record<string, string | number> = { [pageParam]: 1 };
     for (const filter of config.filters) {
       const value = next.find((entry) => entry.id === filter.column)?.value;
       changes[filter.param] = typeof value === 'string' ? value : '';
     }
-    setParams(changes, { page: 1 });
+    setParams(changes, { [pageParam]: 1 });
   };
   const onSortingChange: OnChangeFn<SortingState> = (updater) => {
-    setParams({ sort: formatSort(apply(updater, read.sorting())), page: 1 }, { sort: defaultSort, page: 1 });
+    setParams({ [sortParam]: formatSort(apply(updater, read.sorting())), [pageParam]: 1 }, { [sortParam]: defaultSort, [pageParam]: 1 });
   };
   const onPaginationChange: OnChangeFn<PaginationState> = (updater) => {
-    setParams({ page: apply(updater, read.pagination()).pageIndex + 1 }, { page: 1 });
+    setParams({ [pageParam]: apply(updater, read.pagination()).pageIndex + 1 }, { [pageParam]: 1 });
   };
 
   return {

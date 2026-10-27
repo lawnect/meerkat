@@ -68,6 +68,9 @@ func (d *Database) Version(ctx context.Context) (int, error) {
 type migration struct {
 	version int
 	sql     string
+	// apply runs after sql, in the same transaction, for a change SQL can't
+	// say.
+	apply func(context.Context, conn) error
 }
 
 // Version 3 was used by a rolled-back rate-limit preview. Keep it reserved so
@@ -279,7 +282,7 @@ CREATE TABLE access_hourly (
   PRIMARY KEY(policy_id, hour)
 );
 CREATE INDEX access_hourly_by_hour ON access_hourly(hour);
-`}}
+`}, {version: 15, apply: addHoneypotRule}}
 
 func migrate(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
@@ -297,7 +300,13 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		if err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, migration.sql); err == nil {
+		if migration.sql != "" {
+			_, err = tx.ExecContext(ctx, migration.sql)
+		}
+		if err == nil && migration.apply != nil {
+			err = migration.apply(ctx, tx)
+		}
+		if err == nil {
 			_, err = tx.ExecContext(ctx, "INSERT INTO schema_migrations(version, applied_at) VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))", migration.version)
 		}
 		if err != nil {

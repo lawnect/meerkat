@@ -112,8 +112,13 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/security/rate-limit", s.putRateLimit)
 	mux.HandleFunc("GET /api/v1/security/connection-limits", s.getConnectionLimits)
 	mux.HandleFunc("PUT /api/v1/security/connection-limits", s.putConnectionLimits)
+	mux.HandleFunc("GET /api/v1/security/tunnel-guard", s.getTunnelGuard)
+	mux.HandleFunc("PUT /api/v1/security/tunnel-guard", s.putTunnelGuard)
 	mux.HandleFunc("GET /api/v1/security/block-rules", s.getBlockRules)
 	mux.HandleFunc("PUT /api/v1/security/block-rules", s.putBlockRules)
+	mux.HandleFunc("GET /api/v1/security/client-bans", s.getClientBans)
+	mux.HandleFunc("PUT /api/v1/security/client-bans", s.putClientBans)
+	mux.HandleFunc("POST /api/v1/security/client-bans/release", s.releaseClientBans)
 	mux.HandleFunc("GET /api/v1/security/sso", s.getSSO)
 	mux.HandleFunc("PUT /api/v1/security/sso", s.putSSO)
 	mux.HandleFunc("DELETE /api/v1/security/sso", s.resetSSO)
@@ -258,6 +263,9 @@ func (s *Store) enroll(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	enrolled := func(id string, first bool) {
+		// The token was valid, so the tunnel connections that follow from this
+		// address are the Connector's.
+		s.learnConnector(r)
 		if first {
 			event = &control.AuditEntry{Action: "connector.enroll", ResourceType: "connector", ResourceID: id, Detail: map[string]any{"name": req.Name, "version": req.Version}}
 		}
@@ -393,6 +401,7 @@ func (s *Store) configuration(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 401, "invalid_credential")
 		return
 	}
+	s.learnConnector(r)
 	if managed && len(record.Configuration.ActiveServices()) == 0 {
 		record.LastSeen = s.now().UTC()
 		s.observe(id, record, managed)
@@ -414,6 +423,7 @@ func (s *Store) heartbeat(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 401, "invalid_credential")
 		return
 	}
+	s.learnConnector(r)
 	if hb.ConnectorID != id || (len(record.Configuration.Services) == 0 && hb.ServiceID != record.Configuration.ServiceID) || (len(record.Configuration.Services) != 0 && hb.ServiceID != "") {
 		s.mu.Unlock()
 		fail(w, r, 403, "service_not_allowed")
