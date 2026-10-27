@@ -467,6 +467,9 @@ type accessState struct {
 	tickets  map[string]accessTicket
 	// admins remembers which emails are administrators' (see isAdminEmail).
 	admins adminEmails
+	// counts holds what policies decided until saved: accessCountKey to
+	// *atomic.Int64 (see countAccess).
+	counts sync.Map
 }
 
 // adminEmails remembers, for adminEmailTTL, whether an email is an
@@ -689,10 +692,15 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 		}
 	}
 	rule := s.access.config.Load().matching(host, r.Method, r.URL, valid)
-	switch {
-	case rule == nil:
+	if rule == nil {
 		return r, true
-	case rule.policy.Action == control.AccessBypass:
+	}
+	// What the policy decides is counted for the console: refused unless a
+	// return below says otherwise.
+	outcome := accessDenied
+	defer func() { s.countAccess(rule.policy.ID, outcome) }()
+	if rule.policy.Action == control.AccessBypass {
+		outcome = accessPassed
 		return s.tokenTaken(r, rule, token), true
 	}
 	// The request doesn't simply pass, so a token sent with it that the
@@ -721,6 +729,7 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 	}
 	identity, ok := s.accessSession(r, host)
 	if !ok {
+		outcome = accessChallenged
 		s.accessChallenge(w, r, host, adminHost)
 		return r, false
 	}
@@ -740,7 +749,77 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 		accessPageNext(w, r, http.StatusForbidden, "denied", accessNext{action: accessPathPrefix + "logout?" + url.Values{"return": {accessReturn(r.URL.RequestURI())}}.Encode()})
 		return r, false
 	}
+	outcome = accessPassed
 	return s.tokenTaken(r.WithContext(context.WithValue(r.Context(), accessIdentityKey{}, identity.Email)), rule, token), true
+}
+
+// What a policy decided for a request, as counted for the console (see
+// control.AccessCounts).
+const (
+	accessPassed = iota
+	accessChallenged
+	accessDenied
+)
+
+// accessCountKey names a counter of what one policy decided in one hour,
+// by its Unix hour.
+type accessCountKey struct {
+	policy  string
+	hour    int64
+	outcome int
+}
+
+// countAccess adds one to what the policy decided this hour. Requests add
+// to counters they find without a lock; flushAccessCounts saves them.
+func (s *Store) countAccess(policy string, outcome int) {
+	key := accessCountKey{policy, s.now().Unix() / 3600, outcome}
+	n, ok := s.access.counts.Load(key)
+	if !ok {
+		n, _ = s.access.counts.LoadOrStore(key, new(atomic.Int64))
+	}
+	n.(*atomic.Int64).Add(1)
+}
+
+// flushAccessCounts saves what policies decided since the last flush, and
+// forgets counters of hours gone by; counts it couldn't save wait for the
+// next.
+func (s *Store) flushAccessCounts(ctx context.Context) {
+	if s.control == nil {
+		return
+	}
+	now := s.now()
+	pending := map[control.AccessCountKey]control.AccessCounts{}
+	taken := map[accessCountKey]int64{}
+	s.access.counts.Range(func(k, v any) bool {
+		key, n := k.(accessCountKey), v.(*atomic.Int64).Swap(0)
+		if n != 0 {
+			taken[key] = n
+			at := control.AccessCountKey{Policy: key.policy, Hour: time.Unix(key.hour*3600, 0)}
+			counts := pending[at]
+			switch key.outcome {
+			case accessPassed:
+				counts.Passed += n
+			case accessChallenged:
+				counts.Challenged += n
+			default:
+				counts.Denied += n
+			}
+			pending[at] = counts
+		} else if key.hour < now.Unix()/3600 {
+			s.access.counts.Delete(key)
+		}
+		return true
+	})
+	if len(pending) == 0 {
+		return
+	}
+	if err := s.control.RecordAccessCounts(ctx, pending, now); err != nil {
+		slog.Warn("access policy counts not saved", "error", err)
+		for key, n := range taken {
+			v, _ := s.access.counts.LoadOrStore(key, new(atomic.Int64))
+			v.(*atomic.Int64).Add(n)
+		}
+	}
 }
 
 // tokenTaken notes, for a request rule lets through, the access token rule

@@ -268,6 +268,17 @@ CREATE TABLE address_policies (
   sticky INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL
 );
+`}, {version: 14, sql: `
+-- What each access policy decided, by hour.
+CREATE TABLE access_hourly (
+  policy_id TEXT NOT NULL,
+  hour TEXT NOT NULL,
+  passed INTEGER NOT NULL DEFAULT 0,
+  challenged INTEGER NOT NULL DEFAULT 0,
+  denied INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(policy_id, hour)
+);
+CREATE INDEX access_hourly_by_hour ON access_hourly(hour);
 `}}
 
 func migrate(ctx context.Context, db *sql.DB) error {

@@ -372,3 +372,48 @@ func TestAccessPoliciesSavedWithoutID(t *testing.T) {
 		t.Fatalf("policies = %+v %v", policies, err)
 	}
 }
+
+// What access policies decided adds up by policy and hour, is kept for
+// accessMetricsRetention, and comes back for every hour of a period.
+func TestAccessMetricsStorage(t *testing.T) {
+	ctx := context.Background()
+	db := openRouting(t)
+	now := time.Date(2026, 10, 27, 15, 20, 0, 0, time.UTC)
+	hour := now.Truncate(time.Hour)
+	record := func(counts map[AccessCountKey]AccessCounts, at time.Time) {
+		t.Helper()
+		if err := db.RecordAccessCounts(ctx, counts, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record(map[AccessCountKey]AccessCounts{
+		{"api", hour}:                           {Passed: 3},
+		{"staff", hour}:                         {Challenged: 2, Denied: 1},
+		{"staff", hour.Add(-2 * time.Hour)}:     {Passed: 5},
+		{"old", hour.Add(-40 * 24 * time.Hour)}: {Denied: 9},
+	}, now)
+	record(map[AccessCountKey]AccessCounts{{"api", hour}: {Passed: 1, Denied: 1}}, now)
+	metrics, err := db.AccessMetrics(ctx, now, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metrics.PeriodHours != 24 || len(metrics.Hours) != 24 || metrics.Hours[23].Hour != "2026-10-27T15:00:00Z" || metrics.Hours[0].Hour != "2026-10-26T16:00:00Z" {
+		t.Fatalf("hours: %d %+v %+v", len(metrics.Hours), metrics.Hours[0], metrics.Hours[23])
+	}
+	if got := metrics.Hours[23].AccessCounts; got != (AccessCounts{Passed: 4, Challenged: 2, Denied: 2}) {
+		t.Fatalf("this hour: %+v", got)
+	}
+	if got := metrics.Hours[21].AccessCounts; got != (AccessCounts{Passed: 5}) {
+		t.Fatalf("two hours ago: %+v", got)
+	}
+	if metrics.Policies["api"] != (AccessCounts{Passed: 4, Denied: 1}) || metrics.Policies["staff"] != (AccessCounts{Passed: 5, Challenged: 2, Denied: 1}) {
+		t.Fatalf("policies: %+v", metrics.Policies)
+	}
+	if _, ok := metrics.Policies["old"]; ok {
+		t.Fatal("an hour past retention is in the period")
+	}
+	var kept int
+	if err := db.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM access_hourly WHERE policy_id = 'old'`).Scan(&kept); err != nil || kept != 0 {
+		t.Fatalf("hours past retention kept: %d %v", kept, err)
+	}
+}

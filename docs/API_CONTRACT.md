@@ -301,6 +301,7 @@ POST   /api/v1/security/access-provider/test
 POST   /api/v1/security/access/sessions/revoke
 GET    /api/v1/security/access-policies
 PUT    /api/v1/security/access-policies
+GET    /api/v1/security/access-metrics?hours=24|168|720
 GET    /api/v1/security/access-tokens
 POST   /api/v1/security/access-tokens
 PUT    /api/v1/security/access-tokens/:id
@@ -342,6 +343,11 @@ POST   https://<보호 주소>/.meerkat/access/logout
 - Outlet이 보여 주는 페이지(`401`, `403`, `503`, 로그아웃 등)는 모두 `Cache-Control: no-store`다.
 - 앱에는 `X-Meerkat-Access-Email`로 이메일을 전달한다. 클라이언트가 보낸 헤더 중 이름이 대소문자, `_`·`-` 구분 없이 `X-Meerkat-Access`로 시작하는 것은 모두 지운다(`X_Meerkat_Access_Email`을 같은 헤더로 읽는 앱 서버가 있다).
 - `__Host-meerkat_access`로 시작하는 쿠키 이름은 Outlet 전용이다. 요청에서는 이름의 앞뒤 공백과 대소문자에 관계없이 지워 앱에 전달하지 않고, 앱 응답이 이 이름으로 설정하는 `Set-Cookie`도 지운다.
+
+**지표**
+- 공개 요청에 처음 일치한 정책마다 판정을 시간 단위로 센다. `passed`는 우회, 또는 정책이 받는 세션·토큰으로 앱에 전달한 요청, `challenged`는 로그인으로 보낸 요청(브라우저가 아니면 `401`), `denied`는 차단, 정책이 들이지 않는 세션·토큰, 공급자 비활성화나 관리자 확인 오류로 거부한 요청이다. 정책이 적용되지 않은 요청과 `/.meerkat/access/` 아래 경로는 세지 않는다.
+- 요청은 잠금 없이 메모리에서 세고 30초마다(그리고 아래 `GET` 때) 저장하며, 30일 지난 시간은 지운다. 저장하지 못한 수는 다음에 더한다. 지운 정책의 수도 보관 기간 동안 남는다.
+- `GET /api/v1/security/access-metrics`는 `{"period_hours", "hours": [{"hour", "passed", "challenged", "denied"}], "policies": {"<정책 ID>": {"passed", "challenged", "denied"}}}`를 반환한다. `hours`는 기간의 모든 시간(UTC 정각, 오래된 것부터)이고 `policies`는 기간 합계다. `hours`는 `24`(기본), `168`, `720`이며 그 밖은 `400 invalid_usage_period`이다.
 
 **접근 토큰**
 - 스크립트, CI, 다른 서비스처럼 로그인할 수 없는 클라이언트는 `X-Meerkat-Access-Token: <값>` 헤더를 보낸다. 값이 맞고 만료되지 않았으며 이용 범위 안이면 그 요청에 유효한 토큰이고, 그 토큰을 받는 정책(`require_token`)에 해당한다. 값의 앞뒤 공백은 무시한다. 유효하지 않은 토큰은 보내지 않은 것처럼 정책을 고른다.

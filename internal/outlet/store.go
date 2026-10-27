@@ -388,9 +388,11 @@ func (s *Store) persistLoop(ctx context.Context) {
 		case <-ticker.C:
 			s.persist()
 			s.flushAccessTokenUse(ctx)
+			s.flushAccessCounts(ctx)
 		case <-ctx.Done():
 			s.persist()
 			s.flushAccessTokenUse(context.Background())
+			s.flushAccessCounts(context.Background())
 			return
 		}
 	}

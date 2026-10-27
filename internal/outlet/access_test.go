@@ -528,6 +528,55 @@ func TestAccessPoliciesByMethod(t *testing.T) {
 	}
 }
 
+// What each policy decides is counted, by policy and hour, and the console
+// reads it, requests just made included.
+func TestAccessMetrics(t *testing.T) {
+	f := newAccessFixture(t,
+		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/v1/"}}},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/internal/"}}},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
+	)
+	policies, err := f.db.AccessPolicies(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	api, shut, staff := policies.Policies[0].ID, policies.Policies[1].ID, policies.Policies[2].ID
+	// Signing in starts with a visit sent to sign in: one challenge.
+	alice, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
+	f.visit("app.example.com", "/v1/models")
+	f.visit("app.example.com", "/v1/chat")
+	f.visit("app.example.com", "/internal/x", alice)
+	f.visit("app.example.com", "/workspace")
+	f.visit("app.example.com", "/workspace", alice)
+	f.visit("app.example.com", "/workspace", &http.Cookie{Name: accessCookie, Value: "forged.value"})
+	f.visit("other.example.com", "/")
+	var metrics control.AccessMetrics
+	w := request(f.store.Handler(), "GET", "/api/v1/security/access-metrics", f.admin, nil)
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &metrics) != nil {
+		t.Fatalf("metrics: %d %s", w.Code, w.Body.String())
+	}
+	want := map[string]control.AccessCounts{api: {Passed: 2}, shut: {Denied: 1}, staff: {Passed: 1, Challenged: 3}}
+	for id, counts := range want {
+		if metrics.Policies[id] != counts {
+			t.Errorf("policy %s: %+v, want %+v", id, metrics.Policies[id], counts)
+		}
+	}
+	if len(metrics.Policies) != len(want) || len(metrics.Hours) != 24 || metrics.Hours[23].AccessCounts != (control.AccessCounts{Passed: 3, Challenged: 3, Denied: 1}) {
+		t.Fatalf("metrics: %+v", metrics)
+	}
+	// Counted once: read again, nothing doubles.
+	w = request(f.store.Handler(), "GET", "/api/v1/security/access-metrics?hours=168", f.admin, nil)
+	if json.Unmarshal(w.Body.Bytes(), &metrics) != nil || metrics.PeriodHours != 168 || metrics.Policies[api] != want[api] {
+		t.Fatalf("again: %d %s", w.Code, w.Body.String())
+	}
+	if w := request(f.store.Handler(), "GET", "/api/v1/security/access-metrics?hours=5", f.admin, nil); w.Code != 400 {
+		t.Fatalf("other period: %d", w.Code)
+	}
+	if w := request(f.store.Handler(), "GET", "/api/v1/security/access-metrics", "", nil); w.Code != 401 {
+		t.Fatalf("without a session: %d", w.Code)
+	}
+}
+
 // An allow policy can let in everyone the access provider signs in.
 func TestAccessAllowEveryone(t *testing.T) {
 	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowEveryone: true})

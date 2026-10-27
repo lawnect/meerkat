@@ -348,6 +348,20 @@ export interface AccessToken {
   policies: Array<{ id: string; name: string }>; // 이 토큰을 지정했거나, 모든 토큰을 받으면서 주소가 겹치는 정책
 }
 
+// 접근 정책이 판정한 요청 수(GET /api/v1/security/access-metrics?hours=24|168|720). 통과는 우회, 또는 정책이 받는 세션·토큰,
+// 로그인 요구는 로그인으로 보낸 요청(브라우저가 아니면 401), 거부는 차단, 정책이 들이지 않는 세션·토큰, 공급자 꺼짐입니다.
+export interface AccessCounts {
+  passed: number;
+  challenged: number;
+  denied: number;
+}
+
+export interface AccessMetrics {
+  period_hours: number;
+  hours: Array<AccessCounts & { hour: string }>; // 기간의 모든 시간, 오래된 것부터 (UTC 정각, RFC 3339)
+  policies: Record<string, AccessCounts>; // 정책 ID별 기간 합계. 지워진 정책도 남습니다
+}
+
 export interface AccessTokensView {
   tokens: AccessToken[]; // 만든 순서
   addresses: string[]; // 토큰을 한정할 수 있는 공개 주소(호스트 이름), 정렬됨

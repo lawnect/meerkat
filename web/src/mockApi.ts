@@ -1,4 +1,4 @@
-import type { AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, Outlet, Route, Service, SsoSettings, Target, UsageBucket, UsageSeries, UsageUnit } from './types';
+import type { AccessMetrics, AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, Outlet, Route, Service, SsoSettings, Target, UsageBucket, UsageSeries, UsageUnit } from './types';
 import { accessMethods } from './types';
 
 const now = (): string => new Date().toISOString();
@@ -817,6 +817,33 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
   }
   if (path === '/api/v1/security/access/sessions/revoke' && method === 'POST') return {};
   if (path === '/api/v1/security/access-policies' && method === 'GET') return accessPoliciesResponse();
+  if (path === '/api/v1/security/access-metrics' && method === 'GET') {
+    // 데모: 정책마다 시간대별로 그럴듯한 판정 수를 만듭니다. 우회·허용은 대부분 통과, 차단은 거부입니다.
+    const hours = Number(new URL(url, 'http://localhost').searchParams.get('hours') || '24');
+    if (![24, 168, 720].includes(hours)) fail('invalid_usage_period');
+    const start = Math.floor(Date.now() / 3600000) - hours + 1;
+    const metrics: AccessMetrics = { period_hours: hours, hours: [], policies: {} };
+    for (let index = 0; index < hours; index += 1) {
+      const hour = { hour: new Date((start + index) * 3600000).toISOString().replace('.000Z', 'Z'), passed: 0, challenged: 0, denied: 0 };
+      const daytime = Math.sin(((start + index) % 24) / 24 * Math.PI) + 0.2;
+      accessPolicies.forEach((policy, order) => {
+        if (!policy.enabled) return;
+        const base = Math.round(daytime * (policy.action === 'bypass' ? 180 : 60) / (order + 1));
+        const counts = policy.action === 'block'
+          ? { passed: 0, challenged: 0, denied: base }
+          : policy.action === 'bypass' ? { passed: base, challenged: 0, denied: 0 } : { passed: base, challenged: Math.round(base / 9), denied: Math.round(base / 40) };
+        hour.passed += counts.passed;
+        hour.challenged += counts.challenged;
+        hour.denied += counts.denied;
+        const total = (metrics.policies[policy.id] ??= { passed: 0, challenged: 0, denied: 0 });
+        total.passed += counts.passed;
+        total.challenged += counts.challenged;
+        total.denied += counts.denied;
+      });
+      metrics.hours.push(hour);
+    }
+    return metrics;
+  }
   if (path === '/api/v1/security/access-tokens' && method === 'GET') return { tokens: accessTokens.map(tokenView), addresses: publicAddresses() } satisfies AccessTokensView;
   if (path === '/api/v1/security/access-tokens' && method === 'POST') {
     const body = input as Partial<AccessTokenInput>;
