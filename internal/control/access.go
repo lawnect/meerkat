@@ -158,9 +158,11 @@ type AccessPolicy struct {
 var AccessMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
 
 // CoversMethod reports whether a policy limited to methods covers a request with
-// method: every method when none are named, and HEAD with GET.
+// method: every method when none are named, and HEAD with GET. Methods
+// compare in any case, as many apps read them: a "post" an app runs as a
+// POST must not slip past a policy for POST.
 func CoversMethod(methods []string, method string) bool {
-	if method == "HEAD" {
+	if method = strings.ToUpper(method); method == "HEAD" {
 		method = "GET"
 	}
 	return len(methods) == 0 || slices.Contains(methods, method)

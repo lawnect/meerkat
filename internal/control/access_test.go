@@ -312,6 +312,8 @@ func TestAccessPolicyMethods(t *testing.T) {
 		{[]string{"GET"}, "POST", false},
 		{[]string{"POST"}, "HEAD", false},
 		{[]string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}, "PROPFIND", false},
+		{[]string{"POST"}, "post", true},
+		{[]string{"GET"}, "head", true},
 	} {
 		if CoversMethod(c.methods, c.method) != c.covered {
 			t.Errorf("CoversMethod(%q, %s) != %v", c.methods, c.method, c.covered)

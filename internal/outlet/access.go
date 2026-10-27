@@ -903,7 +903,7 @@ func (s *Store) accessSession(r *http.Request, host string) (control.AccessIdent
 // accessChallenge sends a browser navigation to sign in; other requests,
 // which a redirect to a sign-in page would only confuse, get 401.
 func (s *Store) accessChallenge(w http.ResponseWriter, r *http.Request, host, adminHost string) {
-	navigation := (r.Method == http.MethodGet || r.Method == http.MethodHead) && r.Header.Get("Upgrade") == "" &&
+	navigation := (strings.EqualFold(r.Method, http.MethodGet) || strings.EqualFold(r.Method, http.MethodHead)) && r.Header.Get("Upgrade") == "" &&
 		(r.Header.Get("Sec-Fetch-Mode") == "navigate" || r.Header.Get("Sec-Fetch-Mode") == "" && strings.Contains(r.Header.Get("Accept"), "text/html"))
 	if !navigation || adminHost == "" {
 		accessPage(w, r, http.StatusUnauthorized, "required")

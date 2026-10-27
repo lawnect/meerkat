@@ -489,6 +489,9 @@ func TestAccessPoliciesByMethod(t *testing.T) {
 		{"PUT", "/workspace", http.StatusForbidden},
 		{"PATCH", "/workspace", http.StatusUnauthorized},
 		{"PROPFIND", "/v1/models", http.StatusUnauthorized},
+		{"get", "/v1/models", 200},
+		{"delete", "/workspace", http.StatusForbidden},
+		{"Put", "/workspace", http.StatusForbidden},
 	} {
 		if code := send(c.method, c.path); code != c.code {
 			t.Errorf("%s %s: %d, want %d", c.method, c.path, code, c.code)

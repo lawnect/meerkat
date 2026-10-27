@@ -51,13 +51,15 @@
     conditions: 'Conditions',
     actions: { allow: 'Allow', bypass: 'Bypass', block: 'Block' } as Record<AccessAction, string>,
     actionHints: { allow: 'Sign-in, then only who you allow', bypass: 'Anyone, without signing in', block: 'Nobody' } as Record<AccessAction, string>,
-    tokenActionHints: { allow: 'The token and a sign-in of who you allow', bypass: 'The token alone, without signing in', block: 'Nobody, with the token' } as Record<AccessAction, string>,
+    tokenActionHints: { allow: 'The token and a sign-in of who you allow; requests without it go to the policies below', bypass: 'The token alone, without signing in; requests without it go to the policies below', block: 'Nobody with the token; requests without it go to the policies below' } as Record<AccessAction, string>,
     order: 'Order',
     reorder: (name: string) => `Move ${name}`,
     reorderTip: 'Drag, or press ↑ ↓',
     orderSaved: 'Order saved',
     neverApplies: 'Never applies',
     neverAppliesTip: 'An earlier policy covers every address, path, method and token of this one.',
+    openWithoutToken: 'Open without a token',
+    openWithoutTokenTip: 'No policy below covers every path and method of its addresses for requests that send no token, so those requests reach the app unprotected. Add an all-paths policy below it.',
     noPolicies: 'No access policies',
     addTitle: 'Add policy',
     editTitle: 'Edit policy',
@@ -129,13 +131,15 @@
     conditions: '적용 조건',
     actions: { allow: '허용', bypass: '우회', block: '차단' },
     actionHints: { allow: '로그인 후 허용 대상만 접근', bypass: '로그인 없이 누구나 접근', block: '모두 접근 거부' },
-    tokenActionHints: { allow: '토큰과 허용 대상 로그인 모두 필요', bypass: '토큰만으로 로그인 없이 접근', block: '토큰을 보낸 요청 거부' },
+    tokenActionHints: { allow: '토큰과 허용 대상 로그인 모두 필요. 토큰 없는 요청은 아래 정책이 판단', bypass: '토큰만으로 로그인 없이 접근. 토큰 없는 요청은 아래 정책이 판단', block: '토큰을 보낸 요청 거부. 토큰 없는 요청은 아래 정책이 판단' },
     order: '순서',
     reorder: (name: string) => `${name} 순서 변경`,
     reorderTip: '드래그 또는 ↑ ↓ 키로 이동',
     orderSaved: '순서가 저장되었습니다',
     neverApplies: '적용 안 됨',
     neverAppliesTip: '앞선 정책이 이 정책의 주소, 경로, 메서드, 토큰에 먼저 적용됩니다.',
+    openWithoutToken: '토큰 없는 요청 열림',
+    openWithoutTokenTip: '토큰을 보내지 않은 요청에 적용할 정책이 아래에 없어, 그런 요청은 보호 없이 앱으로 전달됩니다. 아래에 전체 경로 정책을 두십시오.',
     noPolicies: '접근 정책이 없습니다',
     addTitle: '정책 추가',
     editTitle: '정책 편집',
@@ -252,6 +256,10 @@
   // 토큰은 앞선 정책이 토큰 조건이 없거나, 이 정책도 토큰이 필요하고 앞선 정책이 모든 토큰 또는 이 정책이 고른 토큰을 모두 받는 경우입니다.
   const tokensCover = (earlier: AccessPolicy, later: AccessPolicy): boolean =>
     !earlier.require_token || (later.require_token && (!earlier.tokens.length || (later.tokens.length > 0 && later.tokens.every((id) => earlier.tokens.includes(id)))));
+  // 토큰이 필요한 정책은 토큰 없는 요청을 아래 정책에 넘기므로, 아래에 그 주소의 모든 경로와 메서드를 토큰 없이 받는 활성화된 정책이 없으면 그런 요청은 열려 있습니다.
+  const openWithoutToken = (list: AccessPolicy[], index: number): boolean =>
+    list[index].enabled && list[index].require_token && list[index].hosts.some((host) => !list.slice(index + 1).some((later) =>
+      later.enabled && !later.require_token && !later.methods.length && (later.all_paths || startsWith(later).includes('/')) && later.hosts.some((pattern) => hostCovers(pattern, host))));
   const neverApplies = (list: AccessPolicy[], index: number): boolean =>
     list.slice(0, index).some((earlier) => earlier.enabled && methodsCover(earlier, list[index]) && tokensCover(earlier, list[index]) && pathsCover(earlier, list[index]) && list[index].hosts.every((host) => earlier.hosts.some((pattern) => hostCovers(pattern, host))));
 
@@ -559,6 +567,13 @@
                             <Badge variant="outline" class="text-muted-foreground select-none">{t().neverApplies}</Badge>
                           </Tooltip.Trigger>
                           <Tooltip.Content>{t().neverAppliesTip}</Tooltip.Content>
+                        </Tooltip.Root>
+                      {:else if openWithoutToken(policies, index)}
+                        <Tooltip.Root>
+                          <Tooltip.Trigger class="relative z-10 outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+                            <Badge variant="destructive" class="select-none">{t().openWithoutToken}</Badge>
+                          </Tooltip.Trigger>
+                          <Tooltip.Content>{t().openWithoutTokenTip}</Tooltip.Content>
                         </Tooltip.Root>
                       {/if}
                     </span>
