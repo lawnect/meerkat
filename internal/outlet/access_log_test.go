@@ -1,105 +1,15 @@
 package outlet
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/lawnect/meerkat/internal/accesslog"
 	"github.com/lawnect/meerkat/internal/control"
 )
-
-// fakeAccessLog keeps entries in memory and fails Append as told.
-type fakeAccessLog struct {
-	mu      sync.Mutex
-	entries []accesslog.Entry
-	fail    error // Append's error while set
-	full    int   // Appends to refuse as full, each lifted by a Shed
-	sheds   int
-}
-
-func (f *fakeAccessLog) Append(_ context.Context, entries []accesslog.Entry) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.fail != nil {
-		return f.fail
-	}
-	if f.full > f.sheds {
-		return accesslog.ErrFull
-	}
-	f.entries = append(f.entries, entries...)
-	return nil
-}
-
-func (f *fakeAccessLog) Shed(context.Context) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.sheds++
-	return nil
-}
-
-func (f *fakeAccessLog) Prune(context.Context, time.Time) error { return nil }
-func (f *fakeAccessLog) Close() error                           { return nil }
-func (f *fakeAccessLog) Query(context.Context, accesslog.Filter) ([]accesslog.Entry, int64, error) {
-	return nil, 0, nil
-}
-
-func (f *fakeAccessLog) count() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.entries)
-}
-
-// Adding never waits: a full queue gives entries up. While the log refuses
-// writes, entries wait in the buffer, up to its cap, and are written once
-// it takes them again; a full log sheds its oldest and is written to.
-func TestAccessLogWriterGivesUpRatherThanWaits(t *testing.T) {
-	store := &fakeAccessLog{}
-	w := newAccessLogWriter(store)
-	w.queue = make(chan accesslog.Entry, 3)
-	w.bufferCap, w.batchSize, w.tick, w.retryMax = 5, 2, time.Hour, time.Millisecond
-	done := make(chan struct{})
-	go func() {
-		for range 10 {
-			w.add(accesslog.Entry{Path: "/x"})
-		}
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("add waited for a writer that isn't running")
-	}
-	if w.dropped.Load() != 7 {
-		t.Fatalf("given up with the queue full: %d", w.dropped.Load())
-	}
-	ctx, stop := context.WithCancel(context.Background())
-	defer stop()
-	store.fail = errors.New("disk on fire")
-	go w.run(ctx)
-	w.flush()
-	for range 6 {
-		w.add(accesslog.Entry{Path: "/y"})
-	}
-	w.flush()
-	if store.count() != 0 || w.dropped.Load() != 7+4 {
-		t.Fatalf("while failing: %d written, %d given up", store.count(), w.dropped.Load())
-	}
-	store.mu.Lock()
-	store.fail, store.full = nil, 1
-	store.mu.Unlock()
-	w.flush()
-	if store.count() != 5 || store.sheds != 1 {
-		t.Fatalf("after the log recovered: %d written, %d sheds", store.count(), store.sheds)
-	}
-}
 
 // With the log on, every refusal and sign-in asked for is logged, and
 // requests let in that name a person or a token; anonymous ones aren't.
@@ -128,10 +38,10 @@ func TestAccessLog(t *testing.T) {
 	alice, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
 	bob, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("bob@corp.example.com")))
 	policies("alice@corp.example.com")
-	read := func(query string) accessLogView {
+	read := func(query string) logView[accessEntry] {
 		t.Helper()
-		var view accessLogView
-		w := request(h, "GET", "/api/v1/security/access-log"+query, f.admin, nil)
+		var view logView[accessEntry]
+		w := request(h, "GET", "/api/v1/observe/access-log"+query, f.admin, nil)
 		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &view) != nil {
 			t.Fatalf("log%s: %d %s", query, w.Code, w.Body.String())
 		}
@@ -139,14 +49,23 @@ func TestAccessLog(t *testing.T) {
 	}
 	// Off until turned on: nothing is logged.
 	f.visit("app.example.com", "/workspace")
-	if view := read(""); view.Enabled || !view.Available || len(view.Entries) != 0 {
+	if view := read(""); view.Settings != control.DefaultLogSettings() || !view.Available || len(view.Entries) != 0 || view.SizeBytes == 0 {
 		t.Fatalf("off: %+v", view)
 	}
-	if w := request(h, "PUT", "/api/v1/security/access-log", f.admin, map[string]any{"enabled": true}); w.Code != 200 || !strings.Contains(w.Body.String(), `"enabled":true`) {
+	on := map[string]any{"enabled": true, "max_mib": 64, "retention_days": 7}
+	if w := request(h, "PUT", "/api/v1/observe/access-log", f.admin, on); w.Code != 200 || !strings.Contains(w.Body.String(), `"settings":{"enabled":true,"max_mib":64,"retention_days":7}`) {
 		t.Fatalf("turn on: %d %s", w.Code, w.Body.String())
 	}
-	if event := f.lastAudit(t); event.Action != "security.access_log" || string(event.Detail) != `{"enabled":true}` {
+	if event := f.lastAudit(t); event.Action != "observe.log_settings" || string(event.Detail) != `{"enabled":true,"log":"access","max_mib":64,"retention_days":7}` {
 		t.Fatalf("audit: %s %s", event.Action, event.Detail)
+	}
+	if limits := f.store.logs.access.log.Limits(); limits.MaxBytes != 64<<20 || limits.Retention != 7*24*time.Hour {
+		t.Fatalf("limits: %+v", limits)
+	}
+	for _, body := range []map[string]any{{"enabled": true, "max_mib": 8, "retention_days": 7}, {"enabled": true, "max_mib": 64, "retention_days": 0}, {"enabled": true}} {
+		if w := request(h, "PUT", "/api/v1/observe/access-log", f.admin, body); w.Code != 400 {
+			t.Fatalf("settings %v: %d", body, w.Code)
+		}
 	}
 	ci := func(path, value string) {
 		r := httptest.NewRequest("POST", "https://app.example.com"+path, nil)
@@ -182,34 +101,33 @@ func TestAccessLog(t *testing.T) {
 		t.Fatalf("entry: %+v", e)
 	}
 	// Filtered, and in pages.
-	if view := read("?decision=denied"); len(view.Entries) != 3 {
+	if view := read("?decision=denied"); len(view.Entries) != 3 || view.Total != 3 {
 		t.Fatalf("denied: %+v", view.Entries)
 	}
 	if view := read("?policy=" + view.Entries[0].Policy); len(view.Entries) != 4 {
 		t.Fatalf("one policy: %+v", view.Entries)
 	}
-	first := read("?limit=4")
-	if len(first.Entries) != 4 || first.Next == 0 {
+	first := read("?per_page=4")
+	if len(first.Entries) != 4 || first.Total != 6 {
 		t.Fatalf("first page: %+v", first)
 	}
-	if next := read("?limit=4&before=" + strconv.FormatInt(first.Next, 10)); len(next.Entries) != 2 || next.Next != 0 || next.Entries[0].ID >= first.Entries[3].ID {
+	if next := read("?per_page=4&page=2"); len(next.Entries) != 2 || next.Total != 6 || next.Entries[0].ID >= first.Entries[3].ID {
 		t.Fatalf("second page: %+v", next)
 	}
-	for _, query := range []string{"?decision=maybe", "?before=x", "?limit=0", "?limit=201"} {
-		if w := request(h, "GET", "/api/v1/security/access-log"+query, f.admin, nil); w.Code != 400 {
+	for _, query := range []string{"?decision=maybe", "?page=0", "?page=x", "?per_page=0", "?per_page=201"} {
+		if w := request(h, "GET", "/api/v1/observe/access-log"+query, f.admin, nil); w.Code != 400 {
 			t.Fatalf("%s: %d", query, w.Code)
 		}
 	}
 	// Off again: nothing more is logged; what was stays.
-	if w := request(h, "PUT", "/api/v1/security/access-log", f.admin, map[string]any{"enabled": false}); w.Code != 200 {
+	if w := request(h, "PUT", "/api/v1/observe/access-log", f.admin, map[string]any{"enabled": false, "max_mib": 64, "retention_days": 7}); w.Code != 200 {
 		t.Fatalf("turn off: %d", w.Code)
 	}
 	f.visit("app.example.com", "/internal/y")
-	if view := read(""); view.Enabled || len(view.Entries) != 6 {
+	if view := read(""); view.Settings.Enabled || len(view.Entries) != 6 {
 		t.Fatalf("off again: %d entries", len(view.Entries))
 	}
-	// The switch survives a restart.
-	if err := f.store.reloadAccess(context.Background()); err != nil || f.store.access.logging.Load() {
-		t.Fatalf("after reloading: %v %v", f.store.access.logging.Load(), err)
+	if w := request(h, "GET", "/api/v1/observe/access-log", "", nil); w.Code != 401 {
+		t.Fatalf("without a session: %d", w.Code)
 	}
 }

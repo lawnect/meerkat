@@ -25,7 +25,7 @@ func Handler() http.Handler {
 			page = "/" + strings.TrimPrefix(strings.TrimPrefix(page, "/ko"), "/")
 		}
 		switch page {
-		case "/", "/connectors", "/services", "/domains", "/routes", "/diagnostics", "/settings":
+		case "/", "/connectors", "/services", "/domains", "/routes", "/access", "/observe", "/diagnostics", "/settings":
 			w.Header().Set("Cache-Control", "no-store")
 			http.ServeFileFS(w, r, site, "index.html")
 			return

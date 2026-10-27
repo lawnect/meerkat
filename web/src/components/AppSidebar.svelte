@@ -3,7 +3,7 @@
   import { useSidebar } from '$lib/components/ui/sidebar/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import { translations } from '../i18n.svelte';
-  import { ArrowExit, BranchRequestClosed, BranchRequestClosedFilled, Globe, GlobeFilled, LayoutCellFour, LayoutCellFourFilled, PlugConnected, PlugConnectedFilled, Settings, SettingsFilled, ShieldLock, ShieldLockFilled, type IconComponent } from '../icons';
+  import { ArrowExit, BranchRequestClosed, BranchRequestClosedFilled, Eye, EyeFilled, Globe, GlobeFilled, LayoutCellFour, LayoutCellFourFilled, PlugConnected, PlugConnectedFilled, Settings, SettingsFilled, ShieldLock, ShieldLockFilled, type IconComponent } from '../icons';
   import { pageHref } from '../navigation';
   import type { PageKey } from '../types';
   import BrandMark from './BrandMark.svelte';
@@ -23,6 +23,7 @@
     connectors: 'Tunnels',
     domains: 'Domains',
     access: 'Access protection',
+    observe: 'Observe',
     diagnostics: 'Path diagnostics',
     settings: 'Settings',
   }, {
@@ -34,6 +35,7 @@
     connectors: '터널 관리',
     domains: '도메인 관리',
     access: '접근 보호',
+    observe: '관찰',
     diagnostics: '경로 진단',
     settings: '설정',
   });
@@ -44,6 +46,7 @@
     { page: 'connectors', icon: PlugConnected, activeIcon: PlugConnectedFilled },
     { page: 'domains', icon: Globe, activeIcon: GlobeFilled },
     { page: 'access', icon: ShieldLock, activeIcon: ShieldLockFilled },
+    { page: 'observe', icon: Eye, activeIcon: EyeFilled },
     { page: 'diagnostics', icon: BranchRequestClosed, activeIcon: BranchRequestClosedFilled },
     { page: 'settings', icon: Settings, activeIcon: SettingsFilled },
   ];

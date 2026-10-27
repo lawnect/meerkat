@@ -16,6 +16,7 @@ import (
 // tunnel is connected and the app answers at the tunnel port.
 type backend struct {
 	serviceID string
+	service   string // its name, for the failure log
 	address   string
 }
 
@@ -41,7 +42,7 @@ func (s *Store) liveBackends(plans []control.HTTPRoutePlan) []backend {
 		if len(plans) > 1 && managedServiceStatus(record, plan.ServiceID, now) != "connected" {
 			continue
 		}
-		live = append(live, backend{serviceID: plan.ServiceID, address: address})
+		live = append(live, backend{serviceID: plan.ServiceID, service: plan.ServiceName, address: address})
 	}
 	s.mu.RUnlock()
 	if len(live) < 2 {

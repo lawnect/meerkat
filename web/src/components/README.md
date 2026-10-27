@@ -28,12 +28,16 @@ shadcn-svelte CLI가 관리하는 코드입니다. 새 컴포넌트는 저장소
 | `ShareChart` | 비율 도넛 그래프와 범례 (chart-pie-donut-text). 항목이 많으면 상위 4개 다음을 "기타"로 묶습니다 |
 | `TagInput` | 값을 칩으로 쌓는 입력 (Enter·쉼표로 추가, 붙여 넣으면 여러 개). SSO 허용 사용자·그룹에 씁니다 |
 | `AddressSelect` | 공개 주소 하나를 고르는 `NativeSelect`. 등록된 공개 주소와 상위 도메인 와일드카드를 보여 주고, `taken`(다른 줄이 고른 주소)은 고를 수 없게 합니다. 접근 정책·접근 토큰·차단 규칙의 주소 줄에 씁니다 |
-| `PaginationBar` | 목록 위·아래에 두는 줄. 왼쪽은 표시 범위, 오른쪽은 shadcn `Pagination`(문서의 Usage 구성 그대로). `total`, `perPage`, `bind:page`, `placement`. 페이지를 나누는 목록(터널·도메인·감사 로그)은 목록 위(`placement="top"`, 페이지가 둘 이상일 때만 보임)와 아래(범위는 한 페이지여도 보임)에 한 번씩 둡니다 |
+| `PaginationBar` | 목록 위·아래에 두는 줄. 왼쪽은 표시 범위, 오른쪽은 shadcn `Pagination`(문서의 Usage 구성 그대로). `total`, `perPage`, `bind:page`, `placement`. 페이지를 나누는 목록(터널·도메인·감사 로그·접근 기록·실패 요청)은 목록 위(`placement="top"`, 페이지가 둘 이상일 때만 보임)와 아래(범위는 한 페이지여도 보임)에 한 번씩 둡니다 |
 | `data-table/*` | Data Table 문서 구성의 공통 부품. `features.ts`(TanStack 기능 묶음), `DataTable`(표), `SortHeader`(정렬 머리글), `DataTablePagination`(TanStack 페이지 상태를 `PaginationBar`에 연결, `placement`) |
 | `TrendChart` | 시간에 따른 선 그래프 (`Chart` + LayerChart `LineChart`). 단위가 다른 지표를 각자의 최댓값 기준으로 겹쳐 그리고, 툴팁에 실제 값을 보여줍니다. 애니메이션은 쓰지 않습니다 |
+| `PeriodControls` | 기간 탐색 줄: 자동 새로고침 스위치, 단위 선택, 이전·다음 버튼, 날짜 달력. `Card.Header` 안에서 `Card.Title` 다음에 두고(`class="@max-md/card-header:grid-cols-1 @max-md/card-header:gap-3"`), `web/src/period.svelte.ts`의 `createPeriod()`가 만든 `period`를 넘깁니다. 단위·기준 날짜·자동 새로고침은 주소의 `unit`·`date`·`live`가 단일 출처이고, 같은 파일의 `trackPeriod()`가 기간이 바뀔 때와 5초마다 다시 불러옵니다. 트래픽 카드(`RequestTrend`)와 관찰의 지표 탭(`AccessMetrics`)이 함께 씁니다 |
+| `LogCard` | 요청 기록 카드(관찰의 접근 기록·실패 요청). 머리글에 사용 크기·새로 고침·기록 설정·기록 스위치, 본문에 필터 줄·표·위아래 `PaginationBar`를 그리고, 서버가 나눈 페이지를 `/api/v1/observe/{kind}-log`로 받습니다. 부모는 `kind`(`access`·`failure`), 적용 중인 `filters`, 필터 입력(`filterControls`), 시각 다음의 열(`columns`)과 한 줄의 셀(`cells`)을 채웁니다. page·per_page·필터는 주소 query가 단일 출처이고, 필터를 바꾸면 부모가 `page`를 비웁니다 |
+| `LogSettingsDialog` | 기록 하나의 용량 상한(16–4096 MiB)과 보관 기간(1–365일)을 저장하는 대화상자. `LogCard`의 설정 버튼이 엽니다 |
 
 ## 지켜야 할 것
 
 - **CSP:** Outlet은 `style-src 'self'`, `script-src 'self'`를 씁니다. 템플릿에 고정된 `style="…"` 속성, 인라인 `<style>`·`<script>`를 만들면 안 됩니다. Svelte의 동적 `style` 값은 CSSOM으로 설정되어 괜찮습니다. 같은 이유로 `Chart`의 `config`에는 색을 넣지 않고 시리즈에 `var(--primary)`처럼 직접 지정하며, `mode-watcher` 대신 `web/src/theme.svelte.ts`가 다크 테마를 켭니다.
 - **아이콘:** Fluent UI System Icons만 `web/src/icons.ts`에서 가져오고, 표시 크기에 맞는 크기 버전(12/16/20/24/…)을 씁니다. 줄여서 그리지 않습니다: text-xs 글자 옆의 작은 아이콘(탭, `InfoTooltip`, 배지, `size="sm"`·`xs` 버튼)은 12px 전용 버전(`Info12`, `Home12`, …)을 `size-3`으로 쓰고, 12px 버전이 없으면 16px 버전을 `size-4`로 씁니다. `size-*` 클래스가 없는 아이콘은 `app.css`가 만든 크기 그대로 그립니다.
+- **탭:** `Tabs.Content`는 숨겨진 탭도 그려 두므로, 주소 query(page·필터·기간)를 읽거나 주기적으로 불러오는 컴포넌트는 `{#if tab === '…'}`로 고른 탭에서만 그립니다. 탭을 옮길 때는 이전 탭의 query를 함께 지웁니다(관찰 화면의 `setTab`).
 - **문구:** 화면 문구는 `translations(en, ko)`로 정의합니다. 설명은 툴팁으로 빼고, 보이는 글은 이름·값·동작에 필요한 말로 줄입니다.

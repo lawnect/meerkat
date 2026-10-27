@@ -18,7 +18,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/lawnect/meerkat/internal/accesslog"
 	"github.com/lawnect/meerkat/internal/contract"
 	"github.com/lawnect/meerkat/internal/control"
 	"github.com/lawnect/meerkat/internal/proxy"
@@ -85,6 +84,11 @@ func (r Record) probeFor(serviceID string) string {
 }
 
 type Store struct {
+	// logs are the Outlet's logs, each nil when its file couldn't be opened.
+	logs struct {
+		access   *outletLog[accessEntry]
+		failures *outletLog[failureEntry]
+	}
 	mu          sync.RWMutex
 	path        string
 	managedPath string
@@ -294,13 +298,13 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 	if controlDB != nil {
 		s.journal = newAuditJournal(controlDB, filepath.Join(dir, "spool", "audit"))
 		s.workers.Go(func() { s.journal.run(workers) })
-		// The access log has a file of its own; without it the Outlet runs
-		// on, only not logging.
-		if log, err := accesslog.Open(context.Background(), filepath.Join(dir, "access-log.db")); err != nil {
-			slog.Warn("access log unavailable", "error", err)
-		} else {
-			s.access.log = newAccessLogWriter(log)
-			s.workers.Go(func() { s.access.log.run(workers) })
+		// Each log has a file of its own; without it the Outlet runs on,
+		// only not keeping that log.
+		if s.logs.access = openOutletLog(context.Background(), controlDB, dir, "access-log.db", control.LogAccess, accessEntries); s.logs.access != nil {
+			s.workers.Go(func() { s.logs.access.writer.Run(workers) })
+		}
+		if s.logs.failures = openOutletLog(context.Background(), controlDB, dir, "failure-log.db", control.LogFailures, failureEntries); s.logs.failures != nil {
+			s.workers.Go(func() { s.logs.failures.writer.Run(workers) })
 		}
 	}
 	s.workers.Go(func() { s.persistLoop(workers) })
@@ -416,9 +420,8 @@ func (s *Store) Close() {
 			s.stopWorkers()
 		}
 		s.workers.Wait()
-		if s.access.log != nil {
-			_ = s.access.log.log.Close()
-		}
+		s.logs.access.close()
+		s.logs.failures.close()
 	})
 }
 

@@ -6,6 +6,7 @@ export const pagePath: Record<PageKey, string> = {
   connectors: '/connectors',
   domains: '/domains',
   access: '/access',
+  observe: '/observe',
   diagnostics: '/diagnostics',
   settings: '/settings',
 };

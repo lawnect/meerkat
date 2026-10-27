@@ -305,6 +305,16 @@ On the **local admin port** (`https://localhost:18443`) opened through the SSH t
 
 Every action an admin takes (successful and failed logins, verification code checks, logouts, and changes to tunnels, services, public addresses, domains, tunnel addresses, and Telegram, alert, and rate limit settings) is recorded in the SQLite `audit_events` table with the time, account, access path (`public`/`local`), access address, browser, target, and non-secret details. Tokens, passwords, verification codes, and bot tokens aren't recorded. The log is append-only. SQLite triggers block updates and deletes, and there is no delete API or retention period, so entries can't be erased from the UI. This doesn't stop a server administrator who can edit the database file directly, so it assumes that access to the server is controlled. Recording never holds up a request: entries are queued in memory and written in the background. If the database can't take them they wait in memory, then in files under the data directory's `spool/audit/`, and are written once the writer is idle. If even those limits are exceeded, the entry is dropped and counted in the log, and the request still goes through.
 
+### Observe
+
+The **Observe** page gathers what the Outlet sees, in four tabs:
+- **Metrics**: what access policies decided (passed, sent to sign in, denied), by hour, day, month or year, moving through periods as the dashboard's traffic card does, in total and by policy.
+- **Access log**: every request access policies refused or sent to sign in, and those let in by a signed-in person or a token.
+- **Failed requests**: public requests that failed (the app answered 5xx, couldn't be reached or timed out, or no service was live) or that the Outlet refused before an app (rate limits, block rules, path or upload size, connection limits).
+- **Audit log**: what administrators did (above).
+
+Each log is off until turned on, and keeps its entries in a SQLite file of its own (`access-log.db`, `failure-log.db`) so it never grows the control database. Its cap (16 MiB to 4 GiB, 256 MiB by default) is enforced by SQLite itself, and entries go after the days you choose (30 by default) or, oldest first, when the file is full. Requests never wait on a log: they hand it an entry, and entries it can't keep up with are given up and counted.
+
 ### Rate limiting
 
 Public requests are limited with token buckets before they're proxied. There are limits per client IP, per subnet (IPv4 /24, IPv6 /56), and per public hostname, plus admin-defined rules per endpoint (a host and path prefix, applied to the overall total or per IP). If any one of them is exceeded, the request is rejected with `429 Too Many Requests` and `Retry-After: 1`, and the response says which limit triggered. The defaults are generous enough not to trigger during normal use (300 requests per second per IP with a burst of 1000, 1500 and 5000 per subnet, and no per-host limit). The admin host's login path (`/api/v1/session`) has its own rule of 3 requests per second per IP with a burst of 30, which you can edit in the list. Settings take effect immediately without a restart, and rejected requests are aggregated hourly and shown in the usage chart. Certificate issuance checks (`cert-ask`) and ACME paths aren't limited, and the local admin port opened over SSH doesn't go through these limits.
@@ -357,7 +367,7 @@ Bypass conditions open paths, so they are compared exactly, as the app gets the 
 
 Conditions work as in block rules and see the path decoded once, so write them decoded (`/files/100%`, not `/files/100%25`). A path an app could read another way, such as an encoded `..`, matches every Allow and Block condition and no Bypass condition; a double-encoded one is also compared decoded twice. For apps that interpret paths in unusual ways, protect all paths. Someone denied can **Sign in again** from the denied page, which is how groups added to a policy later take effect.
 
-The **Metrics** tab shows what the policies decided (passed, sent to sign in, denied) over the last 24 hours, 7 or 30 days, in total and by policy; requests no policy covers aren't counted. Turned on there, the request log keeps every refusal and sign-in asked for, and requests let in by a signed-in person or a token, for 30 days in `access-log.db`, a SQLite file of its own capped at 256 MiB; requests never wait on it, and entries it can't keep up with are given up.
+What the policies decide, and the requests behind it, are on the **Observe** page (see below).
 
 A session lasts the configured hours (24 by default), only on the address it was issued for. **Sign everyone out** ends all of them. A group added to a policy counts from a person's next sign-in. The groups claim and scopes are set on the Access SSO card; add the scope your provider needs to send groups.
 

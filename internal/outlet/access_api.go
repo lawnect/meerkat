@@ -270,32 +270,29 @@ func (s *Store) accessTokenViews(ctx context.Context, tokens []control.AccessTok
 	return views, nil
 }
 
-// getAccessMetrics returns what access policies decided over the last 24
-// hours, 7 days or 30 days, by hour and by policy.
+// getAccessMetrics returns what access policies decided over a range, in
+// calendar buckets of a unit, as the dashboard reads traffic, and by policy.
 func (s *Store) getAccessMetrics(w http.ResponseWriter, r *http.Request) {
 	if !s.alertsAdmin(w, r) {
 		return
 	}
-	hours := 24
-	switch r.URL.Query().Get("hours") {
-	case "", "24":
-	case "168":
-		hours = 168
-	case "720":
-		hours = 720
-	default:
-		fail(w, r, 400, "invalid_usage_period")
+	unit, from, to, location, ok := usageRange(w, r)
+	if !ok {
 		return
 	}
 	// What was counted since the last save is saved first, so the console
 	// sees requests just made.
 	s.flushAccessCounts(r.Context())
-	metrics, err := s.control.AccessMetrics(r.Context(), s.now(), hours)
+	series, err := s.control.AccessSeries(r.Context(), unit, from, to, location)
+	if errors.Is(err, control.ErrInvalidUsageRange) {
+		fail(w, r, 400, "invalid_usage_range")
+		return
+	}
 	if err != nil {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	reply(w, 200, metrics)
+	reply(w, 200, series)
 }
 
 // hostsMeet reports whether two addresses, names or "*.domain", cover some

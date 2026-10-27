@@ -374,46 +374,87 @@ func TestAccessPoliciesSavedWithoutID(t *testing.T) {
 }
 
 // What access policies decided adds up by policy and hour, is kept for
-// accessMetricsRetention, and comes back for every hour of a period.
-func TestAccessMetricsStorage(t *testing.T) {
+// accessMetricsRetention, and comes back in calendar buckets.
+func TestAccessSeries(t *testing.T) {
 	ctx := context.Background()
 	db := openRouting(t)
 	now := time.Date(2026, 10, 27, 15, 20, 0, 0, time.UTC)
 	hour := now.Truncate(time.Hour)
-	record := func(counts map[AccessCountKey]AccessCounts, at time.Time) {
+	record := func(counts map[AccessCountKey]AccessCounts) {
 		t.Helper()
-		if err := db.RecordAccessCounts(ctx, counts, at); err != nil {
+		if err := db.RecordAccessCounts(ctx, counts, now); err != nil {
 			t.Fatal(err)
 		}
 	}
 	record(map[AccessCountKey]AccessCounts{
-		{"api", hour}:                           {Passed: 3},
-		{"staff", hour}:                         {Challenged: 2, Denied: 1},
-		{"staff", hour.Add(-2 * time.Hour)}:     {Passed: 5},
-		{"old", hour.Add(-40 * 24 * time.Hour)}: {Denied: 9},
-	}, now)
-	record(map[AccessCountKey]AccessCounts{{"api", hour}: {Passed: 1, Denied: 1}}, now)
-	metrics, err := db.AccessMetrics(ctx, now, 24)
+		{"api", hour}:                            {Passed: 3},
+		{"staff", hour}:                          {Challenged: 2, Denied: 1},
+		{"staff", hour.Add(-2 * time.Hour)}:      {Passed: 5},
+		{"staff", hour.Add(-26 * time.Hour)}:     {Denied: 4},
+		{"old", hour.Add(-500 * 24 * time.Hour)}: {Denied: 9},
+	})
+	record(map[AccessCountKey]AccessCounts{{"api", hour}: {Passed: 1, Denied: 1}})
+	seoul, _ := time.LoadLocation("Asia/Seoul")
+	day := time.Date(2026, 10, 28, 0, 0, 0, 0, seoul) // 15:20 UTC is 00:20 the next day in Seoul
+	series, err := db.AccessSeries(ctx, "hour", day, day.AddDate(0, 0, 1), seoul)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if metrics.PeriodHours != 24 || len(metrics.Hours) != 24 || metrics.Hours[23].Hour != "2026-10-27T15:00:00Z" || metrics.Hours[0].Hour != "2026-10-26T16:00:00Z" {
-		t.Fatalf("hours: %d %+v %+v", len(metrics.Hours), metrics.Hours[0], metrics.Hours[23])
+	if series.Unit != "hour" || len(series.Buckets) != 24 || series.Buckets[0].Start != "2026-10-28T00:00:00+09:00" || series.Buckets[0].AccessCounts != (AccessCounts{Passed: 4, Challenged: 2, Denied: 2}) {
+		t.Fatalf("hours: %d %+v", len(series.Buckets), series.Buckets[0])
 	}
-	if got := metrics.Hours[23].AccessCounts; got != (AccessCounts{Passed: 4, Challenged: 2, Denied: 2}) {
-		t.Fatalf("this hour: %+v", got)
+	if series.Policies["api"] != (AccessCounts{Passed: 4, Denied: 1}) || series.Policies["staff"] != (AccessCounts{Challenged: 2, Denied: 1}) {
+		t.Fatalf("policies over the day: %+v", series.Policies)
 	}
-	if got := metrics.Hours[21].AccessCounts; got != (AccessCounts{Passed: 5}) {
-		t.Fatalf("two hours ago: %+v", got)
+	month := time.Date(2026, 10, 1, 0, 0, 0, 0, seoul)
+	if series, err = db.AccessSeries(ctx, "day", month, month.AddDate(0, 1, 0), seoul); err != nil || len(series.Buckets) != 31 {
+		t.Fatalf("days: %d %v", len(series.Buckets), err)
 	}
-	if metrics.Policies["api"] != (AccessCounts{Passed: 4, Denied: 1}) || metrics.Policies["staff"] != (AccessCounts{Passed: 5, Challenged: 2, Denied: 1}) {
-		t.Fatalf("policies: %+v", metrics.Policies)
+	// In Seoul, 26 hours before is the 26th at 22:00, two hours before the
+	// 27th at 22:00, and this hour the 28th.
+	if series.Buckets[25].AccessCounts != (AccessCounts{Denied: 4}) || series.Buckets[26].AccessCounts != (AccessCounts{Passed: 5}) || series.Buckets[27].AccessCounts != (AccessCounts{Passed: 4, Challenged: 2, Denied: 2}) {
+		t.Fatalf("26th to 28th: %+v %+v %+v", series.Buckets[25], series.Buckets[26], series.Buckets[27])
 	}
-	if _, ok := metrics.Policies["old"]; ok {
-		t.Fatal("an hour past retention is in the period")
+	if _, err := db.AccessSeries(ctx, "week", month, month.AddDate(0, 1, 0), seoul); !errors.Is(err, ErrInvalidUsageRange) {
+		t.Fatalf("unknown unit: %v", err)
 	}
 	var kept int
 	if err := db.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM access_hourly WHERE policy_id = 'old'`).Scan(&kept); err != nil || kept != 0 {
 		t.Fatalf("hours past retention kept: %d %v", kept, err)
+	}
+}
+
+// Log settings are off at 256 MiB and 30 days until saved, saved within
+// their limits, and read back as the defaults when damaged.
+func TestLogSettings(t *testing.T) {
+	ctx := context.Background()
+	db := openRouting(t)
+	now := time.Now()
+	if got, err := db.LogSettings(ctx, LogAccess); err != nil || got != DefaultLogSettings() || got.Enabled {
+		t.Fatalf("defaults: %+v %v", got, err)
+	}
+	want := LogSettings{Enabled: true, MaxMiB: 1024, RetentionDays: 7}
+	if _, err := db.SetLogSettings(ctx, LogFailures, want, now); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.LogSettings(ctx, LogFailures); got != want {
+		t.Fatalf("saved: %+v", got)
+	}
+	if got, _ := db.LogSettings(ctx, LogAccess); got.Enabled {
+		t.Fatal("one log's settings reached the other")
+	}
+	for _, bad := range []LogSettings{{MaxMiB: 8, RetentionDays: 7}, {MaxMiB: 8192, RetentionDays: 7}, {MaxMiB: 64, RetentionDays: 0}, {MaxMiB: 64, RetentionDays: 400}} {
+		if _, err := db.SetLogSettings(ctx, LogAccess, bad, now); !errors.Is(err, ErrInvalidLogSettings) {
+			t.Fatalf("%+v: %v", bad, err)
+		}
+	}
+	if _, err := db.SetLogSettings(ctx, "other", want, now); !errors.Is(err, ErrInvalidLogSettings) {
+		t.Fatalf("unknown log: %v", err)
+	}
+	if err := putSetting(ctx, db.db, "log_"+LogFailures, `{"enabled":true,"max_mib":1}`, now); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.LogSettings(ctx, LogFailures); got != DefaultLogSettings() {
+		t.Fatalf("damaged: %+v", got)
 	}
 }

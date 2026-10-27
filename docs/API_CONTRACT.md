@@ -301,9 +301,6 @@ POST   /api/v1/security/access-provider/test
 POST   /api/v1/security/access/sessions/revoke
 GET    /api/v1/security/access-policies
 PUT    /api/v1/security/access-policies
-GET    /api/v1/security/access-metrics?hours=24|168|720
-GET    /api/v1/security/access-log?decision=&policy=&before=&limit=
-PUT    /api/v1/security/access-log
 GET    /api/v1/security/access-tokens
 POST   /api/v1/security/access-tokens
 PUT    /api/v1/security/access-tokens/:id
@@ -346,16 +343,7 @@ POST   https://<보호 주소>/.meerkat/access/logout
 - 앱에는 `X-Meerkat-Access-Email`로 이메일을 전달한다. 클라이언트가 보낸 헤더 중 이름이 대소문자, `_`·`-` 구분 없이 `X-Meerkat-Access`로 시작하는 것은 모두 지운다(`X_Meerkat_Access_Email`을 같은 헤더로 읽는 앱 서버가 있다).
 - `__Host-meerkat_access`로 시작하는 쿠키 이름은 Outlet 전용이다. 요청에서는 이름의 앞뒤 공백과 대소문자에 관계없이 지워 앱에 전달하지 않고, 앱 응답이 이 이름으로 설정하는 `Set-Cookie`도 지운다.
 
-**지표**
-- 공개 요청에 처음 일치한 정책마다 판정을 시간 단위로 센다. `passed`는 우회, 또는 정책이 받는 세션·토큰으로 앱에 전달한 요청, `challenged`는 로그인으로 보낸 요청(브라우저가 아니면 `401`), `denied`는 차단, 정책이 들이지 않는 세션·토큰, 공급자 비활성화나 관리자 확인 오류로 거부한 요청이다. 정책이 적용되지 않은 요청과 `/.meerkat/access/` 아래 경로는 세지 않는다.
-- 요청은 잠금 없이 메모리에서 세고 30초마다(그리고 아래 `GET` 때) 저장하며, 30일 지난 시간은 지운다. 저장하지 못한 수는 다음에 더한다. 지운 정책의 수도 보관 기간 동안 남는다.
-- `GET /api/v1/security/access-metrics`는 `{"period_hours", "hours": [{"hour", "passed", "challenged", "denied"}], "policies": {"<정책 ID>": {"passed", "challenged", "denied"}}}`를 반환한다. `hours`는 기간의 모든 시간(UTC 정각, 오래된 것부터)이고 `policies`는 기간 합계다. `hours`는 `24`(기본), `168`, `720`이며 그 밖은 `400 invalid_usage_period`이다.
-
-**요청 기록**
-- 켜면(`PUT /api/v1/security/access-log` `{"enabled": true}`, 처음에는 꺼짐, `security.access_log`) 정책이 거부하거나 로그인을 요구한 요청은 모두, 통과한 요청은 로그인한 사용자나 토큰으로 들어온 것만 기록한다(익명 우회는 지표로만 센다). 시각, 주소, 메서드, 경로(쿼리 없이 512바이트까지), 클라이언트 IP, 정책 ID, 판정, 사유(`bypass`·`session`, `no_session`, `blocked`·`not_allowed`·`token_invalid`·`token_expired`·`token_out_of_scope`·`token_not_allowed`·`unavailable`), 이메일, 토큰 ID를 남긴다.
-- 기록은 데이터 디렉터리의 별도 SQLite 파일 `access-log.db`에 두어 제어 DB와 연결도 용량도 나누지 않는다. SQLite가 파일을 256MiB(`max_page_count`), WAL을 16MiB로 묶으며, 가득 차면 가장 오래된 10분의 1을 지우고 다시 쓴다. 30일 지난 것과 50만 건을 넘는 오래된 것은 한 시간마다 지운다. 파일을 열 수 없으면 Outlet은 기록 없이 동작하며 `available`이 `false`이고 켜기는 `409 access_log_unavailable`이다.
-- 요청은 기록을 기다리지 않는다. 8192건짜리 대기열에 넣기만 하고 차 있으면 버린다. 백그라운드가 1초마다(또는 500건마다) 묶어 쓰고, 쓰기에 실패하면 2만 건까지 메모리에 두었다가 최대 30초 간격으로 다시 쓰며, 넘는 것은 버린다. 디스크에 따로 쌓지 않는다. 버린 수는 `dropped`(Outlet 시작 이후)로 알린다.
-- `GET`은 `{"enabled", "available", "entries": [{"id", "at", "host", "method", "path", "client", "policy", "decision", "reason", "email", "token"}], "next", "dropped"}`를 최신순으로 반환한다. `decision`(`passed`·`challenged`·`denied`)과 `policy`(정책 ID)로 거르고, `limit`(1~200, 기본 50)건씩, `next`를 `before`로 넘겨 다음 쪽을 받는다(`0`이면 끝). 맞지 않는 값은 `400 invalid_access_log_filter`이다. 읽기 전에 대기 중인 기록을 쓴다. `PUT`도 같은 형태로 답한다.
+정책이 판정한 요청의 지표와 기록은 아래 **관찰**에 있다.
 
 **접근 토큰**
 - 스크립트, CI, 다른 서비스처럼 로그인할 수 없는 클라이언트는 `X-Meerkat-Access-Token: <값>` 헤더를 보낸다. 값이 맞고 만료되지 않았으며 이용 범위 안이면 그 요청에 유효한 토큰이고, 그 토큰을 받는 정책(`require_token`)에 해당한다. 값의 앞뒤 공백은 무시한다. 유효하지 않은 토큰은 보내지 않은 것처럼 정책을 고른다.
@@ -377,6 +365,38 @@ POST   https://<보호 주소>/.meerkat/access/logout
 - `finish`는 그 주소에 발급된 티켓만 받아 세션 쿠키로 바꾸고 원래 경로로 보낸다.
 - `logout`은 같은 주소에서 보낸 `POST`일 때만 세션 쿠키를 지우고, `return`이 있으면 그 경로로 보낸다(`303`). `GET`이나 다른 사이트(같은 도메인의 다른 주소 포함)에서 온 요청은 지우지 않고 확인 버튼만 보여 준다.
 - `/.meerkat/access/` 아래 경로는 Outlet이 처리하며, 기본 차단 규칙보다 먼저 확인한다.
+
+### 관찰
+
+콘솔의 **관찰** 페이지는 접근 보호의 지표, 접근 기록, 실패 요청, 감사 로그(위)를 모아 보여 준다.
+
+~~~
+GET    /api/v1/observe/access-metrics?unit=hour|day|month|year&from=<RFC3339>&to=<RFC3339>&tz=<IANA>
+GET    /api/v1/observe/access-log?page=&per_page=&decision=&policy=
+PUT    /api/v1/observe/access-log
+GET    /api/v1/observe/failure-log?page=&per_page=&cause=&host=
+PUT    /api/v1/observe/failure-log
+~~~
+
+**접근 판정 지표**
+- 공개 요청에 처음 일치한 정책마다 판정을 시간 단위로 센다. `passed`는 우회, 또는 정책이 받는 세션·토큰으로 앱에 전달한 요청, `challenged`는 로그인으로 보낸 요청(브라우저가 아니면 `401`), `denied`는 차단, 정책이 들이지 않는 세션·토큰, 공급자 비활성화나 관리자 확인 오류로 거부한 요청이다. 정책이 적용되지 않은 요청과 `/.meerkat/access/` 아래 경로는 세지 않는다.
+- 요청은 잠금 없이 메모리에서 세고 30초마다(그리고 아래 `GET` 때) 제어 DB에 저장하며, 400일 지난 시간은 지운다. 저장하지 못한 수는 다음에 더한다.
+- `GET /api/v1/observe/access-metrics`는 `GET /api/v1/usage`와 같이 `from`·`to`를 `tz`의 단위 경계로 맞춰 `{"unit", "buckets": [{"start", "passed", "challenged", "denied"}], "policies": {"<정책 ID>": {"passed", "challenged", "denied"}}}`를 반환한다. `buckets`는 범위의 모든 구간이고 `policies`는 범위 합계다(지운 정책도 남는다). 맞지 않는 범위는 `400 invalid_usage_range`이다.
+
+**기록 공통**
+- 접근 기록(`access`)과 실패 요청(`failures`)은 데이터 디렉터리의 별도 SQLite 파일(`access-log.db`, `failure-log.db`)에 두어 제어 DB와 연결도 용량도 나누지 않는다.
+- 기록마다 설정 `{"enabled", "max_mib", "retention_days"}`가 있다. 처음에는 꺼져 있고(256MiB, 30일), `max_mib`는 16~4096, `retention_days`는 1~365이다. SQLite가 파일 크기를 `max_mib`로(`max_page_count`), WAL을 16MiB로 막고, 가득 차면 가장 오래된 10분의 1을 지우고 다시 쓴다. 보관 기간이 지난 기록은 한 시간마다, 상한을 낮추면 바로 지우고 파일을 줄인다.
+- 요청은 기록을 기다리지 않는다. 기록이 꺼져 있으면 아무것도 하지 않고, 켜져 있으면 8192건짜리 대기열에 넣기만 하며 차 있으면 버린다. 백그라운드가 1초마다(또는 500건마다) 묶어 쓰고, 쓰기에 실패하면 2만 건까지 메모리에 두었다가 최대 30초 간격으로 다시 쓰며, 넘는 것은 버린다. 디스크에 따로 쌓지 않는다.
+- `GET`은 `{"settings", "available", "size_bytes", "dropped", "total", "entries": [...]}`를 최신순으로 반환한다. `available`은 파일을 열었는지, `size_bytes`는 파일 크기, `dropped`는 Outlet 시작 이후 버린 수, `total`은 조건에 맞는 수다. `page`(1부터)와 `per_page`(1~200, 기본 50)로 나누어 받는다. 읽기 전에 대기 중인 기록을 쓴다. 맞지 않는 값은 `400 invalid_log_filter`이다.
+- `PUT`은 설정을 받아 저장하고 바로 적용하며 `GET`의 첫 쪽으로 답한다. 맞지 않는 값은 `400 invalid_log_settings`, 파일을 열 수 없는데 켜려면 `409 log_unavailable`이다. `observe.log_settings`에 `{"log", "enabled", "max_mib", "retention_days"}`를 남긴다.
+
+**접근 기록**
+- 정책이 거부하거나 로그인을 요구한 요청은 모두, 통과한 요청은 로그인한 사용자나 토큰으로 들어온 것만 기록한다(익명 우회는 지표로만 센다).
+- 항목은 `{"id", "at", "host", "method", "path", "client", "policy", "decision", "reason", "email", "token"}`이다. `path`는 쿼리 없이 512바이트까지, `client`는 클라이언트 IP, `policy`는 정책 ID, `token`은 토큰 ID다. `reason`은 `bypass`·`session`(통과), `no_session`(로그인 요구), `blocked`·`not_allowed`·`token_invalid`·`token_expired`·`token_out_of_scope`·`token_not_allowed`·`unavailable`(거부)이다. `decision`과 `policy`로 거른다.
+
+**실패 요청**
+- 경로가 있는 공개 주소로 온 요청 중 실패했거나 Outlet이 앱에 보내기 전에 막은 요청을 기록한다. 경로가 없는 주소와 접근 보호가 막은 요청(접근 기록)은 남기지 않는다. 다른 서비스로 다시 보낸 요청은 마지막 결과로 한 번만 남긴다.
+- 항목은 `{"id", "at", "host", "method", "path", "client", "cause", "status", "service", "duration_ms"}`이며 `cause`와 `host`로 거른다. `cause`는 `app_error`(앱이 5xx로 응답), `unreachable`(서비스에 닿지 못함, `502`), `timeout`(연결이나 응답 헤더 시간 초과, `504`), `no_service`(살아 있는 서비스 없음, `404`), `rate_limited`(요청 제한, `429`), `blocked`(차단 규칙, `403`), `too_long`(경로 길이, `414`), `too_large`(업로드 크기, `413`), `busy`(연결 제한, 클라이언트별 `429`·전체 `503`)이고, `status`는 클라이언트가 받은 상태 코드, `duration_ms`는 요청을 받은 때부터 실패까지(앱의 5xx는 응답 헤더까지)다. 클라이언트 쪽 오류(`400`, `408`, `499`)는 남기지 않는다. 요청 제한과 클라이언트별 연결 제한은 주소를 보기 전에 거부하므로, 경로가 있는 주소로 온 요청일 때만 남긴다.
 
 ### Outlet 사용량
 

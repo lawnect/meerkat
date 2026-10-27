@@ -162,6 +162,7 @@ func (s *Store) PublicHandler() http.Handler {
 			}
 			return
 		}
+		began := s.failureStart()
 		limits := s.connectionLimits()
 		w, body := guardTransfer(w, r, limits)
 		defer finishTransfer(w, body)
@@ -171,10 +172,12 @@ func (s *Store) PublicHandler() http.Handler {
 			return
 		}
 		if s.limitRequest(w, r, host) {
+			s.logTurnedAway(r, host, failRateLimited, http.StatusTooManyRequests)
 			return
 		}
 		client, ok := s.admitClient(w, r, limits)
 		if !ok {
+			s.logTurnedAway(r, host, failBusy, http.StatusTooManyRequests)
 			return
 		}
 		if client != "" {
@@ -207,6 +210,7 @@ func (s *Store) PublicHandler() http.Handler {
 		// maxPublicPath) would only make them slow.
 		if len(r.URL.EscapedPath()) > maxPublicPath {
 			http.Error(w, "request path too long", http.StatusRequestURITooLong)
+			s.logFailure(r, host, began, failTooLong, http.StatusRequestURITooLong, "")
 			return
 		}
 		// Access protection first: its own paths start with "/.", which the
@@ -219,12 +223,14 @@ func (s *Store) PublicHandler() http.Handler {
 		if rule := s.blockedBy(host, r.URL.Path); rule != nil {
 			rule.hits.Add(1)
 			blocked(w)
+			s.logFailure(r, host, began, failBlocked, http.StatusForbidden, "")
 			return
 		}
 		origin, _ := requestOrigin(r)
 		backends := s.orderBackends(host, origin, s.liveBackends(plans), policy)
 		if len(backends) == 0 {
 			http.NotFound(w, r)
+			s.logFailure(r, host, began, failNoService, http.StatusNotFound, "")
 			return
 		}
 		// A tunnel is not an HTTP proxy for other destinations.
@@ -236,6 +242,7 @@ func (s *Store) PublicHandler() http.Handler {
 			if r.ContentLength > limit {
 				w.Header().Set("Connection", "close")
 				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				s.logFailure(r, host, began, failTooLarge, http.StatusRequestEntityTooLarge, "")
 				return
 			}
 			if body != nil {
@@ -244,6 +251,7 @@ func (s *Store) PublicHandler() http.Handler {
 		}
 		held, ok := s.admitProxy(w, r, limits)
 		if !ok {
+			s.logFailure(r, host, began, failBusy, http.StatusServiceUnavailable, "")
 			return
 		}
 		if held {
@@ -311,6 +319,8 @@ func (s *Store) PublicHandler() http.Handler {
 					dropAccessSetCookie(res.Header)
 					if res.StatusCode < 500 {
 						s.noteServed(target.serviceID)
+					} else {
+						s.logFailure(r, host, began, failAppError, res.StatusCode, target.service)
 					}
 					return nil
 				},
@@ -337,6 +347,7 @@ func (s *Store) PublicHandler() http.Handler {
 					case body != nil && body.tooLarge.Load():
 						w.Header().Set("Connection", "close")
 						http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+						s.logFailure(r, host, began, failTooLarge, http.StatusRequestEntityTooLarge, target.service)
 						return
 					case body != nil && (body.timedOut.Load() || clientGone && !body.complete.Load()):
 						w.Header().Set("Connection", "close")
@@ -353,9 +364,11 @@ func (s *Store) PublicHandler() http.Handler {
 					var timeout net.Error
 					if errors.As(err, &timeout) && timeout.Timeout() {
 						http.Error(w, "upstream timed out", http.StatusGatewayTimeout)
+						s.logFailure(r, host, began, failTimeout, http.StatusGatewayTimeout, target.service)
 						return
 					}
 					http.Error(w, "upstream unavailable", http.StatusBadGateway)
+					s.logFailure(r, host, began, failUnreachable, http.StatusBadGateway, target.service)
 				},
 			}
 			proxy.ServeHTTP(w, r)

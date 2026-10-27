@@ -470,10 +470,6 @@ type accessState struct {
 	// counts holds what policies decided until saved: accessCountKey to
 	// *atomic.Int64 (see countAccess).
 	counts sync.Map
-	// log writes the access log, nil when its file couldn't be opened;
-	// logging is its switch.
-	log     *accessLogWriter
-	logging atomic.Bool
 }
 
 // adminEmails remembers, for adminEmailTTL, whether an email is an
@@ -588,11 +584,6 @@ func (s *Store) reloadAccess(ctx context.Context) error {
 		return err
 	}
 	s.access.enabled.Store(provider.Enabled)
-	logging, err := s.control.AccessLogEnabled(ctx)
-	if err != nil {
-		return err
-	}
-	s.access.logging.Store(logging)
 	policies, err := s.control.AccessPolicies(ctx)
 	switch {
 	case errors.Is(err, control.ErrStoredAccessPolicies):

@@ -1,4 +1,4 @@
-export type PageKey = 'overview' | 'connectors' | 'domains' | 'access' | 'diagnostics' | 'settings';
+export type PageKey = 'overview' | 'connectors' | 'domains' | 'access' | 'observe' | 'diagnostics' | 'settings';
 export type AuthMode = 'loading' | 'setup' | 'login' | 'unavailable' | 'dashboard';
 
 // 로그인 화면이 보여 줄 방식(GET /api/v1/setup/status의 sign_in). 공개 관리자 주소에서 SSO가 켜져 있을 때만 sso가 true입니다.
@@ -348,23 +348,41 @@ export interface AccessToken {
   policies: Array<{ id: string; name: string }>; // 이 토큰을 지정했거나, 모든 토큰을 받으면서 주소가 겹치는 정책
 }
 
-// 접근 정책이 판정한 요청 수(GET /api/v1/security/access-metrics?hours=24|168|720). 통과는 우회, 또는 정책이 받는 세션·토큰,
-// 로그인 요구는 로그인으로 보낸 요청(브라우저가 아니면 401), 거부는 차단, 정책이 들이지 않는 세션·토큰, 공급자 꺼짐입니다.
+// 관찰 화면(/api/v1/observe/…). 접근 정책이 판정한 요청 수: 통과는 우회, 또는 정책이 받는 세션·토큰,
+// 로그인 요구는 로그인으로 보낸 요청(브라우저가 아니면 401), 거부는 차단, 정책이 들이지 않는 세션·토큰, 접근 보호 SSO 비활성화입니다.
 export interface AccessCounts {
   passed: number;
   challenged: number;
   denied: number;
 }
 
+// GET /api/v1/observe/access-metrics?unit&from&to&tz. 요청 사용량(UsageSeries)과 같은 방식으로 기간을 단위에 맞춥니다.
 export interface AccessMetrics {
-  period_hours: number;
-  hours: Array<AccessCounts & { hour: string }>; // 기간의 모든 시간, 오래된 것부터 (UTC 정각, RFC 3339)
+  unit: UsageUnit;
+  buckets: Array<AccessCounts & { start: string }>; // 기간의 모든 구간, 오래된 것부터 (0으로 채움, RFC 3339)
   policies: Record<string, AccessCounts>; // 정책 ID별 기간 합계. 지워진 정책도 남습니다
 }
 
-// 접근 보호 요청 기록(GET·PUT /api/v1/security/access-log). 별도 파일에 30일, 최대 50만 건·256MiB까지 둡니다.
+// 요청 기록은 접근(access)과 실패(failures) 두 가지이며, 각각 별도 파일과 설정을 가집니다.
+// GET·PUT /api/v1/observe/access-log, /api/v1/observe/failure-log. 기록은 처음에는 꺼져 있습니다.
+export interface LogSettings {
+  enabled: boolean;
+  max_mib: number; // 16–4096. 파일 크기 상한, 넘으면 오래된 기록부터 지웁니다
+  retention_days: number; // 1–365
+}
+
+export interface LogView<Entry> {
+  settings: LogSettings;
+  available: boolean; // 기록 파일을 열었는지. false이면 켤 수 없습니다(409 log_unavailable)
+  size_bytes: number;
+  dropped: number; // Outlet 시작 이후 대기열이 넘쳐 기록하지 못한 수
+  total: number; // 필터에 맞는 전체 수
+  entries: Entry[]; // 최신순
+}
+
 // 거부·로그인 요구는 모두, 통과는 로그인한 사용자나 토큰으로 들어온 것만 남깁니다.
 export type AccessDecision = keyof AccessCounts;
+export const accessDecisions = ['passed', 'challenged', 'denied'] as const satisfies readonly AccessDecision[];
 export interface AccessLogEntry {
   id: number;
   at: string; // RFC 3339
@@ -379,12 +397,20 @@ export interface AccessLogEntry {
   token: string; // 토큰 ID
 }
 
-export interface AccessLogView {
-  enabled: boolean; // 기록 스위치. 처음에는 꺼져 있습니다
-  available: boolean; // 기록 파일을 열었는지
-  entries: AccessLogEntry[]; // 최신순
-  next: number; // 다음 쪽을 받을 before 값, 0이면 끝
-  dropped: number; // Outlet 시작 이후 대기열이 넘쳐 기록하지 못한 수
+// 공개 주소로 온 요청 중 실패했거나 앱에 닿기 전에 Outlet이 거절한 것.
+export const failureCauses = ['app_error', 'unreachable', 'timeout', 'no_service', 'rate_limited', 'blocked', 'too_long', 'too_large', 'busy'] as const;
+export type FailureCause = (typeof failureCauses)[number];
+export interface FailureLogEntry {
+  id: number;
+  at: string;
+  host: string;
+  method: string;
+  path: string;
+  client: string;
+  cause: FailureCause;
+  status: number; // 클라이언트가 받은 상태 코드
+  service: string; // 서비스 이름, 없으면 ''
+  duration_ms: number;
 }
 
 export interface AccessTokensView {

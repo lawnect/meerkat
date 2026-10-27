@@ -16,6 +16,7 @@
   import ConnectorsPage from './pages/ConnectorsPage.svelte';
   import DiagnosticsPage from './pages/DiagnosticsPage.svelte';
   import AccessPage from './pages/AccessPage.svelte';
+  import ObservePage from './pages/ObservePage.svelte';
   import SettingsPage from './pages/SettingsPage.svelte';
   import { ArrowExit, Warning } from './icons';
   import * as Alert from '$lib/components/ui/alert/index.js';
@@ -51,6 +52,8 @@
   let loading = $state(false);
   let loadError = $state('');
   let data = $state<DashboardData>({ connectors: [], services: [], routes: [], records: [], outlet: {} });
+  // 실패 요청을 주소로 거를 때 고르는 공개 주소입니다.
+  const publicAddresses = $derived([...new Set(data.routes.map((route) => route.hostname))].sort());
   let statusRefreshPromise: Promise<void> | null = null;
   let backgroundRefreshBusy = false;
 
@@ -70,7 +73,10 @@
 
   function currentPage(): PageKey {
     const legacy: Record<string, PageKey> = { '/routes': 'connectors', '/services': 'connectors' };
-    const replacement = legacy[stripLocale(window.location.pathname).replace(/\/+$/, '')];
+    const path = stripLocale(window.location.pathname).replace(/\/+$/, '');
+    // 감사 로그와 접근 지표는 설정·접근 보호의 탭에서 관찰 화면으로 옮겼습니다. 이전 주소는 같은 탭의 새 주소로 바꿉니다.
+    const tab = new URLSearchParams(window.location.search).get('tab');
+    const replacement = (path === '/settings' && tab === 'audit') || (path === '/access' && tab === 'metrics') ? 'observe' : legacy[path];
     if (replacement) {
       window.history.replaceState(null, '', `${pageHref(replacement)}${window.location.search}${window.location.hash}`);
     }
@@ -264,6 +270,8 @@
             <ConnectorsPage {data} onChanged={refresh} onCheckConnection={refreshConnectorStatus} detailId={connectorDetailId} onOpenDetail={openConnectorDetail} onBack={closeConnectorDetail} />
           {:else if view === 'access'}
             <AccessPage />
+          {:else if view === 'observe'}
+            <ObservePage addresses={publicAddresses} />
           {:else if view === 'diagnostics'}
             <DiagnosticsPage />
           {:else if view === 'settings'}

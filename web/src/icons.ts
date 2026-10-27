@@ -28,6 +28,8 @@ export { default as Globe } from '~icons/fluent/globe-16-regular';
 export { default as GlobeFilled } from '~icons/fluent/globe-16-filled';
 export { default as BranchRequestClosed } from '~icons/fluent/branch-request-closed-16-regular';
 export { default as BranchRequestClosedFilled } from '~icons/fluent/branch-request-closed-16-filled';
+export { default as Eye } from '~icons/fluent/eye-16-regular';
+export { default as EyeFilled } from '~icons/fluent/eye-16-filled';
 
 // 화면별 아이콘. 이름 뒤 숫자는 크게 표시할 때 쓰는 해당 크기 버전입니다(숫자 없음 = 16px).
 export { default as ArrowDown20 } from '~icons/fluent/arrow-down-20-regular';
@@ -125,6 +127,7 @@ export { default as ArrowSortDown } from '~icons/fluent/arrow-sort-down-16-regul
 export { default as Search20 } from '~icons/fluent/search-20-regular';
 export { default as DataTrending } from '~icons/fluent/data-trending-16-regular';
 export { default as ArrowReset20 } from '~icons/fluent/arrow-reset-20-regular';
+export { default as FilterDismiss } from '~icons/fluent/filter-dismiss-16-regular';
 export { default as ArrowUndo } from '~icons/fluent/arrow-undo-16-regular';
 export { default as Save } from '~icons/fluent/save-16-regular';
 export { default as Settings } from '~icons/fluent/settings-16-regular';
@@ -153,3 +156,4 @@ export { default as Edit12 } from '~icons/fluent/edit-12-regular';
 export { default as ChevronRight12 } from '~icons/fluent/chevron-right-12-regular';
 export { default as CalendarLtr12 } from '~icons/fluent/calendar-ltr-12-regular';
 export { default as Shield20 } from '~icons/fluent/shield-20-regular';
+export { default as ErrorCircle12 } from '~icons/fluent/error-circle-12-regular';

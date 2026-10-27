@@ -93,6 +93,8 @@ func scanRoute(row rowScanner, extra ...any) (Route, error) {
 type HTTPRoutePlan struct {
 	Route
 	ConnectorID string
+	// ServiceName is the service's name; only Routing's plans carry it.
+	ServiceName string
 }
 
 func (d *Database) HTTPRoutePlans(ctx context.Context) ([]HTTPRoutePlan, error) {

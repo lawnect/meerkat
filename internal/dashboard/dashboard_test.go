@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"net/http/httptest"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -50,7 +51,7 @@ func TestHandlerServesEmbeddedSvelteEntryAndRestrictiveCSP(t *testing.T) {
 }
 
 func TestHandlerServesKoreanPagesUnderPrefix(t *testing.T) {
-	for _, path := range []string{"/ko", "/ko/", "/ko/connectors", "/ko/connectors/abc", "/ko/domains", "/ko/domains/example.com", "/domains/example.com", "/ko/diagnostics"} {
+	for _, path := range []string{"/ko", "/ko/", "/ko/connectors", "/ko/connectors/abc", "/ko/domains", "/ko/domains/example.com", "/domains/example.com", "/ko/diagnostics", "/access", "/ko/access", "/observe", "/ko/observe"} {
 		recorder := httptest.NewRecorder()
 		Handler().ServeHTTP(recorder, httptest.NewRequest("GET", path, nil))
 		if recorder.Code != 200 || !strings.Contains(recorder.Body.String(), "Meerkat Outlet") {
@@ -62,6 +63,32 @@ func TestHandlerServesKoreanPagesUnderPrefix(t *testing.T) {
 		Handler().ServeHTTP(recorder, httptest.NewRequest("GET", path, nil))
 		if recorder.Code != 404 {
 			t.Fatalf("%s status = %d, want 404", path, recorder.Code)
+		}
+	}
+}
+
+// Every page the console links to opens when loaded or refreshed directly,
+// in both languages: the pages are read from the console's own list.
+func TestHandlerServesEveryConsolePage(t *testing.T) {
+	source, err := os.ReadFile("../../web/src/navigation.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := regexp.MustCompile(`(?s)export const pagePath[^{]*\{(.*?)\};`).FindSubmatch(source)
+	if list == nil {
+		t.Fatal("pagePath not found in navigation.ts")
+	}
+	pages := regexp.MustCompile(`'(/[^']*)'`).FindAllSubmatch(list[1], -1)
+	if len(pages) < 5 {
+		t.Fatalf("pagePath lists %d pages", len(pages))
+	}
+	for _, page := range pages {
+		for _, path := range []string{string(page[1]), "/ko" + strings.TrimSuffix(string(page[1]), "/")} {
+			recorder := httptest.NewRecorder()
+			Handler().ServeHTTP(recorder, httptest.NewRequest("GET", path, nil))
+			if recorder.Code != 200 {
+				t.Errorf("%s status = %d, want the dashboard entry page", path, recorder.Code)
+			}
 		}
 	}
 }

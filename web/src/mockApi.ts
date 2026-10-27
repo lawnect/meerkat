@@ -1,5 +1,5 @@
-import type { AccessLogEntry, AccessLogView, AccessMetrics, AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, Outlet, Route, Service, SsoSettings, Target, UsageBucket, UsageSeries, UsageUnit } from './types';
-import { accessMethods } from './types';
+import type { AccessCounts, AccessLogEntry, AccessMetrics, AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, FailureCause, FailureLogEntry, LogSettings, LogView, Outlet, Route, Service, SsoSettings, Target, UsageBucket, UsageSeries, UsageUnit } from './types';
+import { accessDecisions, accessMethods, failureCauses } from './types';
 
 const now = (): string => new Date().toISOString();
 const ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
@@ -247,29 +247,6 @@ let accessPolicies: AccessPolicy[] = [
   { id: 'vault-api', name: 'Vault API', enabled: true, action: 'bypass', hosts: ['vault.example.test'], all_paths: false, conditions: [{ operator: 'starts_with', value: '/v1/' }], methods: ['GET', 'POST'], require_token: true, tokens: ['deploybot'], allow_everyone: false, allowed_users: [], allowed_groups: [], allow_admins: false },
   { id: 'vault', name: 'Vault members', enabled: true, action: 'allow', hosts: ['vault.example.test'], all_paths: true, conditions: [], methods: [], require_token: false, tokens: [], allow_everyone: false, allowed_users: ['@example.test'], allowed_groups: [], allow_admins: true },
 ];
-// 요청 기록 데모. 데모에서는 켜 두고, 정책과 토큰에 맞춰 몇 시간치 기록을 만들어 둡니다.
-let accessLogEnabled = true;
-const accessLog: AccessLogEntry[] = Array.from({ length: 140 }, (_, index) => {
-  const kind = index % 7;
-  const at = new Date(Date.now() - index * 97000).toISOString();
-  const base = { id: 1000 - index, at, host: 'vault.example.test', client: `198.51.100.${(index * 37) % 250 + 1}`, email: '', token: '' };
-  if (kind === 0) return { ...base, method: 'POST', path: '/v1/secret/data/app', policy: 'vault-api', decision: 'passed', reason: 'bypass', token: 'deploybot' };
-  if (kind === 1) return { ...base, method: 'GET', path: '/ui/', policy: 'vault', decision: 'challenged', reason: 'no_session' };
-  if (kind === 2) return { ...base, method: 'GET', path: '/ui/vault/secrets', policy: 'vault', decision: 'passed', reason: 'session', email: 'alice@example.test' };
-  if (kind === 3) return { ...base, method: 'GET', path: '/ui/vault/auth', policy: 'vault', decision: 'denied', reason: 'not_allowed', email: 'contractor@partner.example' };
-  if (kind === 4) return { ...base, method: 'POST', path: '/v1/auth/token/create', policy: 'vault', decision: 'denied', reason: 'token_expired', token: 'monitor' };
-  if (kind === 5) return { ...base, method: 'GET', path: '/ui/vault/policies', policy: 'vault', decision: 'passed', reason: 'session', email: 'bob@example.test' };
-  return { ...base, method: 'PUT', path: '/v1/sys/policy/admin', policy: 'vault', decision: 'denied', reason: 'token_invalid' };
-});
-const accessLogView = (params: URLSearchParams): AccessLogView => {
-  const decision = params.get('decision') ?? '';
-  const policy = params.get('policy') ?? '';
-  const before = Number(params.get('before') || '0');
-  const limit = Number(params.get('limit') || '50');
-  const matched = accessLog.filter((entry) => (!decision || entry.decision === decision) && (!policy || entry.policy === policy) && (!before || entry.id < before));
-  const page = matched.slice(0, limit);
-  return structuredClone({ enabled: accessLogEnabled, available: true, entries: page, next: matched.length > limit ? page[page.length - 1].id : 0, dropped: 0 });
-};
 const accessPoliciesResponse = (): AccessPoliciesView => structuredClone({ policies: accessPolicies, addresses: publicAddresses() });
 // 접근 토큰 데모 상태. 값은 만들 때만 돌려줍니다.
 let accessTokens: Array<Omit<AccessToken, 'policies'>> = [
@@ -588,7 +565,8 @@ function usageConnectors(totals: Omit<UsageBucket, 'start'>): UsageSeries['conne
     .sort((a, b) => b.requests - a.requests);
 }
 
-function usageSeries(params: URLSearchParams): UsageSeries {
+// Validates unit/from/to/tz like the real API and returns the unit-aligned bucket boundaries.
+function usageRange(params: URLSearchParams): { unit: UsageUnit; boundaries: Date[] } {
   const unit = params.get('unit') as UsageUnit;
   const rawFrom = params.get('from') || '';
   const rawTo = params.get('to') || '';
@@ -601,7 +579,11 @@ function usageSeries(params: URLSearchParams): UsageSeries {
     // The mock buckets in the browser's zone but still rejects unknown names.
     try { new Intl.DateTimeFormat('en', { timeZone: zone }); } catch { fail('invalid_usage_range'); }
   }
-  const boundaries = usageBoundaries(unit, from, to);
+  return { unit, boundaries: usageBoundaries(unit, from, to) };
+}
+
+function usageSeries(params: URLSearchParams): UsageSeries {
+  const { unit, boundaries } = usageRange(params);
   // Data exists for the last three years only, up to and including this hour.
   const earliest = new Date();
   earliest.setFullYear(earliest.getFullYear() - 3);
@@ -631,6 +613,203 @@ function usageSeries(params: URLSearchParams): UsageSeries {
     { requests: 0, request_bytes: 0, response_bytes: 0, error_responses: 0 },
   );
   return { unit, updated_at: now(), buckets, connectors: usageConnectors(totals) };
+}
+
+// ---- Observe: access decision metrics and the two request logs (GET/PUT /api/v1/observe/…) ----
+
+const ACCESS_HISTORY_DAYS = 400;
+// A policy that was deleted still shows up in the metrics with the counts it had.
+const REMOVED_POLICY = 'p_removed';
+
+// Deterministic decision counts per policy for one UTC hour index, like syntheticHour: busy by day, quieter at weekends.
+function accessHour(hour: number, localOffsetHours: number): Array<[string, AccessCounts]> {
+  const localHour = hour + localOffsetHours;
+  const hourOfDay = ((localHour % 24) + 24) % 24;
+  const weekday = (((Math.floor(localHour / 24) + 4) % 7) + 7) % 7;
+  const daily = 0.12 + 0.88 * (0.5 + 0.5 * Math.sin(((hourOfDay - 9) / 24) * 2 * Math.PI));
+  const weekly = weekday === 0 || weekday === 6 ? 0.5 : 1;
+  const rows: Array<[string, AccessCounts]> = [];
+  accessPolicies.forEach((policy, order) => {
+    if (!policy.enabled) return;
+    const base = Math.round((daily * weekly * (policy.action === 'bypass' ? 180 : 60) * (0.75 + 0.5 * hashUnit(hour * 5 + order))) / (order + 1));
+    rows.push([policy.id, policy.action === 'block'
+      ? { passed: 0, challenged: 0, denied: base }
+      : policy.action === 'bypass' ? { passed: base, challenged: 0, denied: 0 } : { passed: base, challenged: Math.round(base / 9), denied: Math.round(base / 40) }]);
+  });
+  if (hashUnit(hour * 11 + 3) < 0.4) rows.push([REMOVED_POLICY, { passed: 0, challenged: 0, denied: Math.max(1, Math.round(4 * daily)) }]);
+  return rows;
+}
+
+function accessMetrics(params: URLSearchParams): AccessMetrics {
+  const { unit, boundaries } = usageRange(params);
+  const firstHour = Math.ceil((Date.now() - ACCESS_HISTORY_DAYS * 24 * HOUR_MS) / HOUR_MS);
+  const lastHour = Math.floor(Date.now() / HOUR_MS);
+  const offsetHours = Math.round(-new Date().getTimezoneOffset() / 60);
+  const policies: Record<string, AccessCounts> = {};
+  const buckets = boundaries.slice(0, -1).map((start, index) => {
+    const bucket = { start: rfc3339Local(start), passed: 0, challenged: 0, denied: 0 };
+    const last = Math.min(lastHour, Math.ceil(boundaries[index + 1].getTime() / HOUR_MS) - 1);
+    for (let hour = Math.max(firstHour, Math.ceil(start.getTime() / HOUR_MS)); hour <= last; hour += 1) {
+      for (const [policy, counts] of accessHour(hour, offsetHours)) {
+        bucket.passed += counts.passed;
+        bucket.challenged += counts.challenged;
+        bucket.denied += counts.denied;
+        const total = (policies[policy] ??= { passed: 0, challenged: 0, denied: 0 });
+        total.passed += counts.passed;
+        total.challenged += counts.challenged;
+        total.denied += counts.denied;
+      }
+    }
+    return bucket;
+  });
+  return { unit, buckets, policies };
+}
+
+interface MockLog<Entry> {
+  settings: LogSettings;
+  available: boolean;
+  dropped: number;
+  entries: Entry[]; // newest first
+}
+
+// Entries are made once, newest first, with gaps of one to eleven minutes.
+function mockEntries<Entry>(count: number, make: (index: number, at: string, roll: (salt: number) => number) => Entry): Entry[] {
+  let at = Date.now() - 20000;
+  return Array.from({ length: count }, (_, index) => {
+    const entry = make(index, new Date(at).toISOString(), (salt) => hashUnit(index * 31 + salt));
+    at -= (60 + Math.floor(hashUnit(index * 17 + 2) * 600)) * 1000;
+    return entry;
+  });
+}
+const pick = <T>(items: readonly T[], roll: number): T => items[Math.min(items.length - 1, Math.floor(roll * items.length))];
+const clientIp = (roll: number): string => `${pick(['198.51.100', '203.0.113', '192.0.2'], roll)}.${1 + Math.floor((roll * 997) % 250)}`;
+
+const accessLog: MockLog<AccessLogEntry> = {
+  settings: { enabled: true, max_mib: 256, retention_days: 30 },
+  available: true,
+  dropped: 0,
+  entries: mockEntries(420, (index, at, roll): AccessLogEntry => {
+    const base = { id: 5000 - index, at, host: 'vault.example.test', client: clientIp(roll(1)), email: '', token: '' };
+    const kind = Math.floor(roll(2) * 9);
+    if (kind === 0) return { ...base, method: 'POST', path: '/v1/secret/data/app', policy: 'vault-api', decision: 'passed', reason: 'bypass', token: 'deploybot' };
+    if (kind === 1) return { ...base, method: 'GET', path: '/v1/sys/health', policy: 'vault-api', decision: 'passed', reason: 'bypass', token: 'monitor' };
+    if (kind === 2) return { ...base, method: 'GET', path: '/ui/', policy: 'vault', decision: 'challenged', reason: 'no_session' };
+    if (kind === 3) return { ...base, method: 'GET', path: '/ui/vault/secrets', policy: 'vault', decision: 'passed', reason: 'session', email: 'alice@example.test' };
+    if (kind === 4) return { ...base, method: 'GET', path: '/ui/vault/policies/acl/' + 'team-'.repeat(1 + Math.floor(roll(3) * 12)) + 'readers', policy: 'vault', decision: 'passed', reason: 'session', email: 'bob@example.test' };
+    if (kind === 5) return { ...base, method: 'GET', path: '/ui/vault/auth', policy: 'vault', decision: 'denied', reason: 'not_allowed', email: 'contractor@partner.example' };
+    if (kind === 6) return { ...base, method: 'POST', path: '/v1/auth/token/create', policy: 'vault-api', decision: 'denied', reason: 'token_expired', token: 'monitor' };
+    if (kind === 7) return { ...base, method: 'PUT', path: '/v1/sys/policy/admin', policy: 'vault-api', decision: 'denied', reason: 'token_invalid' };
+    return { ...base, method: 'GET', path: '/old/console', policy: REMOVED_POLICY, decision: 'denied', reason: 'blocked' };
+  }),
+};
+
+// Public addresses with the service behind them; the failure log uses addresses that exist in the demo.
+const FAILURE_SITES: Array<[host: string, service: string, paths: string[]]> = [
+  ['photos.example.test', 'photos', ['/api/assets/thumbnail/9f2c', '/api/server-info', '/api/albums/shared']],
+  ['files.example.test', 'files', ['/remote.php/dav/files/alice/backup.tar', '/index.php/apps/files', '/ocs/v2.php/apps/notifications']],
+  ['blog.example.com', 'blog', ['/ghost/api/admin/posts', '/rss/', '/2026/10/hello-world']],
+  ['api.staging.example.net', 'api', ['/v2/orders', '/v2/orders/18273/items', '/v2/search']],
+  ['shop.example.com', 'web', ['/checkout', '/cart/add', '/products/48']],
+  ['vault.example.test', 'vault', ['/v1/secret/data/app', '/ui/vault/secrets']],
+  ['erp.example.com', 'erp', ['/web/login', '/web/dataset/call_kw']],
+  ['dns.example.test', 'pihole', ['/admin/api.php', '/admin/']],
+];
+// cause: [statuses, weight, duration in ms]
+const FAILURE_SHAPES: Record<FailureCause, { statuses: number[]; weight: number; duration: (roll: number) => number }> = {
+  app_error: { statuses: [500, 500, 503], weight: 30, duration: (roll) => 20 + Math.round(roll * 900) },
+  unreachable: { statuses: [502], weight: 18, duration: (roll) => 2 + Math.round(roll * 40) },
+  timeout: { statuses: [504], weight: 8, duration: () => 30000 },
+  no_service: { statuses: [404], weight: 10, duration: (roll) => Math.round(roll * 3) },
+  rate_limited: { statuses: [429], weight: 12, duration: () => 0 },
+  blocked: { statuses: [403], weight: 14, duration: () => 0 },
+  too_long: { statuses: [414], weight: 2, duration: () => 0 },
+  too_large: { statuses: [413], weight: 3, duration: (roll) => 100 + Math.round(roll * 2400) },
+  busy: { statuses: [503, 429], weight: 3, duration: () => 1 },
+};
+const failureLog: MockLog<FailureLogEntry> = {
+  settings: { enabled: true, max_mib: 256, retention_days: 30 },
+  available: true,
+  dropped: 7,
+  entries: mockEntries(360, (index, at, roll): FailureLogEntry => {
+    const total = failureCauses.reduce((sum, cause) => sum + FAILURE_SHAPES[cause].weight, 0);
+    let target = roll(4) * total;
+    const cause = failureCauses.find((item) => (target -= FAILURE_SHAPES[item].weight) < 0) ?? 'app_error';
+    const shape = FAILURE_SHAPES[cause];
+    const [host, service, paths] = pick(FAILURE_SITES, roll(5));
+    const refused = cause === 'blocked' || cause === 'too_long' || cause === 'rate_limited';
+    const path = cause === 'blocked' ? pick(['/.env', '/wp-login.php', '/.git/config', '/phpmyadmin/'], roll(6)) : cause === 'too_long' ? `/search/${'a'.repeat(20)}…` : pick(paths, roll(6));
+    return {
+      id: 9000 - index, at, host, path, client: clientIp(roll(7)),
+      method: cause === 'too_large' ? 'POST' : pick(['GET', 'GET', 'GET', 'POST', 'PUT'], roll(8)),
+      cause, status: pick(shape.statuses, roll(9)),
+      service: cause === 'no_service' || (refused && roll(10) < 0.4) ? '' : service,
+      duration_ms: shape.duration(roll(11)),
+    };
+  }),
+};
+
+function logPageParam(params: URLSearchParams, name: string, fallback: number, max: number): number {
+  const value = params.get(name);
+  if (value === null) return fallback;
+  const number = Number(value);
+  if (!/^\d+$/.test(value) || number < 1 || number > max) fail('invalid_log_filter');
+  return number;
+}
+
+function logView<Entry>(log: MockLog<Entry>, params: URLSearchParams, matches: (entry: Entry) => boolean): LogView<Entry> {
+  const page = logPageParam(params, 'page', 1, Number.MAX_SAFE_INTEGER);
+  const perPage = logPageParam(params, 'per_page', 50, 200);
+  const matched = log.entries.filter(matches);
+  // The demo pretends the file holds far more than the few hundred entries kept in memory.
+  const sizeBytes = Math.round(log.entries.length * 30000 + 1.4 * 1048576);
+  return structuredClone({
+    settings: log.settings,
+    available: log.available,
+    size_bytes: sizeBytes,
+    dropped: log.dropped,
+    total: matched.length,
+    entries: matched.slice((page - 1) * perPage, page * perPage),
+  });
+}
+
+function saveLogSettings<Entry>(kind: 'access' | 'failures', log: MockLog<Entry>, input: Partial<LogSettings>): void {
+  const integer = (value: unknown, min: number, max: number): value is number => typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max;
+  if (typeof input.enabled !== 'boolean' || !integer(input.max_mib, 16, 4096) || !integer(input.retention_days, 1, 365)) fail('invalid_log_settings');
+  if (input.enabled && !log.available) fail('log_unavailable');
+  log.settings = { enabled: input.enabled, max_mib: input.max_mib, retention_days: input.retention_days };
+  auditEvents.unshift({
+    id: `audit-${auditEvents.length + 1}`, created_at: now(), actor_email: 'dev@example.test', action: 'observe.log_settings', resource_type: 'observe', resource_id: kind,
+    detail: { log: kind, ...log.settings }, source: 'public', ip: '203.0.113.7', user_agent: 'Chrome on macOS',
+  });
+}
+
+function observe(path: string, method: string, params: URLSearchParams, input: unknown): unknown {
+  if (path === '/api/v1/observe/access-metrics' && method === 'GET') return accessMetrics(params);
+  if (path === '/api/v1/observe/access-log') {
+    if (method === 'PUT') {
+      saveLogSettings('access', accessLog, input as Partial<LogSettings>);
+      return logView(accessLog, new URLSearchParams(), () => true);
+    }
+    if (method === 'GET') {
+      const decision = params.get('decision') ?? '';
+      const policy = params.get('policy') ?? '';
+      if (decision && !(accessDecisions as readonly string[]).includes(decision)) fail('invalid_log_filter');
+      return logView(accessLog, params, (entry) => (!decision || entry.decision === decision) && (!policy || entry.policy === policy));
+    }
+  }
+  if (path === '/api/v1/observe/failure-log') {
+    if (method === 'PUT') {
+      saveLogSettings('failures', failureLog, input as Partial<LogSettings>);
+      return logView(failureLog, new URLSearchParams(), () => true);
+    }
+    if (method === 'GET') {
+      const cause = params.get('cause') ?? '';
+      const host = params.get('host') ?? '';
+      if (cause && !(failureCauses as readonly string[]).includes(cause)) fail('invalid_log_filter');
+      return logView(failureLog, params, (entry) => (!cause || entry.cause === cause) && (!host || entry.host === host));
+    }
+  }
+  return fail('not_found');
 }
 
 export async function mockApi(url: string, options: RequestInit = {}): Promise<unknown> {
@@ -839,42 +1018,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
   }
   if (path === '/api/v1/security/access/sessions/revoke' && method === 'POST') return {};
   if (path === '/api/v1/security/access-policies' && method === 'GET') return accessPoliciesResponse();
-  if (path === '/api/v1/security/access-log' && method === 'PUT') {
-    accessLogEnabled = Boolean((input as { enabled?: boolean }).enabled);
-    return accessLogView(new URL(url, 'http://localhost').searchParams);
-  }
-  if (path === '/api/v1/security/access-log' && method === 'GET') {
-    const params = new URL(url, 'http://localhost').searchParams;
-    if (!['', 'passed', 'challenged', 'denied'].includes(params.get('decision') ?? '')) fail('invalid_access_log_filter');
-    return accessLogView(params);
-  }
-  if (path === '/api/v1/security/access-metrics' && method === 'GET') {
-    // 데모: 정책마다 시간대별로 그럴듯한 판정 수를 만듭니다. 우회·허용은 대부분 통과, 차단은 거부입니다.
-    const hours = Number(new URL(url, 'http://localhost').searchParams.get('hours') || '24');
-    if (![24, 168, 720].includes(hours)) fail('invalid_usage_period');
-    const start = Math.floor(Date.now() / 3600000) - hours + 1;
-    const metrics: AccessMetrics = { period_hours: hours, hours: [], policies: {} };
-    for (let index = 0; index < hours; index += 1) {
-      const hour = { hour: new Date((start + index) * 3600000).toISOString().replace('.000Z', 'Z'), passed: 0, challenged: 0, denied: 0 };
-      const daytime = Math.sin(((start + index) % 24) / 24 * Math.PI) + 0.2;
-      accessPolicies.forEach((policy, order) => {
-        if (!policy.enabled) return;
-        const base = Math.round(daytime * (policy.action === 'bypass' ? 180 : 60) / (order + 1));
-        const counts = policy.action === 'block'
-          ? { passed: 0, challenged: 0, denied: base }
-          : policy.action === 'bypass' ? { passed: base, challenged: 0, denied: 0 } : { passed: base, challenged: Math.round(base / 9), denied: Math.round(base / 40) };
-        hour.passed += counts.passed;
-        hour.challenged += counts.challenged;
-        hour.denied += counts.denied;
-        const total = (metrics.policies[policy.id] ??= { passed: 0, challenged: 0, denied: 0 });
-        total.passed += counts.passed;
-        total.challenged += counts.challenged;
-        total.denied += counts.denied;
-      });
-      metrics.hours.push(hour);
-    }
-    return metrics;
-  }
+  if (path.startsWith('/api/v1/observe/')) return observe(path, method, new URL(url, 'http://localhost').searchParams, input);
   if (path === '/api/v1/security/access-tokens' && method === 'GET') return { tokens: accessTokens.map(tokenView), addresses: publicAddresses() } satisfies AccessTokensView;
   if (path === '/api/v1/security/access-tokens' && method === 'POST') {
     const body = input as Partial<AccessTokenInput>;

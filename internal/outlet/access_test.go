@@ -550,8 +550,11 @@ func TestAccessMetrics(t *testing.T) {
 	f.visit("app.example.com", "/workspace", alice)
 	f.visit("app.example.com", "/workspace", &http.Cookie{Name: accessCookie, Value: "forged.value"})
 	f.visit("other.example.com", "/")
-	var metrics control.AccessMetrics
-	w := request(f.store.Handler(), "GET", "/api/v1/security/access-metrics", f.admin, nil)
+	var metrics control.AccessSeries
+	now := time.Now().UTC()
+	day := now.Truncate(24 * time.Hour)
+	query := url.Values{"unit": {"hour"}, "from": {day.Format(time.RFC3339)}, "to": {day.Add(24 * time.Hour).Format(time.RFC3339)}, "tz": {"UTC"}}.Encode()
+	w := request(f.store.Handler(), "GET", "/api/v1/observe/access-metrics?"+query, f.admin, nil)
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &metrics) != nil {
 		t.Fatalf("metrics: %d %s", w.Code, w.Body.String())
 	}
@@ -561,18 +564,22 @@ func TestAccessMetrics(t *testing.T) {
 			t.Errorf("policy %s: %+v, want %+v", id, metrics.Policies[id], counts)
 		}
 	}
-	if len(metrics.Policies) != len(want) || len(metrics.Hours) != 24 || metrics.Hours[23].AccessCounts != (control.AccessCounts{Passed: 3, Challenged: 3, Denied: 1}) {
+	if len(metrics.Policies) != len(want) || len(metrics.Buckets) != 24 || metrics.Buckets[now.Hour()].AccessCounts != (control.AccessCounts{Passed: 3, Challenged: 3, Denied: 1}) {
 		t.Fatalf("metrics: %+v", metrics)
 	}
-	// Counted once: read again, nothing doubles.
-	w = request(f.store.Handler(), "GET", "/api/v1/security/access-metrics?hours=168", f.admin, nil)
-	if json.Unmarshal(w.Body.Bytes(), &metrics) != nil || metrics.PeriodHours != 168 || metrics.Policies[api] != want[api] {
+	// Counted once: read again, by day, nothing doubles.
+	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	query = url.Values{"unit": {"day"}, "from": {month.Format(time.RFC3339)}, "to": {month.AddDate(0, 1, 0).Format(time.RFC3339)}, "tz": {"UTC"}}.Encode()
+	w = request(f.store.Handler(), "GET", "/api/v1/observe/access-metrics?"+query, f.admin, nil)
+	if json.Unmarshal(w.Body.Bytes(), &metrics) != nil || metrics.Unit != "day" || metrics.Policies[api] != want[api] || metrics.Buckets[now.Day()-1].Passed != 3 {
 		t.Fatalf("again: %d %s", w.Code, w.Body.String())
 	}
-	if w := request(f.store.Handler(), "GET", "/api/v1/security/access-metrics?hours=5", f.admin, nil); w.Code != 400 {
-		t.Fatalf("other period: %d", w.Code)
+	for _, bad := range []string{"unit=week&" + query, "unit=hour&from=x&to=y", "unit=hour&tz=Local&" + query} {
+		if w := request(f.store.Handler(), "GET", "/api/v1/observe/access-metrics?"+bad, f.admin, nil); w.Code != 400 {
+			t.Fatalf("%s: %d", bad, w.Code)
+		}
 	}
-	if w := request(f.store.Handler(), "GET", "/api/v1/security/access-metrics", "", nil); w.Code != 401 {
+	if w := request(f.store.Handler(), "GET", "/api/v1/observe/access-metrics?"+query, "", nil); w.Code != 401 {
 		t.Fatalf("without a session: %d", w.Code)
 	}
 }

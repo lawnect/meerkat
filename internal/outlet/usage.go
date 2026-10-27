@@ -202,6 +202,28 @@ func (s *Store) connectorUsage(w http.ResponseWriter, r *http.Request) {
 	reply(w, 200, usage)
 }
 
+// usageRange reads a series request's unit, from, to and tz, the bounds
+// RFC 3339 and the zone an IANA name, answering 400 when they aren't.
+func usageRange(w http.ResponseWriter, r *http.Request) (unit string, from, to time.Time, location *time.Location, ok bool) {
+	query := r.URL.Query()
+	from, fromErr := time.Parse(time.RFC3339, query.Get("from"))
+	to, toErr := time.Parse(time.RFC3339, query.Get("to"))
+	location = time.UTC
+	if zone := query.Get("tz"); zone != "" {
+		var err error
+		// "Local" would expose the server zone instead of an IANA name.
+		if location, err = time.LoadLocation(zone); err != nil || zone == "Local" {
+			fail(w, r, 400, "invalid_usage_range")
+			return "", from, to, nil, false
+		}
+	}
+	if fromErr != nil || toErr != nil {
+		fail(w, r, 400, "invalid_usage_range")
+		return "", from, to, nil, false
+	}
+	return query.Get("unit"), from, to, location, true
+}
+
 // outletUsage returns Outlet-wide request totals grouped into calendar buckets
 // of the requested zone. The client supplies unit-aligned from/to bounds.
 func (s *Store) outletUsage(w http.ResponseWriter, r *http.Request) {
@@ -212,23 +234,11 @@ func (s *Store) outletUsage(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_unavailable")
 		return
 	}
-	query := r.URL.Query()
-	from, fromErr := time.Parse(time.RFC3339, query.Get("from"))
-	to, toErr := time.Parse(time.RFC3339, query.Get("to"))
-	location := time.UTC
-	if zone := query.Get("tz"); zone != "" {
-		var err error
-		// "Local" would expose the server zone instead of an IANA name.
-		if location, err = time.LoadLocation(zone); err != nil || zone == "Local" {
-			fail(w, r, 400, "invalid_usage_range")
-			return
-		}
-	}
-	if fromErr != nil || toErr != nil {
-		fail(w, r, 400, "invalid_usage_range")
+	unit, from, to, location, ok := usageRange(w, r)
+	if !ok {
 		return
 	}
-	series, err := s.control.OutletUsageSeries(r.Context(), query.Get("unit"), from, to, location)
+	series, err := s.control.OutletUsageSeries(r.Context(), unit, from, to, location)
 	if errors.Is(err, control.ErrInvalidUsageRange) {
 		fail(w, r, 400, "invalid_usage_range")
 		return

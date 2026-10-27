@@ -123,7 +123,7 @@ func (d *Database) loadRouting(ctx context.Context) (*Routing, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := d.db.QueryContext(ctx, `SELECT r.id, r.hostname, r.service_id, s.connector_id, r.priority FROM routes r
+	rows, err := d.db.QueryContext(ctx, `SELECT r.id, r.hostname, r.service_id, s.connector_id, s.name, r.priority FROM routes r
 		JOIN services s ON s.id = r.service_id
 		WHERE r.kind = 'http' AND r.enabled = 1 AND s.enabled = 1
 		ORDER BY r.hostname, r.priority, r.created_at`)
@@ -134,7 +134,7 @@ func (d *Database) loadRouting(ctx context.Context) (*Routing, error) {
 	routes := map[string][]HTTPRoutePlan{}
 	for rows.Next() {
 		var plan HTTPRoutePlan
-		if err := rows.Scan(&plan.ID, &plan.Hostname, &plan.ServiceID, &plan.ConnectorID, &plan.Priority); err != nil {
+		if err := rows.Scan(&plan.ID, &plan.Hostname, &plan.ServiceID, &plan.ConnectorID, &plan.ServiceName, &plan.Priority); err != nil {
 			return nil, err
 		}
 		plan.Kind, plan.Enabled = "http", true
