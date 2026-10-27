@@ -52,6 +52,7 @@
     removeAddress: 'Remove address',
     hostPlaceholder: 'app.example.com or *.example.com',
     allowedIps: 'Allowed IPs',
+    scope: 'Scope',
     anyIp: 'Any IP',
     selectedIps: 'Selected IP ranges',
     ipRanges: 'IP ranges',
@@ -101,6 +102,7 @@
     removeAddress: '주소 삭제',
     hostPlaceholder: 'app.example.com 또는 *.example.com',
     allowedIps: '허용 IP',
+    scope: '이용 범위',
     anyIp: '모든 IP',
     selectedIps: '지정한 IP 대역',
     ipRanges: 'IP 대역',
@@ -308,63 +310,71 @@
   }
 </script>
 
-<!-- 만들기와 편집 대화상자가 함께 쓰는 입력 항목: 이름, 적용 주소, 허용 IP. prefix는 두 대화상자의 id를 구분합니다. -->
+<!-- 만들기와 편집 대화상자가 함께 쓰는 입력 항목: 이름과 이용 범위(적용 주소, 허용 IP). prefix는 두 대화상자의 id를 구분합니다. -->
 {#snippet scopeFields(prefix: string)}
   <Field.Field>
     <Field.Label for={`${prefix}-name`}>{t().tokenName}</Field.Label>
     <Input id={`${prefix}-name`} bind:value={form.name} maxlength={64} pattern=".*\S.*" autocomplete="off" required />
   </Field.Field>
-  <Field.Set>
-    <Field.Legend variant="label">{t().addresses}</Field.Legend>
-    <div class="grid gap-2">
-      {#each form.hosts as row, index (row.key)}
-        <div class="flex items-center gap-2">
-          <Input
-            id={`${prefix}-host-${row.key}`}
-            class="min-w-0 flex-1 font-mono"
-            list={`${prefix}-addresses`}
-            bind:value={row.value}
-            placeholder={t().hostPlaceholder}
-            aria-label={`${t().address} ${index + 1}`}
-            autocomplete="off"
-            autocapitalize="none"
-            spellcheck={false}
-            pattern=".*\S.*"
-            required
-          />
-          <IconButton label={t().removeAddress} icon={Dismiss} disabled={form.hosts.length <= 1} onclick={() => form.hosts.splice(index, 1)} />
-        </div>
-      {/each}
-    </div>
-    <!-- 등록된 공개 주소를 자동 완성 후보로 보여 줍니다. 직접 입력과 와일드카드도 받습니다. -->
-    <datalist id={`${prefix}-addresses`}>
-      {#each addresses as address (address)}<option value={address}></option>{/each}
-    </datalist>
-    <div>
-      <Button variant="outline" size="sm" disabled={form.hosts.length >= maxHosts} onclick={() => addHost(prefix)}><Add12 aria-hidden="true" />{t().addAddress}</Button>
-    </div>
-  </Field.Set>
-  <Field.Set>
-    <Field.Legend variant="label">{t().allowedIps}</Field.Legend>
-    <RadioGroup.Root value={form.scope} onValueChange={(value) => { form.scope = value === 'selected' ? 'selected' : 'any'; rangeMissing = false; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
-      <Field.Field orientation="horizontal" class="w-auto">
-        <RadioGroup.Item value="any" id={`${prefix}-ip-any`} />
-        <Field.Label for={`${prefix}-ip-any`} class="font-normal">{t().anyIp}</Field.Label>
-      </Field.Field>
-      <Field.Field orientation="horizontal" class="w-auto">
-        <RadioGroup.Item value="selected" id={`${prefix}-ip-selected`} />
-        <Field.Label for={`${prefix}-ip-selected`} class="font-normal">{t().selectedIps}</Field.Label>
-      </Field.Field>
-    </RadioGroup.Root>
-    {#if form.scope === 'selected'}
-      <TagInput id={`${prefix}-ranges`} ariaLabel={t().ipRanges} bind:values={form.ranges} lowercase mono placeholder="203.0.113.0/24, 2001:db8::/48" />
-      {#if rangeMissing && !form.ranges.length}
-        <Field.Error>{t().needsRange}</Field.Error>
-      {:else}
-        <Field.Description>{t().ipHint}</Field.Description>
-      {/if}
-    {/if}
-  </Field.Set>
+  <!-- 적용 주소와 허용 IP는 함께 토큰의 이용 범위라 한 카드로 묶습니다. -->
+  <Card.Root size="sm">
+    <Card.Header><Card.Title>{t().scope}</Card.Title></Card.Header>
+    <Card.Content>
+      <Field.Group>
+        <Field.Set>
+          <Field.Legend variant="label">{t().addresses}</Field.Legend>
+          <div class="grid gap-2">
+            {#each form.hosts as row, index (row.key)}
+              <div class="flex items-center gap-2">
+                <Input
+                  id={`${prefix}-host-${row.key}`}
+                  class="min-w-0 flex-1 font-mono"
+                  list={`${prefix}-addresses`}
+                  bind:value={row.value}
+                  placeholder={t().hostPlaceholder}
+                  aria-label={`${t().address} ${index + 1}`}
+                  autocomplete="off"
+                  autocapitalize="none"
+                  spellcheck={false}
+                  pattern=".*\S.*"
+                  required
+                />
+                <IconButton label={t().removeAddress} icon={Dismiss} disabled={form.hosts.length <= 1} onclick={() => form.hosts.splice(index, 1)} />
+              </div>
+            {/each}
+          </div>
+          <!-- 등록된 공개 주소를 자동 완성 후보로 보여 줍니다. 직접 입력과 와일드카드도 받습니다. -->
+          <datalist id={`${prefix}-addresses`}>
+            {#each addresses as address (address)}<option value={address}></option>{/each}
+          </datalist>
+          <div>
+            <Button variant="outline" size="sm" disabled={form.hosts.length >= maxHosts} onclick={() => addHost(prefix)}><Add12 aria-hidden="true" />{t().addAddress}</Button>
+          </div>
+        </Field.Set>
+        <Field.Set>
+          <Field.Legend variant="label">{t().allowedIps}</Field.Legend>
+          <RadioGroup.Root value={form.scope} onValueChange={(value) => { form.scope = value === 'selected' ? 'selected' : 'any'; rangeMissing = false; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
+            <Field.Field orientation="horizontal" class="w-auto">
+              <RadioGroup.Item value="any" id={`${prefix}-ip-any`} />
+              <Field.Label for={`${prefix}-ip-any`} class="font-normal">{t().anyIp}</Field.Label>
+            </Field.Field>
+            <Field.Field orientation="horizontal" class="w-auto">
+              <RadioGroup.Item value="selected" id={`${prefix}-ip-selected`} />
+              <Field.Label for={`${prefix}-ip-selected`} class="font-normal">{t().selectedIps}</Field.Label>
+            </Field.Field>
+          </RadioGroup.Root>
+          {#if form.scope === 'selected'}
+            <TagInput id={`${prefix}-ranges`} ariaLabel={t().ipRanges} bind:values={form.ranges} lowercase mono placeholder="203.0.113.0/24, 2001:db8::/48" />
+            {#if rangeMissing && !form.ranges.length}
+              <Field.Error>{t().needsRange}</Field.Error>
+            {:else}
+              <Field.Description>{t().ipHint}</Field.Description>
+            {/if}
+          {/if}
+        </Field.Set>
+      </Field.Group>
+    </Card.Content>
+  </Card.Root>
 {/snippet}
 
 <Card.Root size="sm" role="region" aria-labelledby="access-tokens-title">

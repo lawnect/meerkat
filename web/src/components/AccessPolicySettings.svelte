@@ -47,6 +47,7 @@
     paths: 'Paths',
     pathsTip: 'Conditions apply to requests that reach the Outlet. A single-page app changes screens in the browser without one, so protect all of its paths and bypass only the paths its clients call.',
     action: 'Action',
+    conditions: 'Conditions',
     actions: { allow: 'Allow', bypass: 'Bypass', block: 'Block' } as Record<AccessAction, string>,
     actionHints: { allow: 'Sign-in, then only who you allow', bypass: 'Anyone, without signing in', block: 'Nobody' } as Record<AccessAction, string>,
     tokenActionHints: { allow: 'The token and a sign-in of who you allow', bypass: 'The token alone, without signing in', block: 'Nobody, with the token' } as Record<AccessAction, string>,
@@ -124,6 +125,7 @@
     paths: '경로',
     pathsTip: '경로 조건은 Outlet에 도달한 요청에만 적용됩니다. 단일 페이지 앱(SPA)의 화면 이동은 서버로 요청되지 않으므로, 앱의 전체 경로를 보호하고 외부 클라이언트가 호출하는 경로만 우회로 지정하십시오.',
     action: '동작',
+    conditions: '적용 조건',
     actions: { allow: '허용', bypass: '우회', block: '차단' },
     actionHints: { allow: '로그인 후 허용 대상만 접근', bypass: '로그인 없이 누구나 접근', block: '모두 접근 거부' },
     tokenActionHints: { allow: '토큰과 허용 대상 로그인 모두 필요', bypass: '토큰만으로 로그인 없이 접근', block: '토큰을 보낸 요청 거부' },
@@ -635,190 +637,202 @@
           </Field.Content>
           <Switch id="access-policy-enabled" bind:checked={form.enabled} />
         </Field.Field>
-        <Field.Set>
-          <Field.Legend variant="label">{t().action}</Field.Legend>
-          <!-- 선택지는 한 줄로 두고, 각 동작의 뜻은 마우스를 올리면 툴팁으로, 화면 낭독기에는 설명으로 알립니다. -->
-          <RadioGroup.Root value={form.action} onValueChange={(value) => { if (actions.includes(value as AccessAction)) form.action = value as AccessAction; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
-            {#each actions as action (action)}
-              {@const hint = form.token === 'none' ? t().actionHints[action] : t().tokenActionHints[action]}
-              <Tooltip.Root>
-                <Tooltip.Trigger>
-                  {#snippet child({ props })}
-                    <Field.Field orientation="horizontal" class="w-auto" {...props} tabindex={-1}>
-                      <RadioGroup.Item value={action} id={`access-policy-action-${action}`} aria-describedby={`access-policy-action-${action}-hint`} />
-                      <Field.Label for={`access-policy-action-${action}`} class="font-normal">{t().actions[action]}</Field.Label>
-                      <span id={`access-policy-action-${action}-hint`} class="sr-only">{hint}</span>
-                    </Field.Field>
-                  {/snippet}
-                </Tooltip.Trigger>
-                <Tooltip.Content>{hint}</Tooltip.Content>
-              </Tooltip.Root>
-            {/each}
-          </RadioGroup.Root>
-        </Field.Set>
-        <Field.Set>
-          <Field.Legend variant="label">{t().addresses}</Field.Legend>
-          <div class="grid gap-2">
-            {#each form.hosts as row, index (row.key)}
-              <div class="flex items-center gap-2">
-                <Input
-                  id={`access-policy-host-${row.key}`}
-                  class="min-w-0 flex-1 font-mono"
-                  list="access-policy-addresses"
-                  bind:value={row.value}
-                  placeholder={t().hostPlaceholder}
-                  aria-label={`${t().address} ${index + 1}`}
-                  autocomplete="off"
-                  autocapitalize="none"
-                  spellcheck={false}
-                  pattern=".*\S.*"
-                  required
-                />
-                <IconButton label={t().removeAddress} icon={Dismiss} disabled={form.hosts.length <= 1} onclick={() => form.hosts.splice(index, 1)} />
-              </div>
-            {/each}
-          </div>
-          <!-- 등록된 공개 주소를 자동 완성 후보로 보여 줍니다. 직접 입력과 와일드카드도 받습니다. -->
-          <datalist id="access-policy-addresses">
-            {#each addresses as address (address)}<option value={address}></option>{/each}
-          </datalist>
-          <div>
-            <Button variant="outline" size="sm" disabled={form.hosts.length >= maxHosts} onclick={addHost}><Add12 aria-hidden="true" />{t().addAddress}</Button>
-          </div>
-        </Field.Set>
-        <Field.Set>
-          <Field.Legend variant="label" class="flex items-center gap-1">{t().paths}<InfoTooltip id="access-policy-paths-tip" label={t().paths} description={t().pathsTip} /></Field.Legend>
-          <RadioGroup.Root value={form.paths} onValueChange={(value) => { form.paths = value === 'selected' ? 'selected' : 'all'; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
-            <Field.Field orientation="horizontal" class="w-auto">
-              <RadioGroup.Item value="all" id="access-policy-paths-all" />
-              <Field.Label for="access-policy-paths-all" class="font-normal">{t().allPaths}</Field.Label>
-            </Field.Field>
-            <Field.Field orientation="horizontal" class="w-auto">
-              <RadioGroup.Item value="selected" id="access-policy-paths-selected" />
-              <Field.Label for="access-policy-paths-selected" class="font-normal">{t().selectedPaths}</Field.Label>
-            </Field.Field>
-          </RadioGroup.Root>
-          {#if form.paths === 'selected'}
-            <Field.Description>{t().conditionsHint}</Field.Description>
-            <div class="grid gap-2">
-              {#each form.conditions as condition, index (condition.key)}
-                <div class="flex flex-wrap items-center gap-2">
-                  <NativeSelect.Root class="w-44" aria-label={`${t().operator} ${index + 1}`} bind:value={condition.operator}>
-                    {#each operators as operator (operator)}
-                      <NativeSelect.Option value={operator}>{operatorLabel(operator)}</NativeSelect.Option>
-                    {/each}
-                  </NativeSelect.Root>
-                  <Input
-                    id={`access-policy-value-${condition.key}`}
-                    class="min-w-40 flex-1 font-mono"
-                    bind:value={condition.value}
-                    placeholder={t().placeholders[condition.operator]}
-                    aria-label={`${t().value} ${index + 1}`}
-                    autocomplete="off"
-                    autocapitalize="none"
-                    spellcheck={false}
-                    pattern=".*\S.*"
-                    required
-                  />
-                  <IconButton label={t().removeCondition} icon={Dismiss} disabled={form.conditions.length <= 1} onclick={() => form.conditions.splice(index, 1)} />
-                </div>
-              {/each}
-            </div>
-            {#if form.action === 'bypass'}<Field.Description>{t().bypassNote}</Field.Description>{:else if hasRegex}<Field.Description>{t().regexNote}</Field.Description>{/if}
-            <div>
-              <Button variant="outline" size="sm" disabled={form.conditions.length >= maxConditions} onclick={addCondition}><Add12 aria-hidden="true" />{t().addCondition}</Button>
-            </div>
-          {/if}
-        </Field.Set>
-        <Field.Set>
-          <Field.Legend variant="label" class="flex items-center gap-1">{t().methods}<InfoTooltip id="access-policy-methods-tip" label={t().methods} description={t().methodsHint} /></Field.Legend>
-          <RadioGroup.Root value={form.methods} onValueChange={(value) => { form.methods = value === 'selected' ? 'selected' : 'all'; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
-            <Field.Field orientation="horizontal" class="w-auto">
-              <RadioGroup.Item value="all" id="access-policy-methods-all" />
-              <Field.Label for="access-policy-methods-all" class="font-normal">{t().allMethods}</Field.Label>
-            </Field.Field>
-            <Field.Field orientation="horizontal" class="w-auto">
-              <RadioGroup.Item value="selected" id="access-policy-methods-selected" />
-              <Field.Label for="access-policy-methods-selected" class="font-normal">{t().selectedMethods}</Field.Label>
-            </Field.Field>
-          </RadioGroup.Root>
-          {#if form.methods === 'selected'}
-            <div class="flex flex-wrap gap-x-4 gap-y-2">
-              {#each accessMethods as method (method)}
-                <Field.Field orientation="horizontal" class="w-auto">
-                  <Checkbox
-                    id={`access-policy-method-${method}`}
-                    checked={form.chosen.includes(method)}
-                    onCheckedChange={(checked) => { form.chosen = checked ? [...form.chosen, method] : form.chosen.filter((entry) => entry !== method); }}
-                  />
-                  <Field.Label for={`access-policy-method-${method}`} class="font-mono font-normal">{method}</Field.Label>
-                </Field.Field>
-              {/each}
-            </div>
-          {/if}
-        </Field.Set>
-        <Field.Set>
-          <Field.Legend variant="label" class="flex items-center gap-1">{t().token}<InfoTooltip id="access-policy-token-tip" label={t().token} description={t().tokenHint} /></Field.Legend>
-          <RadioGroup.Root value={form.token} onValueChange={(value) => { form.token = value === 'any' || value === 'selected' ? value : 'none'; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
-            {#each [['none', t().noToken], ['any', t().anyToken], ['selected', t().selectedTokens]] as [value, label] (value)}
-              <Field.Field orientation="horizontal" class="w-auto">
-                <RadioGroup.Item value={value} id={`access-policy-token-${value}`} />
-                <Field.Label for={`access-policy-token-${value}`} class="font-normal">{label}</Field.Label>
-              </Field.Field>
-            {/each}
-          </RadioGroup.Root>
-          {#if form.token === 'selected'}
-            {#if tokens?.length}
-              <div class="flex flex-wrap gap-x-6 gap-y-2">
-                {#each tokens as token (token.id)}
-                  <Field.Field orientation="horizontal" class="w-auto">
-                    <Checkbox
-                      id={`access-policy-token-id-${token.id}`}
-                      checked={form.tokens.includes(token.id)}
-                      onCheckedChange={(checked) => { form.tokens = checked ? [...form.tokens, token.id] : form.tokens.filter((id) => id !== token.id); }}
+      </Field.Group>
+      <!-- 어떤 요청에 적용할지(주소, 경로, 메서드, 토큰)와 그 요청에 무엇을 할지(동작, 허용 대상)를 카드로 나눕니다. -->
+      <Card.Root size="sm">
+        <Card.Header><Card.Title>{t().conditions}</Card.Title></Card.Header>
+        <Card.Content>
+          <Field.Group>
+            <Field.Set>
+              <Field.Legend variant="label">{t().addresses}</Field.Legend>
+              <div class="grid gap-2">
+                {#each form.hosts as row, index (row.key)}
+                  <div class="flex items-center gap-2">
+                    <Input
+                      id={`access-policy-host-${row.key}`}
+                      class="min-w-0 flex-1 font-mono"
+                      list="access-policy-addresses"
+                      bind:value={row.value}
+                      placeholder={t().hostPlaceholder}
+                      aria-label={`${t().address} ${index + 1}`}
+                      autocomplete="off"
+                      autocapitalize="none"
+                      spellcheck={false}
+                      pattern=".*\S.*"
+                      required
                     />
-                    <Field.Label for={`access-policy-token-id-${token.id}`} class="min-w-0 font-normal">
-                      <span class="truncate">{token.name}</span>
-                      {#if token.hosts?.length}<span class="truncate font-mono text-muted-foreground">{token.hosts[0]}{token.hosts.length > 1 ? ` +${token.hosts.length - 1}` : ''}</span>{/if}
-                    </Field.Label>
-                  </Field.Field>
+                    <IconButton label={t().removeAddress} icon={Dismiss} disabled={form.hosts.length <= 1} onclick={() => form.hosts.splice(index, 1)} />
+                  </div>
                 {/each}
               </div>
-            {:else if tokens}
-              <Field.Description>{t().noTokens}</Field.Description>
+              <!-- 등록된 공개 주소를 자동 완성 후보로 보여 줍니다. 직접 입력과 와일드카드도 받습니다. -->
+              <datalist id="access-policy-addresses">
+                {#each addresses as address (address)}<option value={address}></option>{/each}
+              </datalist>
+              <div>
+                <Button variant="outline" size="sm" disabled={form.hosts.length >= maxHosts} onclick={addHost}><Add12 aria-hidden="true" />{t().addAddress}</Button>
+              </div>
+            </Field.Set>
+            <Field.Set>
+              <Field.Legend variant="label" class="flex items-center gap-1">{t().paths}<InfoTooltip id="access-policy-paths-tip" label={t().paths} description={t().pathsTip} /></Field.Legend>
+              <RadioGroup.Root value={form.paths} onValueChange={(value) => { form.paths = value === 'selected' ? 'selected' : 'all'; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
+                <Field.Field orientation="horizontal" class="w-auto">
+                  <RadioGroup.Item value="all" id="access-policy-paths-all" />
+                  <Field.Label for="access-policy-paths-all" class="font-normal">{t().allPaths}</Field.Label>
+                </Field.Field>
+                <Field.Field orientation="horizontal" class="w-auto">
+                  <RadioGroup.Item value="selected" id="access-policy-paths-selected" />
+                  <Field.Label for="access-policy-paths-selected" class="font-normal">{t().selectedPaths}</Field.Label>
+                </Field.Field>
+              </RadioGroup.Root>
+              {#if form.paths === 'selected'}
+                <Field.Description>{t().conditionsHint}</Field.Description>
+                <div class="grid gap-2">
+                  {#each form.conditions as condition, index (condition.key)}
+                    <div class="flex flex-wrap items-center gap-2">
+                      <NativeSelect.Root class="w-44" aria-label={`${t().operator} ${index + 1}`} bind:value={condition.operator}>
+                        {#each operators as operator (operator)}
+                          <NativeSelect.Option value={operator}>{operatorLabel(operator)}</NativeSelect.Option>
+                        {/each}
+                      </NativeSelect.Root>
+                      <Input
+                        id={`access-policy-value-${condition.key}`}
+                        class="min-w-40 flex-1 font-mono"
+                        bind:value={condition.value}
+                        placeholder={t().placeholders[condition.operator]}
+                        aria-label={`${t().value} ${index + 1}`}
+                        autocomplete="off"
+                        autocapitalize="none"
+                        spellcheck={false}
+                        pattern=".*\S.*"
+                        required
+                      />
+                      <IconButton label={t().removeCondition} icon={Dismiss} disabled={form.conditions.length <= 1} onclick={() => form.conditions.splice(index, 1)} />
+                    </div>
+                  {/each}
+                </div>
+                {#if form.action === 'bypass'}<Field.Description>{t().bypassNote}</Field.Description>{:else if hasRegex}<Field.Description>{t().regexNote}</Field.Description>{/if}
+                <div>
+                  <Button variant="outline" size="sm" disabled={form.conditions.length >= maxConditions} onclick={addCondition}><Add12 aria-hidden="true" />{t().addCondition}</Button>
+                </div>
+              {/if}
+            </Field.Set>
+            <Field.Set>
+              <Field.Legend variant="label" class="flex items-center gap-1">{t().methods}<InfoTooltip id="access-policy-methods-tip" label={t().methods} description={t().methodsHint} /></Field.Legend>
+              <RadioGroup.Root value={form.methods} onValueChange={(value) => { form.methods = value === 'selected' ? 'selected' : 'all'; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
+                <Field.Field orientation="horizontal" class="w-auto">
+                  <RadioGroup.Item value="all" id="access-policy-methods-all" />
+                  <Field.Label for="access-policy-methods-all" class="font-normal">{t().allMethods}</Field.Label>
+                </Field.Field>
+                <Field.Field orientation="horizontal" class="w-auto">
+                  <RadioGroup.Item value="selected" id="access-policy-methods-selected" />
+                  <Field.Label for="access-policy-methods-selected" class="font-normal">{t().selectedMethods}</Field.Label>
+                </Field.Field>
+              </RadioGroup.Root>
+              {#if form.methods === 'selected'}
+                <div class="flex flex-wrap gap-x-4 gap-y-2">
+                  {#each accessMethods as method (method)}
+                    <Field.Field orientation="horizontal" class="w-auto">
+                      <Checkbox
+                        id={`access-policy-method-${method}`}
+                        checked={form.chosen.includes(method)}
+                        onCheckedChange={(checked) => { form.chosen = checked ? [...form.chosen, method] : form.chosen.filter((entry) => entry !== method); }}
+                      />
+                      <Field.Label for={`access-policy-method-${method}`} class="font-mono font-normal">{method}</Field.Label>
+                    </Field.Field>
+                  {/each}
+                </div>
+              {/if}
+            </Field.Set>
+            <Field.Set>
+              <Field.Legend variant="label" class="flex items-center gap-1">{t().token}<InfoTooltip id="access-policy-token-tip" label={t().token} description={t().tokenHint} /></Field.Legend>
+              <RadioGroup.Root value={form.token} onValueChange={(value) => { form.token = value === 'any' || value === 'selected' ? value : 'none'; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
+                {#each [['none', t().noToken], ['any', t().anyToken], ['selected', t().selectedTokens]] as [value, label] (value)}
+                  <Field.Field orientation="horizontal" class="w-auto">
+                    <RadioGroup.Item value={value} id={`access-policy-token-${value}`} />
+                    <Field.Label for={`access-policy-token-${value}`} class="font-normal">{label}</Field.Label>
+                  </Field.Field>
+                {/each}
+              </RadioGroup.Root>
+              {#if form.token === 'selected'}
+                {#if tokens?.length}
+                  <div class="flex flex-wrap gap-x-6 gap-y-2">
+                    {#each tokens as token (token.id)}
+                      <Field.Field orientation="horizontal" class="w-auto">
+                        <Checkbox
+                          id={`access-policy-token-id-${token.id}`}
+                          checked={form.tokens.includes(token.id)}
+                          onCheckedChange={(checked) => { form.tokens = checked ? [...form.tokens, token.id] : form.tokens.filter((id) => id !== token.id); }}
+                        />
+                        <Field.Label for={`access-policy-token-id-${token.id}`} class="min-w-0 font-normal">
+                          <span class="truncate">{token.name}</span>
+                          {#if token.hosts?.length}<span class="truncate font-mono text-muted-foreground">{token.hosts[0]}{token.hosts.length > 1 ? ` +${token.hosts.length - 1}` : ''}</span>{/if}
+                        </Field.Label>
+                      </Field.Field>
+                    {/each}
+                  </div>
+                {:else if tokens}
+                  <Field.Description>{t().noTokens}</Field.Description>
+                {/if}
+              {/if}
+            </Field.Set>
+          </Field.Group>
+        </Card.Content>
+      </Card.Root>
+      <Card.Root size="sm">
+        <Card.Header><Card.Title id="access-policy-action-title">{t().action}</Card.Title></Card.Header>
+        <Card.Content>
+          <Field.Group>
+            <!-- 선택지는 한 줄로 두고, 각 동작의 뜻은 마우스를 올리면 툴팁으로, 화면 낭독기에는 설명으로 알립니다. -->
+            <RadioGroup.Root aria-labelledby="access-policy-action-title" value={form.action} onValueChange={(value) => { if (actions.includes(value as AccessAction)) form.action = value as AccessAction; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
+              {#each actions as action (action)}
+                {@const hint = form.token === 'none' ? t().actionHints[action] : t().tokenActionHints[action]}
+                <Tooltip.Root>
+                  <Tooltip.Trigger>
+                    {#snippet child({ props })}
+                      <Field.Field orientation="horizontal" class="w-auto" {...props} tabindex={-1}>
+                        <RadioGroup.Item value={action} id={`access-policy-action-${action}`} aria-describedby={`access-policy-action-${action}-hint`} />
+                        <Field.Label for={`access-policy-action-${action}`} class="font-normal">{t().actions[action]}</Field.Label>
+                        <span id={`access-policy-action-${action}-hint`} class="sr-only">{hint}</span>
+                      </Field.Field>
+                    {/snippet}
+                  </Tooltip.Trigger>
+                  <Tooltip.Content>{hint}</Tooltip.Content>
+                </Tooltip.Root>
+              {/each}
+            </RadioGroup.Root>
+            {#if form.action === 'allow'}
+              <Field.Set>
+                <Field.Legend variant="label">{t().who}</Field.Legend>
+                <Field.Field orientation="horizontal">
+                  <Field.Content>
+                    <div class="flex items-center gap-1"><Field.Label for="access-policy-everyone">{t().everyone}</Field.Label><InfoTooltip id="access-policy-everyone-tip" label={t().everyone} description={t().everyoneTip} /></div>
+                  </Field.Content>
+                  <Switch id="access-policy-everyone" bind:checked={form.everyone} />
+                </Field.Field>
+                {#if !form.everyone}
+                  <Field.Field>
+                    <Field.Label for="access-policy-users">{t().allowedUsers}</Field.Label>
+                    <TagInput id="access-policy-users" ariaLabel={t().allowedUsers} bind:values={form.users} lowercase mono placeholder="user@example.com, @example.com" />
+                    <Field.Description>{t().allowedUsersHint}</Field.Description>
+                  </Field.Field>
+                  <Field.Field>
+                    <Field.Label for="access-policy-groups">{t().allowedGroups}</Field.Label>
+                    <TagInput id="access-policy-groups" ariaLabel={t().allowedGroups} bind:values={form.groups} mono placeholder="staff" />
+                    <Field.Description>{t().allowedGroupsHint}</Field.Description>
+                  </Field.Field>
+                  <Field.Field orientation="horizontal">
+                    <Field.Content>
+                      <div class="flex items-center gap-1"><Field.Label for="access-policy-admins">{t().allowAdmins}</Field.Label><InfoTooltip id="access-policy-admins-tip" label={t().allowAdmins} description={t().allowAdminsTip} /></div>
+                    </Field.Content>
+                    <Switch id="access-policy-admins" bind:checked={form.admins} />
+                  </Field.Field>
+                {/if}
+              </Field.Set>
             {/if}
-          {/if}
-        </Field.Set>
-        {#if form.action === 'allow'}
-          <Field.Set>
-            <Field.Legend variant="label">{t().who}</Field.Legend>
-            <Field.Field orientation="horizontal">
-              <Field.Content>
-                <div class="flex items-center gap-1"><Field.Label for="access-policy-everyone">{t().everyone}</Field.Label><InfoTooltip id="access-policy-everyone-tip" label={t().everyone} description={t().everyoneTip} /></div>
-              </Field.Content>
-              <Switch id="access-policy-everyone" bind:checked={form.everyone} />
-            </Field.Field>
-            {#if !form.everyone}
-              <Field.Field>
-                <Field.Label for="access-policy-users">{t().allowedUsers}</Field.Label>
-                <TagInput id="access-policy-users" ariaLabel={t().allowedUsers} bind:values={form.users} lowercase mono placeholder="user@example.com, @example.com" />
-                <Field.Description>{t().allowedUsersHint}</Field.Description>
-              </Field.Field>
-              <Field.Field>
-                <Field.Label for="access-policy-groups">{t().allowedGroups}</Field.Label>
-                <TagInput id="access-policy-groups" ariaLabel={t().allowedGroups} bind:values={form.groups} mono placeholder="staff" />
-                <Field.Description>{t().allowedGroupsHint}</Field.Description>
-              </Field.Field>
-              <Field.Field orientation="horizontal">
-                <Field.Content>
-                  <div class="flex items-center gap-1"><Field.Label for="access-policy-admins">{t().allowAdmins}</Field.Label><InfoTooltip id="access-policy-admins-tip" label={t().allowAdmins} description={t().allowAdminsTip} /></div>
-                </Field.Content>
-                <Switch id="access-policy-admins" bind:checked={form.admins} />
-              </Field.Field>
-            {/if}
-          </Field.Set>
-        {/if}
-      </Field.Group>
+          </Field.Group>
+        </Card.Content>
+      </Card.Root>
       {#if formError}<Alert.Root variant="destructive"><Warning aria-hidden="true" /><Alert.Description>{formError}</Alert.Description></Alert.Root>{/if}
       <Dialog.Footer>
         {#if editingId}
