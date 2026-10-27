@@ -857,6 +857,17 @@ func TestAccessSavedPoliciesThatFailTheChecksStayClosed(t *testing.T) {
 	if w := request(f.store.Handler(), "GET", "/api/v1/security/access-policies", f.admin, nil); w.Code != 200 || !strings.Contains(w.Body.String(), `"name":"Old"`) || !strings.Contains(w.Body.String(), `"damaged":true`) {
 		t.Fatalf("console: %d %s", w.Code, w.Body.String())
 	}
+	// A damaged bypass policy saved above a damaged allow policy lets nobody
+	// in, but doesn't shut out whom the allow policy names.
+	store(`{"policies":[{"id":"open","name":"Open","enabled":true,"action":"bypass","hosts":["app.example.com"],"all_paths":true},` +
+		`{"id":"old","name":"Old","enabled":true,"hosts":["app.example.com"],"conditions":[{"operator":"matches","value":"("}],"allowed_users":["@Corp.example.com"]}]}`)
+	if w := f.visit("app.example.com", "/"); w.Code != http.StatusFound {
+		t.Fatalf("damaged bypass: %d", w.Code)
+	}
+	session, _ = f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
+	if w := f.visit("app.example.com", "/", session); w.Code != 200 {
+		t.Fatalf("named person behind a damaged bypass: %d", w.Code)
+	}
 	for _, raw := range []string{`not json`, `null`, `{}`, `{"policies":null}`, `{"policies":[null]}`, `{"policies":[{"name":"No hosts","enabled":true,"all_paths":true}]}`} {
 		store(raw)
 		if w := f.visit("other.example.com", "/"); w.Code != http.StatusFound {
@@ -1237,10 +1248,41 @@ func TestAccessTokens(t *testing.T) {
 		t.Fatalf("token the policy doesn't name: %d", w.Code)
 	}
 	id, _, _ := strings.Cut(deployValue, ".")
-	for _, value := range []string{"x", id, id + ".wrong", "nosuchtoken." + deployValue[len(id)+1:], deployValue + "x", " " + deployValue} {
+	for _, value := range []string{"x", id, id + ".wrong", "nosuchtoken." + deployValue[len(id)+1:], deployValue + "x", deployValue + " x"} {
 		if w := send("app.example.com", "/deploy/run", map[string]string{accessTokenHeader: value}); w.Code != http.StatusUnauthorized || w.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("token %q: %d", value, w.Code)
 		}
+	}
+	// Spaces around the value don't matter; a refused token leaves the
+	// request to a session it also carries, and is audited without one.
+	if w := send("app.example.com", "/deploy/run", map[string]string{accessTokenHeader: " " + deployValue + " "}); w.Code != 200 {
+		t.Fatalf("token with spaces: %d", w.Code)
+	}
+	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
+	// The deploy token is valid but no policy for / names it.
+	for _, value := range []string{"junk.secret", deployValue} {
+		r := httptest.NewRequest("GET", "https://app.example.com/", nil)
+		r.Host = "app.example.com"
+		r.Header.Set("X-Forwarded-For", "198.51.100.30")
+		r.Header.Set(accessTokenHeader, value)
+		r.AddCookie(session)
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, r)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), "email=alice@corp.example.com") {
+			t.Fatalf("session with token %q: %d %s", value, w.Code, w.Body.String())
+		}
+	}
+	if w := send("app.example.com", "/deploy/run", map[string]string{accessTokenHeader: "junk.secret"}); w.Code != http.StatusUnauthorized {
+		t.Fatalf("junk token: %d", w.Code)
+	}
+	if event := f.lastAudit(t); event.Action != "access.token_failed" || !strings.Contains(string(event.Detail), `"reason":"invalid"`) {
+		t.Fatalf("audit: %s %s", event.Action, event.Detail)
+	}
+	if w := send("app.example.com", "/deploy/run", token(monitorValue)); w.Code != http.StatusForbidden {
+		t.Fatalf("token the policy doesn't name: %d", w.Code)
+	}
+	if event := f.lastAudit(t); event.Action != "access.token_failed" || !strings.Contains(string(event.Detail), `"reason":"not_allowed"`) || !strings.Contains(string(event.Detail), monitor.ID) {
+		t.Fatalf("audit: %s %s", event.Action, event.Detail)
 	}
 	// Tokens need no provider.
 	f.provider(t, false)
@@ -1268,8 +1310,11 @@ func TestAccessTokens(t *testing.T) {
 	if w := request(h, "DELETE", "/api/v1/security/access-tokens/"+deploy.ID, f.admin, nil); w.Code != http.StatusNoContent {
 		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
 	}
-	if event := f.lastAudit(t); event.Action != "security.access_token_delete" || !strings.Contains(string(event.Detail), "Deploy bot") {
-		t.Fatalf("audit: %s %s", event.Action, event.Detail)
+	// (The expired-token check above logged a refusal dated a month ahead,
+	// so look the deletion up by its action.)
+	f.store.journal.flush()
+	if events, _, err := f.db.Audit(context.Background(), control.AuditFilter{Limit: 1, Action: "security.access_token_delete"}); err != nil || len(events) != 1 || !strings.Contains(string(events[0].Detail), "Deploy bot") {
+		t.Fatalf("audit: %+v %v", events, err)
 	}
 	if w := request(h, "DELETE", "/api/v1/security/access-tokens/"+deploy.ID, f.admin, nil); w.Code != http.StatusNotFound {
 		t.Fatalf("delete again: %d", w.Code)

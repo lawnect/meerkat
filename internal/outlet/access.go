@@ -335,18 +335,20 @@ func compileAccess(policies control.AccessPolicies) *accessConfig {
 }
 
 // closedAccess compiles saved policies that no longer pass the checks so
-// that they keep closed what they may have protected: each enabled one, in
-// order, covers every path of the addresses it names, or of every address
-// when it names no valid one, and lets in, after a sign-in, only whom an
-// allow policy names as saved. With nothing readable, or a policy that
-// isn't, every address is closed.
+// that they keep closed what they may have protected. Each enabled one
+// covers every path of the addresses it names, or of every address when it
+// names no valid one: an allow policy lets in, after a sign-in, only whom
+// it names as saved, and comes first, in order, so that a bypass or block
+// policy saved above it, which now lets nobody in, doesn't shut those
+// people out. With nothing readable, or a policy that isn't, every address
+// is closed.
 func closedAccess(policies control.AccessPolicies) *accessConfig {
 	nobody := accessRule{match: compileBlockRule(nil, nil), all: true, policy: control.AccessPolicy{Action: control.AccessAllow}}
 	// Every saved policy has an ID: one without was never readable.
 	if len(policies.Policies) == 0 || slices.ContainsFunc(policies.Policies, func(policy control.AccessPolicy) bool { return policy.ID == "" }) {
 		return &accessConfig{rules: []accessRule{nobody}}
 	}
-	config := &accessConfig{}
+	var allowing, closing []accessRule
 	for _, policy := range policies.Policies {
 		if !policy.Enabled {
 			continue
@@ -359,20 +361,21 @@ func closedAccess(policies control.AccessPolicies) *accessConfig {
 		}
 		rule := nobody
 		rule.match = compileBlockRule(hosts, nil)
-		if policy.Action == control.AccessAllow || policy.Action == "" {
-			// Whom it names, in the form sessions carry, as saving would put it.
-			rule.policy.AllowEveryone, rule.policy.AllowAdmins = policy.AllowEveryone, policy.AllowAdmins
-			for _, user := range policy.AllowedUsers {
-				rule.policy.AllowedUsers = append(rule.policy.AllowedUsers, strings.ToLower(strings.TrimSpace(user)))
-			}
-			for _, group := range policy.AllowedGroups {
-				rule.policy.AllowedGroups = append(rule.policy.AllowedGroups, strings.TrimSpace(group))
-			}
-			rule.policy.AllowedTokens = policy.AllowedTokens
+		if policy.Action != control.AccessAllow && policy.Action != "" {
+			closing = append(closing, rule)
+			continue
 		}
-		config.rules = append(config.rules, rule)
+		// Whom it names, in the form sessions carry, as saving would put it.
+		rule.policy.AllowEveryone, rule.policy.AllowAdmins, rule.policy.AllowedTokens = policy.AllowEveryone, policy.AllowAdmins, policy.AllowedTokens
+		for _, user := range policy.AllowedUsers {
+			rule.policy.AllowedUsers = append(rule.policy.AllowedUsers, strings.ToLower(strings.TrimSpace(user)))
+		}
+		for _, group := range policy.AllowedGroups {
+			rule.policy.AllowedGroups = append(rule.policy.AllowedGroups, strings.TrimSpace(group))
+		}
+		allowing = append(allowing, rule)
 	}
-	return config
+	return &accessConfig{rules: append(allowing, closing...)}
 }
 
 func (s *Store) reloadAccess(ctx context.Context) error {
@@ -483,20 +486,36 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 	case rule.policy.Action == control.AccessBlock:
 		accessPage(w, r, http.StatusForbidden, "denied")
 		return r, false
-	case r.Header.Get(accessTokenHeader) != "":
-		// A client that can't sign in sends an access token instead, which
-		// needs no provider.
-		token, ok := s.accessToken(r.Header.Get(accessTokenHeader))
+	}
+	// A client that can't sign in sends an access token instead, which needs
+	// no provider. A token that doesn't get the request through leaves it to
+	// a session the request may also carry; without one, the refusal stands.
+	if value := strings.TrimSpace(r.Header.Get(accessTokenHeader)); value != "" {
+		token, ok := s.accessToken(value)
 		ip, _ := requestOrigin(r)
-		if !ok {
-			accessPage(w, r, http.StatusUnauthorized, "token")
-		} else if !token.usableFrom(host, ip) || !rule.policy.AllowsToken(token.ID) {
-			accessPage(w, r, http.StatusForbidden, "denied")
-		} else {
+		reason := ""
+		switch {
+		case !ok:
+			reason = "invalid"
+		case !token.usableFrom(host, ip):
+			reason = "out_of_scope"
+		case !rule.policy.AllowsToken(token.ID):
+			reason = "not_allowed"
+		default:
 			s.access.used.Store(token.ID, s.now())
 			return r.WithContext(context.WithValue(r.Context(), accessServiceKey{}, token.Name)), true
 		}
-		return r, false
+		if _, session := s.accessSession(r, host); !session {
+			s.accessTokenFailed(r, host, token.ID, reason)
+			if reason == "invalid" {
+				accessPage(w, r, http.StatusUnauthorized, "token")
+			} else {
+				accessPage(w, r, http.StatusForbidden, "denied")
+			}
+			return r, false
+		}
+	}
+	switch {
 	case !s.access.enabled.Load():
 		accessPage(w, r, http.StatusServiceUnavailable, "unavailable")
 		return r, false
@@ -566,6 +585,20 @@ func (t accessTokenRule) usableFrom(host, ip string) bool {
 	}
 	addr, err := netip.ParseAddr(ip)
 	return err == nil && slices.ContainsFunc(t.ranges, func(prefix netip.Prefix) bool { return prefix.Contains(addr.Unmap()) })
+}
+
+// accessTokenFailed records a refused access token in the audit log, as
+// many a minute as one client's failed sign-ins (see accessState.failures).
+// id is the token's, when the value named one.
+func (s *Store) accessTokenFailed(r *http.Request, host, id, reason string) {
+	if ip, _ := requestOrigin(r); !s.access.failures.allow(clientKey(ip), s.now()) {
+		return
+	}
+	detail := map[string]any{"reason": reason}
+	if id != "" {
+		detail["token"] = id
+	}
+	s.audit(r, "access.token_failed", control.AuditEntry{ResourceType: "address", ResourceID: host, Detail: detail})
 }
 
 // accessToken returns the access token whose value a request sent, if it

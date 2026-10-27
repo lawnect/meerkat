@@ -54,7 +54,7 @@
     reorderTip: 'Drag, or press ↑ ↓',
     orderSaved: 'Order saved',
     neverApplies: 'Never applies',
-    neverAppliesTip: 'An earlier policy covers every path of these addresses.',
+    neverAppliesTip: 'An earlier policy covers every address and path of this one.',
     noPolicies: 'No access policies',
     addTitle: 'Add policy',
     editTitle: 'Edit policy',
@@ -121,7 +121,7 @@
     reorderTip: '드래그 또는 ↑ ↓ 키로 이동',
     orderSaved: '순서가 저장되었습니다',
     neverApplies: '적용 안 됨',
-    neverAppliesTip: '앞선 정책이 이 주소의 전체 경로에 먼저 적용됩니다.',
+    neverAppliesTip: '앞선 정책이 이 정책의 주소와 경로에 먼저 적용됩니다.',
     noPolicies: '접근 정책이 없습니다',
     addTitle: '정책 추가',
     editTitle: '정책 편집',
@@ -204,10 +204,18 @@
     return parts.every((part, index) => ((index === 0 || index === parts.length - 1) && part === '') || (part !== '' && part !== '.' && part !== '..' && !((index < parts.length - 1 || whole) && /[. ]$/.test(part))));
   };
 
-  // 앞선 활성화된 정책이 주소마다 전체 경로에 적용되면, 뒤의 정책은 적용될 일이 없습니다.
+  // 앞선 활성화된 정책이 이 정책의 주소와 경로를 모두 덮으면, 이 정책은 적용될 일이 없습니다. 앞선 정책이 전체 경로이거나,
+  // 우회가 아닌 앞선 정책의 '다음으로 시작' 조건이 이 정책의 '같음'·'다음으로 시작' 조건을 모두 덮는 경우입니다(서버처럼 소문자로, 끝에 /를 붙여 비교).
   const hostCovers = (pattern: string, host: string): boolean => pattern === host || (pattern.startsWith('*.') && host.endsWith(pattern.slice(1)));
+  const pathsCover = (earlier: AccessPolicy, later: AccessPolicy): boolean =>
+    earlier.all_paths ||
+    (earlier.action !== 'bypass' && !later.all_paths && later.conditions.every((condition) => {
+      if (condition.operator !== 'starts_with' && condition.operator !== 'equals') return false;
+      const path = condition.value.toLowerCase() + (condition.operator === 'equals' ? '/' : '');
+      return earlier.conditions.some((prefix) => prefix.operator === 'starts_with' && path.startsWith(prefix.value));
+    }));
   const neverApplies = (list: AccessPolicy[], index: number): boolean =>
-    list.slice(0, index).some((earlier) => earlier.enabled && earlier.all_paths && list[index].hosts.every((host) => earlier.hosts.some((pattern) => hostCovers(pattern, host))));
+    list.slice(0, index).some((earlier) => earlier.enabled && pathsCover(earlier, list[index]) && list[index].hosts.every((host) => earlier.hosts.some((pattern) => hostCovers(pattern, host))));
 
   let policies = $state<AccessPolicy[] | null>(null);
   let addresses = $state<string[]>([]);
