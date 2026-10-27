@@ -94,3 +94,23 @@ func (d *Database) AccessMetrics(ctx context.Context, now time.Time, hours int) 
 func (c *AccessCounts) add(n AccessCounts) {
 	c.Passed, c.Challenged, c.Denied = c.Passed+n.Passed, c.Challenged+n.Challenged, c.Denied+n.Denied
 }
+
+// settingAccessLog says whether access protection keeps a log of the
+// requests it decides.
+const settingAccessLog = "access_log"
+
+// AccessLogEnabled reports whether the access log is on; it is off until
+// turned on.
+func (d *Database) AccessLogEnabled(ctx context.Context) (bool, error) {
+	value, err := getSetting(ctx, d.db, settingAccessLog)
+	return value == "on", err
+}
+
+// SetAccessLog turns the access log on or off.
+func (d *Database) SetAccessLog(ctx context.Context, enabled bool, now time.Time) error {
+	value := "off"
+	if enabled {
+		value = "on"
+	}
+	return putSetting(ctx, d.db, settingAccessLog, value, now)
+}

@@ -470,6 +470,10 @@ type accessState struct {
 	// counts holds what policies decided until saved: accessCountKey to
 	// *atomic.Int64 (see countAccess).
 	counts sync.Map
+	// log writes the access log, nil when its file couldn't be opened;
+	// logging is its switch.
+	log     *accessLogWriter
+	logging atomic.Bool
 }
 
 // adminEmails remembers, for adminEmailTTL, whether an email is an
@@ -584,6 +588,11 @@ func (s *Store) reloadAccess(ctx context.Context) error {
 		return err
 	}
 	s.access.enabled.Store(provider.Enabled)
+	logging, err := s.control.AccessLogEnabled(ctx)
+	if err != nil {
+		return err
+	}
+	s.access.logging.Store(logging)
 	policies, err := s.control.AccessPolicies(ctx)
 	switch {
 	case errors.Is(err, control.ErrStoredAccessPolicies):
@@ -695,12 +704,19 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 	if rule == nil {
 		return r, true
 	}
-	// What the policy decides is counted for the console: refused unless a
-	// return below says otherwise.
-	outcome := accessDenied
-	defer func() { s.countAccess(rule.policy.ID, outcome) }()
+	// What the policy decides is counted, and logged, for the console:
+	// refused unless a return below says otherwise, with why, and who.
+	outcome, reason, email := accessDenied, "", ""
+	logged := ""
+	if value != "" {
+		logged = token.ID
+	}
+	defer func() {
+		s.countAccess(rule.policy.ID, outcome)
+		s.logAccess(r, host, rule.policy.ID, outcome, reason, email, logged)
+	}()
 	if rule.policy.Action == control.AccessBypass {
-		outcome = accessPassed
+		outcome, reason = accessPassed, "bypass"
 		return s.tokenTaken(r, rule, token), true
 	}
 	// The request doesn't simply pass, so a token sent with it that the
@@ -710,12 +726,14 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 		s.accessTokenFailed(r, host, token.ID, refused)
 	}
 	if rule.policy.Action == control.AccessBlock {
+		reason = "blocked"
 		accessPage(w, r, http.StatusForbidden, "denied")
 		return r, false
 	}
 	// Such a token leaves the request to a session it may also carry;
 	// without one, the refusal stands, rather than a sign-in.
 	if _, session := s.accessSession(r, host); refused != "" && !session {
+		reason = "token_" + refused
 		if refused == "invalid" || refused == "expired" {
 			accessPage(w, r, http.StatusUnauthorized, "token")
 		} else {
@@ -724,32 +742,36 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 		return r, false
 	}
 	if !s.access.enabled.Load() {
+		reason = "unavailable"
 		accessPage(w, r, http.StatusServiceUnavailable, "unavailable")
 		return r, false
 	}
 	identity, ok := s.accessSession(r, host)
 	if !ok {
-		outcome = accessChallenged
+		outcome, reason = accessChallenged, "no_session"
 		s.accessChallenge(w, r, host, adminHost)
 		return r, false
 	}
+	email = identity.Email
 	// The database is asked only when the session alone doesn't settle it.
 	allowed := rule.policy.Allows(identity, false)
 	if !allowed && rule.policy.AllowAdmins {
 		admin, err := s.isAdminEmail(r.Context(), identity.Email)
 		if err != nil {
+			reason = "unavailable"
 			accessPage(w, r, http.StatusServiceUnavailable, "unavailable")
 			return r, false
 		}
 		allowed = admin
 	}
 	if !allowed {
+		reason = "not_allowed"
 		// The person can sign in again, with another account or with groups
 		// a policy named after they signed in.
 		accessPageNext(w, r, http.StatusForbidden, "denied", accessNext{action: accessPathPrefix + "logout?" + url.Values{"return": {accessReturn(r.URL.RequestURI())}}.Encode()})
 		return r, false
 	}
-	outcome = accessPassed
+	outcome, reason = accessPassed, "session"
 	return s.tokenTaken(r.WithContext(context.WithValue(r.Context(), accessIdentityKey{}, identity.Email)), rule, token), true
 }
 

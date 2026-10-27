@@ -362,6 +362,31 @@ export interface AccessMetrics {
   policies: Record<string, AccessCounts>; // 정책 ID별 기간 합계. 지워진 정책도 남습니다
 }
 
+// 접근 보호 요청 기록(GET·PUT /api/v1/security/access-log). 별도 파일에 30일, 최대 50만 건·256MiB까지 둡니다.
+// 거부·로그인 요구는 모두, 통과는 로그인한 사용자나 토큰으로 들어온 것만 남깁니다.
+export type AccessDecision = keyof AccessCounts;
+export interface AccessLogEntry {
+  id: number;
+  at: string; // RFC 3339
+  host: string;
+  method: string;
+  path: string; // 쿼리 없이, 512바이트까지
+  client: string; // 클라이언트 IP
+  policy: string; // 정책 ID
+  decision: AccessDecision;
+  reason: string; // bypass·session(통과), no_session(로그인 요구), blocked·not_allowed·token_*·unavailable(거부)
+  email: string;
+  token: string; // 토큰 ID
+}
+
+export interface AccessLogView {
+  enabled: boolean; // 기록 스위치. 처음에는 꺼져 있습니다
+  available: boolean; // 기록 파일을 열었는지
+  entries: AccessLogEntry[]; // 최신순
+  next: number; // 다음 쪽을 받을 before 값, 0이면 끝
+  dropped: number; // Outlet 시작 이후 대기열이 넘쳐 기록하지 못한 수
+}
+
 export interface AccessTokensView {
   tokens: AccessToken[]; // 만든 순서
   addresses: string[]; // 토큰을 한정할 수 있는 공개 주소(호스트 이름), 정렬됨

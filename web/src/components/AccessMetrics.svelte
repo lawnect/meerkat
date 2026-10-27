@@ -10,12 +10,14 @@
   import { api, errorMessage } from '../api';
   import { intlLocale, translations } from '../i18n.svelte';
   import { Shield20, Warning } from '../icons';
-  import type { AccessAction, AccessCounts, AccessMetrics, AccessPoliciesView, AccessPolicy } from '../types';
+  import type { AccessAction, AccessCounts, AccessMetrics, AccessPoliciesView, AccessPolicy, AccessToken, AccessTokensView } from '../types';
   import { oneOf, setParams } from '../urlState.svelte';
+  import AccessLog from './AccessLog.svelte';
   import InfoTooltip from './InfoTooltip.svelte';
   import TrendChart from './TrendChart.svelte';
 
-  // 접근 보호 화면의 지표 탭. 접근 정책이 판정한 요청을 통과·로그인 요구·거부로 나눠 기간의 추이와 정책별 합계로 보여 줍니다.
+  // 접근 보호 화면의 지표 탭. 접근 정책이 판정한 요청을 통과·로그인 요구·거부로 나눠 기간의 추이와 정책별 합계로 보여 주고,
+  // 그 아래에 요청 기록(AccessLog)을 둡니다.
   // 기간은 주소(?period=7d)가 단일 출처이고, 24시간은 1시간, 7일은 6시간, 30일은 하루 단위로 묶어 그립니다.
   type Outcome = keyof AccessCounts;
   type Step = 'hour' | 'sixHours' | 'day';
@@ -63,8 +65,14 @@
 
   let metrics = $state<AccessMetrics | null>(null);
   let policies = $state<AccessPolicy[] | null>(null);
+  let tokens = $state<AccessToken[] | null>(null);
   let loadError = $state('');
   let shown = $state<Outcome[]>([...outcomes]);
+
+  // 요청 기록에 토큰 이름을 보여 주는 데만 쓰므로 한 번만 불러옵니다.
+  $effect(() => {
+    api<AccessTokensView>('/api/v1/security/access-tokens').then((view) => { tokens = view.tokens; }).catch(() => {});
+  });
 
   $effect(() => {
     const hours = period;
@@ -234,3 +242,5 @@
     {/if}
   </Card.Content>
 </Card.Root>
+
+<AccessLog {policies} {tokens} />

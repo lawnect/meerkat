@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/lawnect/meerkat/internal/accesslog"
 	"github.com/lawnect/meerkat/internal/contract"
 	"github.com/lawnect/meerkat/internal/control"
 	"github.com/lawnect/meerkat/internal/proxy"
@@ -293,6 +294,14 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 	if controlDB != nil {
 		s.journal = newAuditJournal(controlDB, filepath.Join(dir, "spool", "audit"))
 		s.workers.Go(func() { s.journal.run(workers) })
+		// The access log has a file of its own; without it the Outlet runs
+		// on, only not logging.
+		if log, err := accesslog.Open(context.Background(), filepath.Join(dir, "access-log.db")); err != nil {
+			slog.Warn("access log unavailable", "error", err)
+		} else {
+			s.access.log = newAccessLogWriter(log)
+			s.workers.Go(func() { s.access.log.run(workers) })
+		}
 	}
 	s.workers.Go(func() { s.persistLoop(workers) })
 	return s, nil
@@ -407,6 +416,9 @@ func (s *Store) Close() {
 			s.stopWorkers()
 		}
 		s.workers.Wait()
+		if s.access.log != nil {
+			_ = s.access.log.log.Close()
+		}
 	})
 }
 

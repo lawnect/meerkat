@@ -357,7 +357,7 @@ Bypass conditions open paths, so they are compared exactly, as the app gets the 
 
 Conditions work as in block rules and see the path decoded once, so write them decoded (`/files/100%`, not `/files/100%25`). A path an app could read another way, such as an encoded `..`, matches every Allow and Block condition and no Bypass condition; a double-encoded one is also compared decoded twice. For apps that interpret paths in unusual ways, protect all paths. Someone denied can **Sign in again** from the denied page, which is how groups added to a policy later take effect.
 
-The **Metrics** tab shows what the policies decided (passed, sent to sign in, denied) over the last 24 hours, 7 or 30 days, in total and by policy; requests no policy covers aren't counted.
+The **Metrics** tab shows what the policies decided (passed, sent to sign in, denied) over the last 24 hours, 7 or 30 days, in total and by policy; requests no policy covers aren't counted. Turned on there, the request log keeps every refusal and sign-in asked for, and requests let in by a signed-in person or a token, for 30 days in `access-log.db`, a SQLite file of its own capped at 256 MiB; requests never wait on it, and entries it can't keep up with are given up.
 
 A session lasts the configured hours (24 by default), only on the address it was issued for. **Sign everyone out** ends all of them. A group added to a policy counts from a person's next sign-in. The groups claim and scopes are set on the Access SSO card; add the scope your provider needs to send groups.
 

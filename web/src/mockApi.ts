@@ -1,4 +1,4 @@
-import type { AccessMetrics, AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, Outlet, Route, Service, SsoSettings, Target, UsageBucket, UsageSeries, UsageUnit } from './types';
+import type { AccessLogEntry, AccessLogView, AccessMetrics, AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, Outlet, Route, Service, SsoSettings, Target, UsageBucket, UsageSeries, UsageUnit } from './types';
 import { accessMethods } from './types';
 
 const now = (): string => new Date().toISOString();
@@ -247,13 +247,35 @@ let accessPolicies: AccessPolicy[] = [
   { id: 'vault-api', name: 'Vault API', enabled: true, action: 'bypass', hosts: ['vault.example.test'], all_paths: false, conditions: [{ operator: 'starts_with', value: '/v1/' }], methods: ['GET', 'POST'], require_token: true, tokens: ['deploybot'], allow_everyone: false, allowed_users: [], allowed_groups: [], allow_admins: false },
   { id: 'vault', name: 'Vault members', enabled: true, action: 'allow', hosts: ['vault.example.test'], all_paths: true, conditions: [], methods: [], require_token: false, tokens: [], allow_everyone: false, allowed_users: ['@example.test'], allowed_groups: [], allow_admins: true },
 ];
+// 요청 기록 데모. 데모에서는 켜 두고, 정책과 토큰에 맞춰 몇 시간치 기록을 만들어 둡니다.
+let accessLogEnabled = true;
+const accessLog: AccessLogEntry[] = Array.from({ length: 140 }, (_, index) => {
+  const kind = index % 7;
+  const at = new Date(Date.now() - index * 97000).toISOString();
+  const base = { id: 1000 - index, at, host: 'vault.example.test', client: `198.51.100.${(index * 37) % 250 + 1}`, email: '', token: '' };
+  if (kind === 0) return { ...base, method: 'POST', path: '/v1/secret/data/app', policy: 'vault-api', decision: 'passed', reason: 'bypass', token: 'deploybot' };
+  if (kind === 1) return { ...base, method: 'GET', path: '/ui/', policy: 'vault', decision: 'challenged', reason: 'no_session' };
+  if (kind === 2) return { ...base, method: 'GET', path: '/ui/vault/secrets', policy: 'vault', decision: 'passed', reason: 'session', email: 'alice@example.test' };
+  if (kind === 3) return { ...base, method: 'GET', path: '/ui/vault/auth', policy: 'vault', decision: 'denied', reason: 'not_allowed', email: 'contractor@partner.example' };
+  if (kind === 4) return { ...base, method: 'POST', path: '/v1/auth/token/create', policy: 'vault', decision: 'denied', reason: 'token_expired', token: 'monitor' };
+  if (kind === 5) return { ...base, method: 'GET', path: '/ui/vault/policies', policy: 'vault', decision: 'passed', reason: 'session', email: 'bob@example.test' };
+  return { ...base, method: 'PUT', path: '/v1/sys/policy/admin', policy: 'vault', decision: 'denied', reason: 'token_invalid' };
+});
+const accessLogView = (params: URLSearchParams): AccessLogView => {
+  const decision = params.get('decision') ?? '';
+  const policy = params.get('policy') ?? '';
+  const before = Number(params.get('before') || '0');
+  const limit = Number(params.get('limit') || '50');
+  const matched = accessLog.filter((entry) => (!decision || entry.decision === decision) && (!policy || entry.policy === policy) && (!before || entry.id < before));
+  const page = matched.slice(0, limit);
+  return structuredClone({ enabled: accessLogEnabled, available: true, entries: page, next: matched.length > limit ? page[page.length - 1].id : 0, dropped: 0 });
+};
 const accessPoliciesResponse = (): AccessPoliciesView => structuredClone({ policies: accessPolicies, addresses: publicAddresses() });
 // 접근 토큰 데모 상태. 값은 만들 때만 돌려줍니다.
 let accessTokens: Array<Omit<AccessToken, 'policies'>> = [
   { id: 'deploybot', name: 'Deploy bot', hosts: ['vault.example.test'], ranges: ['203.0.113.0/24'], created_at: '2026-10-20T03:00:00Z', expires_at: '', last_used_at: '2026-10-27T01:12:00Z' },
   { id: 'monitor', name: 'Uptime monitor', hosts: ['*.example.test'], ranges: [], created_at: '2026-10-22T09:30:00Z', expires_at: '2027-01-20T09:30:00Z', last_used_at: '' },
 ];
-// 서버처럼 토큰마다 허용한 정책을 붙여 보여 줍니다.
 // 서버처럼 토큰을 지정했거나, 모든 토큰을 받으면서 주소가 겹치는 정책을 보여 줍니다.
 const hostsMeet = (a: string, b: string): boolean => a === b || (a.startsWith('*.') && b.endsWith(a.slice(1))) || (b.startsWith('*.') && a.endsWith(b.slice(1)));
 const tokenView = (token: Omit<AccessToken, 'policies'>): AccessToken => structuredClone({
@@ -817,6 +839,15 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
   }
   if (path === '/api/v1/security/access/sessions/revoke' && method === 'POST') return {};
   if (path === '/api/v1/security/access-policies' && method === 'GET') return accessPoliciesResponse();
+  if (path === '/api/v1/security/access-log' && method === 'PUT') {
+    accessLogEnabled = Boolean((input as { enabled?: boolean }).enabled);
+    return accessLogView(new URL(url, 'http://localhost').searchParams);
+  }
+  if (path === '/api/v1/security/access-log' && method === 'GET') {
+    const params = new URL(url, 'http://localhost').searchParams;
+    if (!['', 'passed', 'challenged', 'denied'].includes(params.get('decision') ?? '')) fail('invalid_access_log_filter');
+    return accessLogView(params);
+  }
   if (path === '/api/v1/security/access-metrics' && method === 'GET') {
     // 데모: 정책마다 시간대별로 그럴듯한 판정 수를 만듭니다. 우회·허용은 대부분 통과, 차단은 거부입니다.
     const hours = Number(new URL(url, 'http://localhost').searchParams.get('hours') || '24');
