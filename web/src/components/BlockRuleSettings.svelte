@@ -362,7 +362,7 @@
                         pattern=".*\S.*"
                         required
                       />
-                      <IconButton label={t().removeAddress} icon={Dismiss} disabled={form.hosts.length <= 1} onclick={() => form.hosts.splice(index, 1)} />
+                      <IconButton label={t().removeAddress} icon={Dismiss} variant="outline" size="icon" disabled={form.hosts.length <= 1} onclick={() => form.hosts.splice(index, 1)} />
                     </div>
                   {/each}
                 </div>
@@ -400,7 +400,7 @@
                       pattern=".*\S.*"
                       required
                     />
-                    <IconButton label={t().removeCondition} icon={Dismiss} disabled={form.conditions.length <= 1} onclick={() => form.conditions.splice(index, 1)} />
+                    <IconButton label={t().removeCondition} icon={Dismiss} variant="outline" size="icon" disabled={form.conditions.length <= 1} onclick={() => form.conditions.splice(index, 1)} />
                   </div>
                 {/each}
               </div>
