@@ -22,29 +22,29 @@ RUN LDFLAGS="-X github.com/lawnect/meerkat/internal/contract.Version=${VERSION}"
     CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o /out/demo-service ./cmd/demo-service && \
     CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o /out/poc-probe ./cmd/poc-probe
 
-FROM debian:bookworm-slim AS rathole-download
-ARG TARGETARCH
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip && rm -rf /var/lib/apt/lists/*
-# Stable v0.5.0 provides Noise on both platforms. ARM64's embedded build does
-# not include TLS; the control API still uses Go TLS on both architectures.
-RUN case "$TARGETARCH" in \
-      amd64) target=x86_64-unknown-linux-gnu sha=3e7d0d0f365120cd3cd351d147d1a12ee960c8068b464d4dd533a3821873b80e ;; \
-      arm64) target=aarch64-unknown-linux-musl sha=fa4a6fc63d86f8f1faa7c103a845e4715ce79a048455c0eec897b27237576564 ;; \
-      *) exit 1 ;; \
-    esac && \
-    curl --fail --location --retry 3 -o /tmp/rathole.zip "https://github.com/rathole-org/rathole/releases/download/v0.5.0/rathole-${target}.zip" && \
-    echo "${sha}  /tmp/rathole.zip" | sha256sum -c - && \
-    unzip /tmp/rathole.zip -d /out && chmod 0755 /out/rathole && \
-    /out/rathole --version && \
+FROM rust:1.98-bookworm AS rathole-build
+# rathole v0.5.0 is the latest release, and its lockfile pins crates with
+# known advisories, snow 0.9.3 among them (RUSTSEC-2024-0011: a forged packet
+# can make the tunnel drop). The image builds the v0.5.0 source against
+# deploy/rathole/Cargo.lock, which is its lockfile after `cargo update`: the
+# same release on the latest compatible dependencies. Only what the tunnel
+# uses is built: server, client, Noise and hot reload, without TLS or
+# websocket, so OpenSSL isn't linked either.
+ARG RATHOLE_COMMIT=ebb764ae53d7ffe4fcb45f83f7563bec5c74199d
+RUN git clone --depth 1 --branch v0.5.0 https://github.com/rathole-org/rathole /src && \
+    test "$(git -C /src rev-parse HEAD)" = "$RATHOLE_COMMIT"
+WORKDIR /src
+COPY deploy/rathole/Cargo.lock ./Cargo.lock
+RUN cargo build --release --locked --no-default-features --features server,client,noise,hot-reload && \
+    mkdir /out && cp target/release/rathole /out/rathole && cp LICENSE /out/RATHOLE-LICENSE && \
+    /out/rathole --version | grep -Eq '^Build Version: +0\.5\.0$' && \
     /out/rathole --version | grep -q hot_reload
-RUN curl --fail --location --retry 3 -o /out/RATHOLE-LICENSE \
-    https://raw.githubusercontent.com/rathole-org/rathole/v0.5.0/LICENSE
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /var/lib/meerkat && chown 65532:65532 /var/lib/meerkat
 COPY --from=go-build /out/ /usr/local/bin/
-COPY --from=rathole-download /out/rathole /usr/local/bin/rathole
-COPY --from=rathole-download /out/RATHOLE-LICENSE /usr/share/doc/rathole/LICENSE
+COPY --from=rathole-build /out/rathole /usr/local/bin/rathole
+COPY --from=rathole-build /out/RATHOLE-LICENSE /usr/share/doc/rathole/LICENSE
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/connector"]

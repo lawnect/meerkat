@@ -57,6 +57,8 @@ docker compose --env-file .local/poc/compose.env -f deploy/compose.poc.yaml up -
 git tag meerkat-v1.0.0 && git push origin meerkat-v1.0.0
 ```
 
+rathole은 공식 릴리스 바이너리 대신 v0.5.0 소스에서 직접 빌드합니다. 해당 릴리스가 알려진 취약점이 있는 크레이트를 고정하고 있기 때문입니다(snow 0.9.3, RUSTSEC-2024-0011 등). 빌드에는 v0.5.0 락파일에 `cargo update`를 적용한 [deploy/rathole/Cargo.lock](deploy/rathole/Cargo.lock)을 쓰고, server·client·Noise·hot-reload 기능만 포함하므로 TLS 코드와 OpenSSL은 들어가지 않습니다. 프로토콜은 공식 v0.5.0 바이너리와 양방향으로 호환됩니다.
+
 정식 버전 태그는 `latest`도 옮기고, `meerkat-v1.1.0-rc.1` 같은 사전 릴리스는 옮기지 않습니다. `main`에 push하는 것만으로는 빌드하지 않습니다. 같은 릴리스를 다시 빌드하려면 그 태그에서 워크플로를 수동으로 실행합니다. 원격 Outlet/Connector VM에서는 소스 코드를 빌드하지 않고 GHCR 이미지를 가져와 Compose로 실행합니다.
 
 새 서버의 첫 실행은 아래 **Outlet 초기 접속** 순서대로 진행합니다. 기존 설치를 업데이트할 때는
