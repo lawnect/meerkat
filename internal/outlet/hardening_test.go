@@ -3,6 +3,7 @@ package outlet
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -123,14 +124,38 @@ func TestClientKeyGroupsIPv6Prefixes(t *testing.T) {
 	}
 }
 
+// The limiter holds so many keys, and a key at its limit stays there while
+// others arrive: only the key whose last try is stalest makes room, and one
+// that keeps trying, refused, isn't.
 func TestAttemptLimiterStaysBounded(t *testing.T) {
 	var l attemptLimiter
 	now := time.Date(2026, 10, 26, 14, 0, 0, 0, time.UTC)
 	for i := range 3 * maxLoginKeys {
 		l.allow(net.IPv4(10, byte(i>>16), byte(i>>8), byte(i)).String(), now)
-		if len(l.hits) > maxLoginKeys {
+		if len(l.hits) > maxLoginKeys || l.keys.Len() != len(l.hits) {
 			t.Fatalf("%d keys after %d addresses", len(l.hits), i+1)
 		}
+	}
+	l = attemptLimiter{}
+	for range loginAttempts {
+		l.allow("busy", now)
+	}
+	for i := range maxLoginKeys - 1 {
+		l.allow(fmt.Sprint("other ", i), now.Add(time.Second))
+	}
+	if l.allow("busy", now.Add(2*time.Second)) {
+		t.Fatal("a key at its limit started over as others arrived")
+	}
+	if !l.allow("one more", now.Add(3*time.Second)) || l.allow("busy", now.Add(4*time.Second)) {
+		t.Fatal("a key at its limit that kept trying made room for another")
+	}
+	if _, ok := l.hits["other 0"]; ok {
+		t.Fatal("the stalest key stayed")
+	}
+	// Once its attempts leave the window, it may again, and the keys that
+	// left it are gone.
+	if !l.allow("busy", now.Add(4*time.Second+loginWindow)) || len(l.hits) != 1 {
+		t.Fatalf("after the window: %d keys", len(l.hits))
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -184,23 +185,24 @@ func (s *Store) putAccessPolicies(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	// What each policy does, to which methods and for whom, in order; the
-	// path conditions can be long and say only where.
+	// What each policy does, to which methods and tokens and for whom, in
+	// order; the path conditions can be long and say only where.
 	type logged struct {
 		Name     string   `json:"name"`
 		Enabled  bool     `json:"enabled"`
 		Action   string   `json:"action"`
 		Hosts    []string `json:"hosts"`
 		Methods  []string `json:"methods,omitempty"`
+		Token    bool     `json:"require_token,omitempty"`
+		Tokens   []string `json:"tokens,omitempty"`
 		Everyone bool     `json:"allow_everyone,omitempty"`
 		Users    []string `json:"allowed_users,omitempty"`
 		Groups   []string `json:"allowed_groups,omitempty"`
 		Admins   bool     `json:"allow_admins,omitempty"`
-		Tokens   []string `json:"allowed_tokens,omitempty"`
 	}
 	policies := make([]logged, 0, len(saved.Policies))
 	for _, p := range saved.Policies {
-		policies = append(policies, logged{p.Name, p.Enabled, p.Action, p.Hosts, p.Methods, p.AllowEveryone, p.AllowedUsers, p.AllowedGroups, p.AllowAdmins, p.AllowedTokens})
+		policies = append(policies, logged{p.Name, p.Enabled, p.Action, p.Hosts, p.Methods, p.RequireToken, p.Tokens, p.AllowEveryone, p.AllowedUsers, p.AllowedGroups, p.AllowAdmins})
 	}
 	s.audited(r, "security.access_policies", "security", "access_policies", map[string]any{"policies": policies})
 	view, err := s.accessPoliciesView(r.Context(), saved)
@@ -234,8 +236,9 @@ type accessTokensView struct {
 	Addresses []string `json:"addresses"`
 }
 
-// accessTokenViews shows tokens with the policies that allow them and their
-// last use, saved or since the last save.
+// accessTokenViews shows tokens with the policies that require them, by
+// name or as any token on an address they share, and their last use, saved
+// or since the last save.
 func (s *Store) accessTokenViews(ctx context.Context, tokens []control.AccessToken) ([]accessTokenView, error) {
 	policies, err := s.control.AccessPolicies(ctx)
 	if err != nil && !errors.Is(err, control.ErrStoredAccessPolicies) {
@@ -256,13 +259,24 @@ func (s *Store) accessTokenViews(ctx context.Context, tokens []control.AccessTok
 			view.LastUsedAt = last.UTC().Format(time.RFC3339)
 		}
 		for _, policy := range policies.Policies {
-			if policy.AllowsToken(token.ID) {
+			if slices.Contains(policy.Tokens, token.ID) || policy.RequireToken && len(policy.Tokens) == 0 && slices.ContainsFunc(policy.Hosts, func(host string) bool {
+				return slices.ContainsFunc(token.Hosts, func(other string) bool { return hostsMeet(host, other) })
+			}) {
 				view.Policies = append(view.Policies, accessPolicyRef{policy.ID, policy.Name})
 			}
 		}
 		views = append(views, view)
 	}
 	return views, nil
+}
+
+// hostsMeet reports whether two addresses, names or "*.domain", cover some
+// address in common.
+func hostsMeet(a, b string) bool {
+	under := func(wild, host string) bool {
+		return strings.HasPrefix(wild, "*.") && strings.HasSuffix(host, wild[1:])
+	}
+	return a == b || under(a, b) || under(b, a)
 }
 
 func (s *Store) getAccessTokens(w http.ResponseWriter, r *http.Request) {

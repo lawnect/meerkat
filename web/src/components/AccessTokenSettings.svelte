@@ -25,15 +25,15 @@
   import InfoTooltip from './InfoTooltip.svelte';
   import TagInput from './TagInput.svelte';
 
-  // 접근 보호 화면의 접근 토큰 카드. 로그인할 수 없는 클라이언트(스크립트, CI, 다른 서비스)가 토큰을 허용한 접근 정책을 통과하는 데 씁니다.
+  // 접근 보호 화면의 접근 토큰 카드. 로그인할 수 없는 클라이언트(스크립트, CI, 다른 서비스)가 보내, 토큰이 필요한 접근 정책에 해당하게 합니다.
   // 토큰은 이용 범위(적용 주소, 허용 IP 대역) 안에서만 통하며, 범위와 이름은 행을 눌러 열리는 편집 대화상자에서 바꿉니다. 토큰 값은 바뀌지 않습니다.
   // 토큰 값은 만든 직후 대화상자에만 한 번 보여 주고, 대화상자가 닫히면 지웁니다. 서버에도 값은 남지 않아 다시 볼 수 없습니다.
-  // tokens는 접근 토큰 목록(불러오기 전에는 null)으로, 만들거나 고치거나 지울 때마다 갱신해 접근 정책 카드가 허용할 토큰을 고르게 합니다.
+  // tokens는 접근 토큰 목록(불러오기 전에는 null)으로, 만들거나 고치거나 지울 때마다 갱신해 접근 정책 카드가 토큰 조건의 토큰을 고르게 합니다.
   let { tokens = $bindable(null) }: { tokens?: AccessToken[] | null } = $props();
 
   const t = translations({
     title: 'Access tokens',
-    tip: 'Clients that can\'t sign in, such as scripts, CI and other services, pass the access policies that allow a token by sending its value in the X-Meerkat-Access-Token header. A token works only on its addresses and from its IP ranges, and only where an allow policy allows it. The app receives the token name in the X-Meerkat-Access-Service header. A token\'s value is shown only once, when it is created.',
+    tip: 'Clients that can\'t sign in, such as scripts, CI and other services, send a token\'s value in the X-Meerkat-Access-Token header to meet the access policies that require it; with Bypass, the token alone lets them in. A token works only on its addresses and from its IP ranges. The app receives the token name in the X-Meerkat-Access-Service header. A token\'s value is shown only once, when it is created.',
     create: 'Create token',
     name: 'Name',
     addresses: 'Addresses',
@@ -59,8 +59,8 @@
     needsRange: 'Enter at least one IP range.',
     expiry: 'Expiry',
     expiryOptions: { 0: 'No expiry', 30: '30 days', 90: '90 days', 365: '1 year' } as Record<string, string>,
-    policies: 'Allowing policies',
-    noPolicies: 'No allowing policy',
+    policies: 'Policies',
+    noPolicies: 'No policy requires it',
     creating: 'Creating…',
     saving: 'Saving…',
     saved: 'Saved',
@@ -74,7 +74,7 @@
     deleteTitle: 'Delete this token?',
     deleted: 'Deleted',
     gone: 'This token no longer exists.',
-    inUse: 'A token that a policy allows can\'t be deleted. Remove it from the policies first.',
+    inUse: 'A token that a policy names can\'t be deleted. Remove it from the policies first.',
     invalid: 'Check the values: the name can be up to 64 characters, addresses are hostnames or *.domain, IP ranges are CIDR or single addresses, and up to 100 tokens can be created.',
     failed: (code: string) => `Couldn't create: ${code}`,
     saveFailed: (code: string) => `Couldn't save: ${code}`,
@@ -82,7 +82,7 @@
     loadFailed: (code: string) => `Couldn't load access tokens: ${code}`,
   }, {
     title: '접근 토큰',
-    tip: '로그인할 수 없는 클라이언트(스크립트, CI, 다른 서비스 등)는 X-Meerkat-Access-Token 헤더로 토큰 값을 보내 해당 토큰을 허용한 접근 정책을 통과할 수 있습니다. 토큰은 지정한 주소와 IP 대역에서만 사용할 수 있으며, 허용 정책이 해당 토큰을 허용한 경우에만 통과합니다. 앱에는 토큰 이름이 X-Meerkat-Access-Service 헤더로 전달됩니다. 토큰 값은 생성할 때 한 번만 표시됩니다.',
+    tip: '로그인할 수 없는 클라이언트(스크립트, CI, 다른 서비스 등)는 X-Meerkat-Access-Token 헤더로 토큰 값을 보내 해당 토큰이 필요한 접근 정책에 해당하며, 우회 정책이면 토큰만으로 통과합니다. 토큰은 지정한 주소와 IP 대역에서만 사용할 수 있습니다. 앱에는 토큰 이름이 X-Meerkat-Access-Service 헤더로 전달됩니다. 토큰 값은 생성할 때 한 번만 표시됩니다.',
     create: '토큰 생성',
     name: '이름',
     addresses: '적용 주소',
@@ -108,8 +108,8 @@
     needsRange: 'IP 대역을 하나 이상 입력하십시오.',
     expiry: '만료 기간',
     expiryOptions: { 0: '만료 없음', 30: '30일', 90: '90일', 365: '1년' },
-    policies: '허용 정책',
-    noPolicies: '허용한 정책 없음',
+    policies: '적용 정책',
+    noPolicies: '이 토큰이 필요한 정책 없음',
     creating: '생성 중…',
     saving: '저장 중…',
     saved: '저장되었습니다',
@@ -123,7 +123,7 @@
     deleteTitle: '이 토큰을 삭제하시겠습니까?',
     deleted: '삭제되었습니다',
     gone: '이미 삭제된 토큰입니다.',
-    inUse: '정책에서 허용 중인 토큰은 삭제할 수 없습니다. 정책에서 먼저 제외하십시오.',
+    inUse: '정책에 지정된 토큰은 삭제할 수 없습니다. 정책에서 먼저 제외하십시오.',
     invalid: '입력값이 올바르지 않습니다. 이름은 64자 이하, 주소는 호스트 이름 또는 *.도메인, IP 대역은 CIDR 또는 단일 주소여야 하며, 토큰은 최대 100개까지 만들 수 있습니다.',
     failed: (code: string) => `생성 중 오류가 발생했습니다: ${code}`,
     saveFailed: (code: string) => `저장 중 오류가 발생했습니다: ${code}`,

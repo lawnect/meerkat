@@ -326,16 +326,17 @@ export interface AccessPolicy {
   all_paths: boolean; // true이면 호스트의 모든 경로, false이면 conditions가 일치하는 경로만
   conditions: BlockCondition[]; // all_paths가 false일 때 1–50개. 하나라도 맞으면 일치합니다
   methods: AccessMethod[]; // 이 메서드의 요청에만 적용. 비어 있으면 모든 메서드, 서버가 accessMethods 순서로 정리합니다
+  require_token: boolean; // true이면 그 주소와 클라이언트에 유효한 접근 토큰을 보낸 요청에만 적용
+  tokens: string[]; // require_token일 때 받는 토큰 ID. 비어 있으면 모든 토큰, 있는 토큰만
   // 아래는 allow일 때만 의미가 있고, 서버는 bypass·block이면 비웁니다.
   allow_everyone: boolean; // 접근 보호 SSO로 로그인한 모든 사용자. 켜면 사용자·그룹·관리자 허용은 비웁니다
   allowed_users: string[]; // 이메일 또는 '@도메인', 소문자
   allowed_groups: string[]; // 사용자와 그룹을 모두 지정하면 둘 다 맞아야 합니다
-  allow_admins: boolean; // Meerkat 관리자의 이메일도 허용. allow에는 전체·사용자·그룹·관리자·토큰 중 하나가 필요합니다
-  allowed_tokens: string[]; // 로그인 없이 통과시킬 접근 토큰 ID. allow일 때만, 있는 토큰만
+  allow_admins: boolean; // Meerkat 관리자의 이메일도 허용. allow에는 전체·사용자·그룹·관리자 중 하나가 필요합니다
 }
 
 // 접근 토큰(GET/POST /api/v1/security/access-tokens, PUT·DELETE …/{id}). 로그인할 수 없는 클라이언트가
-// X-Meerkat-Access-Token 헤더에 값을 보내면, 토큰의 이용 범위(주소, IP 대역) 안에서 그 토큰을 허용한 정책을 로그인 없이 통과합니다.
+// X-Meerkat-Access-Token 헤더에 값을 보내면, 토큰의 이용 범위(주소, IP 대역) 안에서 그 토큰이 필요한 정책에 해당합니다.
 export interface AccessToken {
   id: string;
   name: string; // 1–64자
@@ -344,7 +345,7 @@ export interface AccessToken {
   created_at: string; // RFC 3339
   expires_at: string; // RFC 3339, ''이면 만료 없음
   last_used_at: string; // RFC 3339, ''이면 사용 기록 없음
-  policies: Array<{ id: string; name: string }>; // 이 토큰을 허용한 정책
+  policies: Array<{ id: string; name: string }>; // 이 토큰을 지정했거나, 모든 토큰을 받으면서 주소가 겹치는 정책
 }
 
 export interface AccessTokensView {

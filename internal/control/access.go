@@ -140,6 +140,10 @@ type AccessPolicy struct {
 	// Methods limits the policy to requests with these HTTP methods, GET
 	// taking HEAD along; none means every method.
 	Methods []string `json:"methods"`
+	// RequireToken limits the policy to requests that send an access token
+	// valid for them: one of Tokens, by ID, or any when Tokens is empty.
+	RequireToken bool     `json:"require_token"`
+	Tokens       []string `json:"tokens"`
 	// Who an AccessAllow policy lets in: everyone the access provider signs
 	// in, or else those each list that is set matches, as for the
 	// administrators' single sign-on; AllowAdmins also lets in anyone whose
@@ -148,9 +152,6 @@ type AccessPolicy struct {
 	AllowedUsers  []string `json:"allowed_users"`
 	AllowedGroups []string `json:"allowed_groups"`
 	AllowAdmins   bool     `json:"allow_admins"`
-	// AllowedTokens are the IDs of the access tokens an AccessAllow policy
-	// lets through without a sign-in.
-	AllowedTokens []string `json:"allowed_tokens"`
 }
 
 // AccessMethods are the HTTP methods a policy can be limited to.
@@ -256,8 +257,8 @@ func (a AccessPolicies) Normalize() (AccessPolicies, bool) {
 		if ok != [2]bool{true, true} {
 			return a, false
 		}
-		tokens := make([]string, 0, len(policy.AllowedTokens))
-		for _, id := range policy.AllowedTokens {
+		tokens := make([]string, 0, len(policy.Tokens))
+		for _, id := range policy.Tokens {
 			if !validRuleID(id) || len(tokens) == MaxAccessTokens {
 				return a, false
 			}
@@ -265,12 +266,15 @@ func (a AccessPolicies) Normalize() (AccessPolicies, bool) {
 				tokens = append(tokens, id)
 			}
 		}
-		policy.AllowedTokens = tokens
+		if !policy.RequireToken {
+			tokens = []string{}
+		}
+		policy.Tokens = tokens
 		switch policy.Action {
 		case AccessAllow:
 		case AccessBypass, AccessBlock:
 			// Who may pass means nothing to these.
-			policy.AllowEveryone, policy.AllowedTokens = false, []string{}
+			policy.AllowEveryone = false
 		default:
 			return a, false
 		}
@@ -278,7 +282,7 @@ func (a AccessPolicies) Normalize() (AccessPolicies, bool) {
 			policy.AllowedUsers, policy.AllowedGroups, policy.AllowAdmins = []string{}, []string{}, false
 		}
 		// An allow policy that names nobody would be a block policy.
-		if policy.Action == AccessAllow && !policy.AllowEveryone && len(policy.AllowedUsers)+len(policy.AllowedGroups)+len(policy.AllowedTokens) == 0 && !policy.AllowAdmins {
+		if policy.Action == AccessAllow && !policy.AllowEveryone && len(policy.AllowedUsers)+len(policy.AllowedGroups) == 0 && !policy.AllowAdmins {
 			return a, false
 		}
 		out = append(out, policy)
@@ -300,7 +304,7 @@ func (a AccessPolicies) Readable() AccessPolicies {
 			policy.Action = AccessAllow
 		}
 		seen[policy.ID] = true
-		for _, list := range []*[]string{&policy.Hosts, &policy.Methods, &policy.AllowedUsers, &policy.AllowedGroups, &policy.AllowedTokens} {
+		for _, list := range []*[]string{&policy.Hosts, &policy.Methods, &policy.Tokens, &policy.AllowedUsers, &policy.AllowedGroups} {
 			if *list == nil {
 				*list = []string{}
 			}
@@ -360,10 +364,10 @@ type AccessIdentity struct {
 	Groups []string
 }
 
-// AllowsToken reports whether the access token with ID id may pass this
-// policy.
-func (p AccessPolicy) AllowsToken(id string) bool {
-	return slices.Contains(p.AllowedTokens, id)
+// TakesToken reports whether the policy covers a request that sent the
+// access token with ID id, valid for it, or none when id is empty.
+func (p AccessPolicy) TakesToken(id string) bool {
+	return !p.RequireToken || id != "" && (len(p.Tokens) == 0 || slices.Contains(p.Tokens, id))
 }
 
 // Allows reports whether the identity may pass this policy; admin says
@@ -470,7 +474,7 @@ func (d *Database) SetAccessPolicies(ctx context.Context, policies AccessPolicie
 		return policies, err
 	}
 	for _, policy := range policies.Policies {
-		for _, id := range policy.AllowedTokens {
+		for _, id := range policy.Tokens {
 			if !slices.ContainsFunc(tokens, func(token AccessToken) bool { return token.ID == id }) {
 				return policies, ErrInvalidAccessPolicies
 			}
@@ -483,9 +487,9 @@ func (d *Database) SetAccessPolicies(ctx context.Context, policies AccessPolicie
 }
 
 // AccessToken lets a client that can't sign in, such as a script or another
-// service, through the allow policies that name it, on the addresses and
-// from the client addresses it is limited to: it sends its value,
-// "<ID>.<secret>", in the X-Meerkat-Access-Token header.
+// service, meet the policies that require it, on the addresses and from the
+// client addresses it is limited to: it sends its value, "<ID>.<secret>", in
+// the X-Meerkat-Access-Token header.
 type AccessToken struct {
 	ID string `json:"id"`
 	AccessTokenScope
@@ -708,7 +712,8 @@ func AccessTokenHash(value string) string {
 }
 
 // DeleteAccessToken deletes the access token with ID id and returns it. A
-// token a policy names stays: ErrAccessTokenInUse.
+// token a policy names stays: ErrAccessTokenInUse. Policies that take any
+// token don't hold one back.
 func (d *Database) DeleteAccessToken(ctx context.Context, id string, now time.Time) (AccessToken, error) {
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -728,7 +733,7 @@ func (d *Database) DeleteAccessToken(ctx context.Context, id string, now time.Ti
 		return AccessToken{}, err
 	}
 	var policies AccessPolicies
-	if raw != "" && json.Unmarshal([]byte(raw), &policies) == nil && slices.ContainsFunc(policies.Policies, func(policy AccessPolicy) bool { return policy.AllowsToken(id) }) {
+	if raw != "" && json.Unmarshal([]byte(raw), &policies) == nil && slices.ContainsFunc(policies.Policies, func(policy AccessPolicy) bool { return slices.Contains(policy.Tokens, id) }) {
 		return AccessToken{}, ErrAccessTokenInUse
 	}
 	token := tokens[i]

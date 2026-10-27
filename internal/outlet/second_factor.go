@@ -2,6 +2,7 @@ package outlet
 
 import (
 	"cmp"
+	"container/list"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -163,41 +164,61 @@ type attemptLimiter struct {
 	// loginAttempts.
 	attempts int
 	mu       sync.Mutex
-	hits     map[string][]time.Time
+	// hits holds each key's attempts in the window, and keys orders them
+	// by their last try, allowed or not, stalest first: keys out of the
+	// window leave from the front, and with maxLoginKeys in it the stalest
+	// makes room for a new one, so a key that keeps trying never starts
+	// over for others arriving.
+	hits     map[string]*list.Element
+	keys     list.List
 	failures []time.Time
 	checking int
+}
+
+type keyAttempts struct {
+	key   string
+	times []time.Time
+	last  time.Time
 }
 
 func (l *attemptLimiter) allow(key string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.hits == nil {
-		l.hits = map[string][]time.Time{}
+		l.hits = map[string]*list.Element{}
 	}
-	if len(l.hits) > 1024 {
-		for other, times := range l.hits {
-			if len(times) == 0 || now.Sub(times[len(times)-1]) >= loginWindow {
-				delete(l.hits, other)
-			}
+	for first := l.keys.Front(); first != nil && now.Sub(first.Value.(*keyAttempts).last) >= loginWindow; first = l.keys.Front() {
+		l.drop(first)
+	}
+	element, ok := l.hits[key]
+	if !ok {
+		if l.keys.Len() >= maxLoginKeys {
+			l.drop(l.keys.Front())
 		}
+		element = l.keys.PushBack(&keyAttempts{key: key})
+		l.hits[key] = element
 	}
-	// Still full means every key is fresh: start over rather than scan on
-	// each request. The shared failure limit holds regardless.
-	if len(l.hits) >= maxLoginKeys {
-		clear(l.hits)
-	}
-	recent := l.hits[key][:0]
-	for _, at := range l.hits[key] {
+	mine := element.Value.(*keyAttempts)
+	mine.last = now
+	l.keys.MoveToBack(element)
+	recent := mine.times[:0]
+	for _, at := range mine.times {
 		if now.Sub(at) < loginWindow {
 			recent = append(recent, at)
 		}
 	}
 	if len(recent) >= cmp.Or(l.attempts, loginAttempts) {
-		l.hits[key] = recent
+		mine.times = recent
 		return false
 	}
-	l.hits[key] = append(recent, now)
+	mine.times = append(recent, now)
 	return true
+}
+
+// drop forgets a key's attempts; l.mu is held.
+func (l *attemptLimiter) drop(element *list.Element) {
+	delete(l.hits, element.Value.(*keyAttempts).key)
+	l.keys.Remove(element)
 }
 
 const (

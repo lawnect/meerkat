@@ -1,16 +1,19 @@
 package outlet
 
 import (
+	"cmp"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"html"
 	"log/slog"
+	"math/bits"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -145,12 +148,13 @@ func plainPath(u *url.URL) bool {
 type accessConfig struct{ rules []accessRule }
 
 // matching returns the first rule that covers a request for host and u's
-// path, or nil. Allow and block conditions compare the path broadly, in the
+// path, with method, that sent the access token with ID token, valid for
+// it, or none when token is empty; or nil. Allow and block conditions compare the path broadly, in the
 // form rules take: a path an app may read differently matches them all, so
 // it can't slip past one, and one with an escape still in it after decoding
 // is also compared decoded once more, as an app decoding again reads it. A
 // bypass condition, which opens paths, matches only a plain path, exactly.
-func (c *accessConfig) matching(host, method string, u *url.URL) *accessRule {
+func (c *accessConfig) matching(host, method string, u *url.URL, token string) *accessRule {
 	if c == nil {
 		return nil
 	}
@@ -159,7 +163,7 @@ func (c *accessConfig) matching(host, method string, u *url.URL) *accessRule {
 	for i := range c.rules {
 		rule := &c.rules[i]
 		switch {
-		case !rule.match.covers(host) || !control.CoversMethod(rule.policy.Methods, method):
+		case !rule.match.covers(host) || !control.CoversMethod(rule.policy.Methods, method) || !rule.policy.TakesToken(token):
 			continue
 		case rule.all:
 			return rule
@@ -277,13 +281,16 @@ func (c *accessConfig) signingIn(host string) []*accessRule {
 }
 
 // shadows reports whether rule, applying first on an address, takes every
-// request later's conditions would: it covers every method later does, and
-// it takes every path, or it isn't a bypass (which matches narrowly) and
-// starts with a path that each of later's equals and starts-with
-// conditions does, compared as requests are. The console marks the same as
-// never applying.
+// request later's conditions would: it covers every method later does and
+// every token later requires, if it requires one, and it takes every path,
+// or it isn't a bypass (which matches narrowly) and starts with a path that
+// each of later's equals and starts-with conditions does, compared as
+// requests are. The console marks the same as never applying.
 func (rule *accessRule) shadows(later *accessRule) bool {
 	if len(rule.policy.Methods) != 0 && (len(later.policy.Methods) == 0 || slices.ContainsFunc(later.policy.Methods, func(method string) bool { return !control.CoversMethod(rule.policy.Methods, method) })) {
+		return false
+	}
+	if tokens := rule.policy.Tokens; rule.policy.RequireToken && (!later.policy.RequireToken || len(tokens) != 0 && (len(later.policy.Tokens) == 0 || slices.ContainsFunc(later.policy.Tokens, func(id string) bool { return !slices.Contains(tokens, id) }))) {
 		return false
 	}
 	if rule.all || slices.Contains(rule.match.prefixes, "/") {
@@ -320,45 +327,116 @@ func policyGroups(rules []*accessRule) map[string]bool {
 
 // fewestGroups keeps few of groups that still satisfy every rule naming
 // groups that groups satisfied: it takes the group that satisfies the most
-// rules left, the shorter on a tie, until none is left, then drops any it
-// took that the others make unneeded.
+// rules left, the shorter on a tie and then the earlier, until none is
+// left, then drops any it took that the others make unneeded. Each group
+// carries the rules it satisfies as bits, and of groups satisfying the
+// same rules only the one the greedy choice would take is weighed.
 func fewestGroups(rules []*accessRule, groups []string) []string {
-	var sets []map[string]bool
-	for _, rule := range rules {
-		set := map[string]bool{}
-		for _, group := range rule.policy.AllowedGroups {
-			set[group] = true
-		}
-		if slices.ContainsFunc(groups, func(group string) bool { return set[group] }) {
-			sets = append(sets, set)
+	position := make(map[string]int, len(groups))
+	for i, group := range groups {
+		if _, ok := position[group]; !ok {
+			position[group] = i
 		}
 	}
-	var kept []string
-	for open := slices.Clone(sets); len(open) > 0; {
-		best, most := "", 0
-		for _, group := range groups {
-			n := 0
-			for _, set := range open {
-				if set[group] {
-					n++
+	words := (len(rules) + 63) / 64
+	meets := map[int]ruleBits{}
+	all := make(ruleBits, words)
+	named := 0
+	for _, rule := range rules {
+		hit := false
+		for _, group := range rule.policy.AllowedGroups {
+			if i, ok := position[group]; ok {
+				if meets[i] == nil {
+					meets[i] = make(ruleBits, words)
 				}
-			}
-			if n > most || n == most && n > 0 && len(group) < len(best) {
-				best, most = group, n
+				meets[i].set(named)
+				hit = true
 			}
 		}
-		kept = append(kept, best)
-		open = slices.DeleteFunc(open, func(set map[string]bool) bool { return set[best] })
+		if hit {
+			all.set(named)
+			named++
+		}
+	}
+	type candidate struct {
+		at    int
+		group string
+		meets ruleBits
+	}
+	var candidates []candidate
+	same := map[string]int{}
+	for i, group := range groups {
+		set := meets[i]
+		if set == nil || position[group] != i {
+			continue
+		}
+		key := set.key()
+		if j, ok := same[key]; !ok {
+			same[key] = len(candidates)
+			candidates = append(candidates, candidate{i, group, set})
+		} else if len(group) < len(candidates[j].group) {
+			candidates[j] = candidate{i, group, set}
+		}
+	}
+	slices.SortFunc(candidates, func(a, b candidate) int { return a.at - b.at })
+	var kept []candidate
+	for open := slices.Clone(all); !open.empty(); {
+		best, most := 0, 0
+		for i, c := range candidates {
+			if n := c.meets.common(open); n > most || n == most && n > 0 && len(c.group) < len(candidates[best].group) {
+				best, most = i, n
+			}
+		}
+		kept = append(kept, candidates[best])
+		open.clear(candidates[best].meets)
 	}
 	for i := len(kept) - 1; i >= 0; i-- {
 		without := slices.Delete(slices.Clone(kept), i, i+1)
-		if !slices.ContainsFunc(sets, func(set map[string]bool) bool {
-			return !slices.ContainsFunc(without, func(group string) bool { return set[group] })
-		}) {
+		covered := make(ruleBits, words)
+		for _, c := range without {
+			covered.add(c.meets)
+		}
+		if slices.Equal(covered, all) {
 			kept = without
 		}
 	}
-	return kept
+	out := make([]string, len(kept))
+	for i, c := range kept {
+		out[i] = c.group
+	}
+	return out
+}
+
+// ruleBits is a set of rules, by their place in a list.
+type ruleBits []uint64
+
+func (b ruleBits) set(i int) { b[i/64] |= 1 << (i % 64) }
+func (b ruleBits) add(other ruleBits) {
+	for i := range b {
+		b[i] |= other[i]
+	}
+}
+func (b ruleBits) clear(other ruleBits) {
+	for i := range b {
+		b[i] &^= other[i]
+	}
+}
+func (b ruleBits) common(other ruleBits) int {
+	n := 0
+	for i := range b {
+		n += bits.OnesCount64(b[i] & other[i])
+	}
+	return n
+}
+func (b ruleBits) empty() bool {
+	return !slices.ContainsFunc(b, func(word uint64) bool { return word != 0 })
+}
+func (b ruleBits) key() string {
+	out := make([]byte, 0, 8*len(b))
+	for _, word := range b {
+		out = binary.LittleEndian.AppendUint64(out, word)
+	}
+	return string(out)
 }
 
 type accessTicket struct {
@@ -480,7 +558,7 @@ func closedAccess(policies control.AccessPolicies) *accessConfig {
 		rule.match = compileBlockRule(hosts, nil)
 		if policy.Action == control.AccessAllow || policy.Action == "" {
 			// Whom it names, in the form sessions carry, as saving would put it.
-			rule.policy.AllowEveryone, rule.policy.AllowAdmins, rule.policy.AllowedTokens = policy.AllowEveryone, policy.AllowAdmins, policy.AllowedTokens
+			rule.policy.AllowEveryone, rule.policy.AllowAdmins = policy.AllowEveryone, policy.AllowAdmins
 			for _, user := range policy.AllowedUsers {
 				rule.policy.AllowedUsers = append(rule.policy.AllowedUsers, strings.ToLower(strings.TrimSpace(user)))
 			}
@@ -579,8 +657,9 @@ func accessReturn(path string) string {
 
 // guardAccess passes a request on when no policy covers it, when the first
 // that does opens it, or when its session satisfies that policy, carrying
-// the email along for the app. Otherwise it answers the request itself, as
-// it does the Outlet's own paths under /.meerkat/access/, and returns false.
+// along for the app the email and the name of the access token the policy
+// required. Otherwise it answers the request itself, as it does the
+// Outlet's own paths under /.meerkat/access/, and returns false.
 func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminHost string) (*http.Request, bool) {
 	if strings.HasPrefix(r.URL.Path, accessPathPrefix) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -594,43 +673,48 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 		}
 		return r, false
 	}
-	rule := s.access.config.Load().matching(host, r.Method, r.URL)
+	// A client that can't sign in sends an access token, which policies can
+	// require: it counts where it is valid, on this address from this client.
+	value := strings.TrimSpace(r.Header.Get(accessTokenHeader))
+	var token accessTokenRule
+	var refused, valid string
+	if value != "" {
+		token, refused = s.accessToken(value)
+		if ip, _ := requestOrigin(r); refused == "" && !token.usableFrom(host, ip) {
+			refused = "out_of_scope"
+		}
+		if refused == "" {
+			valid = token.ID
+		}
+	}
+	rule := s.access.config.Load().matching(host, r.Method, r.URL, valid)
 	switch {
-	case rule == nil || rule.policy.Action == control.AccessBypass:
+	case rule == nil:
 		return r, true
-	case rule.policy.Action == control.AccessBlock:
+	case rule.policy.Action == control.AccessBypass:
+		return s.tokenTaken(r, rule, token), true
+	}
+	// The request doesn't simply pass, so a token sent with it that the
+	// policy doesn't require is audited, saying why it didn't count.
+	if value != "" && !rule.policy.RequireToken {
+		refused = cmp.Or(refused, "not_allowed")
+		s.accessTokenFailed(r, host, token.ID, refused)
+	}
+	if rule.policy.Action == control.AccessBlock {
 		accessPage(w, r, http.StatusForbidden, "denied")
 		return r, false
 	}
-	// A client that can't sign in sends an access token instead, which needs
-	// no provider. A token that doesn't get the request through is audited
-	// and leaves the request to a session it may also carry; without one,
-	// the refusal stands.
-	if value := strings.TrimSpace(r.Header.Get(accessTokenHeader)); value != "" {
-		token, reason := s.accessToken(value)
-		ip, _ := requestOrigin(r)
-		switch {
-		case reason != "":
-		case !token.usableFrom(host, ip):
-			reason = "out_of_scope"
-		case !rule.policy.AllowsToken(token.ID):
-			reason = "not_allowed"
-		default:
-			s.noteTokenUse(token.ID)
-			return r.WithContext(context.WithValue(r.Context(), accessServiceKey{}, token.Name)), true
+	// Such a token leaves the request to a session it may also carry;
+	// without one, the refusal stands, rather than a sign-in.
+	if _, session := s.accessSession(r, host); refused != "" && !session {
+		if refused == "invalid" || refused == "expired" {
+			accessPage(w, r, http.StatusUnauthorized, "token")
+		} else {
+			accessPage(w, r, http.StatusForbidden, "denied")
 		}
-		s.accessTokenFailed(r, host, token.ID, reason)
-		if _, session := s.accessSession(r, host); !session {
-			if reason == "invalid" || reason == "expired" {
-				accessPage(w, r, http.StatusUnauthorized, "token")
-			} else {
-				accessPage(w, r, http.StatusForbidden, "denied")
-			}
-			return r, false
-		}
+		return r, false
 	}
-	switch {
-	case !s.access.enabled.Load():
+	if !s.access.enabled.Load() {
 		accessPage(w, r, http.StatusServiceUnavailable, "unavailable")
 		return r, false
 	}
@@ -655,7 +739,17 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 		accessPageNext(w, r, http.StatusForbidden, "denied", accessNext{action: accessPathPrefix + "logout?" + url.Values{"return": {accessReturn(r.URL.RequestURI())}}.Encode()})
 		return r, false
 	}
-	return r.WithContext(context.WithValue(r.Context(), accessIdentityKey{}, identity.Email)), true
+	return s.tokenTaken(r.WithContext(context.WithValue(r.Context(), accessIdentityKey{}, identity.Email)), rule, token), true
+}
+
+// tokenTaken notes, for a request rule lets through, the access token rule
+// required: when it was last used, and its name for the app.
+func (s *Store) tokenTaken(r *http.Request, rule *accessRule, token accessTokenRule) *http.Request {
+	if !rule.policy.RequireToken {
+		return r
+	}
+	s.noteTokenUse(token.ID)
+	return r.WithContext(context.WithValue(r.Context(), accessServiceKey{}, token.Name))
 }
 
 // accessSameOrigin refuses a POST that comes from another site, sibling

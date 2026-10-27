@@ -30,12 +30,12 @@
   // 정책은 위에서부터 확인해 처음 일치하는 하나가 적용되며, 순서는 손잡이를 드래그하거나 화살표 키로 바꿉니다.
   // 스위치, 순서 변경, 대화상자의 저장·삭제는 모두 바로 서버에 저장하고, 응답으로 목록을 다시 채웁니다.
   // providerEnabled는 접근 보호 SSO가 켜져 있는지(알 수 없으면 null)로, 꺼져 있으면 정책이 적용되지 않는다고 안내합니다.
-  // tokens는 접근 토큰 목록(알 수 없으면 null)으로, 허용할 토큰을 고르고 이름을 보여 주는 데 씁니다.
+  // tokens는 접근 토큰 목록(알 수 없으면 null)으로, 토큰 조건에서 토큰을 고르고 이름을 보여 주는 데 씁니다.
   let { providerEnabled = null, tokens = null }: { providerEnabled?: boolean | null; tokens?: AccessToken[] | null } = $props();
 
   const t = translations({
     title: 'Access policies',
-    tip: 'Policies are checked from the top; the first enabled one that matches a request applies. Drag a policy to change the order. Allow lets in, after a sign-in with access SSO, only who the policy allows, Bypass lets anyone in without one, and Block lets nobody in. The signed-in email reaches the app in the X-Meerkat-Access-Email header.',
+    tip: 'Policies are checked from the top; the first enabled one that matches a request applies. Drag a policy to change the order. Allow lets in, after a sign-in with access SSO, only who the policy allows, Bypass lets anyone in without one, and Block lets nobody in. A policy that requires an access token matches only requests that send one. The signed-in email reaches the app in the X-Meerkat-Access-Email header, and the token\'s name in X-Meerkat-Access-Service.',
     providerOff: 'Access SSO is off, so no one can sign in to protected addresses.',
     damaged: 'Saved policies are invalid, so their addresses are closed.',
     damagedEmpty: 'Saved policies can\'t be read, so every public address is closed.',
@@ -49,12 +49,13 @@
     action: 'Action',
     actions: { allow: 'Allow', bypass: 'Bypass', block: 'Block' } as Record<AccessAction, string>,
     actionHints: { allow: 'Sign-in, then only who you allow', bypass: 'Anyone, without signing in', block: 'Nobody' } as Record<AccessAction, string>,
+    tokenActionHints: { allow: 'The token and a sign-in of who you allow', bypass: 'The token alone, without signing in', block: 'Nobody, with the token' } as Record<AccessAction, string>,
     order: 'Order',
     reorder: (name: string) => `Move ${name}`,
     reorderTip: 'Drag, or press ↑ ↓',
     orderSaved: 'Order saved',
     neverApplies: 'Never applies',
-    neverAppliesTip: 'An earlier policy covers every address, path and method of this one.',
+    neverAppliesTip: 'An earlier policy covers every address, path, method and token of this one.',
     noPolicies: 'No access policies',
     addTitle: 'Add policy',
     editTitle: 'Edit policy',
@@ -76,6 +77,12 @@
     selectedMethods: 'Selected methods',
     methodsHint: 'GET includes HEAD',
     needsMethod: 'Choose at least one method.',
+    token: 'Access token',
+    tokenHint: 'Sent in the X-Meerkat-Access-Token header, valid for the address and client',
+    noToken: 'Not required',
+    anyToken: 'Any token',
+    selectedTokens: 'Selected tokens',
+    needsToken: 'Choose at least one token.',
     bypassNote: 'Compared with the path exactly as the app gets it, case included',
     bypassPaths: 'Enter bypass paths as the app gets them, without \\, //, or segments that are . or .. or end in a dot or space.',
     operators: { equals: 'equals', starts_with: 'starts with', ends_with: 'ends with', contains: 'contains', matches: 'matches regex' } as Record<BlockOperator, string>,
@@ -90,8 +97,6 @@
     allowAdmins: 'Allow administrators',
     allowAdminsTip: 'Anyone whose email, as verified by the access SSO provider, is a Meerkat administrator\'s is let in, whether or not they match the allowed users and groups.',
     administrators: 'Administrators',
-    allowedTokens: 'Allowed tokens',
-    allowedTokensHint: 'Sent in the X-Meerkat-Access-Token header',
     noTokens: 'Create one under Access tokens first.',
     delete: 'Delete',
     deleteTitle: 'Delete this policy?',
@@ -101,13 +106,13 @@
     saving: 'Saving…',
     saved: 'Saved',
     invalid: 'Check the policy: addresses are hostnames or *.domain, equals and starts with need a leading /, regular expressions must use RE2 syntax, and an allow policy must let someone in.',
-    needsWho: 'Choose who may pass: everyone, users, groups, administrators or tokens.',
+    needsWho: 'Choose who may pass: everyone, users, groups or administrators.',
     decodedPaths: 'Enter paths without %-escapes or ;parameters.',
     failed: (code: string) => `Couldn't save: ${code}`,
     loadFailed: (code: string) => `Couldn't load access policies: ${code}`,
   }, {
     title: '접근 정책',
-    tip: '정책은 위에서부터 순서대로 확인하며, 요청에 처음 일치하는 활성화된 정책 하나가 적용됩니다. 순서는 드래그하여 변경합니다. 허용은 접근 보호 SSO 로그인 후 허용 대상만, 우회는 로그인 없이 누구나 접근할 수 있으며, 차단은 모두 거부합니다. 로그인한 사용자의 이메일은 X-Meerkat-Access-Email 헤더로 앱에 전달됩니다.',
+    tip: '정책은 위에서부터 순서대로 확인하며, 요청에 처음 일치하는 활성화된 정책 하나가 적용됩니다. 순서는 드래그하여 변경합니다. 허용은 접근 보호 SSO 로그인 후 허용 대상만, 우회는 로그인 없이 누구나 접근할 수 있으며, 차단은 모두 거부합니다. 접근 토큰이 필요한 정책은 토큰을 보낸 요청에만 적용됩니다. 로그인한 사용자의 이메일은 X-Meerkat-Access-Email 헤더로, 토큰 이름은 X-Meerkat-Access-Service 헤더로 앱에 전달됩니다.',
     providerOff: '접근 보호 SSO가 비활성화되어 보호 대상 주소에 로그인할 수 없습니다.',
     damaged: '저장된 정책이 올바르지 않아 해당 주소를 차단 중입니다.',
     damagedEmpty: '저장된 정책을 읽을 수 없어 모든 공개 주소를 차단 중입니다.',
@@ -121,12 +126,13 @@
     action: '동작',
     actions: { allow: '허용', bypass: '우회', block: '차단' },
     actionHints: { allow: '로그인 후 허용 대상만 접근', bypass: '로그인 없이 누구나 접근', block: '모두 접근 거부' },
+    tokenActionHints: { allow: '토큰과 허용 대상 로그인 모두 필요', bypass: '토큰만으로 로그인 없이 접근', block: '토큰을 보낸 요청 거부' },
     order: '순서',
     reorder: (name: string) => `${name} 순서 변경`,
     reorderTip: '드래그 또는 ↑ ↓ 키로 이동',
     orderSaved: '순서가 저장되었습니다',
     neverApplies: '적용 안 됨',
-    neverAppliesTip: '앞선 정책이 이 정책의 주소, 경로, 메서드에 먼저 적용됩니다.',
+    neverAppliesTip: '앞선 정책이 이 정책의 주소, 경로, 메서드, 토큰에 먼저 적용됩니다.',
     noPolicies: '접근 정책이 없습니다',
     addTitle: '정책 추가',
     editTitle: '정책 편집',
@@ -148,6 +154,12 @@
     selectedMethods: '선택한 메서드',
     methodsHint: 'GET 선택 시 HEAD 포함',
     needsMethod: '메서드를 하나 이상 선택하십시오.',
+    token: '접근 토큰',
+    tokenHint: 'X-Meerkat-Access-Token 헤더의 토큰이 주소와 클라이언트에 유효할 때 적용',
+    noToken: '조건 없음',
+    anyToken: '모든 토큰',
+    selectedTokens: '선택한 토큰',
+    needsToken: '토큰을 하나 이상 선택하십시오.',
     bypassNote: '앱이 받는 경로와 대소문자까지 그대로 비교',
     bypassPaths: '우회 조건은 앱이 받는 경로 그대로 입력하십시오. \\, //, . 또는 .. 조각, 점이나 공백으로 끝나는 조각은 사용할 수 없습니다.',
     operators: { equals: '같음', starts_with: '다음으로 시작', ends_with: '다음으로 끝남', contains: '포함', matches: '정규식과 일치' },
@@ -162,8 +174,6 @@
     allowAdmins: '관리자 허용',
     allowAdminsTip: '접근 보호 SSO에서 인증된 이메일이 Meerkat 관리자 이메일과 같은 사용자는 허용 사용자·그룹 조건과 무관하게 접근할 수 있습니다.',
     administrators: '관리자',
-    allowedTokens: '허용 토큰',
-    allowedTokensHint: 'X-Meerkat-Access-Token 헤더로 통과',
     noTokens: '접근 토큰에서 먼저 생성하십시오.',
     delete: '삭제',
     deleteTitle: '이 정책을 삭제하시겠습니까?',
@@ -173,7 +183,7 @@
     saving: '저장 중…',
     saved: '저장되었습니다',
     invalid: '정책 입력값이 올바르지 않습니다. 주소는 도메인 이름 또는 *.도메인 형식이어야 하며, 같음 및 다음으로 시작 조건은 /로 시작해야 하고, 정규식은 RE2 구문만 지원합니다. 허용 정책에는 허용 대상이 필요합니다.',
-    needsWho: '사용자 전체, 허용 사용자·그룹, 관리자 허용, 허용 토큰 중 하나 이상을 지정하십시오.',
+    needsWho: '사용자 전체, 허용 사용자·그룹, 관리자 허용 중 하나 이상을 지정하십시오.',
     decodedPaths: '경로는 % 인코딩과 ;매개변수 없이 입력하십시오.',
     failed: (code: string) => `저장 중 오류가 발생했습니다: ${code}`,
     loadFailed: (code: string) => `접근 정책을 불러오는 중 오류가 발생했습니다: ${code}`,
@@ -194,14 +204,13 @@
   const newRow = (condition: BlockCondition = { operator: 'starts_with', value: '' }): ConditionRow => ({ ...condition, key: nextKey++ });
   const newHost = (value = ''): HostRow => ({ key: nextKey++, value });
 
-  // 동작 열은 허용 정책의 허용 대상 중 첫 항목만 보여주고 나머지는 개수로 줄입니다. 토큰은 이름으로 보여 줍니다.
+  // 동작 열은 허용 정책의 허용 대상 중 첫 항목만 보여주고 나머지는 개수로 줄입니다. 토큰 열은 토큰을 이름으로 보여 줍니다.
   const tokenName = (id: string): string => tokens?.find((token) => token.id === id)?.name ?? id;
   const allowedEntries = (policy: AccessPolicy): Array<{ text: string; mono: boolean }> => [
     ...(policy.allow_everyone ? [{ text: t().everyone, mono: false }] : []),
     ...policy.allowed_users.map((text) => ({ text, mono: true })),
     ...policy.allowed_groups.map((text) => ({ text, mono: true })),
     ...(policy.allow_admins ? [{ text: t().administrators, mono: false }] : []),
-    ...policy.allowed_tokens.map((id) => ({ text: tokenName(id), mono: false })),
   ];
 
   // 서버의 bypassCondition과 같은 검사: \\, 빈 조각, ., .., 끝나는 곳이 확실한 조각 끝의 점·공백을 받지 않습니다.
@@ -237,8 +246,11 @@
   // 메서드는 앞선 정책이 모든 메서드이거나, 이 정책이 고른 메서드를 모두 고른 경우입니다.
   const methodsCover = (earlier: AccessPolicy, later: AccessPolicy): boolean =>
     !earlier.methods.length || (later.methods.length > 0 && later.methods.every((method) => earlier.methods.includes(method)));
+  // 토큰은 앞선 정책이 토큰 조건이 없거나, 이 정책도 토큰이 필요하고 앞선 정책이 모든 토큰 또는 이 정책이 고른 토큰을 모두 받는 경우입니다.
+  const tokensCover = (earlier: AccessPolicy, later: AccessPolicy): boolean =>
+    !earlier.require_token || (later.require_token && (!earlier.tokens.length || (later.tokens.length > 0 && later.tokens.every((id) => earlier.tokens.includes(id)))));
   const neverApplies = (list: AccessPolicy[], index: number): boolean =>
-    list.slice(0, index).some((earlier) => earlier.enabled && methodsCover(earlier, list[index]) && pathsCover(earlier, list[index]) && list[index].hosts.every((host) => earlier.hosts.some((pattern) => hostCovers(pattern, host))));
+    list.slice(0, index).some((earlier) => earlier.enabled && methodsCover(earlier, list[index]) && tokensCover(earlier, list[index]) && pathsCover(earlier, list[index]) && list[index].hosts.every((host) => earlier.hosts.some((pattern) => hostCovers(pattern, host))));
 
   let policies = $state<AccessPolicy[] | null>(null);
   let addresses = $state<string[]>([]);
@@ -252,8 +264,8 @@
   let deleteName = $state('');
   let editingId = $state('');
   // 선택한 경로의 조건 줄은 항상 하나 이상 남겨 두어, "선택한 경로"를 고르면 바로 입력할 수 있게 합니다.
-  let form = $state<{ name: string; enabled: boolean; action: AccessAction; hosts: HostRow[]; paths: 'all' | 'selected'; conditions: ConditionRow[]; methods: 'all' | 'selected'; chosen: AccessMethod[]; everyone: boolean; users: string[]; groups: string[]; admins: boolean; tokens: string[] }>({
-    name: '', enabled: true, action: 'allow', hosts: [], paths: 'all', conditions: [], methods: 'all', chosen: [], everyone: false, users: [], groups: [], admins: false, tokens: [],
+  let form = $state<{ name: string; enabled: boolean; action: AccessAction; hosts: HostRow[]; paths: 'all' | 'selected'; conditions: ConditionRow[]; methods: 'all' | 'selected'; chosen: AccessMethod[]; token: 'none' | 'any' | 'selected'; tokens: string[]; everyone: boolean; users: string[]; groups: string[]; admins: boolean }>({
+    name: '', enabled: true, action: 'allow', hosts: [], paths: 'all', conditions: [], methods: 'all', chosen: [], token: 'none', tokens: [], everyone: false, users: [], groups: [], admins: false,
   });
   let formError = $state('');
 
@@ -350,11 +362,12 @@
       conditions: policy?.conditions.length ? policy.conditions.map((condition) => newRow(condition)) : [newRow()],
       methods: policy?.methods.length ? 'selected' : 'all',
       chosen: policy ? [...policy.methods] : [],
+      token: !policy?.require_token ? 'none' : policy.tokens.length ? 'selected' : 'any',
+      tokens: policy ? [...policy.tokens] : [],
       everyone: policy?.allow_everyone ?? false,
       users: policy ? [...policy.allowed_users] : [],
       groups: policy ? [...policy.allowed_groups] : [],
       admins: policy?.allow_admins ?? false,
-      tokens: policy ? [...policy.allowed_tokens] : [],
     };
     formError = '';
     dialogOpen = true;
@@ -380,7 +393,7 @@
     const allow = form.action === 'allow';
     // 허용 대상은 허용 정책에만 있고, 사용자 전체를 고르면 사용자·그룹·관리자는 따로 둘 필요가 없습니다.
     const named = allow && !form.everyone;
-    if (allow && !form.everyone && !form.users.length && !form.groups.length && !form.admins && !form.tokens.length) {
+    if (allow && !form.everyone && !form.users.length && !form.groups.length && !form.admins) {
       formError = t().needsWho;
       return;
     }
@@ -398,6 +411,12 @@
       formError = t().needsMethod;
       return;
     }
+    // 지워진 토큰은 빼고 보냅니다. 남은 토큰이 없으면 고르게 합니다.
+    const chosenTokens = tokens ? form.tokens.filter((id) => tokens.some((token) => token.id === id)) : [...form.tokens];
+    if (form.token === 'selected' && !chosenTokens.length) {
+      formError = t().needsToken;
+      return;
+    }
     const current = editing;
     const next: AccessPolicy = {
       id: current?.id ?? '',
@@ -408,11 +427,12 @@
       all_paths: form.paths === 'all',
       conditions: form.paths === 'selected' ? form.conditions.map((condition) => ({ operator: condition.operator, value: condition.value.trim() })) : [],
       methods: form.methods === 'selected' ? accessMethods.filter((method) => form.chosen.includes(method)) : [],
+      require_token: form.token !== 'none',
+      tokens: form.token === 'selected' ? chosenTokens : [],
       allow_everyone: allow && form.everyone,
       allowed_users: named ? [...form.users] : [],
       allowed_groups: named ? [...form.groups] : [],
       allow_admins: named && form.admins,
-      allowed_tokens: allow ? (tokens ? form.tokens.filter((id) => tokens.some((token) => token.id === id)) : [...form.tokens]) : [],
     };
     const list = $state.snapshot(policies);
     busy = true;
@@ -482,6 +502,7 @@
                 <Table.Head>{t().addresses}</Table.Head>
                 <Table.Head>{t().paths}</Table.Head>
                 <Table.Head>{t().methods}</Table.Head>
+                <Table.Head>{t().token}</Table.Head>
                 <Table.Head class="pr-4">{t().action}</Table.Head>
               </Table.Row>
             </Table.Header>
@@ -559,6 +580,18 @@
                   <Table.Cell>
                     {#if policy.methods.length}<span class="font-mono">{policy.methods.join(', ')}</span>{:else}{t().allMethods}{/if}
                   </Table.Cell>
+                  <Table.Cell>
+                    {#if !policy.require_token}
+                      <span class="text-muted-foreground">{t().noToken}</span>
+                    {:else if !policy.tokens.length}
+                      {t().anyToken}
+                    {:else}
+                      <span class="flex items-center gap-1.5">
+                        <span class="max-w-40 truncate">{tokenName(policy.tokens[0])}</span>
+                        {#if policy.tokens.length > 1}<span class="text-muted-foreground tabular-nums">+{(policy.tokens.length - 1).toLocaleString(intlLocale())}</span>{/if}
+                      </span>
+                    {/if}
+                  </Table.Cell>
                   <Table.Cell class="pr-4">
                     <span class="flex items-center gap-1.5">
                       <Badge variant={policy.action === 'block' ? 'destructive' : policy.action === 'bypass' ? 'secondary' : 'outline'} class="select-none">{t().actions[policy.action]}</Badge>
@@ -610,7 +643,7 @@
                 <RadioGroup.Item value={action} id={`access-policy-action-${action}`} />
                 <Field.Content>
                   <Field.Label for={`access-policy-action-${action}`} class="font-normal">{t().actions[action]}</Field.Label>
-                  <Field.Description>{t().actionHints[action]}</Field.Description>
+                  <Field.Description>{form.token === 'none' ? t().actionHints[action] : t().tokenActionHints[action]}</Field.Description>
                 </Field.Content>
               </Field.Field>
             {/each}
@@ -718,6 +751,39 @@
             <Field.Description>{t().methodsHint}</Field.Description>
           {/if}
         </Field.Set>
+        <Field.Set>
+          <Field.Legend variant="label">{t().token}</Field.Legend>
+          <Field.Description>{t().tokenHint}</Field.Description>
+          <RadioGroup.Root value={form.token} onValueChange={(value) => { form.token = value === 'any' || value === 'selected' ? value : 'none'; }}>
+            {#each [['none', t().noToken], ['any', t().anyToken], ['selected', t().selectedTokens]] as [value, label] (value)}
+              <Field.Field orientation="horizontal">
+                <RadioGroup.Item value={value} id={`access-policy-token-${value}`} />
+                <Field.Label for={`access-policy-token-${value}`} class="font-normal">{label}</Field.Label>
+              </Field.Field>
+            {/each}
+          </RadioGroup.Root>
+          {#if form.token === 'selected'}
+            {#if tokens?.length}
+              <Field.Group class="gap-2">
+                {#each tokens as token (token.id)}
+                  <Field.Field orientation="horizontal">
+                    <Checkbox
+                      id={`access-policy-token-id-${token.id}`}
+                      checked={form.tokens.includes(token.id)}
+                      onCheckedChange={(checked) => { form.tokens = checked ? [...form.tokens, token.id] : form.tokens.filter((id) => id !== token.id); }}
+                    />
+                    <Field.Label for={`access-policy-token-id-${token.id}`} class="min-w-0 font-normal">
+                      <span class="truncate">{token.name}</span>
+                      {#if token.hosts?.length}<span class="truncate font-mono text-muted-foreground">{token.hosts[0]}{token.hosts.length > 1 ? ` +${token.hosts.length - 1}` : ''}</span>{/if}
+                    </Field.Label>
+                  </Field.Field>
+                {/each}
+              </Field.Group>
+            {:else if tokens}
+              <Field.Description>{t().noTokens}</Field.Description>
+            {/if}
+          {/if}
+        </Field.Set>
         {#if form.action === 'allow'}
           <Field.Set>
             <Field.Legend variant="label">{t().who}</Field.Legend>
@@ -745,29 +811,6 @@
                 <Switch id="access-policy-admins" bind:checked={form.admins} />
               </Field.Field>
             {/if}
-            <Field.Set>
-              <Field.Legend variant="label">{t().allowedTokens}</Field.Legend>
-              <Field.Description>{t().allowedTokensHint}</Field.Description>
-              {#if tokens?.length}
-                <Field.Group class="gap-2">
-                  {#each tokens as token (token.id)}
-                    <Field.Field orientation="horizontal">
-                      <Checkbox
-                        id={`access-policy-token-${token.id}`}
-                        checked={form.tokens.includes(token.id)}
-                        onCheckedChange={(checked) => { form.tokens = checked ? [...form.tokens, token.id] : form.tokens.filter((id) => id !== token.id); }}
-                      />
-                      <Field.Label for={`access-policy-token-${token.id}`} class="min-w-0 font-normal">
-                        <span class="truncate">{token.name}</span>
-                        {#if token.hosts?.length}<span class="truncate font-mono text-muted-foreground">{token.hosts[0]}{token.hosts.length > 1 ? ` +${token.hosts.length - 1}` : ''}</span>{/if}
-                      </Field.Label>
-                    </Field.Field>
-                  {/each}
-                </Field.Group>
-              {:else if tokens}
-                <Field.Description>{t().noTokens}</Field.Description>
-              {/if}
-            </Field.Set>
           </Field.Set>
         {/if}
       </Field.Group>

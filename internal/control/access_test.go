@@ -209,13 +209,16 @@ func TestAccessTokenStorage(t *testing.T) {
 	if used, err := db.AccessTokenUse(ctx); err != nil || len(used) != 1 || !used[token.ID].Equal(now.Truncate(time.Second)) {
 		t.Fatalf("used = %v %v", used, err)
 	}
-	if _, err := db.SetAccessPolicies(ctx, AccessPolicies{Policies: []AccessPolicy{{Name: "CI", Hosts: []string{"app.example.com"}, AllPaths: true, AllowedTokens: []string{token.ID}}}}, now); err != nil {
+	ci := AccessPolicy{Name: "CI", Action: AccessBypass, Hosts: []string{"app.example.com"}, AllPaths: true, RequireToken: true, Tokens: []string{token.ID}}
+	if _, err := db.SetAccessPolicies(ctx, AccessPolicies{Policies: []AccessPolicy{ci}}, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.DeleteAccessToken(ctx, token.ID, now); !errors.Is(err, ErrAccessTokenInUse) {
 		t.Fatalf("in use: %v", err)
 	}
-	if _, err := db.SetAccessPolicies(ctx, AccessPolicies{Policies: []AccessPolicy{}}, now); err != nil {
+	// A policy that takes any token holds none back.
+	ci.Tokens = nil
+	if _, err := db.SetAccessPolicies(ctx, AccessPolicies{Policies: []AccessPolicy{ci}}, now); err != nil {
 		t.Fatal(err)
 	}
 	if deleted, err := db.DeleteAccessToken(ctx, token.ID, now); err != nil || deleted.ID != token.ID {
@@ -316,11 +319,50 @@ func TestAccessPolicyMethods(t *testing.T) {
 	}
 }
 
+// A policy can require an access token, one of some or any; the tokens it
+// names are kept only then, and don't count as whom an allow policy lets in.
+func TestAccessPolicyTokens(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		policy AccessPolicy
+		tokens []string
+	}{
+		{"bypass with tokens", AccessPolicy{Action: AccessBypass, RequireToken: true, Tokens: []string{"tok1", "tok1", "tok2"}}, []string{"tok1", "tok2"}},
+		{"any token", AccessPolicy{Action: AccessBlock, RequireToken: true}, []string{}},
+		{"tokens without the condition", AccessPolicy{Action: AccessBypass, Tokens: []string{"tok1"}}, []string{}},
+		{"allow with a token and people", AccessPolicy{RequireToken: true, Tokens: []string{"tok1"}, AllowEveryone: true}, []string{"tok1"}},
+		{"allow with only a token", AccessPolicy{RequireToken: true, Tokens: []string{"tok1"}}, nil},
+		{"bad token ID", AccessPolicy{Action: AccessBypass, RequireToken: true, Tokens: []string{"no such/token"}}, nil},
+	} {
+		c.policy.Name, c.policy.Hosts, c.policy.AllPaths = "x", []string{"app.example.com"}, true
+		normalized, ok := (AccessPolicies{Policies: []AccessPolicy{c.policy}}).Normalize()
+		if ok != (c.tokens != nil) || ok && !slices.Equal(normalized.Policies[0].Tokens, c.tokens) {
+			t.Errorf("%s = %+v %v, want %q", c.name, normalized.Policies, ok, c.tokens)
+		}
+	}
+	for _, c := range []struct {
+		policy AccessPolicy
+		id     string
+		takes  bool
+	}{
+		{AccessPolicy{}, "", true},
+		{AccessPolicy{}, "tok1", true},
+		{AccessPolicy{RequireToken: true}, "", false},
+		{AccessPolicy{RequireToken: true}, "tok1", true},
+		{AccessPolicy{RequireToken: true, Tokens: []string{"tok1"}}, "tok1", true},
+		{AccessPolicy{RequireToken: true, Tokens: []string{"tok1"}}, "tok2", false},
+	} {
+		if c.policy.TakesToken(c.id) != c.takes {
+			t.Errorf("%+v TakesToken(%q) != %v", c.policy, c.id, c.takes)
+		}
+	}
+}
+
 // A saved policy without an ID was damaged: it isn't given a new one.
 func TestAccessPoliciesSavedWithoutID(t *testing.T) {
 	ctx := context.Background()
 	db := openRouting(t)
-	raw := `{"policies":[{"name":"Open","enabled":true,"action":"bypass","hosts":["app.example.com"],"all_paths":true,"allowed_users":[],"allowed_groups":[],"allowed_tokens":[]}]}`
+	raw := `{"policies":[{"name":"Open","enabled":true,"action":"bypass","hosts":["app.example.com"],"all_paths":true,"tokens":[],"allowed_users":[],"allowed_groups":[]}]}`
 	if err := putSetting(ctx, db.db, settingAccessPolicies, raw, time.Now()); err != nil {
 		t.Fatal(err)
 	}

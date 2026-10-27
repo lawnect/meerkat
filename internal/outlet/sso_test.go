@@ -574,7 +574,7 @@ func TestSSOPendingSignInsAreRationed(t *testing.T) {
 	}
 	mine := 0
 	for _, entry := range st.pending {
-		if entry.client == "attacker" {
+		if entry.p.client == "attacker" {
 			mine++
 		}
 	}
@@ -589,6 +589,49 @@ func TestSSOPendingSignInsAreRationed(t *testing.T) {
 	}
 	if _, ok := st.take("victim-state", now); !ok {
 		t.Fatal("the victim's sign-in was evicted")
+	}
+}
+
+// Sign-ins leave the table when taken or expired, making room for their
+// client and for others; a client replacing its own loses its oldest.
+func TestSSOPendingSignInsLeave(t *testing.T) {
+	st := ssoState{perClient: 2, capacity: 3}
+	now := time.Now()
+	put := func(state, client string, at time.Time) bool {
+		return st.put(state, ssoPending{client: client, expires: at.Add(ssoStateTTL)}, at)
+	}
+	if !put("a1", "a", now) || !put("a2", "a", now.Add(time.Second)) || !put("b1", "b", now.Add(2*time.Second)) {
+		t.Fatal("refused while there was room")
+	}
+	if put("c1", "c", now.Add(3*time.Second)) {
+		t.Fatal("admitted past capacity")
+	}
+	// Taking one makes room, for anyone.
+	if _, ok := st.take("b1", now); !ok || !put("c1", "c", now.Add(3*time.Second)) {
+		t.Fatal("no room after a sign-in was taken")
+	}
+	// A client at its share replaces its own oldest, even with the table full.
+	if !put("a3", "a", now.Add(4*time.Second)) {
+		t.Fatal("a client's own sign-in refused")
+	}
+	if _, ok := st.take("a1", now); ok {
+		t.Fatal("the oldest sign-in of the client stayed")
+	}
+	if _, ok := st.take("a2", now); !ok {
+		t.Fatal("a newer sign-in of the client was replaced")
+	}
+	// Expired ones go when the next arrives.
+	later := now.Add(ssoStateTTL + 5*time.Second)
+	for _, state := range []string{"d1", "e1", "f1"} {
+		if !put(state, state, later) {
+			t.Fatalf("%s refused after the others expired", state)
+		}
+	}
+	if len(st.pending) != 3 || len(st.clients) != 3 || st.order.Len() != 3 {
+		t.Fatalf("left: %d sign-ins, %d clients, %d in order", len(st.pending), len(st.clients), st.order.Len())
+	}
+	if _, ok := st.take("c1", later); ok {
+		t.Fatal("an expired sign-in came back")
 	}
 }
 

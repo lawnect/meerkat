@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1112,6 +1113,69 @@ func TestAccessFewestGroups(t *testing.T) {
 	}
 }
 
+// Packing groups by the rules each satisfies keeps what weighing every
+// group against every rule kept, ties included.
+func TestAccessFewestGroupsAsBefore(t *testing.T) {
+	// slowly is how groups were packed before.
+	slowly := func(rules []*accessRule, groups []string) []string {
+		var sets []map[string]bool
+		for _, rule := range rules {
+			set := map[string]bool{}
+			for _, group := range rule.policy.AllowedGroups {
+				set[group] = true
+			}
+			if slices.ContainsFunc(groups, func(group string) bool { return set[group] }) {
+				sets = append(sets, set)
+			}
+		}
+		var kept []string
+		for open := slices.Clone(sets); len(open) > 0; {
+			best, most := "", 0
+			for _, group := range groups {
+				n := 0
+				for _, set := range open {
+					if set[group] {
+						n++
+					}
+				}
+				if n > most || n == most && n > 0 && len(group) < len(best) {
+					best, most = group, n
+				}
+			}
+			kept = append(kept, best)
+			open = slices.DeleteFunc(open, func(set map[string]bool) bool { return set[best] })
+		}
+		for i := len(kept) - 1; i >= 0; i-- {
+			without := slices.Delete(slices.Clone(kept), i, i+1)
+			if !slices.ContainsFunc(sets, func(set map[string]bool) bool {
+				return !slices.ContainsFunc(without, func(group string) bool { return set[group] })
+			}) {
+				kept = without
+			}
+		}
+		return kept
+	}
+	random := rand.New(rand.NewPCG(1, 2))
+	for range 2000 {
+		name := func() string { return strings.Repeat("g", 1+random.IntN(3)) + fmt.Sprint(random.IntN(12)) }
+		var rules []*accessRule
+		for range random.IntN(140) {
+			var named []string
+			for range random.IntN(5) {
+				named = append(named, name())
+			}
+			rules = append(rules, &accessRule{policy: control.AccessPolicy{AllowedGroups: named}})
+		}
+		var groups []string
+		for range random.IntN(16) {
+			groups = append(groups, name())
+		}
+		if got, want := fewestGroups(rules, groups), slowly(rules, groups); !slices.Equal(got, want) && len(got)+len(want) > 0 {
+			t.Fatalf("groups %q: kept %q, before %q", groups, got, want)
+		}
+	}
+}
+
 // An app can't set the Outlet's cookies on its address.
 func TestAccessAppCantSetOutletCookies(t *testing.T) {
 	header := http.Header{"Set-Cookie": {"app=1; Path=/", "__Host-meerkat_access=junk; Path=/; Secure", " __HOST-MEERKAT_ACCESS_BIND =x; Path=/", "other=2"}}
@@ -1340,12 +1404,15 @@ func TestAccessTokens(t *testing.T) {
 			t.Fatalf("create %v: %d", body, w.Code)
 		}
 	}
-	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []map[string]any{{"name": "x", "enabled": true, "hosts": []string{"app.example.com"}, "all_paths": true, "allowed_tokens": []string{"nosuchtoken"}}}}); w.Code != 400 {
+	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []map[string]any{{"name": "x", "enabled": true, "hosts": []string{"app.example.com"}, "all_paths": true, "action": "bypass", "require_token": true, "tokens": []string{"nosuchtoken"}}}}); w.Code != 400 {
 		t.Fatalf("policy naming an unknown token: %d", w.Code)
 	}
+	deployPath := []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/deploy/"}}
 	f.setPolicies(t,
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/deploy/"}}, AllowedTokens: []string{deploy.ID}},
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}, AllowedTokens: []string{monitor.ID}},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: deployPath, RequireToken: true, Tokens: []string{deploy.ID}},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: deployPath, AllowedUsers: []string{"@corp.example.com"}},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, AllPaths: true, RequireToken: true, Tokens: []string{monitor.ID}},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
 	)
 	send := func(host, path string, headers map[string]string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest("GET", "https://"+host+path, nil)
@@ -1369,7 +1436,8 @@ func TestAccessTokens(t *testing.T) {
 	if w := send("app.example.com", "/", token(monitorValue)); w.Code != 200 {
 		t.Fatalf("monitor token: %d", w.Code)
 	}
-	// The first policy covering /deploy/ doesn't name the monitor token.
+	// The policy that decides /deploy/ for it doesn't require the monitor
+	// token.
 	if w := send("app.example.com", "/deploy/run", token(monitorValue)); w.Code != http.StatusForbidden {
 		t.Fatalf("token the policy doesn't name: %d", w.Code)
 	}
@@ -1385,7 +1453,7 @@ func TestAccessTokens(t *testing.T) {
 		t.Fatalf("token with spaces: %d", w.Code)
 	}
 	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
-	// The deploy token is valid but no policy for / names it. Another client
+	// The deploy token is valid but no policy for / requires it. Another client
 	// sends these, so their audits leave this one's allowance alone.
 	for value, reason := range map[string]string{"junk.secret": "invalid", deployValue: "not_allowed"} {
 		r := httptest.NewRequest("GET", "https://app.example.com/", nil)
@@ -1455,7 +1523,10 @@ func TestAccessTokens(t *testing.T) {
 	if w := request(h, "DELETE", "/api/v1/security/access-tokens/"+deploy.ID, f.admin, nil); w.Code != http.StatusConflict {
 		t.Fatalf("delete a token in use: %d", w.Code)
 	}
-	f.setPolicies(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedTokens: []string{monitor.ID}})
+	f.setPolicies(t,
+		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, AllPaths: true, RequireToken: true, Tokens: []string{monitor.ID}},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
+	)
 	if w := request(h, "DELETE", "/api/v1/security/access-tokens/"+deploy.ID, f.admin, nil); w.Code != http.StatusNoContent {
 		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
 	}
@@ -1500,7 +1571,10 @@ func TestAccessTokenScope(t *testing.T) {
 	if w.Code != http.StatusCreated || json.Unmarshal(w.Body.Bytes(), &created) != nil {
 		t.Fatalf("create: %d %s", w.Code, w.Body.String())
 	}
-	f.setPolicies(t, control.AccessPolicy{Enabled: true, Hosts: []string{"*.example.com"}, AllPaths: true, AllowedTokens: []string{created.Token.ID}})
+	f.setPolicies(t,
+		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"*.example.com"}, AllPaths: true, RequireToken: true, Tokens: []string{created.Token.ID}},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"*.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
+	)
 	send := func(host, client string) int {
 		r := httptest.NewRequest("GET", "https://"+host+"/", nil)
 		r.Host = host
@@ -1552,16 +1626,121 @@ func TestAccessTokenScope(t *testing.T) {
 	if w := request(h, "GET", "/api/v1/security/access-tokens", f.admin, nil); !strings.Contains(w.Body.String(), `"last_used_at":"20`) {
 		t.Fatalf("list after a restart: %s", w.Body.String())
 	}
-	// The policy audit names the tokens it allows.
+	// The policy audit names the tokens it requires.
 	if event := f.lastAuditAction(t); event != "security.access_token_update" {
 		t.Fatalf("audit: %s", event)
 	}
-	body := map[string]any{"policies": []map[string]any{{"name": "CI", "enabled": true, "hosts": []string{"app.example.com"}, "all_paths": true, "allowed_tokens": []string{created.Token.ID}}}}
+	body := map[string]any{"policies": []map[string]any{{"name": "CI", "enabled": true, "action": "bypass", "hosts": []string{"app.example.com"}, "all_paths": true, "require_token": true, "tokens": []string{created.Token.ID}}}}
 	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, body); w.Code != 200 {
 		t.Fatalf("policies: %d %s", w.Code, w.Body.String())
 	}
-	if event := f.lastAudit(t); !strings.Contains(string(event.Detail), `"allowed_tokens":["`+created.Token.ID+`"]`) {
+	if event := f.lastAudit(t); !strings.Contains(string(event.Detail), `"require_token":true,"tokens":["`+created.Token.ID+`"]`) {
 		t.Fatalf("policy audit: %s", event.Detail)
+	}
+	// A policy taking any token on an address the token shares lists it too;
+	// one on other addresses doesn't.
+	f.setPolicies(t,
+		control.AccessPolicy{Name: "Any", Enabled: true, Action: control.AccessBypass, Hosts: []string{"api.example.com"}, AllPaths: true, RequireToken: true},
+		control.AccessPolicy{Name: "Elsewhere", Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.org"}, AllPaths: true, RequireToken: true},
+	)
+	if w := request(h, "GET", "/api/v1/security/access-tokens", f.admin, nil); json.Unmarshal(w.Body.Bytes(), &list) != nil || len(list.Tokens[0].Policies) != 1 || list.Tokens[0].Policies[0].Name != "Any" {
+		t.Fatalf("policies taking any token: %s", w.Body.String())
+	}
+}
+
+// A policy that requires an access token covers only requests that send
+// one valid for them; others go on to the policies below. With bypass the
+// token alone lets them in; with allow, a session must as well.
+func TestAccessTokenCondition(t *testing.T) {
+	f := newAccessFixture(t)
+	h := f.store.Handler()
+	create := func(name string) (string, string) {
+		t.Helper()
+		var created struct {
+			Token accessTokenView `json:"token"`
+			Value string          `json:"value"`
+		}
+		w := request(h, "POST", "/api/v1/security/access-tokens", f.admin, map[string]any{"name": name, "hosts": []string{"app.example.com"}, "ranges": []string{}, "expires_days": 0})
+		if w.Code != http.StatusCreated || json.Unmarshal(w.Body.Bytes(), &created) != nil {
+			t.Fatalf("create %s: %d %s", name, w.Code, w.Body.String())
+		}
+		return created.Token.ID, created.Value
+	}
+	ci, ciValue := create("CI")
+	_, otherValue := create("Other")
+	on := func(prefix string) []control.BlockCondition {
+		return []control.BlockCondition{{Operator: control.BlockStartsWith, Value: prefix}}
+	}
+	f.setPolicies(t,
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: on("/both/"), RequireToken: true, Tokens: []string{ci}, AllowedUsers: []string{"@corp.example.com"}},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: on("/any/"), RequireToken: true},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: on("/shut/"), RequireToken: true, Tokens: []string{ci}},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
+	)
+	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
+	send := func(path, token string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "https://app.example.com"+path, nil)
+		r.Host = "app.example.com"
+		r.Header.Set("X-Forwarded-For", "198.51.100.40")
+		if token != "" {
+			r.Header.Set(accessTokenHeader, token)
+		}
+		for _, cookie := range cookies {
+			r.AddCookie(cookie)
+		}
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, r)
+		return w
+	}
+	for _, c := range []struct {
+		name, path, token string
+		session           bool
+		code              int
+		body              string
+	}{
+		{"any token", "/any/x", ciValue, false, 200, "service=CI "},
+		{"another token", "/any/x", otherValue, false, 200, "service=Other "},
+		{"no token falls through", "/any/x", "", false, http.StatusUnauthorized, ""},
+		{"no token, a session below", "/any/x", "", true, 200, "email=alice@corp.example.com"},
+		{"token and session", "/both/x", ciValue, true, 200, "service=CI "},
+		{"token without a session", "/both/x", ciValue, false, http.StatusUnauthorized, ""},
+		{"session without the token", "/both/x", otherValue, true, 200, "service= "},
+		{"blocked token", "/shut/x", ciValue, false, http.StatusForbidden, ""},
+		{"another token where one is blocked", "/shut/x", otherValue, false, http.StatusForbidden, ""},
+		{"no token where one is blocked", "/shut/x", "", true, 200, "email=alice@corp.example.com"},
+	} {
+		var cookies []*http.Cookie
+		if c.session {
+			cookies = append(cookies, session)
+		}
+		if w := send(c.path, c.token, cookies...); w.Code != c.code || !strings.Contains(w.Body.String(), c.body) {
+			t.Errorf("%s: %d %s", c.name, w.Code, w.Body.String())
+		}
+	}
+	// A policy requiring a token hides from a sign-in none that don't.
+	f.setPolicies(t,
+		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true, RequireToken: true},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowEveryone: true},
+	)
+	if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash("browser")); w.Code != http.StatusFound {
+		t.Fatalf("start behind a block for tokens: %d", w.Code)
+	}
+	// Nor does one requiring some tokens hide one taking any; one requiring
+	// any hides one requiring some.
+	for _, c := range []struct {
+		first, then []string
+		code        int
+	}{
+		{[]string{ci}, nil, http.StatusFound},
+		{nil, []string{ci}, http.StatusNotFound},
+	} {
+		f.setPolicies(t,
+			control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true, RequireToken: true, Tokens: c.first},
+			control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, RequireToken: true, Tokens: c.then, AllowEveryone: true},
+		)
+		if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash("browser")); w.Code != c.code {
+			t.Fatalf("start behind a block for tokens %q, allowing %q: %d", c.first, c.then, w.Code)
+		}
 	}
 }
 

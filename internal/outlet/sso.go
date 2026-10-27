@@ -2,6 +2,7 @@ package outlet
 
 import (
 	"cmp"
+	"container/list"
 	"context"
 	"crypto/subtle"
 	"errors"
@@ -60,10 +61,14 @@ type ssoProvider struct {
 
 // ssoState holds sign-ins in flight, keyed by the hash of their state, and
 // the last discovered provider. Both live in memory: a restart only asks
-// people to start signing in again.
+// people to start signing in again. Sign-ins all last ssoStateTTL, so they
+// expire in the order they were put: order and each client's list keep
+// that order, so that putting and taking one never looks through the rest.
 type ssoState struct {
 	mu      sync.Mutex
-	pending map[string]ssoPending
+	pending map[string]*ssoEntry
+	order   list.List
+	clients map[string]*list.List
 	// perClient is how many sign-ins one client address may have in
 	// flight, zero being maxSSOPerClient, and capacity how many all may,
 	// zero being maxSSOPending. With keep, a client at perClient is refused
@@ -78,6 +83,13 @@ type ssoState struct {
 	failure     error
 }
 
+// ssoEntry is a sign-in in flight, with its places in ssoState's lists.
+type ssoEntry struct {
+	key             string
+	p               ssoPending
+	inOrder, inMine *list.Element
+}
+
 // put admits a sign-in, or reports false when there is no room. An address
 // with perClient sign-ins in flight replaces its own oldest; sign-ins
 // of others that have not expired are never evicted, so a flood of starts
@@ -86,29 +98,30 @@ func (st *ssoState) put(state string, p ssoPending, now time.Time) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if st.pending == nil {
-		st.pending = map[string]ssoPending{}
+		st.pending, st.clients = map[string]*ssoEntry{}, map[string]*list.List{}
 	}
-	mine, oldest := 0, ""
-	for key, entry := range st.pending {
-		switch {
-		case !now.Before(entry.expires):
-			delete(st.pending, key)
-		case entry.client == p.client:
-			mine++
-			if oldest == "" || entry.expires.Before(st.pending[oldest].expires) {
-				oldest = key
-			}
-		}
+	for first := st.order.Front(); first != nil && !now.Before(first.Value.(*ssoEntry).p.expires); first = st.order.Front() {
+		st.remove(first.Value.(*ssoEntry))
 	}
-	if mine >= cmp.Or(st.perClient, maxSSOPerClient) {
+	if mine := st.clients[p.client]; mine != nil && mine.Len() >= cmp.Or(st.perClient, maxSSOPerClient) {
 		if st.keep {
 			return false
 		}
-		delete(st.pending, oldest)
+		st.remove(mine.Front().Value.(*ssoEntry))
 	} else if len(st.pending) >= cmp.Or(st.capacity, maxSSOPending) {
 		return false
 	}
-	st.pending[Hash(state)] = p
+	entry := &ssoEntry{key: Hash(state), p: p}
+	if same, ok := st.pending[entry.key]; ok {
+		st.remove(same)
+	}
+	mine := st.clients[p.client]
+	if mine == nil {
+		mine = list.New()
+		st.clients[p.client] = mine
+	}
+	entry.inOrder, entry.inMine = st.order.PushBack(entry), mine.PushBack(entry)
+	st.pending[entry.key] = entry
 	return true
 }
 
@@ -116,10 +129,22 @@ func (st *ssoState) put(state string, p ssoPending, now time.Time) bool {
 func (st *ssoState) take(state string, now time.Time) (ssoPending, bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	key := Hash(state)
-	p, ok := st.pending[key]
-	delete(st.pending, key)
-	return p, ok && now.Before(p.expires)
+	entry, ok := st.pending[Hash(state)]
+	if !ok {
+		return ssoPending{}, false
+	}
+	st.remove(entry)
+	return entry.p, now.Before(entry.p.expires)
+}
+
+// remove drops a sign-in from the table and its lists; st.mu is held.
+func (st *ssoState) remove(entry *ssoEntry) {
+	delete(st.pending, entry.key)
+	st.order.Remove(entry.inOrder)
+	mine := st.clients[entry.p.client]
+	if mine.Remove(entry.inMine); mine.Len() == 0 {
+		delete(st.clients, entry.p.client)
+	}
 }
 
 // oidcClient talks to the OpenID provider: with a timeout, and following

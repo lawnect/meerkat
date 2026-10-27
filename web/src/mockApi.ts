@@ -244,8 +244,8 @@ let accessProvider: Omit<AccessProviderView, 'redirect_uri' | 'available'> = {
   session_hours: 24,
 };
 let accessPolicies: AccessPolicy[] = [
-  { id: 'vault-api', name: 'Vault API', enabled: true, action: 'bypass', hosts: ['vault.example.test'], all_paths: false, conditions: [{ operator: 'starts_with', value: '/v1/' }], methods: ['GET', 'POST'], allow_everyone: false, allowed_users: [], allowed_groups: [], allow_admins: false, allowed_tokens: [] },
-  { id: 'vault', name: 'Vault members', enabled: true, action: 'allow', hosts: ['vault.example.test'], all_paths: true, conditions: [], methods: [], allow_everyone: false, allowed_users: ['@example.test'], allowed_groups: [], allow_admins: true, allowed_tokens: ['deploybot'] },
+  { id: 'vault-api', name: 'Vault API', enabled: true, action: 'bypass', hosts: ['vault.example.test'], all_paths: false, conditions: [{ operator: 'starts_with', value: '/v1/' }], methods: ['GET', 'POST'], require_token: true, tokens: ['deploybot'], allow_everyone: false, allowed_users: [], allowed_groups: [], allow_admins: false },
+  { id: 'vault', name: 'Vault members', enabled: true, action: 'allow', hosts: ['vault.example.test'], all_paths: true, conditions: [], methods: [], require_token: false, tokens: [], allow_everyone: false, allowed_users: ['@example.test'], allowed_groups: [], allow_admins: true },
 ];
 const accessPoliciesResponse = (): AccessPoliciesView => structuredClone({ policies: accessPolicies, addresses: publicAddresses() });
 // 접근 토큰 데모 상태. 값은 만들 때만 돌려줍니다.
@@ -254,7 +254,14 @@ let accessTokens: Array<Omit<AccessToken, 'policies'>> = [
   { id: 'monitor', name: 'Uptime monitor', hosts: ['*.example.test'], ranges: [], created_at: '2026-10-22T09:30:00Z', expires_at: '2027-01-20T09:30:00Z', last_used_at: '' },
 ];
 // 서버처럼 토큰마다 허용한 정책을 붙여 보여 줍니다.
-const tokenView = (token: Omit<AccessToken, 'policies'>): AccessToken => structuredClone({ ...token, policies: accessPolicies.filter((policy) => policy.allowed_tokens.includes(token.id)).map((policy) => ({ id: policy.id, name: policy.name })) });
+// 서버처럼 토큰을 지정했거나, 모든 토큰을 받으면서 주소가 겹치는 정책을 보여 줍니다.
+const hostsMeet = (a: string, b: string): boolean => a === b || (a.startsWith('*.') && b.endsWith(a.slice(1))) || (b.startsWith('*.') && a.endsWith(b.slice(1)));
+const tokenView = (token: Omit<AccessToken, 'policies'>): AccessToken => structuredClone({
+  ...token,
+  policies: accessPolicies
+    .filter((policy) => policy.tokens.includes(token.id) || (policy.require_token && !policy.tokens.length && policy.hosts.some((host) => token.hosts.some((other) => hostsMeet(host, other)))))
+    .map((policy) => ({ id: policy.id, name: policy.name })),
+});
 // 서버처럼 IP 대역을 CIDR로 정리합니다: 단일 주소는 /32·/128, IPv4는 네트워크 주소로 맞추고, IPv6는 URL 파서로 확인해 표준 표기로 둡니다.
 function normalizeRange(value: string): string | null {
   const [address, bitsText, extra] = value.split('/');
@@ -832,7 +839,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
   if (tokenMatch && method === 'DELETE') {
     const id = decodeURIComponent(tokenMatch[1]);
     if (!accessTokens.some((token) => token.id === id)) fail('access_token_not_found');
-    if (accessPolicies.some((policy) => policy.allowed_tokens.includes(id))) fail('access_token_in_use');
+    if (accessPolicies.some((policy) => policy.tokens.includes(id))) fail('access_token_in_use');
     accessTokens = accessTokens.filter((token) => token.id !== id);
     return undefined;
   }
@@ -879,15 +886,17 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
       const methods = accessMethods.filter((entry) => named.includes(entry));
       let allowedUsers = entries(policy.allowed_users, true, (entry) => /^[^\s@]+@[^\s@]+$/.test(entry) || /^@[^\s@]+$/.test(entry));
       let allowedGroups = entries(policy.allowed_groups, false, (entry) => !/[\u0000-\u001f\u007f]/.test(entry));
-      let allowedTokens = entries(policy.allowed_tokens, false, (entry) => accessTokens.some((token) => token.id === entry));
+      // 서버처럼 토큰 조건이 없으면 토큰 목록을 비우고, 있는 토큰만 받습니다.
+      if (policy.require_token !== undefined && typeof policy.require_token !== 'boolean') fail('invalid_access_policies');
+      const tokens = policy.require_token ? entries(policy.tokens ?? [], false, (entry) => accessTokens.some((token) => token.id === entry)) : [];
       let everyone = policy.allow_everyone;
       let admins = policy.allow_admins;
       // 서버처럼 우회·차단 정책은 허용 대상을, 전체 허용은 사용자·그룹·관리자를 비웁니다.
-      if (action !== 'allow') [everyone, allowedTokens] = [false, []];
+      if (action !== 'allow') everyone = false;
       if (action !== 'allow' || everyone) [allowedUsers, allowedGroups, admins] = [[], [], false];
       // 아무도 허용하지 않는 허용 정책은 주소를 모두에게 닫아 버립니다.
-      if (action === 'allow' && !everyone && allowedUsers.length + allowedGroups.length + allowedTokens.length === 0 && !admins) fail('invalid_access_policies');
-      return { id: policy.id, name, enabled: policy.enabled, action, hosts, all_paths: policy.all_paths, conditions, methods, allow_everyone: everyone, allowed_users: allowedUsers, allowed_groups: allowedGroups, allow_admins: admins, allowed_tokens: allowedTokens };
+      if (action === 'allow' && !everyone && allowedUsers.length + allowedGroups.length === 0 && !admins) fail('invalid_access_policies');
+      return { id: policy.id, name, enabled: policy.enabled, action, hosts, all_paths: policy.all_paths, conditions, methods, require_token: policy.require_token === true, tokens, allow_everyone: everyone, allowed_users: allowedUsers, allowed_groups: allowedGroups, allow_admins: admins };
     });
     const ids = policies.map((policy) => policy.id).filter(Boolean);
     if (new Set(ids).size !== ids.length) fail('invalid_access_policies');
