@@ -2,8 +2,10 @@
   import { onMount, tick } from 'svelte';
   import * as Alert from '$lib/components/ui/alert/index.js';
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
+  import { Badge } from '$lib/components/ui/badge/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import * as Card from '$lib/components/ui/card/index.js';
+  import { Checkbox } from '$lib/components/ui/checkbox/index.js';
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import * as Empty from '$lib/components/ui/empty/index.js';
   import * as Field from '$lib/components/ui/field/index.js';
@@ -14,23 +16,26 @@
   import { Spinner } from '$lib/components/ui/spinner/index.js';
   import { Switch } from '$lib/components/ui/switch/index.js';
   import * as Table from '$lib/components/ui/table/index.js';
+  import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import { toast } from 'svelte-sonner';
   import { api, errorMessage } from '../api';
   import { intlLocale, translations } from '../i18n.svelte';
-  import { Add12, Dismiss, Shield20, Warning } from '../icons';
-  import type { AccessPoliciesView, AccessPolicy, BlockCondition, BlockOperator } from '../types';
+  import { Add12, Dismiss, ReOrder, Shield20, Warning } from '../icons';
+  import type { AccessAction, AccessPoliciesView, AccessPolicy, AccessToken, BlockCondition, BlockOperator } from '../types';
   import IconButton from './IconButton.svelte';
   import InfoTooltip from './InfoTooltip.svelte';
   import TagInput from './TagInput.svelte';
 
-  // 설정 > 보안의 접근 정책 카드. 주소(또는 그 아래 일부 경로)를 접근 보호 SSO 로그인 뒤에 두고, 들어올 수 있는 사람을 지정합니다.
-  // 스위치와 대화상자의 저장·삭제는 모두 바로 서버에 저장하고, 응답으로 목록을 다시 채웁니다.
+  // 설정 > 접근 보호의 접근 정책 카드. 주소(또는 그 아래 일부 경로)마다 허용(로그인 후 허용 대상만)·우회(로그인 없이)·차단을 정합니다.
+  // 정책은 위에서부터 확인해 처음 일치하는 하나가 적용되며, 순서는 손잡이를 드래그하거나 화살표 키로 바꿉니다.
+  // 스위치, 순서 변경, 대화상자의 저장·삭제는 모두 바로 서버에 저장하고, 응답으로 목록을 다시 채웁니다.
   // providerEnabled는 접근 보호 SSO가 켜져 있는지(알 수 없으면 null)로, 꺼져 있으면 정책이 적용되지 않는다고 안내합니다.
-  let { providerEnabled = null }: { providerEnabled?: boolean | null } = $props();
+  // tokens는 접근 토큰 목록(알 수 없으면 null)으로, 허용할 토큰을 고르고 이름을 보여 주는 데 씁니다.
+  let { providerEnabled = null, tokens = null }: { providerEnabled?: boolean | null; tokens?: AccessToken[] | null } = $props();
 
   const t = translations({
     title: 'Access policies',
-    tip: 'Requests that match any enabled policy need a sign-in with the access SSO provider before they reach a tunnel. A request must satisfy every policy that covers it. Within a policy, allowed users and allowed groups must both match when both are set, and Allow administrators also lets in anyone whose email is a Meerkat administrator\'s. The signed-in email reaches the app in the X-Meerkat-Access-Email header.',
+    tip: 'Policies are checked from the top; the first enabled one that matches a request applies. Drag a policy to change the order. Allow lets in, after a sign-in with access SSO, only who the policy allows, Bypass lets anyone in without one, and Block lets nobody in. The signed-in email reaches the app in the X-Meerkat-Access-Email header.',
     providerOff: 'Access SSO is off, so no one can sign in to protected addresses.',
     damaged: 'Saved policies are invalid, so their addresses are closed.',
     damagedEmpty: 'Saved policies can\'t be read, so every public address is closed.',
@@ -40,7 +45,16 @@
     name: 'Name',
     addresses: 'Addresses',
     paths: 'Paths',
-    allowed: 'Allowed',
+    pathsTip: 'Conditions apply to requests that reach the Outlet. A single-page app changes screens in the browser without one, so protect all of its paths and bypass only the paths its clients call.',
+    action: 'Action',
+    actions: { allow: 'Allow', bypass: 'Bypass', block: 'Block' } as Record<AccessAction, string>,
+    actionHints: { allow: 'Sign-in, then only who you allow', bypass: 'Anyone, without signing in', block: 'Nobody' } as Record<AccessAction, string>,
+    order: 'Order',
+    reorder: (name: string) => `Move ${name}`,
+    reorderTip: 'Drag, or press ↑ ↓',
+    orderSaved: 'Order saved',
+    neverApplies: 'Never applies',
+    neverAppliesTip: 'An earlier policy covers every path of these addresses.',
     noPolicies: 'No access policies',
     addTitle: 'Add policy',
     editTitle: 'Edit policy',
@@ -51,7 +65,7 @@
     hostPlaceholder: 'app.example.com or *.example.com',
     allPaths: 'All paths',
     selectedPaths: 'Selected paths',
-    conditionsHint: 'Sign-in required when any condition matches',
+    conditionsHint: 'Applies when any condition matches',
     operator: 'Operator',
     value: 'Value',
     addCondition: 'Add condition',
@@ -60,6 +74,8 @@
     operators: { equals: 'equals', starts_with: 'starts with', ends_with: 'ends with', contains: 'contains', matches: 'matches regex' } as Record<BlockOperator, string>,
     placeholders: { equals: '/admin', starts_with: '/private/', ends_with: '.pdf', contains: '/internal', matches: '^/(admin|reports)/' } as Record<BlockOperator, string>,
     who: 'Who can access',
+    everyone: 'Everyone with access SSO',
+    everyoneTip: 'Lets in anyone the access SSO provider signs in. Check whether the provider also accepts accounts outside your organization.',
     allowedUsers: 'Allowed users',
     allowedUsersHint: 'Email addresses or @domain.',
     allowedGroups: 'Allowed groups',
@@ -67,6 +83,9 @@
     allowAdmins: 'Allow administrators',
     allowAdminsTip: 'Anyone whose email, as verified by the access SSO provider, is a Meerkat administrator\'s is let in, whether or not they match the allowed users and groups.',
     administrators: 'Administrators',
+    allowedTokens: 'Allowed tokens',
+    allowedTokensHint: 'Sent in the X-Meerkat-Access-Token header',
+    noTokens: 'Create one under Access tokens first.',
     delete: 'Delete',
     deleteTitle: 'Delete this policy?',
     deleted: 'Deleted',
@@ -74,14 +93,14 @@
     save: 'Save',
     saving: 'Saving…',
     saved: 'Saved',
-    invalid: 'Check the policy: addresses are hostnames or *.domain, equals and starts with need a leading /, regular expressions must use RE2 syntax, and the policy must allow at least one user, group or administrators.',
-    needsWho: 'Add an allowed user or group, or allow administrators.',
+    invalid: 'Check the policy: addresses are hostnames or *.domain, equals and starts with need a leading /, regular expressions must use RE2 syntax, and an allow policy must let someone in.',
+    needsWho: 'Choose who may pass: everyone, users, groups, administrators or tokens.',
     decodedPaths: 'Enter paths without %-escapes or ;parameters.',
     failed: (code: string) => `Couldn't save: ${code}`,
     loadFailed: (code: string) => `Couldn't load access policies: ${code}`,
   }, {
     title: '접근 정책',
-    tip: '활성화된 정책 중 하나라도 일치하는 요청은 터널로 전달되기 전에 접근 보호 SSO 로그인이 필요합니다. 요청은 해당 요청에 적용되는 모든 정책을 충족해야 합니다. 한 정책에서 허용 사용자와 허용 그룹을 모두 지정한 경우 두 조건을 모두 충족해야 하며, 관리자 허용을 활성화하면 이메일이 Meerkat 관리자의 이메일인 사용자도 허용됩니다. 로그인한 사용자의 이메일은 X-Meerkat-Access-Email 헤더로 앱에 전달됩니다.',
+    tip: '정책은 위에서부터 순서대로 확인하며, 요청에 처음 일치하는 활성화된 정책 하나가 적용됩니다. 순서는 드래그하여 변경합니다. 허용은 접근 보호 SSO 로그인 후 허용 대상만, 우회는 로그인 없이 누구나 접근할 수 있으며, 차단은 모두 거부합니다. 로그인한 사용자의 이메일은 X-Meerkat-Access-Email 헤더로 앱에 전달됩니다.',
     providerOff: '접근 보호 SSO가 비활성화되어 보호 대상 주소에 로그인할 수 없습니다.',
     damaged: '저장된 정책이 올바르지 않아 해당 주소를 차단 중입니다.',
     damagedEmpty: '저장된 정책을 읽을 수 없어 모든 공개 주소를 차단 중입니다.',
@@ -91,7 +110,16 @@
     name: '이름',
     addresses: '적용 주소',
     paths: '경로',
-    allowed: '허용 대상',
+    pathsTip: '경로 조건은 Outlet에 도달한 요청에만 적용됩니다. 단일 페이지 앱(SPA)의 화면 이동은 서버로 요청되지 않으므로, 앱의 전체 경로를 보호하고 외부 클라이언트가 호출하는 경로만 우회로 지정하십시오.',
+    action: '동작',
+    actions: { allow: '허용', bypass: '우회', block: '차단' },
+    actionHints: { allow: '로그인 후 허용 대상만 접근', bypass: '로그인 없이 누구나 접근', block: '모두 접근 거부' },
+    order: '순서',
+    reorder: (name: string) => `${name} 순서 변경`,
+    reorderTip: '드래그 또는 ↑ ↓ 키로 이동',
+    orderSaved: '순서가 저장되었습니다',
+    neverApplies: '적용 안 됨',
+    neverAppliesTip: '앞선 정책이 이 주소의 전체 경로에 먼저 적용됩니다.',
     noPolicies: '접근 정책이 없습니다',
     addTitle: '정책 추가',
     editTitle: '정책 편집',
@@ -102,7 +130,7 @@
     hostPlaceholder: 'app.example.com 또는 *.example.com',
     allPaths: '전체 경로',
     selectedPaths: '선택한 경로',
-    conditionsHint: '조건 중 하나 이상 일치 시 로그인 필요',
+    conditionsHint: '조건 중 하나 이상 일치 시 적용',
     operator: '연산자',
     value: '값',
     addCondition: '조건 추가',
@@ -111,6 +139,8 @@
     operators: { equals: '같음', starts_with: '다음으로 시작', ends_with: '다음으로 끝남', contains: '포함', matches: '정규식과 일치' },
     placeholders: { equals: '/admin', starts_with: '/private/', ends_with: '.pdf', contains: '/internal', matches: '^/(admin|reports)/' },
     who: '접근 허용 대상',
+    everyone: '접근 보호 SSO 사용자 전체',
+    everyoneTip: '접근 보호 SSO 공급자가 인증한 모든 사용자를 허용합니다. 공급자가 조직 외부 계정도 허용하는지 확인하십시오.',
     allowedUsers: '허용 사용자',
     allowedUsersHint: '이메일 주소 또는 @도메인',
     allowedGroups: '허용 그룹',
@@ -118,6 +148,9 @@
     allowAdmins: '관리자 허용',
     allowAdminsTip: '접근 보호 SSO에서 인증된 이메일이 Meerkat 관리자 이메일과 같은 사용자는 허용 사용자·그룹 조건과 무관하게 접근할 수 있습니다.',
     administrators: '관리자',
+    allowedTokens: '허용 토큰',
+    allowedTokensHint: 'X-Meerkat-Access-Token 헤더로 통과',
+    noTokens: '접근 토큰에서 먼저 생성하십시오.',
     delete: '삭제',
     deleteTitle: '이 정책을 삭제하시겠습니까?',
     deleted: '삭제되었습니다',
@@ -125,8 +158,8 @@
     save: '저장',
     saving: '저장 중…',
     saved: '저장되었습니다',
-    invalid: '정책 입력값이 올바르지 않습니다. 주소는 도메인 이름 또는 *.도메인 형식이어야 하며, 같음 및 다음으로 시작 조건은 /로 시작해야 하고, 정규식은 RE2 구문만 지원합니다. 허용 사용자, 허용 그룹, 관리자 허용 중 하나 이상이 필요합니다.',
-    needsWho: '허용 사용자, 허용 그룹, 관리자 허용 중 하나 이상을 지정하십시오.',
+    invalid: '정책 입력값이 올바르지 않습니다. 주소는 도메인 이름 또는 *.도메인 형식이어야 하며, 같음 및 다음으로 시작 조건은 /로 시작해야 하고, 정규식은 RE2 구문만 지원합니다. 허용 정책에는 허용 대상이 필요합니다.',
+    needsWho: '사용자 전체, 허용 사용자·그룹, 관리자 허용, 허용 토큰 중 하나 이상을 지정하십시오.',
     decodedPaths: '경로는 % 인코딩과 ;매개변수 없이 입력하십시오.',
     failed: (code: string) => `저장 중 오류가 발생했습니다: ${code}`,
     loadFailed: (code: string) => `접근 정책을 불러오는 중 오류가 발생했습니다: ${code}`,
@@ -136,6 +169,7 @@
   const maxConditions = 50;
   const maxHosts = 100;
   const operators: BlockOperator[] = ['equals', 'starts_with', 'ends_with', 'contains', 'matches'];
+  const actions: AccessAction[] = ['allow', 'bypass', 'block'];
   const operatorLabel = (operator: BlockOperator): string => t().operators[operator] ?? operator;
   const describe = (code: string): string => (code === 'invalid_access_policies' ? t().invalid : t().failed(code));
 
@@ -146,12 +180,20 @@
   const newRow = (condition: BlockCondition = { operator: 'starts_with', value: '' }): ConditionRow => ({ ...condition, key: nextKey++ });
   const newHost = (value = ''): HostRow => ({ key: nextKey++, value });
 
-  // 허용 대상 열은 첫 항목만 보여주고 나머지는 개수로 줄입니다.
+  // 동작 열은 허용 정책의 허용 대상 중 첫 항목만 보여주고 나머지는 개수로 줄입니다. 토큰은 이름으로 보여 줍니다.
+  const tokenName = (id: string): string => tokens?.find((token) => token.id === id)?.name ?? id;
   const allowedEntries = (policy: AccessPolicy): Array<{ text: string; mono: boolean }> => [
+    ...(policy.allow_everyone ? [{ text: t().everyone, mono: false }] : []),
     ...policy.allowed_users.map((text) => ({ text, mono: true })),
     ...policy.allowed_groups.map((text) => ({ text, mono: true })),
     ...(policy.allow_admins ? [{ text: t().administrators, mono: false }] : []),
+    ...policy.allowed_tokens.map((id) => ({ text: tokenName(id), mono: false })),
   ];
+
+  // 앞선 활성화된 정책이 주소마다 전체 경로에 적용되면, 뒤의 정책은 적용될 일이 없습니다.
+  const hostCovers = (pattern: string, host: string): boolean => pattern === host || (pattern.startsWith('*.') && host.endsWith(pattern.slice(1)));
+  const neverApplies = (list: AccessPolicy[], index: number): boolean =>
+    list.slice(0, index).some((earlier) => earlier.enabled && earlier.all_paths && list[index].hosts.every((host) => earlier.hosts.some((pattern) => hostCovers(pattern, host))));
 
   let policies = $state<AccessPolicy[] | null>(null);
   let addresses = $state<string[]>([]);
@@ -165,8 +207,8 @@
   let deleteName = $state('');
   let editingId = $state('');
   // 선택한 경로의 조건 줄은 항상 하나 이상 남겨 두어, "선택한 경로"를 고르면 바로 입력할 수 있게 합니다.
-  let form = $state<{ name: string; enabled: boolean; hosts: HostRow[]; paths: 'all' | 'selected'; conditions: ConditionRow[]; users: string[]; groups: string[]; admins: boolean }>({
-    name: '', enabled: true, hosts: [], paths: 'all', conditions: [], users: [], groups: [], admins: false,
+  let form = $state<{ name: string; enabled: boolean; action: AccessAction; hosts: HostRow[]; paths: 'all' | 'selected'; conditions: ConditionRow[]; everyone: boolean; users: string[]; groups: string[]; admins: boolean; tokens: string[] }>({
+    name: '', enabled: true, action: 'allow', hosts: [], paths: 'all', conditions: [], everyone: false, users: [], groups: [], admins: false, tokens: [],
   });
   let formError = $state('');
 
@@ -202,6 +244,41 @@
     api<AccessPoliciesView>('/api/v1/security/access-policies').then(adopt).catch((cause) => { loadError = t().loadFailed(errorMessage(cause)); });
   });
 
+  // 드래그 중인 정책과, 놓으면 그 위로 들어갈 정책입니다.
+  let dragId = $state<string | null>(null);
+  let overId = $state<string | null>(null);
+
+  // 정책을 from에서 to 자리로 옮겨 바로 저장합니다. 실패하면 원래 순서로 되돌립니다.
+  async function move(from: number, to: number): Promise<void> {
+    if (!policies || busy || from === to || to < 0 || to >= policies.length) return;
+    const previous = $state.snapshot(policies);
+    const next = [...previous];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    policies = next;
+    busy = true;
+    error = '';
+    try {
+      await put(next);
+      toast.success(t().orderSaved);
+    } catch (cause) {
+      policies = previous;
+      error = describe(errorMessage(cause));
+    } finally {
+      busy = false;
+    }
+    await tick();
+    document.getElementById(`access-policy-handle-${moved.id}`)?.focus();
+  }
+
+  function drop(targetId: string): void {
+    if (!policies || !dragId) return;
+    const from = policies.findIndex((policy) => policy.id === dragId);
+    const to = policies.findIndex((policy) => policy.id === targetId);
+    dragId = overId = null;
+    void move(from, to);
+  }
+
   async function toggle(policy: AccessPolicy, enabled: boolean): Promise<void> {
     if (!policies || busy) return;
     busy = true;
@@ -221,12 +298,15 @@
     form = {
       name: policy?.name ?? '',
       enabled: policy?.enabled ?? true,
+      action: policy?.action ?? 'allow',
       hosts: policy ? policy.hosts.map((host) => newHost(host)) : [newHost()],
       paths: policy && !policy.all_paths ? 'selected' : 'all',
       conditions: policy?.conditions.length ? policy.conditions.map((condition) => newRow(condition)) : [newRow()],
+      everyone: policy?.allow_everyone ?? false,
       users: policy ? [...policy.allowed_users] : [],
       groups: policy ? [...policy.allowed_groups] : [],
       admins: policy?.allow_admins ?? false,
+      tokens: policy ? [...policy.allowed_tokens] : [],
     };
     formError = '';
     dialogOpen = true;
@@ -249,7 +329,10 @@
   async function submit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     if (!policies || busy) return;
-    if (!form.users.length && !form.groups.length && !form.admins) {
+    const allow = form.action === 'allow';
+    // 허용 대상은 허용 정책에만 있고, 사용자 전체를 고르면 사용자·그룹·관리자는 따로 둘 필요가 없습니다.
+    const named = allow && !form.everyone;
+    if (allow && !form.everyone && !form.users.length && !form.groups.length && !form.admins && !form.tokens.length) {
       formError = t().needsWho;
       return;
     }
@@ -263,12 +346,15 @@
       id: current?.id ?? '',
       name: form.name.trim(),
       enabled: form.enabled,
+      action: form.action,
       hosts: form.hosts.map((row) => row.value.trim().toLowerCase()).filter(Boolean),
       all_paths: form.paths === 'all',
       conditions: form.paths === 'selected' ? form.conditions.map((condition) => ({ operator: condition.operator, value: condition.value.trim() })) : [],
-      allowed_users: [...form.users],
-      allowed_groups: [...form.groups],
-      allow_admins: form.admins,
+      allow_everyone: allow && form.everyone,
+      allowed_users: named ? [...form.users] : [],
+      allowed_groups: named ? [...form.groups] : [],
+      allow_admins: named && form.admins,
+      allowed_tokens: allow ? (tokens ? form.tokens.filter((id) => tokens.some((token) => token.id === id)) : [...form.tokens]) : [],
     };
     const list = $state.snapshot(policies);
     busy = true;
@@ -332,22 +418,67 @@
           <Table.Root>
             <Table.Header class="bg-muted">
               <Table.Row class="hover:bg-transparent">
-                <Table.Head class="w-12 pl-4"><span class="sr-only">{t().enabled}</span></Table.Head>
+                <Table.Head class="w-16 pl-2"><span class="sr-only">{t().order}</span></Table.Head>
+                <Table.Head class="w-12"><span class="sr-only">{t().enabled}</span></Table.Head>
                 <Table.Head>{t().name}</Table.Head>
                 <Table.Head>{t().addresses}</Table.Head>
                 <Table.Head>{t().paths}</Table.Head>
-                <Table.Head class="pr-4">{t().allowed}</Table.Head>
+                <Table.Head class="pr-4">{t().action}</Table.Head>
               </Table.Row>
             </Table.Header>
             <Table.Body>
-              {#each policies as policy (policy.id)}
+              {#each policies as policy, index (policy.id)}
                 {@const entries = allowedEntries(policy)}
-                <Table.Row class="relative cursor-pointer">
-                  <Table.Cell class="pl-4">
-                    <Switch size="sm" class="z-10" bind:checked={policy.enabled} disabled={busy} aria-label={policy.name} onCheckedChange={(checked) => toggle(policy, checked)} />
+                <!-- 손잡이로 끌어 다른 행에 놓으면 그 행 자리로 옮깁니다. -->
+                <Table.Row
+                  class={['relative cursor-pointer', overId === policy.id && dragId !== policy.id && 'border-t-2 border-t-primary', dragId === policy.id && 'opacity-50']}
+                  ondragover={(event: DragEvent) => { if (dragId) { event.preventDefault(); overId = policy.id; } }}
+                  ondrop={(event: DragEvent) => { event.preventDefault(); drop(policy.id); }}
+                >
+                  <Table.Cell class="pl-2">
+                    <span class="flex items-center gap-1">
+                      <IconButton
+                        id={`access-policy-handle-${policy.id}`}
+                        label={`${t().reorder(policy.name)} · ${t().reorderTip}`}
+                        icon={ReOrder}
+                        class="relative z-10 cursor-grab"
+                        disabled={busy}
+                        draggable="true"
+                        ondragstart={(event: DragEvent) => {
+                          dragId = policy.id;
+                          if (event.dataTransfer) {
+                            event.dataTransfer.effectAllowed = 'move';
+                            event.dataTransfer.setData('text/plain', policy.id);
+                            const row = (event.currentTarget as HTMLElement).closest('tr');
+                            if (row) event.dataTransfer.setDragImage(row, 16, 16);
+                          }
+                        }}
+                        ondragend={() => { dragId = overId = null; }}
+                        onkeydown={(event: KeyboardEvent) => {
+                          if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+                            event.preventDefault();
+                            void move(index, index + (event.key === 'ArrowUp' ? -1 : 1));
+                          }
+                        }}
+                      />
+                      <span class="text-muted-foreground tabular-nums">{(index + 1).toLocaleString(intlLocale())}</span>
+                    </span>
                   </Table.Cell>
                   <Table.Cell>
-                    <button type="button" class="block max-w-56 truncate text-left text-sm font-medium outline-none after:absolute after:inset-0 text-link focus-visible:ring-3 focus-visible:ring-ring/50" onclick={() => openPolicy(policy)}>{policy.name}</button>
+                    <Switch size="sm" class="relative z-10" bind:checked={policy.enabled} disabled={busy} aria-label={policy.name} onCheckedChange={(checked) => toggle(policy, checked)} />
+                  </Table.Cell>
+                  <Table.Cell>
+                    <span class="flex items-center gap-2">
+                      <button type="button" class="block max-w-56 truncate text-left text-sm font-medium outline-none after:absolute after:inset-0 text-link focus-visible:ring-3 focus-visible:ring-ring/50" onclick={() => openPolicy(policy)}>{policy.name}</button>
+                      {#if neverApplies(policies, index)}
+                        <Tooltip.Root>
+                          <Tooltip.Trigger class="relative z-10 outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+                            <Badge variant="outline" class="text-muted-foreground select-none">{t().neverApplies}</Badge>
+                          </Tooltip.Trigger>
+                          <Tooltip.Content>{t().neverAppliesTip}</Tooltip.Content>
+                        </Tooltip.Root>
+                      {/if}
+                    </span>
                   </Table.Cell>
                   <Table.Cell>
                     <span class="flex items-center gap-1.5">
@@ -367,12 +498,13 @@
                     {/if}
                   </Table.Cell>
                   <Table.Cell class="pr-4">
-                    {#if entries.length}
-                      <span class="flex items-center gap-1.5">
+                    <span class="flex items-center gap-1.5">
+                      <Badge variant={policy.action === 'block' ? 'destructive' : policy.action === 'bypass' ? 'secondary' : 'outline'} class="select-none">{t().actions[policy.action]}</Badge>
+                      {#if policy.action === 'allow' && entries.length}
                         <span class={['max-w-48 truncate', entries[0].mono && 'font-mono']}>{entries[0].text}</span>
                         {#if entries.length > 1}<span class="text-muted-foreground tabular-nums">+{(entries.length - 1).toLocaleString(intlLocale())}</span>{/if}
-                      </span>
-                    {/if}
+                      {/if}
+                    </span>
                   </Table.Cell>
                 </Table.Row>
               {/each}
@@ -409,6 +541,20 @@
           <Switch id="access-policy-enabled" bind:checked={form.enabled} />
         </Field.Field>
         <Field.Set>
+          <Field.Legend variant="label">{t().action}</Field.Legend>
+          <RadioGroup.Root value={form.action} onValueChange={(value) => { if (actions.includes(value as AccessAction)) form.action = value as AccessAction; }}>
+            {#each actions as action (action)}
+              <Field.Field orientation="horizontal">
+                <RadioGroup.Item value={action} id={`access-policy-action-${action}`} />
+                <Field.Content>
+                  <Field.Label for={`access-policy-action-${action}`} class="font-normal">{t().actions[action]}</Field.Label>
+                  <Field.Description>{t().actionHints[action]}</Field.Description>
+                </Field.Content>
+              </Field.Field>
+            {/each}
+          </RadioGroup.Root>
+        </Field.Set>
+        <Field.Set>
           <Field.Legend variant="label">{t().addresses}</Field.Legend>
           <div class="grid gap-2">
             {#each form.hosts as row, index (row.key)}
@@ -439,7 +585,7 @@
           </div>
         </Field.Set>
         <Field.Set>
-          <Field.Legend variant="label">{t().paths}</Field.Legend>
+          <Field.Legend variant="label" class="flex items-center gap-1">{t().paths}<InfoTooltip id="access-policy-paths-tip" label={t().paths} description={t().pathsTip} /></Field.Legend>
           <RadioGroup.Root value={form.paths} onValueChange={(value) => { form.paths = value === 'selected' ? 'selected' : 'all'; }}>
             <Field.Field orientation="horizontal">
               <RadioGroup.Item value="all" id="access-policy-paths-all" />
@@ -482,25 +628,55 @@
             </div>
           {/if}
         </Field.Set>
-        <Field.Set>
-          <Field.Legend variant="label">{t().who}</Field.Legend>
-          <Field.Field>
-            <Field.Label for="access-policy-users">{t().allowedUsers}</Field.Label>
-            <TagInput id="access-policy-users" ariaLabel={t().allowedUsers} bind:values={form.users} lowercase mono placeholder="user@example.com, @example.com" />
-            <Field.Description>{t().allowedUsersHint}</Field.Description>
-          </Field.Field>
-          <Field.Field>
-            <Field.Label for="access-policy-groups">{t().allowedGroups}</Field.Label>
-            <TagInput id="access-policy-groups" ariaLabel={t().allowedGroups} bind:values={form.groups} mono placeholder="staff" />
-            <Field.Description>{t().allowedGroupsHint}</Field.Description>
-          </Field.Field>
-          <Field.Field orientation="horizontal">
-            <Field.Content>
-              <div class="flex items-center gap-1"><Field.Label for="access-policy-admins">{t().allowAdmins}</Field.Label><InfoTooltip id="access-policy-admins-tip" label={t().allowAdmins} description={t().allowAdminsTip} /></div>
-            </Field.Content>
-            <Switch id="access-policy-admins" bind:checked={form.admins} />
-          </Field.Field>
-        </Field.Set>
+        {#if form.action === 'allow'}
+          <Field.Set>
+            <Field.Legend variant="label">{t().who}</Field.Legend>
+            <Field.Field orientation="horizontal">
+              <Field.Content>
+                <div class="flex items-center gap-1"><Field.Label for="access-policy-everyone">{t().everyone}</Field.Label><InfoTooltip id="access-policy-everyone-tip" label={t().everyone} description={t().everyoneTip} /></div>
+              </Field.Content>
+              <Switch id="access-policy-everyone" bind:checked={form.everyone} />
+            </Field.Field>
+            {#if !form.everyone}
+              <Field.Field>
+                <Field.Label for="access-policy-users">{t().allowedUsers}</Field.Label>
+                <TagInput id="access-policy-users" ariaLabel={t().allowedUsers} bind:values={form.users} lowercase mono placeholder="user@example.com, @example.com" />
+                <Field.Description>{t().allowedUsersHint}</Field.Description>
+              </Field.Field>
+              <Field.Field>
+                <Field.Label for="access-policy-groups">{t().allowedGroups}</Field.Label>
+                <TagInput id="access-policy-groups" ariaLabel={t().allowedGroups} bind:values={form.groups} mono placeholder="staff" />
+                <Field.Description>{t().allowedGroupsHint}</Field.Description>
+              </Field.Field>
+              <Field.Field orientation="horizontal">
+                <Field.Content>
+                  <div class="flex items-center gap-1"><Field.Label for="access-policy-admins">{t().allowAdmins}</Field.Label><InfoTooltip id="access-policy-admins-tip" label={t().allowAdmins} description={t().allowAdminsTip} /></div>
+                </Field.Content>
+                <Switch id="access-policy-admins" bind:checked={form.admins} />
+              </Field.Field>
+            {/if}
+            <Field.Set>
+              <Field.Legend variant="label">{t().allowedTokens}</Field.Legend>
+              <Field.Description>{t().allowedTokensHint}</Field.Description>
+              {#if tokens?.length}
+                <Field.Group class="gap-2">
+                  {#each tokens as token (token.id)}
+                    <Field.Field orientation="horizontal">
+                      <Checkbox
+                        id={`access-policy-token-${token.id}`}
+                        checked={form.tokens.includes(token.id)}
+                        onCheckedChange={(checked) => { form.tokens = checked ? [...form.tokens, token.id] : form.tokens.filter((id) => id !== token.id); }}
+                      />
+                      <Field.Label for={`access-policy-token-${token.id}`} class="font-normal">{token.name}</Field.Label>
+                    </Field.Field>
+                  {/each}
+                </Field.Group>
+              {:else if tokens}
+                <Field.Description>{t().noTokens}</Field.Description>
+              {/if}
+            </Field.Set>
+          </Field.Set>
+        {/if}
       </Field.Group>
       {#if formError}<Alert.Root variant="destructive"><Warning aria-hidden="true" /><Alert.Description>{formError}</Alert.Description></Alert.Root>{/if}
       <Dialog.Footer>

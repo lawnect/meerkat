@@ -292,7 +292,7 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 
 ### 접근 보호
 
-공개 주소나 그 아래 경로에 로그인을 요구한다. 관리자 SSO와 별개의 OpenID Connect 클라이언트("접근 보호 SSO")로 로그인하며, 관리자가 아닌 사람도 허용할 수 있다.
+공개 주소나 그 아래 경로마다 로그인 요구, 우회, 차단을 정한다. 관리자 SSO와 별개의 OpenID Connect 클라이언트("접근 보호 SSO")로 로그인하며, 관리자가 아닌 사람도 허용할 수 있다. 로그인할 수 없는 클라이언트는 접근 토큰으로 통과한다.
 
 ~~~
 GET    /api/v1/security/access-provider
@@ -301,6 +301,9 @@ POST   /api/v1/security/access-provider/test
 POST   /api/v1/security/access/sessions/revoke
 GET    /api/v1/security/access-policies
 PUT    /api/v1/security/access-policies
+GET    /api/v1/security/access-tokens
+POST   /api/v1/security/access-tokens
+DELETE /api/v1/security/access-tokens/:id
 GET    /api/v1/access/start?host=<주소>&return=<경로>&bind=<해시>
 GET    /api/v1/access/callback
 GET    https://<보호 주소>/.meerkat/access/finish?ticket=<티켓>
@@ -315,23 +318,33 @@ POST   https://<보호 주소>/.meerkat/access/logout
 - `sessions/revoke`는 세션 서명 키를 바꿔 모든 보호 주소의 세션을 끝낸다(`204`, `security.access_sessions_revoke`).
 
 **정책**
-- `GET`/`PUT /api/v1/security/access-policies`는 `{"policies": [...], "addresses": [공개 주소]}`이다(`GET`은 저장된 정책이 손상되었으면 `"damaged": true`를 더한다). 정책은 `{"id", "name", "enabled", "hosts", "all_paths", "conditions", "allowed_users", "allowed_groups", "allow_admins"}`이다.
+- `GET`/`PUT /api/v1/security/access-policies`는 `{"policies": [...], "addresses": [공개 주소]}`이다(`GET`은 저장된 정책이 손상되었으면 `"damaged": true`를 더한다). 정책은 `{"id", "name", "enabled", "action", "hosts", "all_paths", "conditions", "allow_everyone", "allowed_users", "allowed_groups", "allow_admins", "allowed_tokens"}`이다.
+- 정책은 목록 순서대로 확인하며, 요청에 처음 일치하는 활성화된 정책 하나가 그 요청을 정한다. 순서를 바꾸려면 목록을 그 순서로 저장한다.
+- `action`은 `allow`(로그인 후 허용 대상만, 생략 시 기본), `bypass`(로그인 없이 누구나), `block`(모두 `403`)이다. `bypass`·`block`은 허용 대상을 두지 않으며 저장할 때 비운다.
 - `hosts`는 하나 이상의 주소 또는 `*.도메인`이다.
 - `all_paths`가 `false`이면 `conditions`가 필요하다. 조건은 차단 규칙과 같은 연산자, 값 정리, 경로 비교를 쓴다. 요청 경로는 한 번 디코딩하고 `;` 매개변수를 뺀 형태로 비교하므로, 정규식이 아닌 값에 `%XX` 인코딩이나 `;`가 있으면 `400 invalid_access_policies`이다.
-- 앱마다 다르게 읽을 수 있는 경로는 모든 경로로 보아 그 주소의 조건 정책을 모두 적용한다. 곧 인코딩되어 온 `.`·`..`(`%2e%2e`, `a%2f..`)이나 `\` 옆의 `.`·`..`, `.`·`..`이 아니면서 점과 공백으로만 된 조각, UTF-8이 아니거나 제어 문자(NUL 포함)가 든 경로다. 디코딩 뒤에도 `%XX`가 남은 경로는 한 번 더 디코딩한 경로로도 비교하고, 그 경로에 앞의 경우가 있으면 모든 경로로 본다.
-- 허용 판단: 사용자(이메일 또는 `@도메인`)와 그룹은 둘 다 지정하면 둘 다 맞아야 한다. `allow_admins`는 접근 보호 SSO가 인증한 이메일이 Meerkat 관리자 이메일과 같으면 추가로 허용한다(관리자 SSO의 발급자·subject와는 대조하지 않는다). 아무도 허용하지 않는 정책은 `400 invalid_access_policies`이다.
-- 저장하면 바로 적용하고 `security.access_policies`에 정책마다 이름, 활성화, 주소, 허용 사용자·그룹, 관리자 허용을 남긴다. 동시에 저장해도 마지막으로 저장된 정책이 적용된다.
-- 저장된 정책이 검사를 통과하지 못하면(손상, 업그레이드로 바뀐 검사) Outlet은 그대로 시작하고, 활성화된 정책이 지정한 주소의 전체 경로를 닫은 채로 저장된 허용 대상(이메일은 소문자로)만 들인다. 유효한 주소가 없는 정책, ID가 없는 정책, 정책 목록이 없거나(`null`, `{}`) 읽을 수 없으면 모든 공개 주소를 닫는다. `GET`은 읽은 정책을 빈 목록은 `[]`로, 올바르지 않거나 겹치는 ID는 새 ID로 바꿔 `"damaged": true`와 함께 보여 주며, 고쳐 다시 저장하면 풀린다.
+- 경로 조건은 Outlet에 도달한 요청에만 적용된다. 단일 페이지 앱은 화면을 브라우저 안에서 바꾸므로, 앱 전체를 보호하고 외부 클라이언트가 부르는 경로만 우회한다.
+- 앱마다 다르게 읽을 수 있는 경로는 로그인 요구·차단 정책의 조건에는 모두 일치하고 우회 정책의 조건에는 일치하지 않는 것으로 본다. 곧 인코딩되어 온 `.`·`..`(`%2e%2e`, `a%2f..`)이나 `\` 옆의 `.`·`..`, `.`·`..`이 아니면서 점과 공백으로만 된 조각, UTF-8이 아니거나 제어 문자(NUL 포함)가 든 경로다. 디코딩 뒤에도 `%XX`가 남은 경로는 한 번 더 디코딩한 경로로도 비교해, 로그인 요구·차단은 둘 중 하나, 우회는 둘 다 일치해야 일치로 보며, 그 경로에 앞의 경우가 있으면 모호한 경로로 본다.
+- 허용 판단(`allow`): `allow_everyone`이면 접근 보호 SSO로 로그인한 모든 사용자를 들이며, 이때 사용자·그룹·관리자 허용은 비운다. 아니면 사용자(이메일 또는 `@도메인`)와 그룹은 둘 다 지정하면 둘 다 맞아야 한다. `allow_admins`는 접근 보호 SSO가 인증한 이메일이 Meerkat 관리자 이메일과 같으면 추가로 허용한다(관리자 SSO의 발급자·subject와는 대조하지 않는다). `allowed_tokens`의 접근 토큰은 로그인 없이 통과한다. 아무도 허용하지 않거나 없는 토큰을 지정한 `allow` 정책은 `400 invalid_access_policies`이다.
+- 저장하면 바로 적용하고 `security.access_policies`에 순서대로 정책마다 이름, 활성화, 동작, 주소, 허용 대상을 남긴다. 동시에 저장해도 마지막으로 저장된 정책이 적용된다.
+- 저장된 정책이 검사를 통과하지 못하면(손상, 업그레이드로 바뀐 검사) Outlet은 그대로 시작하고, 활성화된 정책이 순서대로 지정한 주소의 전체 경로를 닫은 채로 `allow` 정책에 저장된 허용 대상(이메일은 소문자로)만 들인다(`bypass`·`block`은 아무도 들이지 않는다). 유효한 주소가 없는 정책, ID가 없는 정책, 정책 목록이 없거나(`null`, `{}`) 읽을 수 없으면 모든 공개 주소를 닫는다. `GET`은 읽은 정책을 빈 목록은 `[]`로, 올바르지 않거나 겹치는 ID는 새 ID로 바꿔 `"damaged": true`와 함께 보여 주며, 고쳐 다시 저장하면 풀린다.
 
 **요청 처리**
-- 공개 요청이 활성화된 정책에 걸리면, 걸린 정책을 모두 충족하는 세션이 있어야 앱으로 전달한다.
+- 공개 요청에 처음 일치한 정책이 `bypass`면 그대로, `block`이면 `403`, `allow`면 그 정책이 허용하는 세션이나 접근 토큰이 있어야 앱으로 전달한다. 일치하는 정책이 없으면 그대로 전달한다.
 - 세션 쿠키는 `__Host-meerkat_access`(HttpOnly, Secure, SameSite=Lax)이다. 이메일, 정책에 쓰인 그룹, 주소, 만료를 Outlet 키로 HMAC 서명하며, 발급된 주소에서만 유효하다.
 - 세션이 없을 때 브라우저 탐색(GET/HEAD, `Sec-Fetch-Mode: navigate` 또는 HTML 요청)은 `302`로 관리 호스트의 `access/start`로 보낸다. 그 밖의 요청은 `401`이다.
 - 세션은 있지만 정책이 허용하지 않으면 `403`이며, 이 페이지의 **다시 로그인** 버튼은 `POST /.meerkat/access/logout?return=<경로>`로 로그아웃한 뒤 그 경로로 돌아가 다시 로그인하게 한다(나중에 정책에 추가된 그룹은 다시 로그인해야 적용된다). 관리자 허용 확인 중 DB 오류는 `503`이다.
-- 공급자가 꺼져 있으면 보호 대상 요청은 기존 세션이 있어도 `503`이고, 시작과 `finish`도 `503`이다.
+- 공급자가 꺼져 있으면 `allow` 정책에 걸린 요청은 기존 세션이 있어도 `503`이고, 시작과 `finish`도 `503`이다. 접근 토큰은 공급자와 무관하게 통과한다.
 - Outlet이 보여 주는 페이지(`401`, `403`, `503`, 로그아웃 등)는 모두 `Cache-Control: no-store`다.
 - 앱에는 `X-Meerkat-Access-Email`로 이메일을 전달한다. 클라이언트가 보낸 같은 헤더는 지운다.
 - `__Host-meerkat_access`로 시작하는 쿠키 이름은 Outlet 전용이다. 요청에서는 이름의 앞뒤 공백과 대소문자에 관계없이 지워 앱에 전달하지 않고, 앱 응답이 이 이름으로 설정하는 `Set-Cookie`도 지운다.
+
+**접근 토큰**
+- 스크립트, CI, 다른 서비스처럼 로그인할 수 없는 클라이언트는 `X-Meerkat-Access-Token: <값>` 헤더를 보낸다. 처음 일치한 `allow` 정책의 `allowed_tokens`에 그 토큰이 있으면 로그인 없이 통과한다. 값이 맞지 않거나 만료되면 `401`, 정책이 허용하지 않으면 `403`이다.
+- 앱에는 토큰 이름을 `X-Meerkat-Access-Service`로 전달한다. 토큰 헤더와 클라이언트가 보낸 같은 헤더는 지운다.
+- `GET`은 `{"tokens": [{"id", "name", "created_at", "expires_at"}]}`를 만든 순서로 반환한다(`expires_at`이 `""`이면 만료 없음). 값은 저장하지 않고 SHA-256 해시만 둔다.
+- `POST`는 `{"name", "expires_days"}`(이름 1~64자, 0이면 만료 없음, 최대 3650일)를 받아 `201 {"token", "value"}`로 답한다. `value`(`<id>.<비밀값>`)는 이때만 보여 준다. 토큰은 100개까지이며, 맞지 않으면 `400 invalid_access_token`이다(`security.access_token_create`).
+- `DELETE`는 `204`다. 정책이 허용 중인 토큰은 `409 access_token_in_use`, 없으면 `404 access_token_not_found`이다(`security.access_token_delete`). 삭제하거나 만료되면 바로 통과하지 못한다.
 
 **로그인 흐름**
 - 로그인은 시작한 브라우저에 묶인다. 보호 주소는 바인딩 쿠키 `__Host-meerkat_access_bind`를, 관리 호스트는 state 쿠키 `__Host-meerkat_access_state`를 둔다(둘 다 Lax, 10분). 브라우저마다 하나씩이며 이후 로그인에서도 같은 값을 쓰므로, 여러 탭에서 동시에 로그인해도 서로 끊지 않고 쿠키가 쌓이지 않는다.

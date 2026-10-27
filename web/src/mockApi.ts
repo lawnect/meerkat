@@ -1,4 +1,4 @@
-import type { AccessPoliciesView, AccessPolicy, AccessProviderView, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, Outlet, Route, Service, SsoSettings, Target, UsageBucket, UsageSeries, UsageUnit } from './types';
+import type { AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, Outlet, Route, Service, SsoSettings, Target, UsageBucket, UsageSeries, UsageUnit } from './types';
 
 const now = (): string => new Date().toISOString();
 const ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
@@ -243,9 +243,15 @@ let accessProvider: Omit<AccessProviderView, 'redirect_uri' | 'available'> = {
   session_hours: 24,
 };
 let accessPolicies: AccessPolicy[] = [
-  { id: 'vault', name: 'Vault members', enabled: true, hosts: ['vault.example.test'], all_paths: true, conditions: [], allowed_users: ['@example.test'], allowed_groups: [], allow_admins: true },
+  { id: 'vault-api', name: 'Vault API', enabled: true, action: 'bypass', hosts: ['vault.example.test'], all_paths: false, conditions: [{ operator: 'starts_with', value: '/v1/' }], allow_everyone: false, allowed_users: [], allowed_groups: [], allow_admins: false, allowed_tokens: [] },
+  { id: 'vault', name: 'Vault members', enabled: true, action: 'allow', hosts: ['vault.example.test'], all_paths: true, conditions: [], allow_everyone: false, allowed_users: ['@example.test'], allowed_groups: [], allow_admins: true, allowed_tokens: ['deploybot'] },
 ];
 const accessPoliciesResponse = (): AccessPoliciesView => structuredClone({ policies: accessPolicies, addresses: publicAddresses() });
+// 접근 토큰 데모 상태. 값은 만들 때만 돌려줍니다.
+let accessTokens: AccessToken[] = [
+  { id: 'deploybot', name: 'Deploy bot', created_at: '2026-10-20T03:00:00Z', expires_at: '' },
+  { id: 'monitor', name: 'Uptime monitor', created_at: '2026-10-22T09:30:00Z', expires_at: '2027-01-20T09:30:00Z' },
+];
 
 // 감사 로그 데모: 최근 며칠 동안의 관리 작업을 만들어 둡니다.
 const AUDIT_SAMPLES: Array<[string, string, string, string]> = [
@@ -754,6 +760,26 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
   }
   if (path === '/api/v1/security/access/sessions/revoke' && method === 'POST') return {};
   if (path === '/api/v1/security/access-policies' && method === 'GET') return accessPoliciesResponse();
+  if (path === '/api/v1/security/access-tokens' && method === 'GET') return structuredClone({ tokens: accessTokens }) satisfies AccessTokensView;
+  if (path === '/api/v1/security/access-tokens' && method === 'POST') {
+    const body = input as { name?: unknown; expires_days?: unknown };
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    const days = body.expires_days ?? 0;
+    if (!name || name.length > 64 || /[\u0000-\u001f\u007f]/.test(name) || typeof days !== 'number' || !Number.isInteger(days) || days < 0 || days > 3650 || accessTokens.length >= 100) fail('invalid_access_token');
+    const now = new Date();
+    const token: AccessToken = { id: Math.random().toString(36).slice(2, 14), name, created_at: now.toISOString().replace(/\.\d+Z$/, 'Z'), expires_at: days ? new Date(now.getTime() + days * 86400000).toISOString().replace(/\.\d+Z$/, 'Z') : '' };
+    accessTokens = [...accessTokens, token];
+    const secret = Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return { token: structuredClone(token), value: `${token.id}.${secret}` } satisfies CreatedAccessToken;
+  }
+  const tokenMatch = path.match(/^\/api\/v1\/security\/access-tokens\/([^/]+)$/);
+  if (tokenMatch && method === 'DELETE') {
+    const id = decodeURIComponent(tokenMatch[1]);
+    if (!accessTokens.some((token) => token.id === id)) fail('access_token_not_found');
+    if (accessPolicies.some((policy) => policy.allowed_tokens.includes(id))) fail('access_token_in_use');
+    accessTokens = accessTokens.filter((token) => token.id !== id);
+    return undefined;
+  }
   if (path === '/api/v1/security/access-policies' && method === 'PUT') {
     // 실제 서버처럼 policies만 받고, 값은 공백 제거·소문자 변환(정규식 제외)·중복 제거 후 검사합니다.
     const body = input as { policies?: unknown };
@@ -767,7 +793,9 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     const policies = (body.policies as unknown[]).map((raw): AccessPolicy => {
       const policy = (raw ?? {}) as Partial<AccessPolicy>;
       const name = typeof policy.name === 'string' ? policy.name.trim() : '';
-      if (!name || name.length > 64 || /[\u0000-\u001f\u007f]/.test(name) || typeof policy.id !== 'string' || typeof policy.enabled !== 'boolean' || typeof policy.all_paths !== 'boolean' || typeof policy.allow_admins !== 'boolean') fail('invalid_access_policies');
+      if (!name || name.length > 64 || /[\u0000-\u001f\u007f]/.test(name) || typeof policy.id !== 'string' || typeof policy.enabled !== 'boolean' || typeof policy.all_paths !== 'boolean' || typeof policy.allow_admins !== 'boolean' || typeof policy.allow_everyone !== 'boolean') fail('invalid_access_policies');
+      const action = policy.action ?? 'allow';
+      if (action !== 'allow' && action !== 'bypass' && action !== 'block') fail('invalid_access_policies');
       if (!Array.isArray(policy.hosts) || policy.hosts.length < 1 || policy.hosts.length > 100) fail('invalid_access_policies');
       const hosts = [...new Set(policy.hosts.map((host) => (typeof host === 'string' ? host.trim().toLowerCase() : '')))];
       if (hosts.some((host) => !validBlockHost(host))) fail('invalid_access_policies');
@@ -788,11 +816,17 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
           return true;
         });
       }
-      const allowedUsers = entries(policy.allowed_users, true, (entry) => /^[^\s@]+@[^\s@]+$/.test(entry) || /^@[^\s@]+$/.test(entry));
-      const allowedGroups = entries(policy.allowed_groups, false, (entry) => !/[\u0000-\u001f\u007f]/.test(entry));
-      // 아무도 허용하지 않는 정책은 주소를 모두에게 닫아 버립니다.
-      if (allowedUsers.length + allowedGroups.length === 0 && !policy.allow_admins) fail('invalid_access_policies');
-      return { id: policy.id, name, enabled: policy.enabled, hosts, all_paths: policy.all_paths, conditions, allowed_users: allowedUsers, allowed_groups: allowedGroups, allow_admins: policy.allow_admins };
+      let allowedUsers = entries(policy.allowed_users, true, (entry) => /^[^\s@]+@[^\s@]+$/.test(entry) || /^@[^\s@]+$/.test(entry));
+      let allowedGroups = entries(policy.allowed_groups, false, (entry) => !/[\u0000-\u001f\u007f]/.test(entry));
+      let allowedTokens = entries(policy.allowed_tokens, false, (entry) => accessTokens.some((token) => token.id === entry));
+      let everyone = policy.allow_everyone;
+      let admins = policy.allow_admins;
+      // 서버처럼 우회·차단 정책은 허용 대상을, 전체 허용은 사용자·그룹·관리자를 비웁니다.
+      if (action !== 'allow') [everyone, allowedTokens] = [false, []];
+      if (action !== 'allow' || everyone) [allowedUsers, allowedGroups, admins] = [[], [], false];
+      // 아무도 허용하지 않는 허용 정책은 주소를 모두에게 닫아 버립니다.
+      if (action === 'allow' && !everyone && allowedUsers.length + allowedGroups.length + allowedTokens.length === 0 && !admins) fail('invalid_access_policies');
+      return { id: policy.id, name, enabled: policy.enabled, action, hosts, all_paths: policy.all_paths, conditions, allow_everyone: everyone, allowed_users: allowedUsers, allowed_groups: allowedGroups, allow_admins: admins, allowed_tokens: allowedTokens };
     });
     const ids = policies.map((policy) => policy.id).filter(Boolean);
     if (new Set(ids).size !== ids.length) fail('invalid_access_policies');

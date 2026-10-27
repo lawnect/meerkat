@@ -144,6 +144,7 @@ export { default as ArrowTrending12 } from '~icons/fluent/arrow-trending-12-regu
 export { default as Alert12 } from '~icons/fluent/alert-12-regular';
 export { default as Shield12 } from '~icons/fluent/shield-12-regular';
 export { default as LockClosed12 } from '~icons/fluent/lock-closed-12-regular';
+export { default as ReOrder } from '~icons/fluent/re-order-dots-vertical-16-regular';
 export { default as ArrowRight12 } from '~icons/fluent/arrow-right-12-regular';
 export { default as ArrowSync12 } from '~icons/fluent/arrow-sync-12-regular';
 export { default as Edit12 } from '~icons/fluent/edit-12-regular';

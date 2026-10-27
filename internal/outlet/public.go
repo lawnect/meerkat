@@ -269,11 +269,17 @@ func (s *Store) PublicHandler() http.Handler {
 					if client := forwardedClient(pr.In); client != "" {
 						pr.Out.Header.Set("X-Real-Ip", client)
 					}
-					// The person access protection let in, never a value the client
-					// sent; the session cookie stays with the Outlet.
+					// The person or access token access protection let in, never a
+					// value the client sent; the session cookie and the token stay
+					// with the Outlet.
 					pr.Out.Header.Del(accessEmailHeader)
+					pr.Out.Header.Del(accessServiceHeader)
+					pr.Out.Header.Del(accessTokenHeader)
 					if email, _ := pr.In.Context().Value(accessIdentityKey{}).(string); email != "" {
 						pr.Out.Header.Set(accessEmailHeader, email)
+					}
+					if service, _ := pr.In.Context().Value(accessServiceKey{}).(string); service != "" {
+						pr.Out.Header.Set(accessServiceHeader, service)
 					}
 					stripAccessCookie(pr.Out.Header)
 					forwardedFor := pr.In.Header.Get("X-Forwarded-For")

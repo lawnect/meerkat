@@ -184,19 +184,21 @@ func (s *Store) putAccessPolicies(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	// Who may get in, per policy; the path conditions can be long and say
-	// only where.
+	// What each policy does and for whom, in order; the path conditions
+	// can be long and say only where.
 	type logged struct {
-		Name    string   `json:"name"`
-		Enabled bool     `json:"enabled"`
-		Hosts   []string `json:"hosts"`
-		Users   []string `json:"allowed_users,omitempty"`
-		Groups  []string `json:"allowed_groups,omitempty"`
-		Admins  bool     `json:"allow_admins,omitempty"`
+		Name     string   `json:"name"`
+		Enabled  bool     `json:"enabled"`
+		Action   string   `json:"action"`
+		Hosts    []string `json:"hosts"`
+		Everyone bool     `json:"allow_everyone,omitempty"`
+		Users    []string `json:"allowed_users,omitempty"`
+		Groups   []string `json:"allowed_groups,omitempty"`
+		Admins   bool     `json:"allow_admins,omitempty"`
 	}
 	policies := make([]logged, 0, len(saved.Policies))
 	for _, p := range saved.Policies {
-		policies = append(policies, logged{p.Name, p.Enabled, p.Hosts, p.AllowedUsers, p.AllowedGroups, p.AllowAdmins})
+		policies = append(policies, logged{p.Name, p.Enabled, p.Action, p.Hosts, p.AllowEveryone, p.AllowedUsers, p.AllowedGroups, p.AllowAdmins})
 	}
 	s.audited(r, "security.access_policies", "security", "access_policies", map[string]any{"policies": policies})
 	view, err := s.accessPoliciesView(r.Context(), saved)
@@ -205,4 +207,97 @@ func (s *Store) putAccessPolicies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, 200, view)
+}
+
+// accessTokenView is an access token as the admin API shows it: never its
+// secret.
+type accessTokenView struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	CreatedAt string `json:"created_at"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+func newAccessTokenView(token control.AccessToken) accessTokenView {
+	return accessTokenView{ID: token.ID, Name: token.Name, CreatedAt: token.CreatedAt, ExpiresAt: token.ExpiresAt}
+}
+
+func (s *Store) getAccessTokens(w http.ResponseWriter, r *http.Request) {
+	if !s.alertsAdmin(w, r) {
+		return
+	}
+	tokens, err := s.control.AccessTokens(r.Context())
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	views := make([]accessTokenView, 0, len(tokens))
+	for _, token := range tokens {
+		views = append(views, newAccessTokenView(token))
+	}
+	reply(w, 200, map[string]any{"tokens": views})
+}
+
+// createAccessToken makes an access token and answers with its value, the
+// only time it is shown.
+func (s *Store) createAccessToken(w http.ResponseWriter, r *http.Request) {
+	if !s.alertsAdmin(w, r) {
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+		// ExpiresDays is how many days the token works; 0 is for good.
+		ExpiresDays int `json:"expires_days"`
+	}
+	if !decode(w, r, &req, "name", "expires_days") {
+		return
+	}
+	if req.ExpiresDays < 0 || req.ExpiresDays > 3650 {
+		fail(w, r, 400, "invalid_access_token")
+		return
+	}
+	var expires time.Time
+	if req.ExpiresDays > 0 {
+		expires = s.now().AddDate(0, 0, req.ExpiresDays)
+	}
+	s.saving.Lock()
+	token, value, err := s.control.CreateAccessToken(r.Context(), req.Name, expires, s.now())
+	if err == nil {
+		err = s.reloadAccessTokens(r.Context())
+	}
+	s.saving.Unlock()
+	if errors.Is(err, control.ErrInvalidAccessToken) {
+		fail(w, r, 400, "invalid_access_token")
+		return
+	}
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	s.audited(r, "security.access_token_create", "access_token", token.ID, map[string]any{"name": token.Name, "expires_at": token.ExpiresAt})
+	reply(w, 201, map[string]any{"token": newAccessTokenView(token), "value": value})
+}
+
+// deleteAccessToken deletes an access token no policy names.
+func (s *Store) deleteAccessToken(w http.ResponseWriter, r *http.Request) {
+	if !s.alertsAdmin(w, r) {
+		return
+	}
+	s.saving.Lock()
+	token, err := s.control.DeleteAccessToken(r.Context(), r.PathValue("id"), s.now())
+	if err == nil {
+		err = s.reloadAccessTokens(r.Context())
+	}
+	s.saving.Unlock()
+	switch {
+	case errors.Is(err, control.ErrAccessTokenNotFound):
+		fail(w, r, 404, "access_token_not_found")
+	case errors.Is(err, control.ErrAccessTokenInUse):
+		fail(w, r, 409, "access_token_in_use")
+	case err != nil:
+		fail(w, r, 503, "persistence_failed")
+	default:
+		s.audited(r, "security.access_token_delete", "access_token", token.ID, map[string]any{"name": token.Name})
+		w.WriteHeader(http.StatusNoContent)
+	}
 }

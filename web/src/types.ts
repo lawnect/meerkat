@@ -313,16 +313,42 @@ export interface AccessProviderView {
 }
 
 // 접근 정책(GET/PUT /api/v1/security/access-policies). 활성화된 정책에 일치하는 요청은 접근 보호 SSO 로그인이 필요하고, 요청에 적용되는 모든 정책을 충족해야 합니다.
+// 정책은 목록 순서대로 확인하며, 요청에 처음 일치하는 활성화된 정책 하나가 적용됩니다.
+export type AccessAction = 'allow' | 'bypass' | 'block'; // 로그인 후 허용 대상만 / 로그인 없이 누구나 / 모두 거부
+
 export interface AccessPolicy {
   id: string; // 새 정책은 '', 서버가 부여합니다
   name: string; // 1–64자
   enabled: boolean;
+  action: AccessAction;
   hosts: string[]; // 호스트 이름 또는 '*.도메인', 1개 이상
   all_paths: boolean; // true이면 호스트의 모든 경로, false이면 conditions가 일치하는 경로만
-  conditions: BlockCondition[]; // all_paths가 false일 때 1–50개. 하나라도 맞으면 보호합니다
+  conditions: BlockCondition[]; // all_paths가 false일 때 1–50개. 하나라도 맞으면 일치합니다
+  // 아래는 allow일 때만 의미가 있고, 서버는 bypass·block이면 비웁니다.
+  allow_everyone: boolean; // 접근 보호 SSO로 로그인한 모든 사용자. 켜면 사용자·그룹·관리자 허용은 비웁니다
   allowed_users: string[]; // 이메일 또는 '@도메인', 소문자
   allowed_groups: string[]; // 사용자와 그룹을 모두 지정하면 둘 다 맞아야 합니다
-  allow_admins: boolean; // Meerkat 관리자의 이메일도 허용. 사용자·그룹·관리자 허용 중 하나는 필요합니다
+  allow_admins: boolean; // Meerkat 관리자의 이메일도 허용. allow에는 전체·사용자·그룹·관리자·토큰 중 하나가 필요합니다
+  allowed_tokens: string[]; // 로그인 없이 통과시킬 접근 토큰 ID. allow일 때만, 있는 토큰만
+}
+
+// 접근 토큰(GET/POST /api/v1/security/access-tokens, DELETE …/{id}). 로그인할 수 없는 클라이언트가
+// X-Meerkat-Access-Token 헤더에 값을 보내면, 그 토큰을 허용한 정책을 로그인 없이 통과합니다.
+export interface AccessToken {
+  id: string;
+  name: string; // 1–64자
+  created_at: string; // RFC 3339
+  expires_at: string; // RFC 3339, ''이면 만료 없음
+}
+
+export interface AccessTokensView {
+  tokens: AccessToken[]; // 만든 순서
+}
+
+// POST 응답. value는 이때 한 번만 보여 줍니다.
+export interface CreatedAccessToken {
+  token: AccessToken;
+  value: string;
 }
 
 export interface AccessPoliciesView {

@@ -3,7 +3,9 @@ package control
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +23,7 @@ const (
 	settingAccessProvider = "access_provider"
 	settingAccessPolicies = "access_policies"
 	settingAccessKey      = "access_key"
+	settingAccessTokens   = "access_tokens"
 
 	MaxAccessPolicies     = 100
 	maxAccessPolicyName   = 64
@@ -28,6 +31,8 @@ const (
 	maxAccessConditions   = 50
 	defaultAccessSession  = 24
 	maxAccessSessionHours = 720
+	MaxAccessTokens       = 100
+	maxAccessTokenName    = 64
 )
 
 var (
@@ -36,6 +41,11 @@ var (
 	// ErrStoredAccessPolicies means the saved policies no longer pass the
 	// checks; AccessPolicies returns what it could read along with it.
 	ErrStoredAccessPolicies = errors.New("stored access policies are invalid")
+	ErrInvalidAccessToken   = errors.New("invalid access token")
+	ErrAccessTokenNotFound  = errors.New("access token not found")
+	// ErrAccessTokenInUse means a policy names the token: take it out of
+	// the policies first.
+	ErrAccessTokenInUse = errors.New("access token in use")
 )
 
 // percentEscape finds an escape left in a path condition: request paths are
@@ -98,28 +108,46 @@ func (p AccessProvider) Normalize() (AccessProvider, bool) {
 	return p, true
 }
 
-// AccessPolicy protects requests for some public addresses, all their
-// paths or the ones its conditions match, and says who may pass.
+// What a policy does with the requests it covers.
+const (
+	// AccessAllow lets in, after a sign-in, whom the policy names.
+	AccessAllow = "allow"
+	// AccessBypass lets anyone in without a sign-in.
+	AccessBypass = "bypass"
+	// AccessBlock lets nobody in.
+	AccessBlock = "block"
+)
+
+// AccessPolicy covers requests for some public addresses, all their paths
+// or the ones its conditions match, and says what they get.
 type AccessPolicy struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
+	// Action is AccessAllow, AccessBypass or AccessBlock; empty is
+	// AccessAllow.
+	Action string `json:"action"`
 	// Hosts are hostnames or "*.domain"; a policy names at least one.
 	Hosts []string `json:"hosts"`
-	// AllPaths protects every path of the hosts; otherwise a path that
-	// any condition matches is protected.
+	// AllPaths covers every path of the hosts; otherwise a path that any
+	// condition matches is covered.
 	AllPaths   bool             `json:"all_paths"`
 	Conditions []BlockCondition `json:"conditions"`
-	// Who may pass: each list that is set must match, as for the
+	// Who an AccessAllow policy lets in: everyone the access provider signs
+	// in, or else those each list that is set matches, as for the
 	// administrators' single sign-on; AllowAdmins also lets in anyone whose
 	// email is a Meerkat administrator's.
+	AllowEveryone bool     `json:"allow_everyone"`
 	AllowedUsers  []string `json:"allowed_users"`
 	AllowedGroups []string `json:"allowed_groups"`
 	AllowAdmins   bool     `json:"allow_admins"`
+	// AllowedTokens are the IDs of the access tokens an AccessAllow policy
+	// lets through without a sign-in.
+	AllowedTokens []string `json:"allowed_tokens"`
 }
 
-// AccessPolicies are evaluated together: a request must satisfy every
-// enabled policy that covers it.
+// AccessPolicies apply in order: the first enabled policy that covers a
+// request decides it.
 type AccessPolicies struct {
 	Policies []AccessPolicy `json:"policies"`
 }
@@ -190,8 +218,30 @@ func (a AccessPolicies) Normalize() (AccessPolicies, bool) {
 		if ok != [2]bool{true, true} {
 			return a, false
 		}
-		// A policy that names nobody would shut its addresses for everyone.
-		if len(policy.AllowedUsers)+len(policy.AllowedGroups) == 0 && !policy.AllowAdmins {
+		tokens := make([]string, 0, len(policy.AllowedTokens))
+		for _, id := range policy.AllowedTokens {
+			if !validRuleID(id) || len(tokens) == MaxAccessTokens {
+				return a, false
+			}
+			if !slices.Contains(tokens, id) {
+				tokens = append(tokens, id)
+			}
+		}
+		policy.AllowedTokens = tokens
+		switch policy.Action {
+		case "", AccessAllow:
+			policy.Action = AccessAllow
+		case AccessBypass, AccessBlock:
+			// Who may pass means nothing to these.
+			policy.AllowEveryone, policy.AllowedTokens = false, []string{}
+		default:
+			return a, false
+		}
+		if policy.Action != AccessAllow || policy.AllowEveryone {
+			policy.AllowedUsers, policy.AllowedGroups, policy.AllowAdmins = []string{}, []string{}, false
+		}
+		// An allow policy that names nobody would be a block policy.
+		if policy.Action == AccessAllow && !policy.AllowEveryone && len(policy.AllowedUsers)+len(policy.AllowedGroups)+len(policy.AllowedTokens) == 0 && !policy.AllowAdmins {
 			return a, false
 		}
 		out = append(out, policy)
@@ -209,8 +259,11 @@ func (a AccessPolicies) Readable() AccessPolicies {
 		for !validRuleID(policy.ID) || seen[policy.ID] {
 			policy.ID, _ = newRuleID()
 		}
+		if policy.Action != AccessBypass && policy.Action != AccessBlock {
+			policy.Action = AccessAllow
+		}
 		seen[policy.ID] = true
-		for _, list := range []*[]string{&policy.Hosts, &policy.AllowedUsers, &policy.AllowedGroups} {
+		for _, list := range []*[]string{&policy.Hosts, &policy.AllowedUsers, &policy.AllowedGroups, &policy.AllowedTokens} {
 			if *list == nil {
 				*list = []string{}
 			}
@@ -229,10 +282,16 @@ type AccessIdentity struct {
 	Groups []string
 }
 
+// AllowsToken reports whether the access token with ID id may pass this
+// policy.
+func (p AccessPolicy) AllowsToken(id string) bool {
+	return slices.Contains(p.AllowedTokens, id)
+}
+
 // Allows reports whether the identity may pass this policy; admin says
 // whether the email is a Meerkat administrator's.
 func (p AccessPolicy) Allows(id AccessIdentity, admin bool) bool {
-	if p.AllowAdmins && admin {
+	if p.AllowEveryone || p.AllowAdmins && admin {
 		return true
 	}
 	if len(p.AllowedUsers)+len(p.AllowedGroups) == 0 {
@@ -308,7 +367,8 @@ func (d *Database) AccessPolicies(ctx context.Context) (AccessPolicies, error) {
 	return policies, nil
 }
 
-// SetAccessPolicies replaces the policies.
+// SetAccessPolicies replaces the policies. The access tokens they name
+// must exist.
 func (d *Database) SetAccessPolicies(ctx context.Context, policies AccessPolicies, now time.Time) (AccessPolicies, error) {
 	policies, ok := policies.Normalize()
 	if !ok {
@@ -318,7 +378,142 @@ func (d *Database) SetAccessPolicies(ctx context.Context, policies AccessPolicie
 	if err != nil {
 		return policies, err
 	}
-	return policies, putSetting(ctx, d.db, settingAccessPolicies, string(raw), now)
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return policies, err
+	}
+	defer tx.Rollback()
+	tokens, err := accessTokens(ctx, tx)
+	if err != nil {
+		return policies, err
+	}
+	for _, policy := range policies.Policies {
+		for _, id := range policy.AllowedTokens {
+			if !slices.ContainsFunc(tokens, func(token AccessToken) bool { return token.ID == id }) {
+				return policies, ErrInvalidAccessPolicies
+			}
+		}
+	}
+	if err := putSetting(ctx, tx, settingAccessPolicies, string(raw), now); err != nil {
+		return policies, err
+	}
+	return policies, tx.Commit()
+}
+
+// AccessToken lets a client that can't sign in, such as a script or another
+// service, through the allow policies that name it: it sends its value,
+// "<ID>.<secret>", in the X-Meerkat-Access-Token header.
+type AccessToken struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// SecretHash is the secret's SHA-256, in hex: the secret itself is
+	// shown once, when the token is made.
+	SecretHash string `json:"secret_hash"`
+	CreatedAt  string `json:"created_at"`
+	// ExpiresAt is when the token stops working, RFC 3339; empty is never.
+	ExpiresAt string `json:"expires_at"`
+}
+
+// AccessTokens returns the access tokens, oldest first. Saved tokens that
+// can't be read count as none: a token only ever lets someone in.
+func (d *Database) AccessTokens(ctx context.Context) ([]AccessToken, error) {
+	return accessTokens(ctx, d.db)
+}
+
+func accessTokens(ctx context.Context, q conn) ([]AccessToken, error) {
+	raw, err := getSetting(ctx, q, settingAccessTokens)
+	if err != nil || raw == "" {
+		return []AccessToken{}, err
+	}
+	var tokens []AccessToken
+	if json.Unmarshal([]byte(raw), &tokens) != nil || tokens == nil {
+		return []AccessToken{}, nil
+	}
+	return tokens, nil
+}
+
+// CreateAccessToken makes an access token named name that stops working at
+// expires, or never when that is zero, and returns it with its value.
+func (d *Database) CreateAccessToken(ctx context.Context, name string, expires, now time.Time) (AccessToken, string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || len([]rune(name)) > maxAccessTokenName || strings.IndexFunc(name, unicode.IsControl) >= 0 || !expires.IsZero() && !expires.After(now) {
+		return AccessToken{}, "", ErrInvalidAccessToken
+	}
+	id, err := newRuleID()
+	if err != nil {
+		return AccessToken{}, "", err
+	}
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return AccessToken{}, "", err
+	}
+	value := id + "." + base64.RawURLEncoding.EncodeToString(secret)
+	token := AccessToken{ID: id, Name: name, SecretHash: AccessTokenHash(value), CreatedAt: stamp(now)}
+	if !expires.IsZero() {
+		token.ExpiresAt = stamp(expires)
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return AccessToken{}, "", err
+	}
+	defer tx.Rollback()
+	tokens, err := accessTokens(ctx, tx)
+	if err != nil {
+		return AccessToken{}, "", err
+	}
+	if len(tokens) >= MaxAccessTokens {
+		return AccessToken{}, "", ErrInvalidAccessToken
+	}
+	raw, err := json.Marshal(append(tokens, token))
+	if err != nil {
+		return AccessToken{}, "", err
+	}
+	if err := putSetting(ctx, tx, settingAccessTokens, string(raw), now); err != nil {
+		return AccessToken{}, "", err
+	}
+	return token, value, tx.Commit()
+}
+
+// AccessTokenHash is what a token's value is kept as: the SHA-256 of the
+// whole value, in hex.
+func AccessTokenHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+// DeleteAccessToken deletes the access token with ID id and returns it. A
+// token a policy names stays: ErrAccessTokenInUse.
+func (d *Database) DeleteAccessToken(ctx context.Context, id string, now time.Time) (AccessToken, error) {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return AccessToken{}, err
+	}
+	defer tx.Rollback()
+	tokens, err := accessTokens(ctx, tx)
+	if err != nil {
+		return AccessToken{}, err
+	}
+	i := slices.IndexFunc(tokens, func(token AccessToken) bool { return token.ID == id })
+	if i < 0 {
+		return AccessToken{}, ErrAccessTokenNotFound
+	}
+	raw, err := getSetting(ctx, tx, settingAccessPolicies)
+	if err != nil {
+		return AccessToken{}, err
+	}
+	var policies AccessPolicies
+	if raw != "" && json.Unmarshal([]byte(raw), &policies) == nil && slices.ContainsFunc(policies.Policies, func(policy AccessPolicy) bool { return policy.AllowsToken(id) }) {
+		return AccessToken{}, ErrAccessTokenInUse
+	}
+	token := tokens[i]
+	out, err := json.Marshal(slices.Delete(tokens, i, i+1))
+	if err != nil {
+		return AccessToken{}, err
+	}
+	if err := putSetting(ctx, tx, settingAccessTokens, string(out), now); err != nil {
+		return AccessToken{}, err
+	}
+	return token, tx.Commit()
 }
 
 // AccessKey signs sessions on protected addresses. It is created on first

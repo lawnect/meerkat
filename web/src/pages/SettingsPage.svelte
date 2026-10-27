@@ -17,9 +17,10 @@
   import { api, errorMessage } from '../api';
   import { intlLocale, translations } from '../i18n.svelte';
   import { Alert12, Alert20, ArrowUndo, Clock12, Delete, Key, LockClosed12, NumberSymbol, Save, Send, Shield12, Warning } from '../icons';
-  import type { AlertRules, AlertSettings } from '../types';
+  import type { AccessToken, AlertRules, AlertSettings } from '../types';
   import AccessPolicySettings from '../components/AccessPolicySettings.svelte';
   import AccessProviderSettings from '../components/AccessProviderSettings.svelte';
+  import AccessTokenSettings from '../components/AccessTokenSettings.svelte';
   import AuditLog from '../components/AuditLog.svelte';
   import BlockRuleSettings from '../components/BlockRuleSettings.svelte';
   import ConnectionLimitSettings from '../components/ConnectionLimitSettings.svelte';
@@ -192,6 +193,8 @@
   let loadError = $state('');
   // 접근 보호 SSO가 켜져 있는지(불러오기 전에는 null). 접근 정책 카드가 정책이 적용되지 않는다고 안내하는 데 씁니다.
   let accessEnabled = $state<boolean | null>(null);
+  // 접근 토큰 목록(불러오기 전에는 null). 접근 정책 대화상자가 허용할 토큰을 고르는 데 씁니다.
+  let accessTokens = $state<AccessToken[] | null>(null);
 
   // 카드마다 바꾼 값은 저장을 누를 때까지 초안으로만 둡니다.
   let botToken = $state('');
@@ -502,9 +505,10 @@
       <ConnectionLimitSettings />
       <BlockRuleSettings />
     </Tabs.Content>
-    <!-- 접근 보호: 자주 고치는 정책을 위에, 한 번 설정하는 SSO 공급자를 아래에 둡니다. -->
+    <!-- 접근 보호: 자주 고치는 정책을 위에, 정책이 쓰는 토큰과 한 번 설정하는 SSO 공급자를 아래에 둡니다. -->
     <Tabs.Content value="access" class="grid min-w-0 gap-4">
-      <AccessPolicySettings providerEnabled={accessEnabled} />
+      <AccessPolicySettings providerEnabled={accessEnabled} tokens={accessTokens} />
+      <AccessTokenSettings bind:tokens={accessTokens} />
       <AccessProviderSettings bind:enabled={accessEnabled} />
     </Tabs.Content>
     <Tabs.Content value="audit" class="grid min-w-0 gap-4">

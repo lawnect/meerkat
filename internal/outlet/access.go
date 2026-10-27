@@ -48,8 +48,12 @@ const (
 	accessStartPath    = "/api/v1/access/start"
 	accessCallbackPath = "/api/v1/access/callback"
 	accessEmailHeader  = "X-Meerkat-Access-Email"
-	accessTicketTTL    = time.Minute
-	maxAccessTickets   = 8192
+	// accessTokenHeader carries an access token from a client that can't
+	// sign in; the app gets the token's name in accessServiceHeader.
+	accessTokenHeader   = "X-Meerkat-Access-Token"
+	accessServiceHeader = "X-Meerkat-Access-Service"
+	accessTicketTTL     = time.Minute
+	maxAccessTickets    = 8192
 	// maxAccessCookie keeps the session cookie under the 4 KB browsers take.
 	maxAccessCookie = 3800
 	// maxAccessPerClient and accessStarts are how many sign-ins one client
@@ -73,32 +77,40 @@ type accessRule struct {
 
 type accessConfig struct{ rules []accessRule }
 
-// covering returns the rules that protect a request for host and u's path.
-// A path an app may read differently from the forms rules compare counts as
-// every path, so it can't slip past a condition; one with an escape still
-// in it after decoding is also compared decoded once more, as an app
-// decoding again reads it.
-func (c *accessConfig) covering(host string, u *url.URL) []*accessRule {
+// matching returns the first rule that covers a request for host and u's
+// path, or nil. A path an app may read differently from the form rules
+// compare is covered by every rule that protects a path, so it can't slip
+// past a condition, and by no rule that opens one; one with an escape
+// still in it after decoding is also compared decoded once more, as an app
+// decoding again reads it, and must match both ways to be opened.
+func (c *accessConfig) matching(host string, u *url.URL) *accessRule {
 	if c == nil || len(c.rules) == 0 {
 		return nil
 	}
 	paths := []rulePath{newRulePath(u.Path)}
-	every := ambiguousPath(u.EscapedPath(), true)
-	if !every && leftEscape.MatchString(u.Path) {
+	unclear := ambiguousPath(u.EscapedPath(), true)
+	if !unclear && leftEscape.MatchString(u.Path) {
 		if twice, err := url.PathUnescape(u.Path); err != nil || ambiguousPath(u.Path, false) {
-			every = true
+			unclear = true
 		} else {
 			paths = append(paths, newRulePath(twice))
 		}
 	}
-	var out []*accessRule
 	for i := range c.rules {
 		rule := &c.rules[i]
-		if rule.match.covers(host) && (rule.all || every || slices.ContainsFunc(paths, rule.match.matches)) {
-			out = append(out, rule)
+		switch {
+		case !rule.match.covers(host):
+		case rule.all:
+			return rule
+		case rule.policy.Action == control.AccessBypass:
+			if !unclear && !slices.ContainsFunc(paths, func(p rulePath) bool { return !rule.match.matches(p) }) {
+				return rule
+			}
+		case unclear || slices.ContainsFunc(paths, rule.match.matches):
+			return rule
 		}
 	}
-	return out
+	return nil
 }
 
 // ambiguousPath reports a path, given escaped, whose meaning decoded
@@ -130,14 +142,15 @@ func ambiguousPath(escaped string, bytes bool) bool {
 	return false
 }
 
-// forHost returns the rules that protect any path of host.
-func (c *accessConfig) forHost(host string) []*accessRule {
+// signingIn returns the rules that let people into some path of host
+// after a sign-in.
+func (c *accessConfig) signingIn(host string) []*accessRule {
 	if c == nil {
 		return nil
 	}
 	var out []*accessRule
 	for i := range c.rules {
-		if rule := &c.rules[i]; rule.match.covers(host) {
+		if rule := &c.rules[i]; rule.policy.Action == control.AccessAllow && rule.match.covers(host) {
 			out = append(out, rule)
 		}
 	}
@@ -210,6 +223,8 @@ type accessTicket struct {
 type accessState struct {
 	config atomic.Pointer[accessConfig]
 	key    atomic.Pointer[[]byte]
+	// tokens maps an access token's ID to it.
+	tokens atomic.Pointer[map[string]control.AccessToken]
 	// enabled is the provider's switch: while it is off nobody can sign in,
 	// so protected addresses let nobody in.
 	enabled atomic.Bool
@@ -223,7 +238,10 @@ type accessState struct {
 	tickets  map[string]accessTicket
 }
 
+// accessIdentityKey and accessServiceKey carry, in a request's context,
+// the email of the person or the name of the access token let in.
 type accessIdentityKey struct{}
+type accessServiceKey struct{}
 
 func compileAccess(policies control.AccessPolicies) *accessConfig {
 	config := &accessConfig{}
@@ -237,11 +255,17 @@ func compileAccess(policies control.AccessPolicies) *accessConfig {
 }
 
 // closedAccess compiles saved policies that no longer pass the checks so
-// that they keep closed what they may have protected: each enabled one
-// covers every path of the addresses it names, or of every address when it
-// names no valid one, and lets in only whom it names as saved. With nothing
-// readable, or a policy that isn't, every address is closed.
+// that they keep closed what they may have protected: each enabled one, in
+// order, covers every path of the addresses it names, or of every address
+// when it names no valid one, and lets in, after a sign-in, only whom an
+// allow policy names as saved. With nothing readable, or a policy that
+// isn't, every address is closed.
 func closedAccess(policies control.AccessPolicies) *accessConfig {
+	nobody := accessRule{match: compileBlockRule(nil, nil), all: true, policy: control.AccessPolicy{Action: control.AccessAllow}}
+	// Every saved policy has an ID: one without was never readable.
+	if len(policies.Policies) == 0 || slices.ContainsFunc(policies.Policies, func(policy control.AccessPolicy) bool { return policy.ID == "" }) {
+		return &accessConfig{rules: []accessRule{nobody}}
+	}
 	config := &accessConfig{}
 	for _, policy := range policies.Policies {
 		if !policy.Enabled {
@@ -253,21 +277,20 @@ func closedAccess(policies control.AccessPolicies) *accessConfig {
 				hosts = append(hosts, host)
 			}
 		}
-		// Whom it names, in the form sessions carry, as saving would put it.
-		users := make([]string, 0, len(policy.AllowedUsers))
-		for _, user := range policy.AllowedUsers {
-			users = append(users, strings.ToLower(strings.TrimSpace(user)))
+		rule := nobody
+		rule.match = compileBlockRule(hosts, nil)
+		if policy.Action == control.AccessAllow || policy.Action == "" {
+			// Whom it names, in the form sessions carry, as saving would put it.
+			rule.policy.AllowEveryone, rule.policy.AllowAdmins = policy.AllowEveryone, policy.AllowAdmins
+			for _, user := range policy.AllowedUsers {
+				rule.policy.AllowedUsers = append(rule.policy.AllowedUsers, strings.ToLower(strings.TrimSpace(user)))
+			}
+			for _, group := range policy.AllowedGroups {
+				rule.policy.AllowedGroups = append(rule.policy.AllowedGroups, strings.TrimSpace(group))
+			}
+			rule.policy.AllowedTokens = policy.AllowedTokens
 		}
-		groups := make([]string, 0, len(policy.AllowedGroups))
-		for _, group := range policy.AllowedGroups {
-			groups = append(groups, strings.TrimSpace(group))
-		}
-		policy.AllowedUsers, policy.AllowedGroups = users, groups
-		config.rules = append(config.rules, accessRule{match: compileBlockRule(hosts, nil), all: true, policy: policy})
-	}
-	// Every saved policy has an ID: one without was never readable.
-	if len(policies.Policies) == 0 || slices.ContainsFunc(policies.Policies, func(policy control.AccessPolicy) bool { return policy.ID == "" }) {
-		config.rules = append(config.rules, accessRule{match: compileBlockRule(nil, nil), all: true})
+		config.rules = append(config.rules, rule)
 	}
 	return config
 }
@@ -292,6 +315,9 @@ func (s *Store) reloadAccess(ctx context.Context) error {
 		return err
 	default:
 		s.access.config.Store(compileAccess(policies))
+	}
+	if err := s.reloadAccessTokens(ctx); err != nil {
+		return err
 	}
 	key, err := s.control.AccessKey(ctx, s.now())
 	if err != nil {
@@ -353,10 +379,10 @@ func accessReturn(path string) string {
 	return path
 }
 
-// guardAccess passes a request on when no policy covers it, or when its
-// session satisfies every policy that does, carrying the email along for
-// the app. Otherwise it answers the request itself, as it does the Outlet's
-// own paths under /.meerkat/access/, and returns false.
+// guardAccess passes a request on when no policy covers it, when the first
+// that does opens it, or when its session satisfies that policy, carrying
+// the email along for the app. Otherwise it answers the request itself, as
+// it does the Outlet's own paths under /.meerkat/access/, and returns false.
 func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminHost string) (*http.Request, bool) {
 	if strings.HasPrefix(r.URL.Path, accessPathPrefix) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -370,11 +396,26 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 		}
 		return r, false
 	}
-	rules := s.access.config.Load().covering(host, r.URL)
-	if len(rules) == 0 {
+	rule := s.access.config.Load().matching(host, r.URL)
+	switch {
+	case rule == nil || rule.policy.Action == control.AccessBypass:
 		return r, true
-	}
-	if !s.access.enabled.Load() {
+	case rule.policy.Action == control.AccessBlock:
+		accessPage(w, r, http.StatusForbidden, "denied")
+		return r, false
+	case r.Header.Get(accessTokenHeader) != "":
+		// A client that can't sign in sends an access token instead, which
+		// needs no provider.
+		token, ok := s.accessToken(r.Header.Get(accessTokenHeader))
+		if !ok {
+			accessPage(w, r, http.StatusUnauthorized, "token")
+		} else if !rule.policy.AllowsToken(token.ID) {
+			accessPage(w, r, http.StatusForbidden, "denied")
+		} else {
+			return r.WithContext(context.WithValue(r.Context(), accessServiceKey{}, token.Name)), true
+		}
+		return r, false
+	case !s.access.enabled.Load():
 		accessPage(w, r, http.StatusServiceUnavailable, "unavailable")
 		return r, false
 	}
@@ -384,25 +425,20 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 		return r, false
 	}
 	// The database is asked only when the session alone doesn't settle it.
-	admin := sync.OnceValues(func() (bool, error) { return s.control.IsAdminEmail(r.Context(), identity.Email) })
-	// Denied, the person can sign in again, with another account or with
-	// groups a policy named after they signed in.
-	again := accessNext{action: accessPathPrefix + "logout?" + url.Values{"return": {accessReturn(r.URL.RequestURI())}}.Encode()}
-	for _, rule := range rules {
-		if rule.policy.Allows(identity, false) {
-			continue
-		}
-		if !rule.policy.AllowAdmins {
-			accessPageNext(w, r, http.StatusForbidden, "denied", again)
-			return r, false
-		}
-		if yes, err := admin(); err != nil {
+	allowed := rule.policy.Allows(identity, false)
+	if !allowed && rule.policy.AllowAdmins {
+		admin, err := s.control.IsAdminEmail(r.Context(), identity.Email)
+		if err != nil {
 			accessPage(w, r, http.StatusServiceUnavailable, "unavailable")
 			return r, false
-		} else if !yes {
-			accessPageNext(w, r, http.StatusForbidden, "denied", again)
-			return r, false
 		}
+		allowed = admin
+	}
+	if !allowed {
+		// The person can sign in again, with another account or with groups
+		// a policy named after they signed in.
+		accessPageNext(w, r, http.StatusForbidden, "denied", accessNext{action: accessPathPrefix + "logout?" + url.Values{"return": {accessReturn(r.URL.RequestURI())}}.Encode()})
+		return r, false
 	}
 	return r.WithContext(context.WithValue(r.Context(), accessIdentityKey{}, identity.Email)), true
 }
@@ -425,6 +461,39 @@ func accessLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	accessPage(w, r, http.StatusOK, "signedOut")
+}
+
+// accessToken returns the access token whose value a request sent, if it
+// is one that hasn't expired.
+func (s *Store) accessToken(value string) (control.AccessToken, bool) {
+	id, _, _ := strings.Cut(value, ".")
+	tokens := s.access.tokens.Load()
+	if tokens == nil {
+		return control.AccessToken{}, false
+	}
+	token, ok := (*tokens)[id]
+	if !ok || subtle.ConstantTimeCompare([]byte(control.AccessTokenHash(value)), []byte(token.SecretHash)) != 1 {
+		return control.AccessToken{}, false
+	}
+	if token.ExpiresAt != "" {
+		if expires, err := time.Parse(time.RFC3339, token.ExpiresAt); err != nil || !s.now().Before(expires) {
+			return control.AccessToken{}, false
+		}
+	}
+	return token, true
+}
+
+func (s *Store) reloadAccessTokens(ctx context.Context) error {
+	tokens, err := s.control.AccessTokens(ctx)
+	if err != nil {
+		return err
+	}
+	byID := make(map[string]control.AccessToken, len(tokens))
+	for _, token := range tokens {
+		byID[token.ID] = token
+	}
+	s.access.tokens.Store(&byID)
+	return nil
 }
 
 func (s *Store) accessSession(r *http.Request, host string) (control.AccessIdentity, bool) {
@@ -476,7 +545,7 @@ func (s *Store) accessStart(w http.ResponseWriter, r *http.Request) {
 	host, returnTo, bind := strings.ToLower(query.Get("host")), accessReturn(query.Get("return")), query.Get("bind")
 	ip, public := requestOrigin(r)
 	// bind is the hash of the browser's binding cookie.
-	if s.control == nil || !public || !validation.Hostname(host) || len(s.access.config.Load().forHost(host)) == 0 || len(bind) != 64 || strings.Trim(bind, "0123456789abcdef") != "" {
+	if s.control == nil || !public || !validation.Hostname(host) || len(s.access.config.Load().signingIn(host)) == 0 || len(bind) != 64 || strings.Trim(bind, "0123456789abcdef") != "" {
 		accessPage(w, r, http.StatusNotFound, "unknown")
 		return
 	}
@@ -593,7 +662,7 @@ func (s *Store) accessCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	email = strings.ToLower(email)
-	rules := s.access.config.Load().forHost(pending.host)
+	rules := s.access.config.Load().signingIn(pending.host)
 	// A session carries only the groups the address's policies name, which
 	// keeps the cookie small: a group added to a policy later counts from
 	// the next sign-in.
@@ -679,7 +748,7 @@ func (s *Store) accessFinish(w http.ResponseWriter, r *http.Request, host string
 	value, err := signAccess(*key, claims)
 	if err == nil && len(value) > maxAccessCookie {
 		// Too many groups for a cookie: fewer that satisfy the same policies.
-		claims.Groups = fewestGroups(s.access.config.Load().forHost(host), claims.Groups)
+		claims.Groups = fewestGroups(s.access.config.Load().signingIn(host), claims.Groups)
 		value, err = signAccess(*key, claims)
 	}
 	if err != nil || len(value) > maxAccessCookie {
@@ -754,6 +823,7 @@ var accessPages = map[string][2]string{
 	"provider":    {"Couldn't sign in with the identity provider.", "인증 공급자 로그인 중 오류가 발생했습니다."},
 	"busy":        {"Too many sign-ins in progress. Try again shortly.", "잠시 후 다시 시도하십시오."},
 	"unknown":     {"This address isn't protected.", "보호되지 않은 주소입니다."},
+	"token":       {"The access token isn't valid.", "접근 토큰이 올바르지 않습니다."},
 	"signOut":     {"Sign out of this address?", "이 주소에서 로그아웃하시겠습니까?"},
 	"signedOut":   {"Signed out.", "로그아웃되었습니다."},
 }

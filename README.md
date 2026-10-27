@@ -339,14 +339,19 @@ Lists are separated by commas. With single sign-on from the environment, the pub
 
 Like Cloudflare Access, public addresses or paths under them can require a sign-in, and the people let in don't have to be Meerkat administrators. Under Settings → Access protection, set up **Access SSO**. It is an OpenID Connect client of its own, separate from the administrators' SSO. Register the redirect URI shown there (`https://<admin address>/api/v1/access/callback`) with the provider; that one URI serves every protected address.
 
-Then add **access policies**. Each one names three things:
-- the addresses it protects, including `*.domain`;
+Then add **access policies**. Each one names:
+- the addresses it covers, including `*.domain`;
 - whether it covers all paths or only paths matching conditions (the same operators as block rules);
-- who may pass: email addresses or `@domain`, groups from the ID token, or both (a person must match both), and optionally Meerkat administrators.
+- its action: **Allow** (sign in, then only who the policy allows), **Bypass** (anyone, without signing in), or **Block** (nobody);
+- for Allow, who may pass: everyone access SSO signs in, or email addresses or `@domain`, groups from the ID token, or both (a person must match both), optionally Meerkat administrators, and access tokens.
 
-A request must satisfy every enabled policy that covers it. A browser without a session goes to the provider and comes back to the page it asked for; other requests get `401`. The provider must mark the email as verified. **Allow administrators** trusts that verified email: anyone the access provider vouches for with an administrator's email gets in.
+Policies are checked from the top, and the first enabled one that matches a request decides it; drag policies to change the order. To protect a whole app except a few paths, put Bypass policies for those paths above an Allow policy for all paths. A policy below one that covers every path of its addresses never applies, and the list marks it. A browser without a session goes to the provider and comes back to the page it asked for; other requests get `401`. The provider must mark the email as verified. **Allow administrators** trusts that verified email: anyone the access provider vouches for with an administrator's email gets in.
 
-Conditions work as in block rules and see the path decoded once, so write them decoded (`/files/100%`, not `/files/100%25`). A path an app could read another way, such as an encoded `..`, counts as every path, so every path condition of the address applies to it; a double-encoded one is also compared decoded twice. For apps that interpret paths in unusual ways, protect all paths. Someone denied can **Sign in again** from the denied page, which is how groups added to a policy later take effect.
+Path conditions see only requests that reach the Outlet. A single-page app changes screens in the browser without one, so a condition on `/login` doesn't stop someone who opens `/` and lets the app navigate; protect all of such an app's paths and bypass the ones its clients call.
+
+**Access tokens** let scripts, CI and other services that can't sign in through Allow policies that name them: create one under Access tokens (its value is shown once), allow it in a policy, and send `X-Meerkat-Access-Token: <value>`. The app receives the token's name in `X-Meerkat-Access-Service`, never the token. Tokens can expire, and one a policy allows can't be deleted until the policy no longer names it.
+
+Conditions work as in block rules and see the path decoded once, so write them decoded (`/files/100%`, not `/files/100%25`). A path an app could read another way, such as an encoded `..`, matches every Allow and Block condition and no Bypass condition; a double-encoded one is also compared decoded twice. For apps that interpret paths in unusual ways, protect all paths. Someone denied can **Sign in again** from the denied page, which is how groups added to a policy later take effect.
 
 A session lasts the configured hours (24 by default), only on the address it was issued for. **Sign everyone out** ends all of them. A group added to a policy counts from a person's next sign-in. The groups claim and scopes are set on the Access SSO card; add the scope your provider needs to send groups.
 
