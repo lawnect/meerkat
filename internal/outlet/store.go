@@ -46,7 +46,9 @@ type Config struct {
 	TunnelListenAddress  string `json:"tunnel_listen_address,omitempty"`
 	// TunnelInternalAddress is where rathole listens, behind the Outlet's
 	// own listener on TunnelListenAddress: a loopback address with another
-	// port. Empty means DefaultTunnelInternalAddress.
+	// port. Empty means the loopback address on the port after
+	// TunnelListenAddress's (see defaultTunnelInternalAddress), which is
+	// DefaultTunnelInternalAddress for the usual 2333.
 	TunnelInternalAddress  string `json:"tunnel_internal_address,omitempty"`
 	TunnelRemoteAddress    string `json:"tunnel_remote_address,omitempty"`
 	TunnelServerPublicKey  string `json:"tunnel_server_public_key,omitempty"`
@@ -184,7 +186,7 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 	}
 	if config.TunnelListenAddress != "" {
 		if config.TunnelInternalAddress == "" {
-			config.TunnelInternalAddress = DefaultTunnelInternalAddress
+			config.TunnelInternalAddress = defaultTunnelInternalAddress(config.TunnelListenAddress)
 		}
 		if err := validateTunnelAddresses(config.TunnelListenAddress, config.TunnelInternalAddress); err != nil {
 			return nil, err
@@ -288,6 +290,7 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 	if err := s.reconcileTunnel(); err != nil {
 		return nil, err
 	}
+	s.markStarted()
 	s.limiter = newRateLimiter()
 	if err := s.reloadRateLimit(context.Background()); err != nil {
 		return nil, err
@@ -332,6 +335,23 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 	}
 	s.workers.Go(func() { s.persistLoop(workers) })
 	return s, nil
+}
+
+// outletStarted is the file, beside server.toml, the Outlet rewrites each
+// time it starts. rathole runs in the Outlet's network namespace; when the
+// Outlet's container restarts it gets a new one, and rathole, left in the
+// old one, can't see that from there. The file can: rathole's container
+// exits once it is newer than rathole, and Docker starts it again in the
+// new namespace (see deploy/compose.outlet.yaml).
+const outletStarted = "outlet-started"
+
+func (s *Store) markStarted() {
+	if s.config.TunnelListenAddress == "" {
+		return
+	}
+	if err := securefs.Write(filepath.Join(filepath.Dir(s.tunnelPath), outletStarted), []byte(time.Now().UTC().Format(time.RFC3339)+"\n")); err != nil {
+		slog.Warn("can't mark the Outlet's start for rathole", "error", err)
+	}
 }
 
 func (s *Store) reconcileTunnel() error {

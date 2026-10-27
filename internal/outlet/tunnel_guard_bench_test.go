@@ -96,10 +96,11 @@ func BenchmarkTunnelGuardEcho(b *testing.B) {
 }
 
 // BenchmarkTunnelGuardSetup is a new connection's time to its first answer:
-// connect, send a byte, read it back from the echo. Direct is the floor; a
-// known client adds the admission and the second connection; an unknown one
-// also waits for its first bytes before rathole is dialled. The known
-// client's guard is a second one in front of the same rathole.
+// connect, send a handshake-sized frame, read it back from the echo. Direct
+// is the floor; a known client adds the admission and the second connection;
+// an unknown one also waits for its whole first frame before rathole is
+// dialled. The known client's guard is a second one in front of the same
+// rathole.
 func BenchmarkTunnelGuardSetup(b *testing.B) {
 	rathole := newEchoRathole(b)
 	// Each connection finds every bucket full, so limits don't get in the way.
@@ -115,13 +116,14 @@ func BenchmarkTunnelGuardSetup(b *testing.B) {
 		{"unknown", g.address().String()},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
-			buf := make([]byte, 1)
+			frame := handshakeFrame(make([]byte, 48))
+			buf := make([]byte, len(frame))
 			for range b.N {
 				conn, err := net.Dial("tcp", tc.address)
 				if err != nil {
 					b.Fatal(err)
 				}
-				if _, err := conn.Write([]byte{'x'}); err != nil {
+				if _, err := conn.Write(frame); err != nil {
 					b.Fatal(err)
 				}
 				if _, err := io.ReadFull(conn, buf); err != nil {

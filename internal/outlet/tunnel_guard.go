@@ -3,6 +3,7 @@ package outlet
 import (
 	"container/list"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"log/slog"
@@ -25,11 +26,17 @@ import (
 // loopback address in the Outlet's network namespace.
 const (
 	// DefaultTunnelInternalAddress is where rathole listens when outlet.json
-	// doesn't say.
+	// doesn't say and the tunnel port is the usual 2333; see
+	// defaultTunnelInternalAddress for the other ports.
 	DefaultTunnelInternalAddress = "127.0.0.1:2334"
 
-	// A known client is a Connector's address: it gets only a sanity cap.
-	guardKnownConcurrent = 4096
+	// A known client is a Connector's address. guardKnownConcurrent is only a
+	// sanity bound, not a limit to tune: a Connector opens a tunnel
+	// connection for each request the Outlet sends it (4096 at once by
+	// default, and the idle keep-alive upstream connections as well) and
+	// about nine ahead of time for each service, so the bound has to stay well
+	// above what the Outlet itself may ask of one address.
+	guardKnownConcurrent = 65536
 	guardKnownClients    = 4096
 	guardKnownTTL        = 15 * time.Minute
 
@@ -39,14 +46,24 @@ const (
 	guardTotalConcurrent  = 256
 	guardTotalPerSecond   = 50
 	guardTotalBurst       = 100
-	// guardFirstBytes is how long an unknown client may stay silent before
-	// it is closed, without rathole having been dialled.
+	// guardFirstBytes is how long an unknown client has to send the whole
+	// first message of its handshake, from the moment it is admitted. A client
+	// that doesn't is closed without rathole having been dialled: rathole does
+	// the Noise handshake inside its accept loop, one connection at a time,
+	// and waits up to 5 s for a handshake that stops halfway, so a few
+	// connections that send one byte and go quiet would stop every tunnel.
 	guardFirstBytes  = 10 * time.Second
 	guardDialTimeout = 5 * time.Second
+	// guardMaxFrame is the longest first message the guard forwards. rathole
+	// frames each Noise message as a 2-byte little-endian length and the body;
+	// the first one of a Noise_NK handshake is 48 bytes.
+	guardMaxFrame = 1024
+	// guardAfterHangup is how long a client gets to finish after rathole has
+	// hung up on it, closed or half-closed. It has nothing left to wait for,
+	// and a client that never closes would hold its place for good.
+	guardAfterHangup = 5 * time.Second
 	// guardBuckets bounds the clients whose rate is remembered.
 	guardBuckets = 16384
-	// guardFirstRead is the most of its first bytes the guard holds back.
-	guardFirstRead = 4096
 )
 
 // guardConfig is the compiled, immutable form of the settings.
@@ -202,8 +219,8 @@ type tunnelGuard struct {
 	bindFailures atomic.Int64
 
 	// These are the limits above; tests shorten them.
-	firstBytes, dialTimeout time.Duration
-	retryFrom, retryTo      time.Duration
+	firstBytes, dialTimeout, afterHangup time.Duration
+	retryFrom, retryTo                   time.Duration
 
 	// bound is closed once the guard listens.
 	bound     chan struct{}
@@ -229,7 +246,7 @@ func newTunnelGuard(listen, internal string, now func() time.Time) *tunnelGuard 
 		// A client's bucket is full again within a minute, so forgetting it
 		// after 2 minutes of silence changes nothing.
 		buckets:    newBucketStore(64, guardBuckets, 2*time.Minute),
-		firstBytes: guardFirstBytes, dialTimeout: guardDialTimeout,
+		firstBytes: guardFirstBytes, dialTimeout: guardDialTimeout, afterHangup: guardAfterHangup,
 		retryFrom: time.Second, retryTo: 30 * time.Second,
 		bound: make(chan struct{}), done: make(chan struct{}),
 		conns: map[net.Conn]struct{}{},
@@ -325,7 +342,7 @@ func (g *tunnelGuard) listenUntilBound(ctx context.Context) net.Listener {
 			return listener
 		}
 		g.bindFailures.Add(1)
-		slog.Warn("the tunnel port can't be bound yet, trying again: until rathole has moved to its new address, the Outlet can't protect it", "listen", g.listen, "error", err.Error(), "retry_in", delay.String())
+		slog.Warn("the tunnel port is taken, trying again; if rathole from before an upgrade holds it, restart the rathole container so it moves to its internal address", "listen", g.listen, "internal", g.internal, "error", err.Error(), "retry_in", delay.String())
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:
@@ -434,9 +451,9 @@ func isTimeout(err error) bool {
 }
 
 // serve proxies one admitted connection to rathole. An unknown client's
-// first bytes are read before rathole is dialled, so a client that connects
-// and says nothing never holds one of rathole's slots, and are then passed
-// on.
+// whole first message is read before rathole is dialled, so a client that
+// connects and says nothing, or stops halfway, never holds rathole's accept
+// loop; the message is then passed on as it came.
 func (g *tunnelGuard) serve(client *net.TCPConn, release func(), unknown bool) {
 	defer g.wg.Done()
 	defer g.forget(client)
@@ -444,20 +461,10 @@ func (g *tunnelGuard) serve(client *net.TCPConn, release func(), unknown bool) {
 	defer client.Close()
 	var first []byte
 	if unknown {
-		buf := make([]byte, guardFirstRead)
-		_ = client.SetReadDeadline(time.Now().Add(g.firstBytes))
-		n, err := client.Read(buf)
-		if n == 0 {
-			// Silence is refused; a client that connects and leaves, as a port
-			// check does, is not.
-			if isTimeout(err) {
-				g.refusedIdle.Add(1)
-				_ = client.SetLinger(0)
-			}
+		var ok bool
+		if first, ok = g.readFirstFrame(client); !ok {
 			return
 		}
-		first = buf[:n]
-		_ = client.SetReadDeadline(time.Time{})
 	}
 	g.accepted.Add(1)
 	g.active.Add(1)
@@ -479,7 +486,43 @@ func (g *tunnelGuard) serve(client *net.TCPConn, release func(), unknown bool) {
 		}
 		_ = upstream.SetWriteDeadline(time.Time{})
 	}
-	pipe(client, upstream)
+	pipe(client, upstream, g.afterHangup)
+}
+
+// readFirstFrame reads the first message of a handshake from an unknown
+// client: a 2-byte little-endian length of 1 to guardMaxFrame, then that many
+// bytes, all within guardFirstBytes. It returns the header and the body as
+// they were sent, and nothing past them, so the rest of the stream stays
+// with the connection. It reports false when the connection is to be closed:
+// a client that didn't finish in time is refused as idle, one with an
+// impossible length is reset, and one that gave up on its own is left alone,
+// as a port check is.
+func (g *tunnelGuard) readFirstFrame(client *net.TCPConn) ([]byte, bool) {
+	_ = client.SetReadDeadline(time.Now().Add(g.firstBytes))
+	idle := func(err error) {
+		if isTimeout(err) {
+			g.refusedIdle.Add(1)
+			_ = client.SetLinger(0)
+		}
+	}
+	var header [2]byte
+	if _, err := io.ReadFull(client, header[:]); err != nil {
+		idle(err)
+		return nil, false
+	}
+	size := int(binary.LittleEndian.Uint16(header[:]))
+	if size < 1 || size > guardMaxFrame {
+		_ = client.SetLinger(0)
+		return nil, false
+	}
+	frame := make([]byte, len(header)+size)
+	copy(frame, header[:])
+	if _, err := io.ReadFull(client, frame[len(header):]); err != nil {
+		idle(err)
+		return nil, false
+	}
+	_ = client.SetReadDeadline(time.Time{})
+	return frame, true
 }
 
 func (g *tunnelGuard) dial() (*net.TCPConn, error) {
@@ -507,24 +550,35 @@ func (g *tunnelGuard) warnDial(err error) {
 	slog.Warn("the tunnel port can't reach rathole", "rathole", g.internal, "error", err.Error())
 }
 
-// pipe copies both ways between two TCP connections, which the runtime
+// pipe copies both ways between a client and rathole, which the runtime
 // splices in the kernel on Linux. An end of data goes on as a half-close so
-// the other direction can finish; a failure closes both.
-func pipe(a, b *net.TCPConn) {
-	forward := func(dst, src *net.TCPConn) {
-		if _, err := io.Copy(dst, src); err != nil {
-			_ = dst.Close()
-			_ = src.Close()
-			return
-		}
-		_ = dst.CloseWrite()
+// the other direction can finish; a failure closes both. Once rathole is done
+// with the client, closed or half-closed, the client has nothing to wait for:
+// it gets grace to finish what it is sending, then both are closed. Nothing
+// else has a deadline: a live tunnel may be quiet for as long as it likes,
+// and rathole may go on answering after the client's end of data.
+func pipe(client, upstream *net.TCPConn, grace time.Duration) {
+	cut := func() {
+		_ = client.Close()
+		_ = upstream.Close()
 	}
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		forward(b, a)
+		if _, err := io.Copy(upstream, client); err != nil {
+			cut()
+			return
+		}
+		_ = upstream.CloseWrite()
 	}()
-	forward(a, b)
+	if _, err := io.Copy(client, upstream); err != nil {
+		cut()
+	} else {
+		_ = client.CloseWrite()
+		// The other copy is waiting to read from the client, and ends with a
+		// timeout, which closes both, if the client doesn't finish by then.
+		_ = client.SetReadDeadline(time.Now().Add(grace))
+	}
 	<-finished
 }
 

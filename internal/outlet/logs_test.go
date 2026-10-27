@@ -22,7 +22,7 @@ type budgetLog struct {
 	turn    func(on bool)
 	routine func(r *http.Request) // adds an entry anyone can make
 	notable func(r *http.Request) // adds one that names someone, or a service in trouble
-	slot    func(client string) *atomic.Uint64
+	slot    func(client string) uint64
 	read    func() (logged int, suppressed int64)
 }
 
@@ -36,7 +36,7 @@ func fromClient(ip string) *http.Request {
 // apart returns an address like format that has a budget of its own, other
 // than those of the clients avoided: a slot is shared by chance, and a test
 // of two clients must not be left to it.
-func apart(slot func(string) *atomic.Uint64, format string, avoid ...string) string {
+func apart(slot func(string) uint64, format string, avoid ...string) string {
 	for i := 1; ; i++ {
 		ip := fmt.Sprintf(format, i)
 		free := true
@@ -245,5 +245,27 @@ func BenchmarkRoutineBudget(b *testing.B) {
 				l.allow(clientKey(ip), now)
 			}
 		})
+	}
+}
+
+// Notable entries have a budget of their own, larger than the routine one:
+// anyone can make an app answer 5xx, or ask for a service that is down, so
+// one client can't fill a log with them either.
+func TestNotableBudget(t *testing.T) {
+	l := &outletLog[failureEntry]{seed: maphash.MakeSeed()}
+	now := time.Date(2026, 10, 27, 15, 0, 0, 0, time.UTC)
+	for range notableBudget {
+		if !l.admit("10.0.0.1", now, false) {
+			t.Fatal("refused within the notable budget")
+		}
+	}
+	if l.admit("10.0.0.1", now, false) || l.suppressed.Load() != 1 {
+		t.Fatal("a notable entry past the budget was kept")
+	}
+	if !l.admit("10.0.0.1", now, true) {
+		t.Fatal("a routine entry was refused for the notable budget")
+	}
+	if !l.admit("10.0.0.1", now.Add(time.Minute), false) {
+		t.Fatal("the notable budget didn't start over the next minute")
 	}
 }

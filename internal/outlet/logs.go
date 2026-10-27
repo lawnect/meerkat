@@ -21,6 +21,10 @@ const (
 	// routineBudget is how many routine entries one client may add to a log
 	// in a minute: enough for a person's mistakes, far from a flood.
 	routineBudget = 60
+	// notableBudget is the same for the other entries. Anyone can make
+	// some of those too, a 5xx from an app or a request to a service
+	// that is down, so they have a budget, one a busy person stays under.
+	notableBudget = 600
 	// budgetSlots is how many clients' budgets a log tells apart. More
 	// clients share slots, which only makes them stricter.
 	budgetSlots = 1024
@@ -43,6 +47,7 @@ type outletLog[E any] struct {
 	// entries were added in it (low half); a slot is picked by a hash with
 	// a seed of this process, so a client can't aim at another's slot.
 	budget     [budgetSlots]atomic.Uint64
+	notable    [budgetSlots]atomic.Uint64 // the same for notable entries
 	seed       maphash.Seed
 	suppressed atomic.Int64 // routine entries given up for a budget
 }
@@ -77,23 +82,38 @@ func (l *outletLog[E]) add(entry E) {
 	}
 }
 
-// slot returns the budget of client, a key from clientKey.
-func (l *outletLog[E]) slot(client string) *atomic.Uint64 {
-	return &l.budget[maphash.String(l.seed, client)%budgetSlots]
+// slot returns where client, a key from clientKey, keeps its budgets.
+func (l *outletLog[E]) slot(client string) uint64 {
+	return maphash.String(l.seed, client) % budgetSlots
 }
 
-// allow takes one of client's routine entries for the minute of now, or
-// counts the entry as suppressed when the budget is spent. It takes no lock
-// and never allocates; a minute that passed starts the budget over.
+// admit takes one of client's entries for the minute of now, from the
+// routine budget or the notable one, or counts the entry as suppressed when
+// that budget is spent.
+func (l *outletLog[E]) admit(client string, now time.Time, routine bool) bool {
+	if routine {
+		return l.allow(client, now)
+	}
+	return l.take(&l.notable, notableBudget, client, now)
+}
+
+// allow takes one of client's routine entries for the minute of now.
 func (l *outletLog[E]) allow(client string, now time.Time) bool {
-	slot, minute := l.slot(client), uint64(now.Unix()/60)<<32
+	return l.take(&l.budget, routineBudget, client, now)
+}
+
+// take spends one of the limit entries client may add in the minute of now.
+// It takes no lock and never allocates; a minute that passed starts the
+// budget over.
+func (l *outletLog[E]) take(slots *[budgetSlots]atomic.Uint64, limit uint64, client string, now time.Time) bool {
+	slot, minute := &slots[l.slot(client)], uint64(now.Unix()/60)<<32
 	for {
 		packed := slot.Load()
 		used := uint64(0)
 		if packed&^math.MaxUint32 == minute {
 			used = packed & math.MaxUint32
 		}
-		if used >= routineBudget {
+		if used >= limit {
 			l.suppressed.Add(1)
 			return false
 		}

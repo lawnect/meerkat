@@ -725,7 +725,8 @@ type outletTunnel struct {
 type outletResponse struct {
 	control.Outlet
 	Tunnel outletTunnel `json:"tunnel"`
-	// Version is the Outlet's software version, also shown on the login page.
+	// Version is the Outlet's software version, shown in the console. Only
+	// signed-in administrators get it; the public sign-in status leaves it out.
 	Version string `json:"version"`
 }
 

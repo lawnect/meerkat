@@ -223,10 +223,11 @@ func TestTrapBansTheClientEverywhereRouted(t *testing.T) {
 	}
 }
 
-// Another site can make a visitor's browser ask for a trap path, with an
-// image or a link. That request is refused but bans nobody; one typed into
-// the address bar, or sent by a scanner, bans.
-func TestTrapFromAnotherSitesPageBansNobody(t *testing.T) {
+// A browser asks for a trap path only by mistake or by someone else's
+// design: a link pasted in a chat, a typed address, an image another site
+// embeds. That request is refused but bans nobody; one sent without a
+// browser's headers, as scanners send them, bans.
+func TestTrapFromABrowserBansNobody(t *testing.T) {
 	f := newBanFixture(t)
 	trap := func(ip string, headers map[string]string) {
 		t.Helper()
@@ -243,7 +244,8 @@ func TestTrapFromAnotherSitesPageBansNobody(t *testing.T) {
 		}
 	}
 	for i, headers := range []map[string]string{
-		{"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Dest": "image"},
+		{"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Dest": "image", "Sec-Fetch-Mode": "no-cors"},
+		{"Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"},
 		{"Sec-Fetch-Site": "same-site"},
 		{"Sec-Fetch-Site": "same-origin"},
 		{"Referer": "https://elsewhere.example.net/"},
@@ -254,12 +256,12 @@ func TestTrapFromAnotherSitesPageBansNobody(t *testing.T) {
 			t.Fatalf("%v: banned: %d", headers, code)
 		}
 	}
-	trap("198.51.100.50", map[string]string{"Sec-Fetch-Site": "none"})
+	trap("198.51.100.50", map[string]string{"User-Agent": "Mozilla/5.0 (compatible; scanner)", "Accept": "*/*"})
 	trap("198.51.100.51", nil)
 	if got := clients(f.bans(t, "")); !slices.Equal(got, []string{"198.51.100.51", "198.51.100.50"}) {
 		t.Fatalf("bans: %v", got)
 	}
-	for query, total := range map[string]int{"?cause=blocked": 4, "?cause=trapped": 2} {
+	for query, total := range map[string]int{"?cause=blocked": 5, "?cause=trapped": 2} {
 		if got := f.failureLog(t, query); got.Total != total {
 			t.Fatalf("%s: %d, want %d", query, got.Total, total)
 		}

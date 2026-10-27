@@ -6,11 +6,34 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/lawnect/meerkat/internal/control"
 	"github.com/lawnect/meerkat/internal/validation"
 )
+
+// defaultTunnelInternalAddress is where rathole listens when outlet.json has
+// no tunnel_internal_address: the loopback address on the port after the
+// tunnel port, or the one before it if that is the last port. The usual 2333
+// gives DefaultTunnelInternalAddress, and a tunnel port of 2334 doesn't
+// collide with it. If the tunnel port doesn't parse, which validation
+// refuses, it is DefaultTunnelInternalAddress.
+func defaultTunnelInternalAddress(listen string) string {
+	_, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return DefaultTunnelInternalAddress
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return DefaultTunnelInternalAddress
+	}
+	next := n + 1
+	if next > 65535 {
+		next = n - 1
+	}
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(next))
+}
 
 // validateTunnelAddresses checks where the Outlet listens for tunnels and
 // where rathole does. rathole must be reachable only from inside the Outlet's

@@ -199,3 +199,42 @@ func TestAccessLogSuppressesAFlood(t *testing.T) {
 		t.Fatalf("named: %+v", view)
 	}
 }
+
+// A token's ID is no secret: a request that sends a known ID with a wrong
+// secret is logged as anonymous, routine and within its client's budget,
+// so knowing an ID doesn't let anyone fill the log with notable entries.
+func TestAccessLogNamesATokenOnlyForItsSecret(t *testing.T) {
+	f := newAccessFixture(t)
+	h := f.store.Handler()
+	var created struct {
+		Token accessTokenView `json:"token"`
+		Value string          `json:"value"`
+	}
+	w := request(h, "POST", "/api/v1/security/access-tokens", f.admin, map[string]any{"name": "CI", "hosts": []string{"app.example.com"}, "ranges": []string{}, "expires_days": 0})
+	if w.Code != http.StatusCreated || json.Unmarshal(w.Body.Bytes(), &created) != nil {
+		t.Fatalf("token: %d %s", w.Code, w.Body.String())
+	}
+	f.setPolicies(t,
+		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true, RequireToken: true},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
+	)
+	if w := request(h, "PUT", "/api/v1/observe/access-log", f.admin, map[string]any{"enabled": true, "max_mib": 64, "retention_days": 7}); w.Code != 200 {
+		t.Fatalf("turn on: %d", w.Code)
+	}
+	send := func(value string) {
+		r := httptest.NewRequest("GET", "https://app.example.com/", nil)
+		r.Host = "app.example.com"
+		r.Header.Set("X-Forwarded-For", "198.51.100.9")
+		r.Header.Set(accessTokenHeader, value)
+		f.handler.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	send(created.Token.ID + ".wrong-secret")
+	send(created.Value)
+	var view logView[accessEntry]
+	if w := request(h, "GET", "/api/v1/observe/access-log", f.admin, nil); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &view) != nil || len(view.Entries) != 2 {
+		t.Fatalf("log: %d %s", w.Code, w.Body.String())
+	}
+	if real, forged := view.Entries[0], view.Entries[1]; real.Token != created.Token.ID || real.Routine || forged.Token != "" || !forged.Routine || forged.Reason != "token_invalid" {
+		t.Fatalf("entries: %+v", view.Entries)
+	}
+}

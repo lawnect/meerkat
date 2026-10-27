@@ -44,13 +44,50 @@ services:
   rathole:
     <<: *runtime
     entrypoint: [/bin/sh, -c]
-    command: ["until test -f /state/rathole/server.toml; do sleep 1; done; exec /usr/local/bin/rathole --server /state/rathole/server.toml"]
+    # rathole shares the Outlet's network namespace. When the Outlet's
+    # container restarts it gets a new one, and rathole is left in the old
+    # one with nothing to serve. So once the Outlet has started again (it
+    # rewrites rathole/outlet-started each time), this exits, and Docker
+    # starts rathole again in the new namespace.
+    command:
+      - |
+        until test -f /state/rathole/server.toml; do
+          sleep 1
+        done
+        /usr/local/bin/rathole --server /state/rathole/server.toml &
+        rathole=$$!
+        trap 'kill "$$rathole"; wait "$$rathole"; exit 0' TERM INT
+        touch /tmp/joined
+        while sleep 5; do
+          kill -0 "$$rathole" 2>/dev/null || break
+          grep -qs ':1F90 ' /proc/net/tcp /proc/net/tcp6 && continue
+          if [ /state/rathole/outlet-started -nt /tmp/joined ]; then
+            kill "$$rathole"
+            break
+          fi
+        done
+        wait "$$rathole"
+        exit 1
     volumes:
       - "${MEERKAT_DEPLOY_DIR}/outlet-data:/state:ro"
     network_mode: service:outlet
+    # Healthy while rathole listens where server.toml says, and the Outlet's
+    # listener (8080, 0x1F90) is in the same namespace.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          port=$$(sed -n 's/^bind_addr = ".*:\([0-9]*\)"$$/\1/p' /state/rathole/server.toml | head -n 1);
+          [ -n "$$port" ] && grep -qs ":$$(printf '%04X' "$$port") " /proc/net/tcp /proc/net/tcp6 &&
+          grep -qs ':1F90 ' /proc/net/tcp /proc/net/tcp6
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     depends_on:
       outlet:
         condition: service_healthy
+        restart: true
 
   caddy:
     # Starts with an empty config; Outlet enables fixed public routing after domain setup.

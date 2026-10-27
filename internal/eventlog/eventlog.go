@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -26,6 +27,10 @@ const (
 	maxWAL = 16 << 20
 	// MaxPage bounds one Query.
 	MaxPage = 200
+	// layout numbers the table layout every log shares (id, at, routine and
+	// the kind's columns); a change to it, or a Kind's Version, starts the
+	// files over.
+	layout = 1
 )
 
 // ErrFull is Append's error when SQLite refuses the write because the file
@@ -46,8 +51,13 @@ type Limits struct {
 // An entry is routine when anyone can make it happen at will, as a flood
 // would; the rest are notable. The flag has a column of its own, so that
 // shedding can keep notable entries longest.
+//
+// Version numbers the columns: change them and change it, and files kept
+// in the old ones start over empty rather than failing to open. Log entries
+// are worth less than a log that works.
 type Kind[E any] struct {
 	Table   string
+	Version int
 	Columns []string
 	Filters []string
 	Search  []string
@@ -87,6 +97,27 @@ func Open[E any](ctx context.Context, path string, kind Kind[E], limits Limits) 
 	for i, column := range kind.Columns {
 		columns[i], names[i] = column+" NOT NULL", strings.Fields(column)[0]
 	}
+	// A file whose layout isn't this one, from an older build, starts over.
+	version := layout<<16 | kind.Version
+	var stored int
+	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&stored); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if stored != version {
+		var tables int
+		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", kind.Table).Scan(&tables); err != nil {
+			db.Close()
+			return nil, err
+		}
+		if tables > 0 {
+			slog.Warn("event log kept by another version starts over", "path", path, "version", stored, "want", version)
+			if _, err := db.ExecContext(ctx, "DROP TABLE "+kind.Table); err != nil {
+				db.Close()
+				return nil, err
+			}
+		}
+	}
 	statements := []string{fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id INTEGER PRIMARY KEY, at TEXT NOT NULL, routine INTEGER NOT NULL, %s)", kind.Table, strings.Join(columns, ", ")),
 		fmt.Sprintf("CREATE INDEX IF NOT EXISTS %[1]s_at ON %[1]s(at)", kind.Table),
 		// Shedding takes the oldest routine entries, and a list can show only them or only the rest.
@@ -99,6 +130,10 @@ func Open[E any](ctx context.Context, path string, kind Kind[E], limits Limits) 
 			db.Close()
 			return nil, err
 		}
+	}
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", version)); err != nil {
+		db.Close()
+		return nil, err
 	}
 	log := &Log[E]{db: db, kind: kind, names: strings.Join(names, ", ")}
 	log.SetLimits(limits)
@@ -148,37 +183,63 @@ func full(err error) error {
 	return err
 }
 
+// shedChunk bounds one delete: the log has a single connection, and the
+// console's reads get it between chunks rather than after the whole lot.
+const shedChunk = 10_000
+
 // Shed forgets the oldest tenth of the entries, so writes fit again: freed
-// pages are reused rather than the file growing. The routine ones go first,
-// and the notable ones only for what the routine ones can't make up, so a
-// flood can't push out what matters.
+// pages are reused rather than the file growing.
 func (l *Log[E]) Shed(ctx context.Context) error {
 	var count int64
 	if err := l.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+l.kind.Table).Scan(&count); err != nil {
 		return err
 	}
-	tenth := max(count/10, 1)
-	done, err := l.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %[1]s WHERE id IN (SELECT id FROM %[1]s WHERE routine = 1 ORDER BY id LIMIT ?)", l.kind.Table), tenth)
-	if err != nil {
-		return err
+	return l.shed(ctx, max(count/10, 1))
+}
+
+// shed forgets the n oldest entries, in chunks. The routine ones go first,
+// and the notable ones only for what the routine ones can't make up, so a
+// flood can't push out what matters.
+func (l *Log[E]) shed(ctx context.Context, n int64) error {
+	for _, which := range []string{"routine = 1", "1 = 1"} {
+		for n > 0 {
+			chunk := min(n, shedChunk)
+			done, err := l.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %[1]s WHERE id IN (SELECT id FROM %[1]s WHERE %[2]s ORDER BY id LIMIT ?)", l.kind.Table, which), chunk)
+			if err != nil {
+				return err
+			}
+			gone, err := done.RowsAffected()
+			if err != nil {
+				return err
+			}
+			n -= gone
+			if gone < chunk {
+				break
+			}
+		}
 	}
-	gone, err := done.RowsAffected()
-	if err != nil || gone >= tenth {
-		return err
-	}
-	_, err = l.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %[1]s WHERE id IN (SELECT id FROM %[1]s ORDER BY id LIMIT ?)", l.kind.Table), tenth-gone)
-	return err
+	return nil
 }
 
 // Prune forgets entries older than the retention before now, then sheds,
 // routine entries first, until the file, its free pages given back, fits
-// the cap.
+// the cap. A lowered cap is met in one Prune: it sheds what the cap leaves
+// no room for, with a tenth to spare, rather than a tenth at a time.
 func (l *Log[E]) Prune(ctx context.Context, now time.Time) error {
 	limits := l.Limits()
-	if _, err := l.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE at < ?", l.kind.Table), now.UTC().Add(-limits.Retention).Format(time.RFC3339Nano)); err != nil {
-		return err
+	for {
+		done, err := l.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %[1]s WHERE id IN (SELECT id FROM %[1]s WHERE at < ? ORDER BY id LIMIT %[2]d)", l.kind.Table, shedChunk), now.UTC().Add(-limits.Retention).Format(time.RFC3339Nano))
+		if err != nil {
+			return err
+		}
+		if gone, err := done.RowsAffected(); err != nil || gone < shedChunk {
+			if err != nil {
+				return err
+			}
+			break
+		}
 	}
-	for range 20 {
+	for range 8 {
 		if _, err := l.db.ExecContext(ctx, "PRAGMA incremental_vacuum"); err != nil {
 			return err
 		}
@@ -186,7 +247,12 @@ func (l *Log[E]) Prune(ctx context.Context, now time.Time) error {
 		if err != nil || size <= limits.MaxBytes {
 			return err
 		}
-		if err := l.Shed(ctx); err != nil {
+		var count int64
+		if err := l.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+l.kind.Table).Scan(&count); err != nil || count == 0 {
+			return err
+		}
+		keep := int64(float64(count) * float64(limits.MaxBytes) / float64(size) * 0.9)
+		if err := l.shed(ctx, max(count-keep, 1)); err != nil {
 			return err
 		}
 	}

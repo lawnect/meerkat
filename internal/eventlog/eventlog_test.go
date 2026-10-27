@@ -2,7 +2,9 @@ package eventlog
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -407,4 +409,103 @@ func BenchmarkLogAppend(b *testing.B) {
 		}
 	}
 	b.ReportMetric(float64(b.N*len(batch))/b.Elapsed().Seconds(), "entries/s")
+}
+
+// A file kept by a build with other columns would fail every write; it
+// starts over instead, and a file in the current layout keeps its entries.
+func TestLogFromAnotherVersionStartsOver(t *testing.T) {
+	ctx := context.Background()
+	limits := Limits{MaxBytes: 64 << 20, Retention: 24 * time.Hour}
+	now := time.Now().UTC()
+	path := filepath.Join(t.TempDir(), "events.db")
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec("CREATE TABLE events (id INTEGER PRIMARY KEY, at TEXT NOT NULL, path TEXT NOT NULL, state TEXT NOT NULL)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec("INSERT INTO events(at, path, state) VALUES (?, '/old', 'x')", now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+
+	reopen := func(kind Kind[testEntry]) *Log[testEntry] {
+		t.Helper()
+		log, err := Open(ctx, path, kind, limits)
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		return log
+	}
+	log := reopen(testKind)
+	if entries, total, err := log.Query(ctx, Query{}); err != nil || total != 0 || len(entries) != 0 {
+		t.Fatalf("old entries kept: %v %d %v", entries, total, err)
+	}
+	if err := log.Append(ctx, []testEntry{{At: now, Path: "/new", State: "ok"}}); err != nil {
+		t.Fatal(err)
+	}
+	log.Close()
+	log = reopen(testKind)
+	if _, total, err := log.Query(ctx, Query{}); err != nil || total != 1 {
+		t.Fatalf("same version lost its entries: %d %v", total, err)
+	}
+	log.Close()
+	bumped := testKind
+	bumped.Version++
+	log = reopen(bumped)
+	defer log.Close()
+	if _, total, err := log.Query(ctx, Query{}); err != nil || total != 0 {
+		t.Fatalf("a new version kept the old entries: %d %v", total, err)
+	}
+}
+
+// Shedding more than a chunk takes every routine entry before any notable
+// one, chunk after chunk; and a lowered cap is met by one Prune, not a
+// tenth of the entries at a time.
+func TestLogShedsInChunksAndMeetsALoweredCap(t *testing.T) {
+	ctx := context.Background()
+	log, _ := openTest(t, Limits{MaxBytes: 256 << 20, Retention: 24 * time.Hour})
+	now := time.Now().UTC()
+	padding := strings.Repeat("x", 200)
+	var batch []testEntry
+	for i := range 2*shedChunk + 500 {
+		batch = append(batch, testEntry{At: now, Path: fmt.Sprintf("/%d/%s", i, padding), State: "r", Routine: i%100 != 0})
+	}
+	if err := log.Append(ctx, batch); err != nil {
+		t.Fatal(err)
+	}
+	notable := int64(0)
+	for _, e := range batch {
+		if !e.Routine {
+			notable++
+		}
+	}
+	routine := int64(len(batch)) - notable
+	if err := log.shed(ctx, routine+5); err != nil {
+		t.Fatal(err)
+	}
+	left, total, err := log.Query(ctx, Query{Limit: MaxPage})
+	if err != nil || int64(total) != notable-5 {
+		t.Fatalf("after shedding: %d left, want %d (%v)", total, notable-5, err)
+	}
+	for _, e := range left {
+		if e.Routine {
+			t.Fatalf("a routine entry outlived the notable ones: %+v", e)
+		}
+	}
+
+	if err := log.Append(ctx, batch); err != nil {
+		t.Fatal(err)
+	}
+	size, _ := log.Size(ctx)
+	limits := log.Limits()
+	limits.MaxBytes = size / 4
+	log.SetLimits(limits)
+	if err := log.Prune(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := log.Size(ctx); after > limits.MaxBytes {
+		t.Fatalf("one prune left %d bytes over a cap of %d", after, limits.MaxBytes)
+	}
 }

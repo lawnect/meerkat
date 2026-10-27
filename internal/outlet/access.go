@@ -698,8 +698,11 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 	// What the policy decides is counted, and logged, for the console:
 	// refused unless a return below says otherwise, with why, and who.
 	outcome, reason, email := accessDenied, "", ""
+	// A token is named only when its secret matched: anyone can send a
+	// known ID with a wrong secret, and the entry is then as anonymous,
+	// and as routine, as one without a token (the audit log keeps the ID).
 	logged := ""
-	if value != "" {
+	if value != "" && refused != "invalid" {
 		logged = token.ID
 	}
 	defer func() {

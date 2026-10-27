@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/netip"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -210,17 +213,26 @@ func settled(t *testing.T, before int) {
 	}
 }
 
+// handshakeFrame is a first handshake message the way rathole's transport
+// frames it: the body's length as 2 little-endian bytes, then the body.
+func handshakeFrame(body []byte) []byte {
+	return append(binary.LittleEndian.AppendUint16(nil, uint16(len(body))), body...)
+}
+
+// framed is a message an unknown client may open a connection with.
+func framed(msg string) string { return string(handshakeFrame([]byte(msg))) }
+
 // Bytes pass both ways, an end of data from the client reaches rathole
-// while rathole can still answer, the first bytes arrive in one piece, and
+// while rathole can still answer, the first message arrives in one piece, and
 // a large transfer in both directions at once arrives intact.
 func TestTunnelGuardPassesBytesBothWays(t *testing.T) {
 	rathole := newEchoRathole(t)
 	g := startGuard(t, rathole.address())
 
 	conn := connectGuard(t, g)
-	echoes(t, conn, "hello")
+	echoes(t, conn, framed("hello"))
 	echoes(t, conn, "second")
-	if first := rathole.firstBytes(); len(first) != 1 || first[0] != "hello" {
+	if first := rathole.firstBytes(); len(first) != 1 || first[0] != framed("hello") {
 		t.Fatalf("rathole saw %q first, want the client's first bytes", first)
 	}
 
@@ -271,7 +283,7 @@ func TestTunnelGuardPassesRatholeClosing(t *testing.T) {
 	}()
 	g := startGuard(t, listener.Addr().String())
 	conn := connectGuard(t, g)
-	if _, err := conn.Write([]byte("hi")); err != nil {
+	if _, err := conn.Write([]byte(framed("hi"))); err != nil {
 		t.Fatal(err)
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
@@ -297,7 +309,7 @@ func TestTunnelGuardClosesSilentClientsBeforeRathole(t *testing.T) {
 	// A client that speaks in time is not idle, however slowly.
 	slow := connectGuard(t, g)
 	time.Sleep(100 * time.Millisecond)
-	echoes(t, slow, "late but in time")
+	echoes(t, slow, framed("late but in time"))
 
 	if n := rathole.accepted.Load(); n != 1 {
 		t.Fatalf("rathole was dialled %d times, want 1 (only for the client that spoke)", n)
@@ -306,6 +318,435 @@ func TestTunnelGuardClosesSilentClientsBeforeRathole(t *testing.T) {
 	if stats := g.stats(); stats.Refused.Idle != 1 || stats.Accepted != 1 {
 		t.Fatalf("stats = %+v", stats)
 	}
+}
+
+// scriptedRathole is a rathole whose behaviour a test writes. With serial
+// set it runs handle in the accept loop itself, as rathole v0.5.0 does the
+// transport handshake of every connection before it accepts the next, and
+// handle starts a goroutine for whatever may overlap.
+type scriptedRathole struct {
+	listener net.Listener
+	accepted atomic.Int64
+	wg       sync.WaitGroup
+
+	mu    sync.Mutex
+	conns map[net.Conn]struct{}
+}
+
+func newScriptedRathole(t testing.TB, serial bool, handle func(*net.TCPConn)) *scriptedRathole {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &scriptedRathole{listener: listener, conns: map[net.Conn]struct{}{}}
+	r.wg.Go(func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			r.accepted.Add(1)
+			r.mu.Lock()
+			r.conns[conn] = struct{}{}
+			r.mu.Unlock()
+			if serial {
+				handle(conn.(*net.TCPConn))
+			} else {
+				r.wg.Go(func() { handle(conn.(*net.TCPConn)) })
+			}
+		}
+	})
+	t.Cleanup(r.close)
+	return r
+}
+
+func (r *scriptedRathole) address() string { return r.listener.Addr().String() }
+
+func (r *scriptedRathole) close() {
+	_ = r.listener.Close()
+	r.mu.Lock()
+	for conn := range r.conns {
+		_ = conn.Close()
+	}
+	r.mu.Unlock()
+	r.wg.Wait()
+}
+
+// readFrame reads one framed message, as rathole does at the start of its
+// handshake, within patience.
+func readFrame(conn *net.TCPConn, patience time.Duration) ([]byte, error) {
+	_ = conn.SetReadDeadline(time.Now().Add(patience))
+	defer conn.SetReadDeadline(time.Time{})
+	var header [2]byte
+	if _, err := io.ReadFull(conn, header[:]); err != nil {
+		return nil, err
+	}
+	body := make([]byte, binary.LittleEndian.Uint16(header[:]))
+	_, err := io.ReadFull(conn, body)
+	return body, err
+}
+
+// An unknown client has to send the whole first message of its handshake
+// before rathole is dialled: rathole handshakes inside its accept loop and
+// waits for a message that stops halfway, so one that did get through would
+// hold every other tunnel up. A client that doesn't finish in time is refused
+// as idle, however it falls short, and rathole never hears of it.
+func TestTunnelGuardWaitsForTheWholeFirstFrameBeforeRathole(t *testing.T) {
+	const deadline = 300 * time.Millisecond
+	body := bytes.Repeat([]byte{7}, 48)
+	frame := handshakeFrame(body)
+	for _, tc := range []struct {
+		name string
+		send func(conn *net.TCPConn)
+	}{
+		{"one byte", func(conn *net.TCPConn) { _, _ = conn.Write(frame[:1]) }},
+		{"the length only", func(conn *net.TCPConn) { _, _ = conn.Write(frame[:2]) }},
+		{"a length that promises more than is sent", func(conn *net.TCPConn) { _, _ = conn.Write(frame[:12]) }},
+		{"one byte short", func(conn *net.TCPConn) { _, _ = conn.Write(frame[:len(frame)-1]) }},
+		{"a trickle that would take longer than the time allowed", func(conn *net.TCPConn) {
+			for i := range frame {
+				if _, err := conn.Write(frame[i : i+1]); err != nil {
+					return
+				}
+				time.Sleep(40 * time.Millisecond)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rathole := newEchoRathole(t)
+			g := startGuard(t, rathole.address(), func(g *tunnelGuard) { g.firstBytes = deadline })
+			conn := connectGuard(t, g)
+			began := time.Now()
+			go tc.send(conn)
+			if !closedByGuard(conn, 3*time.Second) {
+				t.Fatal("the guard didn't close a client that stopped before the end of its first message")
+			}
+			if took := time.Since(began); took < deadline-50*time.Millisecond {
+				t.Fatalf("closed after %v: a client gets the whole time to finish", took)
+			}
+			eventually(t, "the refusal to be counted", func() bool { return g.stats().Refused.Idle == 1 })
+			eventually(t, "the place to be freed", func() bool { return g.unknownConns.total.Load() == 0 })
+			if n := rathole.accepted.Load(); n != 0 {
+				t.Fatalf("rathole was dialled %d times for a client that never finished its first message", n)
+			}
+			if stats := g.stats(); stats.Accepted != 0 || stats.Active != 0 || stats.Refused.Idle != 1 {
+				t.Fatalf("stats = %+v", stats)
+			}
+		})
+	}
+
+	// A client that gives up by itself is not a refusal, as a port check isn't.
+	t.Run("one that leaves", func(t *testing.T) {
+		rathole := newEchoRathole(t)
+		g := startGuard(t, rathole.address(), func(g *tunnelGuard) { g.firstBytes = deadline })
+		conn := connectGuard(t, g)
+		_, _ = conn.Write(frame[:20])
+		conn.Close()
+		eventually(t, "the place to be freed", func() bool { return g.unknownConns.total.Load() == 0 })
+		time.Sleep(2 * deadline)
+		if stats := g.stats(); rathole.accepted.Load() != 0 || stats.Accepted != 0 || stats.Refused.Idle != 0 {
+			t.Fatalf("stats = %+v, rathole dialled %d times", stats, rathole.accepted.Load())
+		}
+	})
+}
+
+// The first message is 1 to 1024 bytes long: any other length is turned away
+// at once, without waiting for a body and without rathole.
+func TestTunnelGuardRefusesImpossibleFrameLengths(t *testing.T) {
+	lengths := func(n int) []byte { return binary.LittleEndian.AppendUint16(nil, uint16(n)) }
+	for _, tc := range []struct {
+		name string
+		sent []byte
+	}{
+		{"zero", lengths(0)},
+		{"zero, with more after it", append(lengths(0), bytes.Repeat([]byte{1}, 48)...)},
+		{"1025", append(lengths(guardMaxFrame+1), bytes.Repeat([]byte{1}, 20)...)},
+		{"4096", append(lengths(4096), bytes.Repeat([]byte{1}, 20)...)},
+		{"65535", lengths(65535)},
+		{"big-endian 48 is 12288", []byte{0, 48}},
+		{"an HTTP request", []byte("GET / HTTP/1.1\r\nHost: x\r\n\r\n")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rathole := newEchoRathole(t)
+			g := startGuard(t, rathole.address())
+			conn := connectGuard(t, g)
+			began := time.Now()
+			_, _ = conn.Write(tc.sent)
+			if !closedByGuard(conn, 3*time.Second) {
+				t.Fatal("the guard didn't close a client with an impossible first message")
+			}
+			if took := time.Since(began); took > 2*time.Second {
+				t.Fatalf("closed after %v, not at once (the time allowed is %v)", took, guardFirstBytes)
+			}
+			eventually(t, "the place to be freed", func() bool { return g.unknownConns.total.Load() == 0 })
+			if stats := g.stats(); rathole.accepted.Load() != 0 || stats.Accepted != 0 || stats.Active != 0 {
+				t.Fatalf("stats = %+v, rathole dialled %d times", stats, rathole.accepted.Load())
+			}
+		})
+	}
+
+	// The ends of the range are allowed.
+	for _, size := range []int{1, 2, 48, guardMaxFrame} {
+		t.Run(fmt.Sprintf("%d is passed on", size), func(t *testing.T) {
+			rathole := newEchoRathole(t)
+			g := startGuard(t, rathole.address())
+			body := make([]byte, size)
+			_, _ = rand.Read(body)
+			echoes(t, connectGuard(t, g), string(handshakeFrame(body)))
+			if first := rathole.firstBytes(); len(first) != 1 || first[0] != string(handshakeFrame(body)) {
+				t.Fatalf("rathole saw %d messages, want the one frame of %d bytes", len(first), size+2)
+			}
+		})
+	}
+}
+
+// What the client sent reaches rathole byte for byte, whether it came in one
+// piece or a byte at a time, and what follows the first message is neither
+// lost nor repeated. rathole gets the message in one write, so it never sees
+// the pauses of a slow sender.
+func TestTunnelGuardForwardsTheFirstFrameByteForByte(t *testing.T) {
+	body := make([]byte, 48)
+	_, _ = rand.Read(body)
+	frame := handshakeFrame(body)
+	rest := make([]byte, 100000)
+	_, _ = rand.Read(rest)
+
+	t.Run("one byte at a time", func(t *testing.T) {
+		rathole := newEchoRathole(t)
+		g := startGuard(t, rathole.address())
+		conn := connectGuard(t, g)
+		for i := range frame {
+			if _, err := conn.Write(frame[i : i+1]); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		got := make([]byte, len(frame))
+		if _, err := io.ReadFull(conn, got); err != nil || !bytes.Equal(got, frame) {
+			t.Fatalf("echo = %x, %v", got, err)
+		}
+		if first := rathole.firstBytes(); len(first) != 1 || first[0] != string(frame) {
+			t.Fatalf("rathole saw %x first, want the whole frame in one piece", first)
+		}
+		echoes(t, conn, "and then anything")
+	})
+	t.Run("with the rest in the same write", func(t *testing.T) {
+		rathole := newEchoRathole(t)
+		g := startGuard(t, rathole.address())
+		conn := connectGuard(t, g)
+		sent := append(append([]byte(nil), frame...), rest...)
+		go func() { _, _ = conn.Write(sent) }()
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		got := make([]byte, len(sent))
+		if _, err := io.ReadFull(conn, got); err != nil || !bytes.Equal(got, sent) {
+			t.Fatalf("echo differs from what was sent (%v): bytes after the first message were lost, changed or repeated", err)
+		}
+		if first := rathole.firstBytes(); len(first) != 1 || !strings.HasPrefix(first[0], string(frame)) {
+			t.Fatalf("rathole didn't see the frame first")
+		}
+	})
+}
+
+// A known client isn't held back: rathole is dialled when it connects, before
+// it has said anything, and one byte is enough.
+func TestTunnelGuardDialsKnownClientsAtOnce(t *testing.T) {
+	rathole := newEchoRathole(t)
+	g := startGuard(t, rathole.address())
+	g.learn("127.0.0.1")
+	conn := connectGuard(t, g)
+	eventually(t, "rathole to be dialled for a silent known client", func() bool { return rathole.accepted.Load() == 1 })
+	echoes(t, conn, "x")
+	if first := rathole.firstBytes(); len(first) != 1 || first[0] != "x" {
+		t.Fatalf("rathole saw %q first", first)
+	}
+	if stats := g.stats(); stats.Refused.Idle != 0 || stats.Accepted != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+// rathole does its handshakes one at a time and waits up to patience for the
+// first message of each. Unknown clients that send a byte and go quiet used
+// to be passed on at that byte and take turns holding it; a known client,
+// the only one that matters to a tunnel, then waited behind all of them.
+func TestTunnelGuardKeepsStallersAwayFromRatholesAcceptLoop(t *testing.T) {
+	if l, err := net.Listen("tcp6", "[::1]:0"); err != nil {
+		t.Skip("no IPv6 loopback to be a second address with")
+	} else {
+		l.Close()
+	}
+	const patience, stallers = time.Second, 8
+	var handshakes, gaveUp atomic.Int64
+	rathole := newScriptedRathole(t, true, func(conn *net.TCPConn) {
+		if _, err := readFrame(conn, patience); err != nil {
+			gaveUp.Add(1)
+			conn.Close()
+			return
+		}
+		handshakes.Add(1)
+		_, _ = conn.Write(handshakeFrame([]byte("welcome")))
+		go func() {
+			defer conn.Close()
+			_, _ = io.Copy(conn, conn)
+		}()
+	})
+	// One dual-stack listener: the stallers come from 127.0.0.1, the Connector
+	// from ::1.
+	g := startGuard(t, rathole.address(), func(g *tunnelGuard) {
+		g.listen = "[::]:0"
+		g.firstBytes = patience
+	})
+	g.learn("::1")
+	port := g.address().(*net.TCPAddr).Port
+
+	for range stallers {
+		conn, err := net.Dial("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		if _, err := conn.Write([]byte{0}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	eventually(t, "the stallers to be admitted", func() bool { return g.unknownConns.total.Load() == stallers })
+	time.Sleep(100 * time.Millisecond)
+
+	began := time.Now()
+	conn, err := net.Dial("tcp6", net.JoinHostPort("::1", strconv.Itoa(port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write(handshakeFrame(make([]byte, 48))); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := readFrame(conn.(*net.TCPConn), 3*time.Second)
+	if err != nil || string(reply) != "welcome" {
+		t.Fatalf("the known client got %q, %v after %v: the stallers hold rathole's accept loop", reply, err, time.Since(began))
+	}
+	if took := time.Since(began); took > patience/2 {
+		t.Fatalf("the known client's handshake took %v while %d unknown clients stalled", took, stallers)
+	}
+	eventually(t, "the stallers to be refused", func() bool { return g.stats().Refused.Idle == stallers })
+	if n := rathole.accepted.Load(); n != 1 || handshakes.Load() != 1 || gaveUp.Load() != 0 {
+		t.Fatalf("rathole accepted %d connections, %d handshakes, gave up on %d: the stallers got through", n, handshakes.Load(), gaveUp.Load())
+	}
+}
+
+// Once rathole has hung up on a client, closed or half-closed, the client has
+// nothing to wait for and no reason to keep its place: it gets a few seconds
+// to finish and is then closed. A tunnel that is alive is never timed out, in
+// either direction.
+func TestTunnelGuardClosesClientsAfterRatholeHangsUp(t *testing.T) {
+	const grace = 400 * time.Millisecond
+	hangups := map[string]func(*net.TCPConn){
+		"closes": func(conn *net.TCPConn) {
+			_, _ = readFrame(conn, 3*time.Second)
+			conn.Close()
+		},
+		"half-closes and goes on listening": func(conn *net.TCPConn) {
+			defer conn.Close()
+			_, _ = readFrame(conn, 3*time.Second)
+			_ = conn.CloseWrite()
+			_, _ = io.Copy(io.Discard, conn)
+		},
+	}
+	for name, hangup := range hangups {
+		t.Run(name, func(t *testing.T) {
+			rathole := newScriptedRathole(t, false, hangup)
+			g := startGuard(t, rathole.address(), func(g *tunnelGuard) { g.afterHangup = grace })
+			conn := connectGuard(t, g)
+			if _, err := conn.Write(handshakeFrame([]byte("hello"))); err != nil {
+				t.Fatal(err)
+			}
+			// The hang-up reaches the client as the end of data...
+			_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			if n, err := conn.Read(make([]byte, 1)); n != 0 || !errors.Is(err, io.EOF) {
+				t.Fatalf("read %d bytes, %v; want the end of data", n, err)
+			}
+			hungUp := time.Now()
+			// ...and the silent client is held no longer than the time allowed.
+			time.Sleep(grace / 4)
+			if stats := g.stats(); stats.Active != 1 || g.unknownConns.total.Load() != 1 {
+				t.Fatalf("the client was cut %v after the hang-up, before the time it was given: %+v", time.Since(hungUp), stats)
+			}
+			eventually(t, "the client to be closed and its place freed", func() bool {
+				return g.stats().Active == 0 && g.unknownConns.total.Load() == 0
+			})
+			if took := time.Since(hungUp); took < grace-100*time.Millisecond || took > grace+time.Second {
+				t.Fatalf("the client was closed %v after the hang-up, want about %v", took, grace)
+			}
+			// The client's side is closed too, not just forgotten.
+			for end := time.Now().Add(2 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+				if _, err := conn.Write([]byte{0}); err != nil {
+					break
+				}
+				if time.Now().After(end) {
+					t.Fatal("the client's connection is still open")
+				}
+			}
+			eventually(t, "the connection to count as ended", func() bool { return g.stats().Active == 0 })
+		})
+	}
+
+	t.Run("a client that finishes in time is not cut short", func(t *testing.T) {
+		got := make(chan []byte, 1)
+		rathole := newScriptedRathole(t, false, func(conn *net.TCPConn) {
+			defer conn.Close()
+			_, _ = readFrame(conn, 3*time.Second)
+			_ = conn.CloseWrite()
+			rest, _ := io.ReadAll(conn)
+			got <- rest
+		})
+		g := startGuard(t, rathole.address(), func(g *tunnelGuard) { g.afterHangup = grace })
+		conn := connectGuard(t, g)
+		_, _ = conn.Write(handshakeFrame([]byte("hello")))
+		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		_, _ = conn.Read(make([]byte, 1)) // the end of data
+		_, _ = conn.Write([]byte("last words"))
+		_ = conn.CloseWrite()
+		select {
+		case rest := <-got:
+			if string(rest) != "last words" {
+				t.Fatalf("rathole heard %q, want what the client sent within the time it was given", rest)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("rathole never saw the client finish")
+		}
+		eventually(t, "the connection to end", func() bool { return g.stats().Active == 0 })
+	})
+
+	t.Run("a live tunnel is never timed out", func(t *testing.T) {
+		rathole := newEchoRathole(t)
+		g := startGuard(t, rathole.address(), func(g *tunnelGuard) { g.afterHangup = grace; g.firstBytes = grace })
+		conn := connectGuard(t, g)
+		echoes(t, conn, framed("up"))
+		time.Sleep(3 * grace)
+		echoes(t, conn, "still up after a long silence")
+		if stats := g.stats(); stats.Active != 1 || stats.Refused.Idle != 0 {
+			t.Fatalf("stats = %+v", stats)
+		}
+	})
+
+	t.Run("rathole may answer long after the client's end of data", func(t *testing.T) {
+		rathole := newScriptedRathole(t, false, func(conn *net.TCPConn) {
+			defer conn.Close()
+			_, _ = readFrame(conn, 3*time.Second)
+			_, _ = io.Copy(io.Discard, conn) // until the client's end of data
+			time.Sleep(3 * grace)
+			_, _ = conn.Write([]byte("late"))
+		})
+		g := startGuard(t, rathole.address(), func(g *tunnelGuard) { g.afterHangup = grace })
+		conn := connectGuard(t, g)
+		_, _ = conn.Write(handshakeFrame([]byte("hello")))
+		_ = conn.CloseWrite()
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if rest, err := io.ReadAll(conn); string(rest) != "late" || err != nil {
+			t.Fatalf("read %q, %v; the half-closed client was cut off before rathole answered", rest, err)
+		}
+	})
 }
 
 // A known client's silence is its own business: rathole's slots are the
@@ -332,7 +773,7 @@ func TestTunnelGuardLimitsAnUnknownClientOverSockets(t *testing.T) {
 		held := make([]*net.TCPConn, guardClientConcurrent)
 		for i := range held {
 			held[i] = connectGuard(t, g)
-			echoes(t, held[i], "x")
+			echoes(t, held[i], framed("x"))
 		}
 		if !turnedAway(t, g.address().String()) {
 			t.Fatal("a 33rd connection from one client stayed open")
@@ -342,7 +783,7 @@ func TestTunnelGuardLimitsAnUnknownClientOverSockets(t *testing.T) {
 		}
 		held[0].Close()
 		eventually(t, "a slot to free up", func() bool { return g.unknownConns.total.Load() == guardClientConcurrent-1 })
-		echoes(t, connectGuard(t, g), "again")
+		echoes(t, connectGuard(t, g), framed("again"))
 	})
 	t.Run("burst", func(t *testing.T) {
 		rathole := newEchoRathole(t)
@@ -350,7 +791,7 @@ func TestTunnelGuardLimitsAnUnknownClientOverSockets(t *testing.T) {
 		g := startGuard(t, rathole.address(), func(g *tunnelGuard) { g.now = clock.now })
 		for range guardTotalBurst {
 			conn := connectGuard(t, g)
-			echoes(t, conn, "x")
+			echoes(t, conn, framed("x"))
 			conn.Close()
 		}
 		if !turnedAway(t, g.address().String()) {
@@ -361,7 +802,7 @@ func TestTunnelGuardLimitsAnUnknownClientOverSockets(t *testing.T) {
 		}
 		// Time passes, and tokens come back.
 		clock.advance(time.Second)
-		echoes(t, connectGuard(t, g), "after a pause")
+		echoes(t, connectGuard(t, g), framed("after a pause"))
 	})
 }
 
@@ -537,6 +978,19 @@ func TestTunnelGuardConcurrentLimits(t *testing.T) {
 			t.Fatalf("past the cap: %v", got)
 		}
 	})
+	t.Run("a Connector may hold more than the requests the Outlet allows at once", func(t *testing.T) {
+		// The Outlet proxies 4096 requests at once by default, and each one
+		// takes a connection from the Connector, besides the idle keep-alive
+		// ones and the channels made ahead for every service.
+		f := newAdmissionGuard()
+		f.g.learn("192.0.2.1")
+		known := netip.MustParseAddr("192.0.2.1")
+		for i := range 2*4096 + 100 {
+			if got := f.try(known); got != admitted {
+				t.Fatalf("connection %d of a known client: %v", i+1, got)
+			}
+		}
+	})
 	t.Run("release frees the slot", func(t *testing.T) {
 		f := newAdmissionGuard()
 		client := netip.MustParseAddr("192.0.2.1")
@@ -553,6 +1007,14 @@ func TestTunnelGuardConcurrentLimits(t *testing.T) {
 			t.Fatalf("after a release: %v", got)
 		}
 	})
+}
+
+// The limits in effect are the documented ones.
+func TestTunnelGuardLimitsAreTheDocumentedOnes(t *testing.T) {
+	g := newTunnelGuard("127.0.0.1:2333", "127.0.0.1:2334", time.Now)
+	if g.firstBytes != 10*time.Second || g.afterHangup != 5*time.Second || g.dialTimeout != 5*time.Second || guardMaxFrame != 1024 {
+		t.Fatalf("first message %v, after a hang-up %v, dial %v, longest first message %d", g.firstBytes, g.afterHangup, g.dialTimeout, guardMaxFrame)
+	}
 }
 
 func TestTunnelGuardRateLimits(t *testing.T) {
@@ -742,7 +1204,7 @@ func TestTunnelGuardShutdownCutsConnectionsAndLeaksNothing(t *testing.T) {
 	address := g.address().String()
 
 	proxied := connectGuard(t, g)
-	echoes(t, proxied, "up")
+	echoes(t, proxied, framed("up"))
 	waiting := connectGuard(t, g) // an unknown client that hasn't spoken
 	eventually(t, "both to be admitted as unknown", func() bool { return g.unknownConns.total.Load() == 2 })
 	g.learn("127.0.0.1")
@@ -793,14 +1255,14 @@ func TestTunnelGuardLeavesNoGoroutinesBehind(t *testing.T) {
 		tcp := conn.(*net.TCPConn)
 		switch i % 4 {
 		case 0: // talks, then both sides finish politely
-			echoes(t, tcp, "x")
+			echoes(t, tcp, framed("x"))
 			_ = tcp.CloseWrite()
 			_, _ = io.Copy(io.Discard, tcp)
 		case 1: // talks, then vanishes
-			echoes(t, tcp, "x")
+			echoes(t, tcp, framed("x"))
 		case 2: // never speaks
 		case 3: // resets with data unread
-			_, _ = tcp.Write(bytes.Repeat([]byte("y"), 100000))
+			_, _ = tcp.Write(append(handshakeFrame([]byte("x")), bytes.Repeat([]byte("y"), 100000)...))
 			_ = tcp.SetLinger(0)
 		}
 		tcp.Close()
@@ -823,7 +1285,7 @@ func TestTunnelGuardClosesClientsWhenRatholeIsDown(t *testing.T) {
 	down.Close()
 	g := startGuard(t, address)
 	conn := connectGuard(t, g)
-	_, _ = conn.Write([]byte("hello"))
+	_, _ = conn.Write([]byte(framed("hello")))
 	if !closedByGuard(conn, 3*time.Second) {
 		t.Fatal("a client stayed connected to a guard whose rathole is down")
 	}
@@ -868,7 +1330,7 @@ func TestTunnelGuardRetriesABusyPort(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	echoes(t, conn.(*net.TCPConn), "through")
+	echoes(t, conn.(*net.TCPConn), framed("through"))
 
 	// Closing during the wait also ends it.
 	busy, err := net.Listen("tcp", "127.0.0.1:0")

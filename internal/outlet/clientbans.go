@@ -289,18 +289,16 @@ func (s *Store) banClient(ip string, rule *blockRule, host, path string) {
 	s.bans.add(key, rule.id, host, path, s.now(), config.duration)
 }
 
-// sentForAPage reports whether a browser made the request for a page: a
-// link followed, or an image or script another site embeds. A trap path
-// there would ban the person browsing rather than a scanner, so such a
-// request is only refused. Browsers say where a request comes from in
-// Sec-Fetch-Site ("none" when typed or bookmarked) and, older ones, in
-// Referer; scanners send neither, and one that forges them is still
-// refused, just not banned.
-func sentForAPage(r *http.Request) bool {
-	if site := r.Header.Get("Sec-Fetch-Site"); site != "" {
-		return site != "none"
-	}
-	return r.Header.Get("Referer") != ""
+// fromABrowser reports whether a browser sent the request. A trap path
+// reaches a browser only by mistake or by someone else's design: a link
+// pasted in a chat, a typed address, an image another site embeds. Banning
+// there would lock out a person, or everyone behind their address, instead
+// of a scanner, so such a request is only refused. Browsers send
+// Sec-Fetch-Site with every request (older ones a Referer when they follow
+// or embed a link); scanners send neither, and one that forges them is
+// still refused, just not banned.
+func fromABrowser(r *http.Request) bool {
+	return r.Header.Get("Sec-Fetch-Site") != "" || r.Header.Get("Referer") != ""
 }
 
 // refuseBanned turns a request away with 403 when its client is banned, and

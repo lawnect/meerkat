@@ -88,7 +88,7 @@ func (s *Store) logFailure(r *http.Request, host string, began time.Time, cause 
 	ip, _ := requestOrigin(r)
 	now := s.now()
 	routine := refused(cause)
-	if routine && !l.allow(clientKey(ip), now) {
+	if !l.admit(clientKey(ip), now, routine) {
 		return
 	}
 	var took time.Duration

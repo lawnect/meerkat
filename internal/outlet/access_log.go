@@ -54,7 +54,7 @@ func (s *Store) logAccess(r *http.Request, host, policy string, outcome int, rea
 	}
 	ip, _ := requestOrigin(r)
 	now := s.now()
-	if routine && !l.allow(clientKey(ip), now) {
+	if !l.admit(clientKey(ip), now, routine) {
 		return
 	}
 	l.add(accessEntry{At: now, Host: host, Method: eventlog.Clip(r.Method, 16), Path: eventlog.Clip(r.URL.Path, 512), Client: ip, Policy: policy, Decision: decisions[outcome], Reason: reason, Email: email, Token: token, Routine: routine})

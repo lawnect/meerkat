@@ -230,7 +230,7 @@ func (s *Store) PublicHandler() http.Handler {
 		if rule := s.blockedBy(host, r.URL.Path); rule != nil {
 			rule.hits.Add(1)
 			cause := failBlocked
-			if rule.ban && !sentForAPage(r) {
+			if rule.ban && !fromABrowser(r) {
 				s.banClient(origin, rule, host, r.URL.Path)
 				cause = failTrapped
 			}

@@ -54,8 +54,12 @@ func startRathole(t *testing.T, binary, mode, config string) {
 
 // The guard in front of the real rathole v0.5.0 (MEERKAT_RATHOLE names the
 // binary): a Noise tunnel is set up through it and carries requests, a strict
-// guard keeps out a client it doesn't know until its range is allowed, and
-// a flood of junk from another address doesn't take the tunnel down.
+// guard keeps out a client it doesn't know until its range is allowed, clients
+// that send one byte and go quiet can't hold rathole's accept loop (which does
+// the handshake of one connection at a time, up to 5 s each), a handshake
+// that rathole answers by hanging up doesn't hold a place for long, and a
+// flood of junk from another address doesn't take the tunnel down. The
+// attackers need addresses other than 127.0.0.1, which only Linux has.
 func TestTunnelGuardWithRealRathole(t *testing.T) {
 	binary := os.Getenv("MEERKAT_RATHOLE")
 	if binary == "" {
@@ -112,21 +116,91 @@ func TestTunnelGuardWithRealRathole(t *testing.T) {
 		t.Fatalf("stats = %+v: a control and a data channel should have been admitted", stats)
 	}
 
-	// Back to limited, with the Connector's address known; junk from another
-	// address, which only Linux has on loopback, is held to the limits.
+	// Back to limited, with the Connector's address known; the rest comes from
+	// other addresses, which only Linux has on loopback.
 	g.config.Store(compileTunnelGuard(control.DefaultTunnelGuard()))
 	g.learn("127.0.0.1")
+	attacker := func(last byte) *net.Dialer {
+		return &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, last)}, Timeout: 2 * time.Second}
+	}
 	if runtime.GOOS == "linux" {
-		var wg sync.WaitGroup
-		for range 300 {
-			wg.Go(func() {
-				dialer := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.2")}, Timeout: 2 * time.Second}
-				conn, err := dialer.Dial("tcp", g.address().String())
+		// Every request needs a data channel, and the ones made ahead are used
+		// up; from here on each visit goes through rathole's accept loop.
+		for range 20 {
+			visit()
+		}
+		// Eight clients send one byte and say nothing more. Passed on at that
+		// byte, each held rathole's accept loop for 5 s, one after the other,
+		// and no tunnel request got through. Now they wait at the guard, which
+		// never dials rathole for them, and a request is answered at once.
+		var stalled sync.WaitGroup
+		for range 8 {
+			stalled.Go(func() {
+				conn, err := attacker(3).Dial("tcp", g.address().String())
 				if err != nil {
 					return
 				}
 				defer conn.Close()
-				_, _ = conn.Write([]byte("not a noise handshake, just junk"))
+				_, _ = conn.Write([]byte{0})
+				_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+				_, _ = io.Copy(io.Discard, conn)
+			})
+		}
+		waitFor("the stallers to be admitted", func() bool { return g.unknownConns.total.Load() == 8 })
+		var slowest time.Duration
+		for end := time.Now().Add(7 * time.Second); time.Now().Before(end); time.Sleep(300 * time.Millisecond) {
+			began := time.Now()
+			if got := visit(); got != "app-ok" {
+				t.Fatalf("a request during the stall attack: %q after %v", got, time.Since(began))
+			}
+			slowest = max(slowest, time.Since(began))
+		}
+		if slowest > time.Second {
+			t.Fatalf("the slowest request during the stall attack took %v", slowest)
+		}
+		t.Logf("slowest of the requests made while 8 clients stalled: %v", slowest.Round(time.Millisecond))
+		stalled.Wait()
+		if stats := g.stats(); stats.Refused.Idle < 8 {
+			t.Fatalf("the stallers weren't refused as idle: %+v", stats)
+		}
+
+		// A whole first message that is junk: rathole drops it at once, and the
+		// guard, which would otherwise wait for a client that has nothing left
+		// to say, closes it a few seconds later.
+		junk := make([]byte, 50)
+		_, _ = rand.Read(junk)
+		junk[0], junk[1] = 48, 0
+		conn, err := attacker(4).Dial("tcp", g.address().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if _, err := conn.Write(junk); err != nil {
+			t.Fatal(err)
+		}
+		waitFor("the junk handshake to be admitted", func() bool { return g.unknownConns.total.Load() == 1 })
+		began := time.Now()
+		waitFor("the place of a client rathole hung up on to be freed", func() bool { return g.unknownConns.total.Load() == 0 })
+		if took := time.Since(began); took > guardAfterHangup+2*time.Second {
+			t.Fatalf("the junk handshake held its place for %v", took)
+		}
+		for range 3 {
+			if got := visit(); got != "app-ok" {
+				t.Fatalf("the tunnel failed after the junk handshake: %q", got)
+			}
+		}
+
+		// Junk that is the right size for a handshake, more of it than the
+		// limits allow.
+		var wg sync.WaitGroup
+		for range 300 {
+			wg.Go(func() {
+				conn, err := attacker(2).Dial("tcp", g.address().String())
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				_, _ = conn.Write(junk)
 				_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 				_, _ = io.Copy(io.Discard, conn)
 			})

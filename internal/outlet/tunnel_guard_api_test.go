@@ -184,7 +184,7 @@ func TestKnownConnectorsPassWhereUnknownClientsAreRefused(t *testing.T) {
 	// the loopback address is still unknown, and the 33rd connection is cut.
 	unknown := open(guardClientConcurrent)
 	for _, conn := range unknown {
-		echoes(t, conn, "x")
+		echoes(t, conn, framed("x"))
 	}
 	if !turnedAway(t, address) {
 		t.Fatal("an unknown client wasn't refused its 33rd connection")
@@ -391,15 +391,15 @@ func TestTunnelGuardSettingsReachTheListener(t *testing.T) {
 			t.Fatalf("%s: %d %s", mode, w.Code, w.Body.String())
 		}
 	}
-	echoes(t, connect(), "limited admits an unknown client")
+	echoes(t, connect(), framed("limited admits an unknown client"))
 	put("strict")
 	if !turnedAway(t, a.store.guard.address().String()) {
 		t.Fatal("strict kept an unknown client")
 	}
 	put("strict", "127.0.0.0/8")
-	echoes(t, connect(), "an allowed range is admitted in strict mode")
+	echoes(t, connect(), framed("an allowed range is admitted in strict mode"))
 	put("limited")
-	echoes(t, connect(), "and back")
+	echoes(t, connect(), framed("and back"))
 }
 
 func TestTunnelAddressesAreValidated(t *testing.T) {
@@ -432,6 +432,42 @@ func TestTunnelAddressesAreValidated(t *testing.T) {
 	}
 }
 
+// Without a tunnel_internal_address rathole listens on the loopback address
+// one port after the tunnel port (the one before it for the last port), so a
+// tunnel port of 2334 can't collide with the default.
+func TestDefaultTunnelInternalAddress(t *testing.T) {
+	for listen, want := range map[string]string{
+		"0.0.0.0:2333":        "127.0.0.1:2334",
+		"0.0.0.0:2334":        "127.0.0.1:2335",
+		"[::]:2334":           "127.0.0.1:2335",
+		"127.0.0.1:2333":      "127.0.0.1:2334",
+		"0.0.0.0:443":         "127.0.0.1:444",
+		"0.0.0.0:1":           "127.0.0.1:2",
+		"0.0.0.0:65534":       "127.0.0.1:65535",
+		"0.0.0.0:65535":       "127.0.0.1:65534",
+		"203.0.113.5:65535":   "127.0.0.1:65534",
+		"[2001:db8::1]:65535": "127.0.0.1:65534",
+	} {
+		got := defaultTunnelInternalAddress(listen)
+		if got != want {
+			t.Errorf("listen %q: default internal address %q, want %q", listen, got, want)
+		}
+		if err := validateTunnelAddresses(listen, got); err != nil {
+			t.Errorf("listen %q: its default internal address is refused: %v", listen, err)
+		}
+	}
+	// What validation refuses as a listen address gets the constant, so the
+	// error that follows is about the listen address.
+	for _, listen := range []string{"2333", "0.0.0.0", "0.0.0.0:0", "0.0.0.0:65536", "0.0.0.0:-1", "0.0.0.0:abc", ""} {
+		if got := defaultTunnelInternalAddress(listen); got != DefaultTunnelInternalAddress {
+			t.Errorf("listen %q: %q, want %q", listen, got, DefaultTunnelInternalAddress)
+		}
+		if err := validateTunnelAddresses(listen, defaultTunnelInternalAddress(listen)); err == nil || err.Error() != "invalid tunnel_listen_address" {
+			t.Errorf("listen %q: %v, want the listen address refused", listen, err)
+		}
+	}
+}
+
 func TestTunnelInternalAddressInTheConfiguration(t *testing.T) {
 	key := base64.StdEncoding.EncodeToString(make([]byte, 32))
 	for _, tc := range []struct {
@@ -439,6 +475,10 @@ func TestTunnelInternalAddressInTheConfiguration(t *testing.T) {
 		bind                   string // the server.toml bind_addr; empty: the Store doesn't open
 	}{
 		{"default", "0.0.0.0:2333", "", "127.0.0.1:2334"},
+		{"default beside the default internal port", "0.0.0.0:2334", "", "127.0.0.1:2335"},
+		{"default at the last port", "0.0.0.0:65535", "", "127.0.0.1:65534"},
+		{"the default isn't taken when one is chosen", "0.0.0.0:2334", "127.0.0.1:2444", "127.0.0.1:2444"},
+		{"a chosen address on the public port is still refused", "0.0.0.0:2334", "127.0.0.1:2334", ""},
 		{"chosen", "0.0.0.0:2333", "127.0.0.1:2444", "127.0.0.1:2444"},
 		{"IPv6", "0.0.0.0:2333", "[::1]:2444", "[::1]:2444"},
 		{"not loopback", "0.0.0.0:2333", "0.0.0.0:2334", ""},
@@ -521,7 +561,7 @@ func TestStoreCloseStopsTheGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	echoes(t, conn.(*net.TCPConn), "before")
+	echoes(t, conn.(*net.TCPConn), framed("before"))
 
 	within(t, "closing the store", store.Close)
 	if !closedByGuard(conn.(*net.TCPConn), 3*time.Second) {
