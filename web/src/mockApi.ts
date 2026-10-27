@@ -254,19 +254,35 @@ let accessTokens: Array<Omit<AccessToken, 'policies'>> = [
 ];
 // 서버처럼 토큰마다 허용한 정책을 붙여 보여 줍니다.
 const tokenView = (token: Omit<AccessToken, 'policies'>): AccessToken => structuredClone({ ...token, policies: accessPolicies.filter((policy) => policy.allowed_tokens.includes(token.id)).map((policy) => ({ id: policy.id, name: policy.name })) });
+// 서버처럼 IP 대역을 CIDR로 정리합니다: 단일 주소는 /32·/128, IPv4는 네트워크 주소로 맞추고, IPv6는 URL 파서로 확인해 표준 표기로 둡니다.
+function normalizeRange(value: string): string | null {
+  const [address, bitsText, extra] = value.split('/');
+  if (extra !== undefined || bitsText !== undefined && !/^\d{1,3}$/.test(bitsText)) return null;
+  const v4 = address.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const octets = v4.slice(1).map(Number);
+    const bits = bitsText === undefined ? 32 : Number(bitsText);
+    if (octets.some((octet) => octet > 255) || bits > 32) return null;
+    const number = octets.reduce((sum, octet) => sum * 256 + octet, 0);
+    const masked = bits === 0 ? 0 : Math.floor(number / 2 ** (32 - bits)) * 2 ** (32 - bits);
+    return `${[24, 16, 8, 0].map((shift) => Math.floor(masked / 2 ** shift) % 256).join('.')}/${bits}`;
+  }
+  const bits = bitsText === undefined ? 128 : Number(bitsText);
+  if (!address.includes(':') || bits > 128) return null;
+  try {
+    return `${new URL(`http://[${address}]/`).hostname.slice(1, -1)}/${bits}`;
+  } catch {
+    return null;
+  }
+}
+
 // 서버의 AccessTokenScope.Normalize: 이름, 주소(소문자, 1–100개), IP 대역(CIDR 또는 단일 주소, 0–50개)을 확인합니다.
 function tokenScope(body: Partial<AccessTokenInput>): Pick<AccessToken, 'name' | 'hosts' | 'ranges'> {
   const name = typeof body.name === 'string' ? body.name.trim() : '';
   if (!name || name.length > 64 || /[\u0000-\u001f\u007f]/.test(name) || !Array.isArray(body.hosts) || body.hosts.length < 1 || body.hosts.length > 100 || !Array.isArray(body.ranges) || body.ranges.length > 50) fail('invalid_access_token');
   const hosts = [...new Set(body.hosts.map((host) => (typeof host === 'string' ? host.trim().toLowerCase() : '')))];
   if (hosts.some((host) => !validBlockHost(host))) fail('invalid_access_token');
-  const ranges = [...new Set(body.ranges.map((range) => {
-    const value = typeof range === 'string' ? range.trim() : '';
-    const v4 = value.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\/(\d{1,2}))?$/);
-    if (v4 && v4.slice(1, 5).every((part) => Number(part) <= 255) && (v4[5] === undefined || Number(v4[5]) <= 32)) return v4[5] === undefined ? `${value}/32` : value;
-    if (/^[0-9a-f:]+(?:\/\d{1,3})?$/i.test(value) && value.includes(':')) return value.includes('/') ? value.toLowerCase() : `${value.toLowerCase()}/128`;
-    return fail('invalid_access_token');
-  }))];
+  const ranges = [...new Set(body.ranges.map((range) => normalizeRange(typeof range === 'string' ? range.trim() : '') ?? fail('invalid_access_token')))];
   return { name, hosts, ranges };
 }
 

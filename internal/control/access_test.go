@@ -151,6 +151,17 @@ func TestAccessTokenStorage(t *testing.T) {
 		fmt.Sprint(token.Hosts) != "[app.example.com *.example.org]" || fmt.Sprint(token.Ranges) != "[10.0.1.0/24 2001:db8::1/128]" {
 		t.Fatalf("token = %+v %q %v", token, value, err)
 	}
+	// IPv4-mapped ranges are kept as the IPv4 ranges clients compare as.
+	mapped, _, err := db.CreateAccessToken(ctx, AccessTokenScope{Name: "Mapped", Hosts: []string{"app.example.com"}, Ranges: []string{"::ffff:198.51.100.30", "::ffff:203.0.113.0/120"}}, time.Time{}, now)
+	if err != nil || fmt.Sprint(mapped.Ranges) != "[198.51.100.30/32 203.0.113.0/24]" {
+		t.Fatalf("mapped = %+v %v", mapped, err)
+	}
+	if _, _, err := db.CreateAccessToken(ctx, AccessTokenScope{Name: "Mapped", Hosts: []string{"app.example.com"}, Ranges: []string{"::ffff:0:0/95"}}, time.Time{}, now); !errors.Is(err, ErrInvalidAccessToken) {
+		t.Fatalf("mapped range wider than IPv4: %v", err)
+	}
+	if _, err := db.DeleteAccessToken(ctx, mapped.ID, now); err != nil {
+		t.Fatal(err)
+	}
 	for name, c := range map[string]struct {
 		scope   AccessTokenScope
 		expires time.Time

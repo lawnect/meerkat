@@ -207,13 +207,23 @@
   // 앞선 활성화된 정책이 이 정책의 주소와 경로를 모두 덮으면, 이 정책은 적용될 일이 없습니다. 앞선 정책이 전체 경로이거나,
   // 우회가 아닌 앞선 정책의 '다음으로 시작' 조건이 이 정책의 '같음'·'다음으로 시작' 조건을 모두 덮는 경우입니다(서버처럼 소문자로, 끝에 /를 붙여 비교).
   const hostCovers = (pattern: string, host: string): boolean => pattern === host || (pattern.startsWith('*.') && host.endsWith(pattern.slice(1)));
-  const pathsCover = (earlier: AccessPolicy, later: AccessPolicy): boolean =>
-    earlier.all_paths ||
-    (earlier.action !== 'bypass' && !later.all_paths && later.conditions.every((condition) => {
+  // 같음 조건은 서버가 요청을 비교하는 모양(소문자, 겹친 / 하나로, 끝에 / 하나)으로 바꿔 봅니다.
+  const slashedPath = (value: string): string => {
+    const path = value.toLowerCase().replace(/\/{2,}/g, '/').replace(/(.)\/$/, '$1');
+    return path === '/' ? path : `${path}/`;
+  };
+  const startsWith = (policy: AccessPolicy) => policy.conditions.filter((condition) => condition.operator === 'starts_with').map((condition) => condition.value);
+  const pathsCover = (earlier: AccessPolicy, later: AccessPolicy): boolean => {
+    if (earlier.all_paths) return true;
+    if (earlier.action === 'bypass') return false;
+    const prefixes = startsWith(earlier);
+    if (prefixes.includes('/')) return true;
+    return !later.all_paths && later.conditions.length > 0 && later.conditions.every((condition) => {
       if (condition.operator !== 'starts_with' && condition.operator !== 'equals') return false;
-      const path = condition.value.toLowerCase() + (condition.operator === 'equals' ? '/' : '');
-      return earlier.conditions.some((prefix) => prefix.operator === 'starts_with' && path.startsWith(prefix.value));
-    }));
+      const path = condition.operator === 'equals' ? slashedPath(condition.value) : condition.value.toLowerCase();
+      return prefixes.some((prefix) => path.startsWith(prefix));
+    });
+  };
   const neverApplies = (list: AccessPolicy[], index: number): boolean =>
     list.slice(0, index).some((earlier) => earlier.enabled && pathsCover(earlier, list[index]) && list[index].hosts.every((host) => earlier.hosts.some((pattern) => hostCovers(pattern, host))));
 

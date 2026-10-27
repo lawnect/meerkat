@@ -209,26 +209,50 @@ func ambiguousPath(escaped string, bytes bool) bool {
 }
 
 // signingIn returns the rules that let people into some path of host
-// after a sign-in: allow rules up to the first rule that takes every path
-// of host, after which none ever applies.
+// after a sign-in: the allow rules that some request could reach, not
+// those an earlier rule for host shadows.
 func (c *accessConfig) signingIn(host string) []*accessRule {
 	if c == nil {
 		return nil
 	}
-	var out []*accessRule
+	var earlier, out []*accessRule
 	for i := range c.rules {
 		rule := &c.rules[i]
-		if !rule.match.covers(host) {
+		if !rule.match.covers(host) || slices.ContainsFunc(earlier, func(e *accessRule) bool { return e.shadows(rule) }) {
 			continue
 		}
 		if rule.policy.Action == control.AccessAllow {
 			out = append(out, rule)
 		}
-		if rule.all {
-			break
-		}
+		earlier = append(earlier, rule)
 	}
 	return out
+}
+
+// shadows reports whether rule, applying first on an address, takes every
+// request later's conditions would: it takes every path, or it isn't a
+// bypass (which matches narrowly) and starts with a path that each of
+// later's equals and starts-with conditions does, compared as requests
+// are. The console marks the same as never applying.
+func (rule *accessRule) shadows(later *accessRule) bool {
+	if rule.all || slices.Contains(rule.match.prefixes, "/") {
+		return true
+	}
+	if rule.policy.Action == control.AccessBypass || later.all || len(later.policy.Conditions) == 0 {
+		return false
+	}
+	return !slices.ContainsFunc(later.policy.Conditions, func(c control.BlockCondition) bool {
+		var path string
+		switch c.Operator {
+		case control.BlockStartsWith:
+			path = strings.ToLower(c.Value)
+		case control.BlockEquals:
+			path = newRulePath(c.Value).slashed
+		default:
+			return true
+		}
+		return !slices.ContainsFunc(rule.match.prefixes, func(prefix string) bool { return strings.HasPrefix(path, prefix) })
+	})
 }
 
 // policyGroups are the group names rules allow: the only ones a session for
@@ -335,22 +359,22 @@ func compileAccess(policies control.AccessPolicies) *accessConfig {
 }
 
 // closedAccess compiles saved policies that no longer pass the checks so
-// that they keep closed what they may have protected. Each enabled one
-// covers every path of the addresses it names, or of every address when it
-// names no valid one: an allow policy lets in, after a sign-in, only whom
-// it names as saved, and comes first, in order, so that a bypass or block
-// policy saved above it, which now lets nobody in, doesn't shut those
-// people out. With nothing readable, or a policy that isn't, every address
-// is closed.
+// that they keep closed what they may have protected, in their saved
+// order. Each enabled allow or block policy covers every path of the
+// addresses it names, or of every address when it names no valid one: an
+// allow policy lets in, after a sign-in, only whom it names as saved, and a
+// block policy nobody. A bypass policy, which only opened paths, is left
+// out, so what it opened falls to the policies below. With nothing
+// readable, or a policy that isn't, every address is closed.
 func closedAccess(policies control.AccessPolicies) *accessConfig {
 	nobody := accessRule{match: compileBlockRule(nil, nil), all: true, policy: control.AccessPolicy{Action: control.AccessAllow}}
 	// Every saved policy has an ID: one without was never readable.
 	if len(policies.Policies) == 0 || slices.ContainsFunc(policies.Policies, func(policy control.AccessPolicy) bool { return policy.ID == "" }) {
 		return &accessConfig{rules: []accessRule{nobody}}
 	}
-	var allowing, closing []accessRule
+	config := &accessConfig{}
 	for _, policy := range policies.Policies {
-		if !policy.Enabled {
+		if !policy.Enabled || policy.Action == control.AccessBypass {
 			continue
 		}
 		var hosts []string
@@ -361,21 +385,19 @@ func closedAccess(policies control.AccessPolicies) *accessConfig {
 		}
 		rule := nobody
 		rule.match = compileBlockRule(hosts, nil)
-		if policy.Action != control.AccessAllow && policy.Action != "" {
-			closing = append(closing, rule)
-			continue
+		if policy.Action == control.AccessAllow || policy.Action == "" {
+			// Whom it names, in the form sessions carry, as saving would put it.
+			rule.policy.AllowEveryone, rule.policy.AllowAdmins, rule.policy.AllowedTokens = policy.AllowEveryone, policy.AllowAdmins, policy.AllowedTokens
+			for _, user := range policy.AllowedUsers {
+				rule.policy.AllowedUsers = append(rule.policy.AllowedUsers, strings.ToLower(strings.TrimSpace(user)))
+			}
+			for _, group := range policy.AllowedGroups {
+				rule.policy.AllowedGroups = append(rule.policy.AllowedGroups, strings.TrimSpace(group))
+			}
 		}
-		// Whom it names, in the form sessions carry, as saving would put it.
-		rule.policy.AllowEveryone, rule.policy.AllowAdmins, rule.policy.AllowedTokens = policy.AllowEveryone, policy.AllowAdmins, policy.AllowedTokens
-		for _, user := range policy.AllowedUsers {
-			rule.policy.AllowedUsers = append(rule.policy.AllowedUsers, strings.ToLower(strings.TrimSpace(user)))
-		}
-		for _, group := range policy.AllowedGroups {
-			rule.policy.AllowedGroups = append(rule.policy.AllowedGroups, strings.TrimSpace(group))
-		}
-		allowing = append(allowing, rule)
+		config.rules = append(config.rules, rule)
 	}
-	return &accessConfig{rules: append(allowing, closing...)}
+	return config
 }
 
 func (s *Store) reloadAccess(ctx context.Context) error {
@@ -491,12 +513,10 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 	// no provider. A token that doesn't get the request through leaves it to
 	// a session the request may also carry; without one, the refusal stands.
 	if value := strings.TrimSpace(r.Header.Get(accessTokenHeader)); value != "" {
-		token, ok := s.accessToken(value)
+		token, reason := s.accessToken(value)
 		ip, _ := requestOrigin(r)
-		reason := ""
 		switch {
-		case !ok:
-			reason = "invalid"
+		case reason != "":
 		case !token.usableFrom(host, ip):
 			reason = "out_of_scope"
 		case !rule.policy.AllowsToken(token.ID):
@@ -507,7 +527,7 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 		}
 		if _, session := s.accessSession(r, host); !session {
 			s.accessTokenFailed(r, host, token.ID, reason)
-			if reason == "invalid" {
+			if reason == "invalid" || reason == "expired" {
 				accessPage(w, r, http.StatusUnauthorized, "token")
 			} else {
 				accessPage(w, r, http.StatusForbidden, "denied")
@@ -601,24 +621,29 @@ func (s *Store) accessTokenFailed(r *http.Request, host, id, reason string) {
 	s.audit(r, "access.token_failed", control.AuditEntry{ResourceType: "address", ResourceID: host, Detail: detail})
 }
 
-// accessToken returns the access token whose value a request sent, if it
-// is one that hasn't expired.
-func (s *Store) accessToken(value string) (accessTokenRule, bool) {
+// accessToken returns the access token whose value a request sent, and
+// why it can't be used: "" when it can, "invalid" for a value that isn't a
+// token's, "expired". The token comes back whenever the value names one,
+// so a refusal can say which.
+func (s *Store) accessToken(value string) (accessTokenRule, string) {
 	id, _, _ := strings.Cut(value, ".")
 	tokens := s.access.tokens.Load()
 	if tokens == nil {
-		return accessTokenRule{}, false
+		return accessTokenRule{}, "invalid"
 	}
 	token, ok := (*tokens)[id]
-	if !ok || subtle.ConstantTimeCompare([]byte(control.AccessTokenHash(value)), []byte(token.SecretHash)) != 1 {
-		return accessTokenRule{}, false
+	if !ok {
+		return accessTokenRule{}, "invalid"
+	}
+	if subtle.ConstantTimeCompare([]byte(control.AccessTokenHash(value)), []byte(token.SecretHash)) != 1 {
+		return token, "invalid"
 	}
 	if token.ExpiresAt != "" {
 		if expires, err := time.Parse(time.RFC3339, token.ExpiresAt); err != nil || !s.now().Before(expires) {
-			return accessTokenRule{}, false
+			return token, "expired"
 		}
 	}
-	return token, true
+	return token, ""
 }
 
 func (s *Store) reloadAccessTokens(ctx context.Context) error {

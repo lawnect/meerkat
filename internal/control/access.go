@@ -506,6 +506,13 @@ func (a AccessTokenScope) Normalize() (AccessTokenScope, bool) {
 			}
 			prefix = netip.PrefixFrom(addr, addr.BitLen())
 		}
+		// Clients compare as IPv4 when they are; so do IPv4-mapped ranges.
+		if prefix.Addr().Is4In6() {
+			if prefix.Bits() < 96 {
+				return a, false
+			}
+			prefix = netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96)
+		}
 		if value = prefix.Masked().String(); !slices.Contains(ranges, value) {
 			ranges = append(ranges, value)
 		}

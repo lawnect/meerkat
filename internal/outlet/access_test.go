@@ -570,11 +570,21 @@ func TestAccessConcurrentRequests(t *testing.T) {
 			}
 		})
 	}
+	// The save runs alongside the requests and is waited for: a Fatal from
+	// it must not come after the test ends.
+	saved := make(chan error, 1)
 	go func() {
-		policy := control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}}
-		f.setPolicies(t, policy)
+		policy := control.AccessPolicy{Name: "staff", Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}}
+		_, err := f.db.SetAccessPolicies(context.Background(), control.AccessPolicies{Policies: []control.AccessPolicy{policy}}, time.Now())
+		if err == nil {
+			err = f.store.reloadAccess(context.Background())
+		}
+		saved <- err
 	}()
 	wg.Wait()
+	if err := <-saved; err != nil {
+		t.Fatalf("save: %v", err)
+	}
 	close(failures)
 	for code := range failures {
 		t.Fatalf("request failed: %d", code)
@@ -867,6 +877,14 @@ func TestAccessSavedPoliciesThatFailTheChecksStayClosed(t *testing.T) {
 	session, _ = f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
 	if w := f.visit("app.example.com", "/", session); w.Code != 200 {
 		t.Fatalf("named person behind a damaged bypass: %d", w.Code)
+	}
+	// Damage elsewhere keeps the saved order: a block above an allow policy
+	// still shuts those it names out.
+	store(`{"policies":[{"id":"shut","name":"Shut","enabled":true,"action":"block","hosts":["app.example.com"],"all_paths":true},` +
+		`{"id":"staff","name":"Staff","enabled":true,"hosts":["app.example.com"],"all_paths":true,"allowed_users":["@corp.example.com"]},` +
+		`{"id":"bad","name":"Bad","enabled":true,"hosts":["other.example.com"],"conditions":[{"operator":"matches","value":"("}],"allowed_users":["@corp.example.com"]}]}`)
+	if w := f.visit("app.example.com", "/", session); w.Code != http.StatusForbidden {
+		t.Fatalf("block above an allow policy, damaged elsewhere: %d", w.Code)
 	}
 	for _, raw := range []string{`not json`, `null`, `{}`, `{"policies":null}`, `{"policies":[null]}`, `{"policies":[{"name":"No hosts","enabled":true,"all_paths":true}]}`} {
 		store(raw)
@@ -1296,6 +1314,9 @@ func TestAccessTokens(t *testing.T) {
 	if w := send("app.example.com", "/", token(monitorValue)); w.Code != http.StatusUnauthorized {
 		t.Fatalf("expired token: %d", w.Code)
 	}
+	if event := f.lastAudit(t); event.Action != "access.token_failed" || !strings.Contains(string(event.Detail), `"reason":"expired"`) || !strings.Contains(string(event.Detail), monitor.ID) {
+		t.Fatalf("expired token audit: %s %s", event.Action, event.Detail)
+	}
 	f.store.now = time.Now
 	// On an address no policy covers, the headers still never reach the app.
 	if w := send("other.example.com", "/", token(deployValue)); w.Code != 200 || strings.Contains(w.Body.String(), "forged") || !strings.HasSuffix(w.Body.String(), "service= token=") {
@@ -1435,10 +1456,27 @@ func TestAccessShadowedPoliciesSignNobodyIn(t *testing.T) {
 	if raw, _ := base64.RawURLEncoding.DecodeString(payload); strings.Contains(string(raw), "team-") {
 		t.Fatalf("session carries shadowed groups: %s", raw)
 	}
-	// A shadowed allow policy alone doesn't let a sign-in start.
-	f.setPolicies(t, control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true},
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowEveryone: true})
-	if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash("browser")); w.Code != http.StatusNotFound {
-		t.Fatalf("start behind a block policy: %d", w.Code)
+	// Nor does a policy whose paths an earlier one starts with: its groups
+	// stay out too, so the session fits.
+	shadowed = []control.AccessPolicy{{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/team/"}}, AllowEveryone: true}}
+	for i, group := range groups {
+		shadowed = append(shadowed, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: fmt.Sprintf("/team/x-%02d/", i)}, {Operator: control.BlockEquals, Value: fmt.Sprintf("/Team/y-%02d", i)}}, AllowedGroups: []string{group}})
+	}
+	f.setPolicies(t, append(shadowed, everyone)...)
+	session, _ = f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@else.example.org", "groups", groups)))
+	payload, _, _ = strings.Cut(session.Value, ".")
+	if raw, _ := base64.RawURLEncoding.DecodeString(payload); strings.Contains(string(raw), "team-") {
+		t.Fatalf("session carries groups of shadowed conditions: %s", raw)
+	}
+	// A shadowed allow policy alone doesn't let a sign-in start, behind a
+	// block for every path or for every path under "/".
+	for _, block := range []control.AccessPolicy{
+		{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true},
+		{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/"}}},
+	} {
+		f.setPolicies(t, block, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowEveryone: true})
+		if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash("browser")); w.Code != http.StatusNotFound {
+			t.Fatalf("start behind %+v: %d", block.Conditions, w.Code)
+		}
 	}
 }
