@@ -633,6 +633,22 @@ func TestSSOPendingSignInsLeave(t *testing.T) {
 	if _, ok := st.take("c1", later); ok {
 		t.Fatal("an expired sign-in came back")
 	}
+	// One put after another that read the clock later lasts as long, so
+	// sign-ins stay in the order they expire.
+	st = ssoState{}
+	put("late", "a", now.Add(time.Second))
+	put("early", "b", now)
+	var previous time.Time
+	for entry := st.order.Front(); entry != nil; entry = entry.Next() {
+		expires := entry.Value.(*ssoEntry).p.expires
+		if expires.Before(previous) {
+			t.Fatalf("out of order: %v before %v", expires, previous)
+		}
+		previous = expires
+	}
+	if _, ok := st.take("early", now.Add(ssoStateTTL+time.Second/2)); !ok {
+		t.Fatal("the sign-in put second expired before the one put first")
+	}
 }
 
 func TestProviderRedirectsStayOnHTTPS(t *testing.T) {

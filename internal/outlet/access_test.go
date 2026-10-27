@@ -286,6 +286,8 @@ func TestPublicPathLimit(t *testing.T) {
 		{"/" + strings.Repeat("a", maxPublicPath-1), 200},
 		{"/" + strings.Repeat("a", maxPublicPath), http.StatusRequestURITooLong},
 		{"/" + strings.Repeat("%41", maxPublicPath/3+1), http.StatusRequestURITooLong},
+		{"/" + strings.Repeat("%20", maxPublicPath/3+1), http.StatusRequestURITooLong},
+		{"/" + strings.Repeat("%C3%A9", maxPublicPath/6+1), http.StatusRequestURITooLong},
 		{"/x?q=" + strings.Repeat("a", 4*maxPublicPath), 200},
 	} {
 		if w := f.visit("app.example.com", c.target); w.Code != c.code {
@@ -983,6 +985,14 @@ func TestAccessSavedPoliciesThatFailTheChecksStayClosed(t *testing.T) {
 	if w := f.visit("app.example.com", "/", session); w.Code != http.StatusForbidden {
 		t.Fatalf("block above an allow policy, damaged elsewhere: %d", w.Code)
 	}
+	// Damaged, an allow policy that also required a token lets nobody in:
+	// without its token, it can't tell whom it let in.
+	store(`{"policies":[{"id":"ci","name":"CI","enabled":true,"hosts":["app.example.com"],"all_paths":true,"require_token":true,"tokens":["nosuchtoken"],"allowed_users":["@corp.example.com"]},` +
+		`{"id":"shut","name":"Shut","enabled":true,"action":"block","hosts":["app.example.com"],"all_paths":true},` +
+		`{"id":"bad","name":"Bad","enabled":true,"hosts":["other.example.com"],"conditions":[{"operator":"matches","value":"("}],"allowed_users":["@corp.example.com"]}]}`)
+	if w := f.visit("app.example.com", "/", session); w.Code != http.StatusForbidden {
+		t.Fatalf("damaged allow policy that required a token: %d", w.Code)
+	}
 	// Damaged, a block limited to some methods shuts every method.
 	store(`{"policies":[{"id":"shut","name":"Shut","enabled":true,"action":"block","hosts":["app.example.com"],"all_paths":true,"methods":["DELETE","TRACE"]},` +
 		`{"id":"staff","name":"Staff","enabled":true,"hosts":["app.example.com"],"all_paths":true,"allowed_users":["@corp.example.com"]}]}`)
@@ -1503,7 +1513,7 @@ func TestAccessTokens(t *testing.T) {
 	if err := f.db.SQL().QueryRowContext(context.Background(), "SELECT value FROM outlet_settings WHERE key = 'access_tokens'").Scan(&saved); err != nil {
 		t.Fatal(err)
 	}
-	for _, raw := range []string{strings.Replace(saved, monitor.ExpiresAt, "soon", 1), saved} {
+	for _, raw := range []string{strings.Replace(saved, monitor.ExpiresAt, "soon", 1), strings.Replace(saved, monitor.ExpiresAt, "0001-01-01T00:00:00Z", 1), saved} {
 		if _, err := f.db.SQL().ExecContext(context.Background(), "UPDATE outlet_settings SET value = ? WHERE key = 'access_tokens'", raw); err != nil {
 			t.Fatal(err)
 		}
@@ -1513,6 +1523,34 @@ func TestAccessTokens(t *testing.T) {
 		if w := send("app.example.com", "/", token(monitorValue)); (raw == saved) != (w.Code == 200) {
 			t.Fatalf("saved expiry %q: %d", raw, w.Code)
 		}
+	}
+	// Two saved tokens with one ID can't be told apart, so neither counts:
+	// not the deploy token, nor another saved under its ID that a value
+	// matches.
+	var tokens []control.AccessToken
+	if err := json.Unmarshal([]byte(saved), &tokens); err != nil {
+		t.Fatal(err)
+	}
+	secret := monitorValue[strings.Index(monitorValue, ".")+1:]
+	twin := tokens[1]
+	twin.ID, twin.Name, twin.SecretHash = deploy.ID, "Twin", control.AccessTokenHash(deploy.ID+"."+secret)
+	raw, _ := json.Marshal(append(slices.Clone(tokens), twin))
+	if _, err := f.db.SQL().ExecContext(context.Background(), "UPDATE outlet_settings SET value = ? WHERE key = 'access_tokens'", string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.reloadAccessTokens(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{deployValue, deploy.ID + "." + secret} {
+		if w := send("app.example.com", "/deploy/run", token(value)); w.Code == 200 {
+			t.Fatalf("token sharing its ID: %d %s", w.Code, w.Body.String())
+		}
+	}
+	if _, err := f.db.SQL().ExecContext(context.Background(), "UPDATE outlet_settings SET value = ? WHERE key = 'access_tokens'", saved); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.reloadAccessTokens(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 	// On an address no policy covers, the headers still never reach the app.
 	if w := send("other.example.com", "/", token(deployValue)); w.Code != 200 || strings.Contains(w.Body.String(), "forged") || !strings.HasSuffix(w.Body.String(), "service= token= others=") {

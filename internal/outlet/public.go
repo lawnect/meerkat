@@ -18,7 +18,8 @@ import (
 
 const certificateAskPath = "/.well-known/meerkat/cert-ask"
 
-// maxPublicPath is the longest path, as sent, a public request may have:
+// maxPublicPath is the longest path a public request may have, escaped as
+// the app gets it:
 // what nginx, Apache and Tomcat take in a whole request line by default.
 // Block rules and access policies compare the path in full, each regular
 // expression in time proportional to its length.
@@ -204,7 +205,7 @@ func (s *Store) PublicHandler() http.Handler {
 		}
 		// Rules compare the whole path, so one longer than apps take (see
 		// maxPublicPath) would only make them slow.
-		if len(r.URL.Path) > maxPublicPath || len(r.URL.RawPath) > maxPublicPath {
+		if len(r.URL.EscapedPath()) > maxPublicPath {
 			http.Error(w, "request path too long", http.StatusRequestURITooLong)
 			return
 		}

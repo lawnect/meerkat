@@ -886,9 +886,13 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
       const methods = accessMethods.filter((entry) => named.includes(entry));
       let allowedUsers = entries(policy.allowed_users, true, (entry) => /^[^\s@]+@[^\s@]+$/.test(entry) || /^@[^\s@]+$/.test(entry));
       let allowedGroups = entries(policy.allowed_groups, false, (entry) => !/[\u0000-\u001f\u007f]/.test(entry));
-      // 서버처럼 토큰 조건이 없으면 토큰 목록을 비우고, 있는 토큰만 받습니다.
+      // 서버처럼 토큰 ID는 공백을 지우지 않고 형식부터 확인한 뒤, 토큰 조건이 없으면 비우고, 있으면 있는 토큰만 받습니다.
       if (policy.require_token !== undefined && typeof policy.require_token !== 'boolean') fail('invalid_access_policies');
-      const tokens = policy.require_token ? entries(policy.tokens ?? [], false, (entry) => accessTokens.some((token) => token.id === entry)) : [];
+      if (policy.tokens !== undefined && policy.tokens !== null && !Array.isArray(policy.tokens)) fail('invalid_access_policies');
+      const ids = [...new Set(policy.tokens ?? [])];
+      if (ids.length > 100 || ids.some((id) => typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,32}$/.test(id))) fail('invalid_access_policies');
+      const tokens = policy.require_token ? ids : [];
+      if (tokens.some((id) => !accessTokens.some((token) => token.id === id))) fail('invalid_access_policies');
       let everyone = policy.allow_everyone;
       let admins = policy.allow_admins;
       // 서버처럼 우회·차단 정책은 허용 대상을, 전체 허용은 사용자·그룹·관리자를 비웁니다.

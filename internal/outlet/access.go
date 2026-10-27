@@ -534,9 +534,10 @@ func compileAccess(policies control.AccessPolicies) *accessConfig {
 // order. Each enabled allow or block policy covers every path and method of
 // the addresses it names, or of every address when it names no valid one: an
 // allow policy lets in, after a sign-in, only whom it names as saved, and a
-// block policy nobody. A bypass policy, which only opened paths, is left
-// out, so what it opened falls to the policies below. With nothing
-// readable, or a policy that isn't, every address is closed.
+// block policy, or an allow policy that also required an access token,
+// nobody. A bypass policy, which only opened paths, is left out, so what it
+// opened falls to the policies below. With nothing readable, or a policy
+// that isn't, every address is closed.
 func closedAccess(policies control.AccessPolicies) *accessConfig {
 	nobody := accessRule{match: compileBlockRule(nil, nil), all: true, policy: control.AccessPolicy{Action: control.AccessAllow}}
 	// Every saved policy has an ID: one without was never readable.
@@ -556,7 +557,7 @@ func closedAccess(policies control.AccessPolicies) *accessConfig {
 		}
 		rule := nobody
 		rule.match = compileBlockRule(hosts, nil)
-		if policy.Action == control.AccessAllow || policy.Action == "" {
+		if (policy.Action == control.AccessAllow || policy.Action == "") && !policy.RequireToken {
 			// Whom it names, in the form sessions carry, as saving would put it.
 			rule.policy.AllowEveryone, rule.policy.AllowAdmins = policy.AllowEveryone, policy.AllowAdmins
 			for _, user := range policy.AllowedUsers {
@@ -779,8 +780,8 @@ type accessTokenRule struct {
 	hosts  blockRule
 	ranges []netip.Prefix
 	// unusable marks a token whose saved scope can't be read; expires is
-	// when it stops working, zero for never, and long past for a saved time
-	// that can't be read.
+	// when it stops working, if it has an ExpiresAt, and the zero time,
+	// long past, for one that can't be read.
 	unusable bool
 	expires  time.Time
 }
@@ -829,7 +830,7 @@ func (s *Store) accessToken(value string) (accessTokenRule, string) {
 	if subtle.ConstantTimeCompare([]byte(control.AccessTokenHash(value)), []byte(token.SecretHash)) != 1 {
 		return token, "invalid"
 	}
-	if !token.expires.IsZero() && !s.now().Before(token.expires) {
+	if token.ExpiresAt != "" && !s.now().Before(token.expires) {
 		return token, "expired"
 	}
 	return token, ""
@@ -848,9 +849,11 @@ func (s *Store) reloadAccessTokens(ctx context.Context) error {
 			rule.ranges, rule.unusable = append(rule.ranges, prefix), rule.unusable || err != nil
 		}
 		if token.ExpiresAt != "" {
-			if rule.expires, err = time.Parse(time.RFC3339, token.ExpiresAt); err != nil {
-				rule.expires = time.Unix(0, 0)
-			}
+			rule.expires, _ = time.Parse(time.RFC3339, token.ExpiresAt)
+		}
+		// Two saved tokens with one ID can't be told apart: neither counts.
+		if _, twice := byID[token.ID]; twice {
+			rule.unusable = true
 		}
 		byID[token.ID] = rule
 	}

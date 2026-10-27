@@ -586,18 +586,9 @@ func (d *Database) CreateAccessToken(ctx context.Context, scope AccessTokenScope
 	if !ok || !expires.IsZero() && !expires.After(now) {
 		return AccessToken{}, "", ErrInvalidAccessToken
 	}
-	id, err := newRuleID()
-	if err != nil {
-		return AccessToken{}, "", err
-	}
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
 		return AccessToken{}, "", err
-	}
-	value := id + "." + base64.RawURLEncoding.EncodeToString(secret)
-	token := AccessToken{ID: id, AccessTokenScope: scope, SecretHash: AccessTokenHash(value), CreatedAt: stamp(now)}
-	if !expires.IsZero() {
-		token.ExpiresAt = stamp(expires)
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -610,6 +601,18 @@ func (d *Database) CreateAccessToken(ctx context.Context, scope AccessTokenScope
 	}
 	if len(tokens) >= MaxAccessTokens {
 		return AccessToken{}, "", ErrInvalidAccessToken
+	}
+	// The ID names the token in policies, so no two share one.
+	var id string
+	for id == "" || slices.ContainsFunc(tokens, func(token AccessToken) bool { return token.ID == id }) {
+		if id, err = newRuleID(); err != nil {
+			return AccessToken{}, "", err
+		}
+	}
+	value := id + "." + base64.RawURLEncoding.EncodeToString(secret)
+	token := AccessToken{ID: id, AccessTokenScope: scope, SecretHash: AccessTokenHash(value), CreatedAt: stamp(now)}
+	if !expires.IsZero() {
+		token.ExpiresAt = stamp(expires)
 	}
 	if err := putAccessTokens(ctx, tx, append(tokens, token), now); err != nil {
 		return AccessToken{}, "", err

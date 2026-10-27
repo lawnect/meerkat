@@ -111,6 +111,11 @@ func (st *ssoState) put(state string, p ssoPending, now time.Time) bool {
 	} else if len(st.pending) >= cmp.Or(st.capacity, maxSSOPending) {
 		return false
 	}
+	// One put after another whose clock was read later, by the moments
+	// between reading it and taking the lock, lasts as long, keeping order.
+	if last := st.order.Back(); last != nil && last.Value.(*ssoEntry).p.expires.After(p.expires) {
+		p.expires = last.Value.(*ssoEntry).p.expires
+	}
 	entry := &ssoEntry{key: Hash(state), p: p}
 	if same, ok := st.pending[entry.key]; ok {
 		st.remove(same)
