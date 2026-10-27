@@ -23,6 +23,32 @@ export function setLocale(locale: Locale): void {
   document.documentElement.lang = locale;
 }
 
+const storageKey = 'meerkat:locale';
+
+function storedLocale(): Locale | null {
+  try {
+    const value = localStorage.getItem(storageKey);
+    return value === 'en' || value === 'ko' ? value : null;
+  } catch { return null; }
+}
+
+// 사용자가 고른 언어입니다. 고르기 전에는 브라우저 언어 설정에서 먼저 나오는 영어나 한국어를 따릅니다.
+export function preferredLocale(): Locale {
+  const stored = storedLocale();
+  if (stored) return stored;
+  for (const language of navigator.languages?.length ? navigator.languages : [navigator.language]) {
+    const primary = language.toLowerCase().split(/[-_;]/)[0].trim();
+    if (primary === 'ko' || primary === 'en') return primary;
+  }
+  return 'en';
+}
+
+// 언어 전환으로 고른 언어를 이 브라우저에 기억합니다.
+export function chooseLocale(locale: Locale): void {
+  try { localStorage.setItem(storageKey, locale); } catch { /* Keep the choice for this page only. */ }
+  setLocale(locale);
+}
+
 export function intlLocale(): string {
   return intlLocales[i18n.locale];
 }

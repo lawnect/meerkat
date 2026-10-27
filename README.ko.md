@@ -11,7 +11,7 @@
 
 관리 UI는 Svelte와 TypeScript, Vite로 빌드하고 Outlet Go 바이너리에 포함합니다. Node.js 22.18+가 필요합니다.
 
-화면은 [shadcn-svelte](https://www.shadcn-svelte.com/)(lyra 스타일, 모서리 둥글림 없음)와 Tailwind CSS 4로 만들고, 아이콘은 Fluent UI System Icons, 글꼴은 저장소에 포함한 SUIT를 씁니다. 라이트·다크 테마 색은 `web/src/app.css`에 정의되어 있습니다. 처음에는 운영체제 설정을 따르고, 사이드바 아래의 테마 버튼으로 고른 값은 브라우저에 저장됩니다. 기본 언어는 영어이고 한국어 화면은 같은 경로 앞에 `/ko`를 붙여 엽니다(예: `/ko/connectors`). 목록의 검색어·필터·정렬·페이지, 상세 화면의 탭처럼 화면 상태는 주소의 쿼리에 남으므로 새로고침하거나 주소를 공유해도 그대로 열립니다. Outlet은 `style-src 'self'`, `script-src 'self'`인 CSP로 화면을 제공하므로 인라인 스타일·스크립트를 쓰지 않습니다. 컴포넌트 작성 규칙은 [web/src/components/README.md](web/src/components/README.md)를 참고합니다.
+화면은 [shadcn-svelte](https://www.shadcn-svelte.com/)(lyra 스타일, 모서리 둥글림 없음)와 Tailwind CSS 4로 만들고, 아이콘은 Fluent UI System Icons, 글꼴은 저장소에 포함한 SUIT를 씁니다. 라이트·다크 테마 색은 `web/src/app.css`에 정의되어 있습니다. 처음에는 운영체제 설정을 따르고, 사이드바 아래의 테마 버튼으로 고른 값은 브라우저에 저장됩니다. 기본 언어는 영어이고 한국어 화면은 같은 경로 앞에 `/ko`를 붙여 엽니다(예: `/ko/connectors`). `/ko`가 없는 주소는 언어 버튼으로 고른 언어(브라우저에 저장)를 따르며, 고르기 전에는 브라우저 언어 설정에서 영어와 한국어 중 먼저 나오는 언어를 따릅니다. 목록의 검색어·필터·정렬·페이지, 상세 화면의 탭처럼 화면 상태는 주소의 쿼리에 남으므로 새로고침하거나 주소를 공유해도 그대로 열립니다. Outlet은 `style-src 'self'`, `script-src 'self'`인 CSP로 화면을 제공하므로 인라인 스타일·스크립트를 쓰지 않습니다. 컴포넌트 작성 규칙은 [web/src/components/README.md](web/src/components/README.md)를 참고합니다.
 
 ```sh
 npm ci

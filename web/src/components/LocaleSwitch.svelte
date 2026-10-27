@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { localizePath, setLocale, stripLocale, translations, type Locale } from '../i18n.svelte';
+  import { chooseLocale, localizePath, stripLocale, translations, type Locale } from '../i18n.svelte';
   import { LocalLanguage } from '../icons';
   import IconButton from './IconButton.svelte';
 
@@ -12,13 +12,13 @@
     return `${localizePath(stripLocale(window.location.pathname), locale)}${window.location.search}${window.location.hash}`;
   }
 
-  // 같은 화면을 유지한 채 주소의 언어 접두사만 바꿉니다.
+  // 같은 화면을 유지한 채 주소의 언어 접두사만 바꾸고, 고른 언어를 기억합니다.
   function switchLocale(event: MouseEvent): void {
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     const locale = t().target;
     window.history.pushState(null, '', localizedCurrentUrl(locale));
-    setLocale(locale);
+    chooseLocale(locale);
   }
 </script>
 
