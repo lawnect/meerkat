@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -273,6 +274,45 @@ func TestBypassConditions(t *testing.T) {
 	policy.Conditions = []BlockCondition{{BlockStartsWith, "/v1;x/"}}
 	if _, ok := (AccessPolicies{Policies: []AccessPolicy{policy}}).Normalize(); ok {
 		t.Fatal("bypass condition with a parameter accepted")
+	}
+}
+
+// A policy can be limited to some methods, kept in one order; GET takes
+// HEAD along, and none named means every method.
+func TestAccessPolicyMethods(t *testing.T) {
+	policy := AccessPolicy{Name: "API", Action: AccessBypass, Hosts: []string{"app.example.com"}, AllPaths: true}
+	for _, c := range []struct {
+		in   []string
+		want []string
+	}{
+		{nil, []string{}},
+		{[]string{" post", "get", "GET"}, []string{"GET", "POST"}},
+		{[]string{"OPTIONS", "delete", "patch", "put"}, []string{"PUT", "PATCH", "DELETE", "OPTIONS"}},
+		{[]string{"HEAD"}, nil},
+		{[]string{"TRACE"}, nil},
+		{[]string{"GET", ""}, nil},
+	} {
+		policy.Methods = c.in
+		normalized, ok := (AccessPolicies{Policies: []AccessPolicy{policy}}).Normalize()
+		if ok != (c.want != nil) || ok && !slices.Equal(normalized.Policies[0].Methods, c.want) {
+			t.Errorf("%q = %+v %v, want %q", c.in, normalized.Policies, ok, c.want)
+		}
+	}
+	for _, c := range []struct {
+		methods []string
+		method  string
+		covered bool
+	}{
+		{nil, "PROPFIND", true},
+		{[]string{"GET"}, "GET", true},
+		{[]string{"GET"}, "HEAD", true},
+		{[]string{"GET"}, "POST", false},
+		{[]string{"POST"}, "HEAD", false},
+		{[]string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}, "PROPFIND", false},
+	} {
+		if CoversMethod(c.methods, c.method) != c.covered {
+			t.Errorf("CoversMethod(%q, %s) != %v", c.methods, c.method, c.covered)
+		}
 	}
 }
 

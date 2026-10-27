@@ -184,13 +184,14 @@ func (s *Store) putAccessPolicies(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	// What each policy does and for whom, in order; the path conditions
-	// can be long and say only where.
+	// What each policy does, to which methods and for whom, in order; the
+	// path conditions can be long and say only where.
 	type logged struct {
 		Name     string   `json:"name"`
 		Enabled  bool     `json:"enabled"`
 		Action   string   `json:"action"`
 		Hosts    []string `json:"hosts"`
+		Methods  []string `json:"methods,omitempty"`
 		Everyone bool     `json:"allow_everyone,omitempty"`
 		Users    []string `json:"allowed_users,omitempty"`
 		Groups   []string `json:"allowed_groups,omitempty"`
@@ -199,7 +200,7 @@ func (s *Store) putAccessPolicies(w http.ResponseWriter, r *http.Request) {
 	}
 	policies := make([]logged, 0, len(saved.Policies))
 	for _, p := range saved.Policies {
-		policies = append(policies, logged{p.Name, p.Enabled, p.Action, p.Hosts, p.AllowEveryone, p.AllowedUsers, p.AllowedGroups, p.AllowAdmins, p.AllowedTokens})
+		policies = append(policies, logged{p.Name, p.Enabled, p.Action, p.Hosts, p.Methods, p.AllowEveryone, p.AllowedUsers, p.AllowedGroups, p.AllowAdmins, p.AllowedTokens})
 	}
 	s.audited(r, "security.access_policies", "security", "access_policies", map[string]any{"policies": policies})
 	view, err := s.accessPoliciesView(r.Context(), saved)

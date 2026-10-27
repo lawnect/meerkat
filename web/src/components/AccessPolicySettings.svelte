@@ -21,7 +21,7 @@
   import { api, errorMessage } from '../api';
   import { intlLocale, translations } from '../i18n.svelte';
   import { Add12, Dismiss, ReOrder, Shield20, Warning } from '../icons';
-  import type { AccessAction, AccessPoliciesView, AccessPolicy, AccessToken, BlockCondition, BlockOperator } from '../types';
+  import { accessMethods, type AccessAction, type AccessMethod, type AccessPoliciesView, type AccessPolicy, type AccessToken, type BlockCondition, type BlockOperator } from '../types';
   import IconButton from './IconButton.svelte';
   import InfoTooltip from './InfoTooltip.svelte';
   import TagInput from './TagInput.svelte';
@@ -54,7 +54,7 @@
     reorderTip: 'Drag, or press ↑ ↓',
     orderSaved: 'Order saved',
     neverApplies: 'Never applies',
-    neverAppliesTip: 'An earlier policy covers every address and path of this one.',
+    neverAppliesTip: 'An earlier policy covers every address, path and method of this one.',
     noPolicies: 'No access policies',
     addTitle: 'Add policy',
     editTitle: 'Edit policy',
@@ -71,6 +71,11 @@
     addCondition: 'Add condition',
     removeCondition: 'Remove condition',
     regexNote: 'RE2 syntax, case-insensitive',
+    methods: 'Methods',
+    allMethods: 'All methods',
+    selectedMethods: 'Selected methods',
+    methodsHint: 'GET includes HEAD',
+    needsMethod: 'Choose at least one method.',
     bypassNote: 'Compared with the path exactly as the app gets it, case included',
     bypassPaths: 'Enter bypass paths as the app gets them, without \\, //, or segments that are . or .. or end in a dot or space.',
     operators: { equals: 'equals', starts_with: 'starts with', ends_with: 'ends with', contains: 'contains', matches: 'matches regex' } as Record<BlockOperator, string>,
@@ -121,7 +126,7 @@
     reorderTip: '드래그 또는 ↑ ↓ 키로 이동',
     orderSaved: '순서가 저장되었습니다',
     neverApplies: '적용 안 됨',
-    neverAppliesTip: '앞선 정책이 이 정책의 주소와 경로에 먼저 적용됩니다.',
+    neverAppliesTip: '앞선 정책이 이 정책의 주소, 경로, 메서드에 먼저 적용됩니다.',
     noPolicies: '접근 정책이 없습니다',
     addTitle: '정책 추가',
     editTitle: '정책 편집',
@@ -138,6 +143,11 @@
     addCondition: '조건 추가',
     removeCondition: '조건 삭제',
     regexNote: 'RE2 구문, 대소문자 구분 없음',
+    methods: '메서드',
+    allMethods: '모든 메서드',
+    selectedMethods: '선택한 메서드',
+    methodsHint: 'GET 선택 시 HEAD 포함',
+    needsMethod: '메서드를 하나 이상 선택하십시오.',
     bypassNote: '앱이 받는 경로와 대소문자까지 그대로 비교',
     bypassPaths: '우회 조건은 앱이 받는 경로 그대로 입력하십시오. \\, //, . 또는 .. 조각, 점이나 공백으로 끝나는 조각은 사용할 수 없습니다.',
     operators: { equals: '같음', starts_with: '다음으로 시작', ends_with: '다음으로 끝남', contains: '포함', matches: '정규식과 일치' },
@@ -204,7 +214,7 @@
     return parts.every((part, index) => ((index === 0 || index === parts.length - 1) && part === '') || (part !== '' && part !== '.' && part !== '..' && !((index < parts.length - 1 || whole) && /[. ]$/.test(part))));
   };
 
-  // 앞선 활성화된 정책이 이 정책의 주소와 경로를 모두 덮으면, 이 정책은 적용될 일이 없습니다. 앞선 정책이 전체 경로이거나,
+  // 앞선 활성화된 정책이 이 정책의 주소, 경로, 메서드를 모두 덮으면, 이 정책은 적용될 일이 없습니다. 경로는 앞선 정책이 전체 경로이거나,
   // 우회가 아닌 앞선 정책의 '다음으로 시작' 조건이 이 정책의 '같음'·'다음으로 시작' 조건을 모두 덮는 경우입니다(서버처럼 소문자로, 끝에 /를 붙여 비교).
   const hostCovers = (pattern: string, host: string): boolean => pattern === host || (pattern.startsWith('*.') && host.endsWith(pattern.slice(1)));
   // 같음 조건은 서버가 요청을 비교하는 모양(소문자, 겹친 / 하나로, 끝에 / 하나)으로 바꿔 봅니다.
@@ -224,8 +234,11 @@
       return prefixes.some((prefix) => path.startsWith(prefix));
     });
   };
+  // 메서드는 앞선 정책이 모든 메서드이거나, 이 정책이 고른 메서드를 모두 고른 경우입니다.
+  const methodsCover = (earlier: AccessPolicy, later: AccessPolicy): boolean =>
+    !earlier.methods.length || (later.methods.length > 0 && later.methods.every((method) => earlier.methods.includes(method)));
   const neverApplies = (list: AccessPolicy[], index: number): boolean =>
-    list.slice(0, index).some((earlier) => earlier.enabled && pathsCover(earlier, list[index]) && list[index].hosts.every((host) => earlier.hosts.some((pattern) => hostCovers(pattern, host))));
+    list.slice(0, index).some((earlier) => earlier.enabled && methodsCover(earlier, list[index]) && pathsCover(earlier, list[index]) && list[index].hosts.every((host) => earlier.hosts.some((pattern) => hostCovers(pattern, host))));
 
   let policies = $state<AccessPolicy[] | null>(null);
   let addresses = $state<string[]>([]);
@@ -239,8 +252,8 @@
   let deleteName = $state('');
   let editingId = $state('');
   // 선택한 경로의 조건 줄은 항상 하나 이상 남겨 두어, "선택한 경로"를 고르면 바로 입력할 수 있게 합니다.
-  let form = $state<{ name: string; enabled: boolean; action: AccessAction; hosts: HostRow[]; paths: 'all' | 'selected'; conditions: ConditionRow[]; everyone: boolean; users: string[]; groups: string[]; admins: boolean; tokens: string[] }>({
-    name: '', enabled: true, action: 'allow', hosts: [], paths: 'all', conditions: [], everyone: false, users: [], groups: [], admins: false, tokens: [],
+  let form = $state<{ name: string; enabled: boolean; action: AccessAction; hosts: HostRow[]; paths: 'all' | 'selected'; conditions: ConditionRow[]; methods: 'all' | 'selected'; chosen: AccessMethod[]; everyone: boolean; users: string[]; groups: string[]; admins: boolean; tokens: string[] }>({
+    name: '', enabled: true, action: 'allow', hosts: [], paths: 'all', conditions: [], methods: 'all', chosen: [], everyone: false, users: [], groups: [], admins: false, tokens: [],
   });
   let formError = $state('');
 
@@ -276,9 +289,10 @@
     api<AccessPoliciesView>('/api/v1/security/access-policies').then(adopt).catch((cause) => { loadError = t().loadFailed(errorMessage(cause)); });
   });
 
-  // 드래그 중인 정책과, 놓으면 그 위로 들어갈 정책입니다.
+  // 드래그 중인 정책과, 놓으면 그 자리로 들어갈 정책입니다. 아래로 끌면 그 정책 아래, 위로 끌면 그 위로 들어갑니다.
   let dragId = $state<string | null>(null);
   let overId = $state<string | null>(null);
+  const dragIndex = $derived(dragId && policies ? policies.findIndex((policy) => policy.id === dragId) : -1);
 
   // 정책을 from에서 to 자리로 옮겨 바로 저장합니다. 실패하면 원래 순서로 되돌립니다.
   async function move(from: number, to: number): Promise<void> {
@@ -334,6 +348,8 @@
       hosts: policy ? policy.hosts.map((host) => newHost(host)) : [newHost()],
       paths: policy && !policy.all_paths ? 'selected' : 'all',
       conditions: policy?.conditions.length ? policy.conditions.map((condition) => newRow(condition)) : [newRow()],
+      methods: policy?.methods.length ? 'selected' : 'all',
+      chosen: policy ? [...policy.methods] : [],
       everyone: policy?.allow_everyone ?? false,
       users: policy ? [...policy.allowed_users] : [],
       groups: policy ? [...policy.allowed_groups] : [],
@@ -378,6 +394,10 @@
       formError = t().bypassPaths;
       return;
     }
+    if (form.methods === 'selected' && !form.chosen.length) {
+      formError = t().needsMethod;
+      return;
+    }
     const current = editing;
     const next: AccessPolicy = {
       id: current?.id ?? '',
@@ -387,6 +407,7 @@
       hosts: form.hosts.map((row) => row.value.trim().toLowerCase()).filter(Boolean),
       all_paths: form.paths === 'all',
       conditions: form.paths === 'selected' ? form.conditions.map((condition) => ({ operator: condition.operator, value: condition.value.trim() })) : [],
+      methods: form.methods === 'selected' ? accessMethods.filter((method) => form.chosen.includes(method)) : [],
       allow_everyone: allow && form.everyone,
       allowed_users: named ? [...form.users] : [],
       allowed_groups: named ? [...form.groups] : [],
@@ -460,15 +481,16 @@
                 <Table.Head>{t().name}</Table.Head>
                 <Table.Head>{t().addresses}</Table.Head>
                 <Table.Head>{t().paths}</Table.Head>
+                <Table.Head>{t().methods}</Table.Head>
                 <Table.Head class="pr-4">{t().action}</Table.Head>
               </Table.Row>
             </Table.Header>
             <Table.Body>
               {#each policies as policy, index (policy.id)}
                 {@const entries = allowedEntries(policy)}
-                <!-- 손잡이로 끌어 다른 행에 놓으면 그 행 자리로 옮깁니다. -->
+                <!-- 손잡이로 끌어 다른 행에 놓으면 그 행 자리로 옮깁니다. 표 본문은 마지막 행의 테두리를 지우므로 아래 표시선은 !로 남깁니다. -->
                 <Table.Row
-                  class={['relative cursor-pointer', overId === policy.id && dragId !== policy.id && 'border-t-2 border-t-primary', dragId === policy.id && 'opacity-50']}
+                  class={['relative cursor-pointer', overId === policy.id && dragId !== policy.id && (dragIndex < index ? 'border-b-2! border-b-primary' : 'border-t-2 border-t-primary'), dragId === policy.id && 'opacity-50']}
                   ondragover={(event: DragEvent) => { if (dragId) { event.preventDefault(); overId = policy.id; } }}
                   ondrop={(event: DragEvent) => { event.preventDefault(); drop(policy.id); }}
                 >
@@ -533,6 +555,9 @@
                         {#if policy.conditions.length > 1}<span class="text-muted-foreground tabular-nums">+{(policy.conditions.length - 1).toLocaleString(intlLocale())}</span>{/if}
                       </span>
                     {/if}
+                  </Table.Cell>
+                  <Table.Cell>
+                    {#if policy.methods.length}<span class="font-mono">{policy.methods.join(', ')}</span>{:else}{t().allMethods}{/if}
                   </Table.Cell>
                   <Table.Cell class="pr-4">
                     <span class="flex items-center gap-1.5">
@@ -663,6 +688,34 @@
             <div>
               <Button variant="outline" size="sm" disabled={form.conditions.length >= maxConditions} onclick={addCondition}><Add12 aria-hidden="true" />{t().addCondition}</Button>
             </div>
+          {/if}
+        </Field.Set>
+        <Field.Set>
+          <Field.Legend variant="label">{t().methods}</Field.Legend>
+          <RadioGroup.Root value={form.methods} onValueChange={(value) => { form.methods = value === 'selected' ? 'selected' : 'all'; }}>
+            <Field.Field orientation="horizontal">
+              <RadioGroup.Item value="all" id="access-policy-methods-all" />
+              <Field.Label for="access-policy-methods-all" class="font-normal">{t().allMethods}</Field.Label>
+            </Field.Field>
+            <Field.Field orientation="horizontal">
+              <RadioGroup.Item value="selected" id="access-policy-methods-selected" />
+              <Field.Label for="access-policy-methods-selected" class="font-normal">{t().selectedMethods}</Field.Label>
+            </Field.Field>
+          </RadioGroup.Root>
+          {#if form.methods === 'selected'}
+            <div class="flex flex-wrap gap-x-4 gap-y-2">
+              {#each accessMethods as method (method)}
+                <Field.Field orientation="horizontal" class="w-auto">
+                  <Checkbox
+                    id={`access-policy-method-${method}`}
+                    checked={form.chosen.includes(method)}
+                    onCheckedChange={(checked) => { form.chosen = checked ? [...form.chosen, method] : form.chosen.filter((entry) => entry !== method); }}
+                  />
+                  <Field.Label for={`access-policy-method-${method}`} class="font-mono font-normal">{method}</Field.Label>
+                </Field.Field>
+              {/each}
+            </div>
+            <Field.Description>{t().methodsHint}</Field.Description>
           {/if}
         </Field.Set>
         {#if form.action === 'allow'}

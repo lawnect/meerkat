@@ -137,6 +137,9 @@ type AccessPolicy struct {
 	// condition matches is covered.
 	AllPaths   bool             `json:"all_paths"`
 	Conditions []BlockCondition `json:"conditions"`
+	// Methods limits the policy to requests with these HTTP methods, GET
+	// taking HEAD along; none means every method.
+	Methods []string `json:"methods"`
 	// Who an AccessAllow policy lets in: everyone the access provider signs
 	// in, or else those each list that is set matches, as for the
 	// administrators' single sign-on; AllowAdmins also lets in anyone whose
@@ -148,6 +151,18 @@ type AccessPolicy struct {
 	// AllowedTokens are the IDs of the access tokens an AccessAllow policy
 	// lets through without a sign-in.
 	AllowedTokens []string `json:"allowed_tokens"`
+}
+
+// AccessMethods are the HTTP methods a policy can be limited to.
+var AccessMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
+
+// CoversMethod reports whether a policy limited to methods covers a request with
+// method: every method when none are named, and HEAD with GET.
+func CoversMethod(methods []string, method string) bool {
+	if method == "HEAD" {
+		method = "GET"
+	}
+	return len(methods) == 0 || slices.Contains(methods, method)
 }
 
 // AccessPolicies apply in order: the first enabled policy that covers a
@@ -220,6 +235,19 @@ func (a AccessPolicies) Normalize() (AccessPolicies, bool) {
 			}
 		}
 		policy.Conditions = conditions
+		named := map[string]bool{}
+		for _, method := range policy.Methods {
+			if method = strings.ToUpper(strings.TrimSpace(method)); !slices.Contains(AccessMethods, method) {
+				return a, false
+			}
+			named[method] = true
+		}
+		policy.Methods = []string{}
+		for _, method := range AccessMethods {
+			if named[method] {
+				policy.Methods = append(policy.Methods, method)
+			}
+		}
 		var ok [2]bool
 		policy.AllowedUsers, ok[0] = normalizeSSOList(policy.AllowedUsers, true, allowedUserEntry)
 		policy.AllowedGroups, ok[1] = normalizeSSOList(policy.AllowedGroups, false, func(v string) bool {
@@ -272,7 +300,7 @@ func (a AccessPolicies) Readable() AccessPolicies {
 			policy.Action = AccessAllow
 		}
 		seen[policy.ID] = true
-		for _, list := range []*[]string{&policy.Hosts, &policy.AllowedUsers, &policy.AllowedGroups, &policy.AllowedTokens} {
+		for _, list := range []*[]string{&policy.Hosts, &policy.Methods, &policy.AllowedUsers, &policy.AllowedGroups, &policy.AllowedTokens} {
 			if *list == nil {
 				*list = []string{}
 			}

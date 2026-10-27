@@ -17,10 +17,18 @@ import (
 	"github.com/lawnect/meerkat/internal/control"
 )
 
-// whoami answers with the access email and cookies the app received.
+// whoami answers with the access email and cookies the app received, and
+// the other headers it got whose names mention meerkat.
 func whoami() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprintf(w, "email=%s cookie=%s path=%s service=%s token=%s", r.Header.Get(accessEmailHeader), r.Header.Get("Cookie"), r.URL.Path, r.Header.Get(accessServiceHeader), r.Header.Get(accessTokenHeader))
+		var others []string
+		for name, values := range r.Header {
+			if strings.Contains(strings.ToLower(name), "meerkat") && name != accessEmailHeader && name != accessServiceHeader {
+				others = append(others, name+":"+strings.Join(values, ","))
+			}
+		}
+		slices.Sort(others)
+		_, _ = fmt.Fprintf(w, "email=%s cookie=%s path=%s service=%s token=%s others=%s", r.Header.Get(accessEmailHeader), r.Header.Get("Cookie"), r.URL.Path, r.Header.Get(accessServiceHeader), r.Header.Get(accessTokenHeader), strings.Join(others, ";"))
 	})
 }
 
@@ -248,17 +256,40 @@ func (f accessFixture) lastAuditAction(t *testing.T) string {
 	return events[0].Action
 }
 
-// A client can't hand the app an identity of its own.
+// A client can't hand the app an identity of its own, not even under a
+// name some app servers read as the Outlet's header.
 func TestAccessEmailHeaderCantBeForged(t *testing.T) {
 	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
 	r := httptest.NewRequest("GET", "/x", nil)
 	r.Host = "other.example.com"
 	r.Header.Set(accessEmailHeader, "boss@corp.example.com")
+	for _, name := range []string{"X_Meerkat_Access_Email", "x-meerkat-access-email", "X-MEERKAT-ACCESS_SERVICE", "X-Meerkat-Access-Groups"} {
+		r.Header[name] = []string{"forged"}
+	}
 	r.AddCookie(&http.Cookie{Name: accessCookie, Value: "forged.value"})
 	w := httptest.NewRecorder()
 	f.handler.ServeHTTP(w, r)
-	if w.Code != 200 || !strings.Contains(w.Body.String(), "email= ") || strings.Contains(w.Body.String(), "forged") {
-		t.Fatalf("unprotected host: %s", w.Body.String())
+	if body := w.Body.String(); w.Code != 200 || !strings.Contains(body, "email= ") || strings.Contains(body, "forged") || strings.Contains(body, "boss") {
+		t.Fatalf("unprotected host: %s", body)
+	}
+}
+
+// A path longer than apps take is refused before any rule reads it; a long
+// query string is not.
+func TestPublicPathLimit(t *testing.T) {
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, AllPaths: true})
+	for _, c := range []struct {
+		target string
+		code   int
+	}{
+		{"/" + strings.Repeat("a", maxPublicPath-1), 200},
+		{"/" + strings.Repeat("a", maxPublicPath), http.StatusRequestURITooLong},
+		{"/" + strings.Repeat("%41", maxPublicPath/3+1), http.StatusRequestURITooLong},
+		{"/x?q=" + strings.Repeat("a", 4*maxPublicPath), 200},
+	} {
+		if w := f.visit("app.example.com", c.target); w.Code != c.code {
+			t.Errorf("%d-byte target: %d, want %d", len(c.target), w.Code, c.code)
+		}
 	}
 }
 
@@ -390,14 +421,14 @@ func TestAccessBypassAndBlock(t *testing.T) {
 		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/internal/"}}},
 		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
 	)
-	for _, path := range []string{"/v1/chat/completions", "/v1/", "/health", "/v1/%EA%B2%8C%EC%8B%9C%ED%8C%90"} {
+	for _, path := range []string{"/v1/chat/completions", "/v1/", "/health", "/v1/%EA%B2%8C%EC%8B%9C%ED%8C%90", "/v1/items(1)", "/v1/files/*", "/v1/a,b:c@d", "/v1/x%20y", "/v1/게시판"} {
 		if w := f.visit("app.example.com", path); w.Code != 200 || !strings.Contains(w.Body.String(), "email= ") {
 			t.Errorf("open %s: %d %s", path, w.Code, w.Body.String())
 		}
 	}
 	// Bypass opens only what it plainly names, as the app gets it: not a
 	// path an app could route elsewhere.
-	for _, path := range []string{"/", "/login", "/workspace", "/healthz", "/v2/x", "/v1", "/V1/models", "/v1./models", "/v1%20/models", "/v1;private/models", "/v1%5cmodels", "/v1%2fmodels", "/v%31/models", "/v1//models", "/health/", "/HEALTH", "/v1/%ea%b2%8c"} {
+	for _, path := range []string{"/", "/login", "/workspace", "/healthz", "/v2/x", "/v1", "/V1/models", "/v1./models", "/v1%20/models", "/v1;private/models", "/v1%5cmodels", "/v1%2fmodels", "/v%31/models", "/v1//models", "/health/", "/HEALTH", "/v1/%ea%b2%8c", "/v1/files/%2A", "/v1/%7Eitems", "/v1/x%2a", "/v1/%61dmin"} {
 		if w := f.visit("app.example.com", path); w.Code != http.StatusFound {
 			t.Errorf("protected %s: %d", path, w.Code)
 		}
@@ -423,6 +454,71 @@ func TestAccessBypassAndBlock(t *testing.T) {
 	f.setPolicies(t, control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true})
 	if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash("browser")); w.Code != http.StatusNotFound {
 		t.Fatalf("start for a blocked address: %d", w.Code)
+	}
+}
+
+// A policy limited to some methods leaves the others to the policies below:
+// GET takes HEAD along, and a method no policy limits to falls to one that
+// names none.
+func TestAccessPoliciesByMethod(t *testing.T) {
+	f := newAccessFixture(t,
+		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/v1/"}}, Methods: []string{"GET"}},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true, Methods: []string{"DELETE", "PUT"}},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
+	)
+	send := func(method, path string) int {
+		r := httptest.NewRequest(method, "https://app.example.com"+path, nil)
+		r.Host = "app.example.com"
+		r.Header.Set("X-Forwarded-For", "198.51.100.30")
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, r)
+		return w.Code
+	}
+	for _, c := range []struct {
+		method, path string
+		code         int
+	}{
+		{"GET", "/v1/models", 200},
+		{"HEAD", "/v1/models", 200},
+		{"POST", "/v1/models", http.StatusUnauthorized},
+		{"OPTIONS", "/v1/models", http.StatusUnauthorized},
+		{"DELETE", "/v1/models", http.StatusForbidden},
+		{"PUT", "/workspace", http.StatusForbidden},
+		{"PATCH", "/workspace", http.StatusUnauthorized},
+		{"PROPFIND", "/v1/models", http.StatusUnauthorized},
+	} {
+		if code := send(c.method, c.path); code != c.code {
+			t.Errorf("%s %s: %d, want %d", c.method, c.path, code, c.code)
+		}
+	}
+	// A policy limited to some methods hides none below it from a sign-in.
+	f.setPolicies(t,
+		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true, Methods: []string{"GET", "POST"}},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowEveryone: true},
+	)
+	if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash("browser")); w.Code != http.StatusFound {
+		t.Fatalf("start behind a block for some methods: %d", w.Code)
+	}
+	// One for every method a later policy names does.
+	f.setPolicies(t,
+		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true, Methods: []string{"GET", "POST"}},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowEveryone: true, Methods: []string{"POST"}},
+	)
+	if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash("browser")); w.Code != http.StatusNotFound {
+		t.Fatalf("start behind a block for its methods: %d", w.Code)
+	}
+	// Saved through the API, methods come back in one order and are audited.
+	h := f.store.Handler()
+	policy := map[string]any{"name": "API", "enabled": true, "action": "bypass", "hosts": []string{"app.example.com"}, "all_paths": true, "methods": []string{"post", "GET"}}
+	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []any{policy}}); w.Code != 200 || !strings.Contains(w.Body.String(), `"methods":["GET","POST"]`) {
+		t.Fatalf("save methods: %d %s", w.Code, w.Body.String())
+	}
+	if event := f.lastAudit(t); event.Action != "security.access_policies" || !strings.Contains(string(event.Detail), `"methods":["GET","POST"]`) {
+		t.Fatalf("audit: %s %s", event.Action, event.Detail)
+	}
+	policy["methods"] = []string{"HEAD"}
+	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []any{policy}}); w.Code != 400 {
+		t.Fatalf("save HEAD: %d", w.Code)
 	}
 }
 
@@ -886,6 +982,12 @@ func TestAccessSavedPoliciesThatFailTheChecksStayClosed(t *testing.T) {
 	if w := f.visit("app.example.com", "/", session); w.Code != http.StatusForbidden {
 		t.Fatalf("block above an allow policy, damaged elsewhere: %d", w.Code)
 	}
+	// Damaged, a block limited to some methods shuts every method.
+	store(`{"policies":[{"id":"shut","name":"Shut","enabled":true,"action":"block","hosts":["app.example.com"],"all_paths":true,"methods":["DELETE","TRACE"]},` +
+		`{"id":"staff","name":"Staff","enabled":true,"hosts":["app.example.com"],"all_paths":true,"allowed_users":["@corp.example.com"]}]}`)
+	if w := f.visit("app.example.com", "/", session); w.Code != http.StatusForbidden {
+		t.Fatalf("damaged block for some methods: %d", w.Code)
+	}
 	for _, raw := range []string{`not json`, `null`, `{}`, `{"policies":null}`, `{"policies":[null]}`, `{"policies":[{"name":"No hosts","enabled":true,"all_paths":true}]}`} {
 		store(raw)
 		if w := f.visit("other.example.com", "/"); w.Code != http.StatusFound {
@@ -1160,6 +1262,12 @@ func TestAccessAdminsByEmail(t *testing.T) {
 	if w := f.visit("app.example.com", "/", staff); w.Code != 200 {
 		t.Fatalf("staff without the database: %d", w.Code)
 	}
+	// An administrator looked up lately gets in without asking again; once
+	// that answer is stale, a lookup that fails lets nobody in.
+	if w := f.visit("app.example.com", "/", admin); w.Code != 200 {
+		t.Fatalf("administrator looked up lately: %d", w.Code)
+	}
+	f.store.now = func() time.Time { return time.Now().Add(adminEmailTTL) }
 	if w := f.visit("app.example.com", "/", admin); w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("administrator without the database: %d", w.Code)
 	}
@@ -1255,7 +1363,7 @@ func TestAccessTokens(t *testing.T) {
 	}
 	// The app sees the token's name, and neither the token nor forged
 	// identity headers.
-	if w := send("app.example.com", "/deploy/run", token(deployValue)); w.Code != 200 || !strings.Contains(w.Body.String(), "email= ") || !strings.HasSuffix(w.Body.String(), "service=Deploy bot token=") || strings.Contains(w.Body.String(), "forged") || strings.Contains(w.Body.String(), deployValue) {
+	if w := send("app.example.com", "/deploy/run", token(deployValue)); w.Code != 200 || !strings.Contains(w.Body.String(), "email= ") || !strings.HasSuffix(w.Body.String(), "service=Deploy bot token= others=") || strings.Contains(w.Body.String(), "forged") || strings.Contains(w.Body.String(), deployValue) {
 		t.Fatalf("deploy token: %d %s", w.Code, w.Body.String())
 	}
 	if w := send("app.example.com", "/", token(monitorValue)); w.Code != 200 {
@@ -1272,22 +1380,26 @@ func TestAccessTokens(t *testing.T) {
 		}
 	}
 	// Spaces around the value don't matter; a refused token leaves the
-	// request to a session it also carries, and is audited without one.
+	// request to a session it also carries, and is audited either way.
 	if w := send("app.example.com", "/deploy/run", map[string]string{accessTokenHeader: " " + deployValue + " "}); w.Code != 200 {
 		t.Fatalf("token with spaces: %d", w.Code)
 	}
 	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
-	// The deploy token is valid but no policy for / names it.
-	for _, value := range []string{"junk.secret", deployValue} {
+	// The deploy token is valid but no policy for / names it. Another client
+	// sends these, so their audits leave this one's allowance alone.
+	for value, reason := range map[string]string{"junk.secret": "invalid", deployValue: "not_allowed"} {
 		r := httptest.NewRequest("GET", "https://app.example.com/", nil)
 		r.Host = "app.example.com"
-		r.Header.Set("X-Forwarded-For", "198.51.100.30")
+		r.Header.Set("X-Forwarded-For", "198.51.100.31")
 		r.Header.Set(accessTokenHeader, value)
 		r.AddCookie(session)
 		w := httptest.NewRecorder()
 		f.handler.ServeHTTP(w, r)
 		if w.Code != 200 || !strings.Contains(w.Body.String(), "email=alice@corp.example.com") {
 			t.Fatalf("session with token %q: %d %s", value, w.Code, w.Body.String())
+		}
+		if event := f.lastAudit(t); event.Action != "access.token_failed" || !strings.Contains(string(event.Detail), `"reason":"`+reason+`"`) {
+			t.Fatalf("session with token %q, audit: %s %s", value, event.Action, event.Detail)
 		}
 	}
 	if w := send("app.example.com", "/deploy/run", map[string]string{accessTokenHeader: "junk.secret"}); w.Code != http.StatusUnauthorized {
@@ -1318,8 +1430,24 @@ func TestAccessTokens(t *testing.T) {
 		t.Fatalf("expired token audit: %s %s", event.Action, event.Detail)
 	}
 	f.store.now = time.Now
+	// So has one whose saved expiry can't be read.
+	var saved string
+	if err := f.db.SQL().QueryRowContext(context.Background(), "SELECT value FROM outlet_settings WHERE key = 'access_tokens'").Scan(&saved); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{strings.Replace(saved, monitor.ExpiresAt, "soon", 1), saved} {
+		if _, err := f.db.SQL().ExecContext(context.Background(), "UPDATE outlet_settings SET value = ? WHERE key = 'access_tokens'", raw); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.store.reloadAccessTokens(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if w := send("app.example.com", "/", token(monitorValue)); (raw == saved) != (w.Code == 200) {
+			t.Fatalf("saved expiry %q: %d", raw, w.Code)
+		}
+	}
 	// On an address no policy covers, the headers still never reach the app.
-	if w := send("other.example.com", "/", token(deployValue)); w.Code != 200 || strings.Contains(w.Body.String(), "forged") || !strings.HasSuffix(w.Body.String(), "service= token=") {
+	if w := send("other.example.com", "/", token(deployValue)); w.Code != 200 || strings.Contains(w.Body.String(), "forged") || !strings.HasSuffix(w.Body.String(), "service= token= others=") {
 		t.Fatalf("unprotected address: %d %s", w.Code, w.Body.String())
 	}
 	// A token a policy names can't be deleted; once out of the policies it

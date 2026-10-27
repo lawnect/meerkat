@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"html"
@@ -119,13 +120,14 @@ func (m exactMatch) matches(p string) bool {
 }
 
 // plainPath reports whether apps can read u's path only one way, so that a
-// bypass condition can be compared with it as is: escaped as Go would
-// escape it, with no escape left after decoding, no backslash, ";",
-// control character or byte that isn't UTF-8, and no segment that is
-// empty, ".", "..", or ends in a dot or a space.
+// bypass condition can be compared with it as is: passed on to the app, as
+// EscapedPath, with only the escapes it needs (canonicalEscapes), with no
+// escape left after decoding, no backslash, ";", control character or byte
+// that isn't UTF-8, and no segment that is empty, ".", "..", or ends in a
+// dot or a space.
 func plainPath(u *url.URL) bool {
 	p := u.Path
-	if u.RawPath != "" || !strings.HasPrefix(p, "/") || leftEscape.MatchString(p) || !utf8.ValidString(p) || strings.ContainsAny(p, `\;`) || strings.IndexFunc(p, unicode.IsControl) >= 0 {
+	if !canonicalEscapes(u.EscapedPath()) || !strings.HasPrefix(p, "/") || leftEscape.MatchString(p) || !utf8.ValidString(p) || strings.ContainsAny(p, `\;`) || strings.IndexFunc(p, unicode.IsControl) >= 0 {
 		return false
 	}
 	segments := strings.Split(p[1:], "/")
@@ -148,36 +150,81 @@ type accessConfig struct{ rules []accessRule }
 // it can't slip past one, and one with an escape still in it after decoding
 // is also compared decoded once more, as an app decoding again reads it. A
 // bypass condition, which opens paths, matches only a plain path, exactly.
-func (c *accessConfig) matching(host string, u *url.URL) *accessRule {
-	if c == nil || len(c.rules) == 0 {
+func (c *accessConfig) matching(host, method string, u *url.URL) *accessRule {
+	if c == nil {
 		return nil
 	}
-	paths := []rulePath{newRulePath(u.Path)}
-	unclear := ambiguousPath(u.EscapedPath(), true)
-	if !unclear && leftEscape.MatchString(u.Path) {
-		if twice, err := url.PathUnescape(u.Path); err != nil || ambiguousPath(u.Path, true) {
-			unclear = true
-		} else {
-			paths = append(paths, newRulePath(twice))
-		}
-	}
-	plain := !unclear && plainPath(u)
+	// The path is read only once a rule that covers the request needs it.
+	var path requestPath
 	for i := range c.rules {
 		rule := &c.rules[i]
 		switch {
-		case !rule.match.covers(host):
+		case !rule.match.covers(host) || !control.CoversMethod(rule.policy.Methods, method):
+			continue
 		case rule.all:
 			return rule
+		}
+		if path.forms == nil {
+			path = readPath(u)
+		}
+		switch {
 		case rule.policy.Action == control.AccessBypass:
-			if plain && rule.exact.matches(u.Path) {
+			if path.plain && rule.exact.matches(u.Path) {
 				return rule
 			}
-		case unclear || slices.ContainsFunc(paths, rule.match.matches):
+		case path.unclear || slices.ContainsFunc(path.forms, rule.match.matches):
 			return rule
 		}
 	}
 	return nil
 }
+
+// requestPath is how access rules read a request's path: the forms
+// conditions compare, whether an app may read it differently (unclear),
+// and whether a bypass condition can compare it as is (plain).
+type requestPath struct {
+	forms          []rulePath
+	unclear, plain bool
+}
+
+func readPath(u *url.URL) requestPath {
+	path := requestPath{forms: []rulePath{newRulePath(u.Path)}, unclear: ambiguousPath(u.EscapedPath(), true)}
+	if !path.unclear && leftEscape.MatchString(u.Path) {
+		if twice, err := url.PathUnescape(u.Path); err != nil || ambiguousPath(u.Path, true) {
+			path.unclear = true
+		} else {
+			path.forms = append(path.forms, newRulePath(twice))
+		}
+	}
+	path.plain = !path.unclear && plainPath(u)
+	return path
+}
+
+// canonicalEscapes reports whether escaped, a path as Go escapes it (which
+// leaves only bytes a path carries as is), escapes a byte only when a path
+// can't carry it, and in uppercase: "%2F", "%7E", "%2A" or "%c3" would let
+// an app read it otherwise than decoded once, but "(", "*" or "!" as
+// clients send them don't.
+func canonicalEscapes(escaped string) bool {
+	for i := strings.IndexByte(escaped, '%'); i >= 0; i = strings.IndexByte(escaped, '%') {
+		if i+2 >= len(escaped) || !upperHex(escaped[i+1]) || !upperHex(escaped[i+2]) {
+			return false
+		}
+		if b, _ := hex.DecodeString(escaped[i+1 : i+3]); pathByte(b[0]) {
+			return false
+		}
+		escaped = escaped[i+3:]
+	}
+	return true
+}
+
+// pathByte reports whether a path carries c as is: an unreserved character,
+// a sub-delimiter, ":", "@", "/", or a bracket, as Go's EscapedPath keeps.
+func pathByte(c byte) bool {
+	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || strings.IndexByte("-._~!$&'()*+,;=:@/[]", c) >= 0
+}
+
+func upperHex(c byte) bool { return '0' <= c && c <= '9' || 'A' <= c && c <= 'F' }
 
 // ambiguousPath reports a path, given escaped, whose meaning decoded
 // depends on the app: "." or ".." that came escaped (%2e%2e, a%2f..) or
@@ -193,12 +240,12 @@ func ambiguousPath(escaped string, bytes bool) bool {
 		return true
 	}
 	backslash := strings.ContainsRune(p, '\\')
-	for _, raw := range strings.Split(escaped, "/") {
+	for raw := range strings.SplitSeq(escaped, "/") {
 		segment, err := url.PathUnescape(raw)
 		if err != nil {
 			return true
 		}
-		for _, part := range strings.FieldsFunc(segment, func(r rune) bool { return r == '/' || r == '\\' }) {
+		for part := range strings.FieldsFuncSeq(segment, func(r rune) bool { return r == '/' || r == '\\' }) {
 			part, _, _ = strings.Cut(part, ";")
 			if dots := part == "." || part == ".."; dots && (segment != raw || backslash) || !dots && strings.Trim(part, ". ") == "" {
 				return true
@@ -230,11 +277,15 @@ func (c *accessConfig) signingIn(host string) []*accessRule {
 }
 
 // shadows reports whether rule, applying first on an address, takes every
-// request later's conditions would: it takes every path, or it isn't a
-// bypass (which matches narrowly) and starts with a path that each of
-// later's equals and starts-with conditions does, compared as requests
-// are. The console marks the same as never applying.
+// request later's conditions would: it covers every method later does, and
+// it takes every path, or it isn't a bypass (which matches narrowly) and
+// starts with a path that each of later's equals and starts-with
+// conditions does, compared as requests are. The console marks the same as
+// never applying.
 func (rule *accessRule) shadows(later *accessRule) bool {
+	if len(rule.policy.Methods) != 0 && (len(later.policy.Methods) == 0 || slices.ContainsFunc(later.policy.Methods, func(method string) bool { return !control.CoversMethod(rule.policy.Methods, method) })) {
+		return false
+	}
 	if rule.all || slices.Contains(rule.match.prefixes, "/") {
 		return true
 	}
@@ -336,6 +387,48 @@ type accessState struct {
 	failures attemptLimiter
 	mu       sync.Mutex
 	tickets  map[string]accessTicket
+	// admins remembers which emails are administrators' (see isAdminEmail).
+	admins adminEmails
+}
+
+// adminEmails remembers, for adminEmailTTL, whether an email is an
+// administrator's, so that an allow policy letting administrators in
+// doesn't ask the database, whose one connection writes also take, on
+// every request.
+type adminEmails struct {
+	mu    sync.Mutex
+	known map[string]adminEmail
+}
+
+type adminEmail struct {
+	admin bool
+	at    time.Time
+}
+
+const (
+	adminEmailTTL  = 30 * time.Second
+	maxAdminEmails = 4096
+)
+
+func (s *Store) isAdminEmail(ctx context.Context, email string) (bool, error) {
+	now, admins := s.now(), &s.access.admins
+	admins.mu.Lock()
+	known, ok := admins.known[email]
+	admins.mu.Unlock()
+	if ok && now.Sub(known.at) < adminEmailTTL {
+		return known.admin, nil
+	}
+	admin, err := s.control.IsAdminEmail(ctx, email)
+	if err != nil {
+		return false, err
+	}
+	admins.mu.Lock()
+	if admins.known == nil || len(admins.known) >= maxAdminEmails {
+		admins.known = map[string]adminEmail{}
+	}
+	admins.known[email] = adminEmail{admin, now}
+	admins.mu.Unlock()
+	return admin, nil
 }
 
 // accessIdentityKey and accessServiceKey carry, in a request's context,
@@ -360,8 +453,8 @@ func compileAccess(policies control.AccessPolicies) *accessConfig {
 
 // closedAccess compiles saved policies that no longer pass the checks so
 // that they keep closed what they may have protected, in their saved
-// order. Each enabled allow or block policy covers every path of the
-// addresses it names, or of every address when it names no valid one: an
+// order. Each enabled allow or block policy covers every path and method of
+// the addresses it names, or of every address when it names no valid one: an
 // allow policy lets in, after a sign-in, only whom it names as saved, and a
 // block policy nobody. A bypass policy, which only opened paths, is left
 // out, so what it opened falls to the policies below. With nothing
@@ -501,7 +594,7 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 		}
 		return r, false
 	}
-	rule := s.access.config.Load().matching(host, r.URL)
+	rule := s.access.config.Load().matching(host, r.Method, r.URL)
 	switch {
 	case rule == nil || rule.policy.Action == control.AccessBypass:
 		return r, true
@@ -510,8 +603,9 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 		return r, false
 	}
 	// A client that can't sign in sends an access token instead, which needs
-	// no provider. A token that doesn't get the request through leaves it to
-	// a session the request may also carry; without one, the refusal stands.
+	// no provider. A token that doesn't get the request through is audited
+	// and leaves the request to a session it may also carry; without one,
+	// the refusal stands.
 	if value := strings.TrimSpace(r.Header.Get(accessTokenHeader)); value != "" {
 		token, reason := s.accessToken(value)
 		ip, _ := requestOrigin(r)
@@ -522,11 +616,11 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 		case !rule.policy.AllowsToken(token.ID):
 			reason = "not_allowed"
 		default:
-			s.access.used.Store(token.ID, s.now())
+			s.noteTokenUse(token.ID)
 			return r.WithContext(context.WithValue(r.Context(), accessServiceKey{}, token.Name)), true
 		}
+		s.accessTokenFailed(r, host, token.ID, reason)
 		if _, session := s.accessSession(r, host); !session {
-			s.accessTokenFailed(r, host, token.ID, reason)
 			if reason == "invalid" || reason == "expired" {
 				accessPage(w, r, http.StatusUnauthorized, "token")
 			} else {
@@ -548,7 +642,7 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 	// The database is asked only when the session alone doesn't settle it.
 	allowed := rule.policy.Allows(identity, false)
 	if !allowed && rule.policy.AllowAdmins {
-		admin, err := s.control.IsAdminEmail(r.Context(), identity.Email)
+		admin, err := s.isAdminEmail(r.Context(), identity.Email)
 		if err != nil {
 			accessPage(w, r, http.StatusServiceUnavailable, "unavailable")
 			return r, false
@@ -590,8 +684,11 @@ type accessTokenRule struct {
 	control.AccessToken
 	hosts  blockRule
 	ranges []netip.Prefix
-	// unusable marks a token whose saved scope can't be read.
+	// unusable marks a token whose saved scope can't be read; expires is
+	// when it stops working, zero for never, and long past for a saved time
+	// that can't be read.
 	unusable bool
+	expires  time.Time
 }
 
 // usableFrom reports whether the token may be used on host by a client at
@@ -638,10 +735,8 @@ func (s *Store) accessToken(value string) (accessTokenRule, string) {
 	if subtle.ConstantTimeCompare([]byte(control.AccessTokenHash(value)), []byte(token.SecretHash)) != 1 {
 		return token, "invalid"
 	}
-	if token.ExpiresAt != "" {
-		if expires, err := time.Parse(time.RFC3339, token.ExpiresAt); err != nil || !s.now().Before(expires) {
-			return token, "expired"
-		}
+	if !token.expires.IsZero() && !s.now().Before(token.expires) {
+		return token, "expired"
 	}
 	return token, ""
 }
@@ -658,10 +753,24 @@ func (s *Store) reloadAccessTokens(ctx context.Context) error {
 			prefix, err := netip.ParsePrefix(value)
 			rule.ranges, rule.unusable = append(rule.ranges, prefix), rule.unusable || err != nil
 		}
+		if token.ExpiresAt != "" {
+			if rule.expires, err = time.Parse(time.RFC3339, token.ExpiresAt); err != nil {
+				rule.expires = time.Unix(0, 0)
+			}
+		}
 		byID[token.ID] = rule
 	}
 	s.access.tokens.Store(&byID)
 	return nil
+}
+
+// noteTokenUse records that a token let a request in, at most once a second
+// a token: requests using one token then don't all write the same entry.
+func (s *Store) noteTokenUse(id string) {
+	now := s.now()
+	if at, ok := s.access.used.Load(id); !ok || now.Sub(at.(time.Time)) >= time.Second {
+		s.access.used.Store(id, now)
+	}
 }
 
 // flushAccessTokenUse saves when tokens last let a request in, so the
@@ -866,7 +975,7 @@ func (s *Store) accessCallback(w http.ResponseWriter, r *http.Request) {
 	// asked only when none does by the session alone.
 	allowed := slices.ContainsFunc(rules, func(rule *accessRule) bool { return rule.policy.Allows(identity, false) })
 	if !allowed && slices.ContainsFunc(rules, func(rule *accessRule) bool { return rule.policy.AllowAdmins }) {
-		admin, err := s.control.IsAdminEmail(r.Context(), email)
+		admin, err := s.isAdminEmail(r.Context(), email)
 		if err != nil {
 			accessPage(w, r, http.StatusServiceUnavailable, "unavailable")
 			return
@@ -972,6 +1081,18 @@ func dropAccessSetCookie(header http.Header) {
 	header.Del("Set-Cookie")
 	for _, line := range kept {
 		header.Add("Set-Cookie", line)
+	}
+}
+
+// dropAccessHeaders removes from what goes to the app every header named
+// like the Outlet's own, X-Meerkat-Access…, in any case and with "_" for
+// "-": some app servers read X_Meerkat_Access_Email as the same header.
+func dropAccessHeaders(header http.Header) {
+	const prefix = "X-Meerkat-Access"
+	for name := range header {
+		if len(name) >= len(prefix) && strings.EqualFold(strings.ReplaceAll(name[:len(prefix)], "_", "-"), prefix) {
+			delete(header, name)
+		}
 	}
 }
 

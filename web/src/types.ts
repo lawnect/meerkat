@@ -312,9 +312,10 @@ export interface AccessProviderView {
   available: boolean; // 도메인(관리자 호스트)이 생기기 전에는 false(redirect_uri는 '')
 }
 
-// 접근 정책(GET/PUT /api/v1/security/access-policies). 활성화된 정책에 일치하는 요청은 접근 보호 SSO 로그인이 필요하고, 요청에 적용되는 모든 정책을 충족해야 합니다.
-// 정책은 목록 순서대로 확인하며, 요청에 처음 일치하는 활성화된 정책 하나가 적용됩니다.
+// 접근 정책(GET/PUT /api/v1/security/access-policies). 정책은 목록 순서대로 확인하며, 요청에 처음 일치하는 활성화된 정책 하나가 적용됩니다.
 export type AccessAction = 'allow' | 'bypass' | 'block'; // 로그인 후 허용 대상만 / 로그인 없이 누구나 / 모두 거부
+export const accessMethods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] as const; // 정책을 한정할 수 있는 메서드. GET은 HEAD 포함
+export type AccessMethod = (typeof accessMethods)[number];
 
 export interface AccessPolicy {
   id: string; // 새 정책은 '', 서버가 부여합니다
@@ -324,6 +325,7 @@ export interface AccessPolicy {
   hosts: string[]; // 호스트 이름 또는 '*.도메인', 1개 이상
   all_paths: boolean; // true이면 호스트의 모든 경로, false이면 conditions가 일치하는 경로만
   conditions: BlockCondition[]; // all_paths가 false일 때 1–50개. 하나라도 맞으면 일치합니다
+  methods: AccessMethod[]; // 이 메서드의 요청에만 적용. 비어 있으면 모든 메서드, 서버가 accessMethods 순서로 정리합니다
   // 아래는 allow일 때만 의미가 있고, 서버는 bypass·block이면 비웁니다.
   allow_everyone: boolean; // 접근 보호 SSO로 로그인한 모든 사용자. 켜면 사용자·그룹·관리자 허용은 비웁니다
   allowed_users: string[]; // 이메일 또는 '@도메인', 소문자

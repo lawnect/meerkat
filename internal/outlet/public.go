@@ -18,6 +18,12 @@ import (
 
 const certificateAskPath = "/.well-known/meerkat/cert-ask"
 
+// maxPublicPath is the longest path, as sent, a public request may have:
+// what nginx, Apache and Tomcat take in a whole request line by default.
+// Block rules and access policies compare the path in full, each regular
+// expression in time proportional to its length.
+const maxPublicPath = 8192
+
 // upstreamHeaderTimeout bounds the wait for an application's response
 // headers, like nginx's proxy_read_timeout; the body may stream for longer.
 // Tests shorten it before building a handler.
@@ -196,6 +202,12 @@ func (s *Store) PublicHandler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
+		// Rules compare the whole path, so one longer than apps take (see
+		// maxPublicPath) would only make them slow.
+		if len(r.URL.Path) > maxPublicPath || len(r.URL.RawPath) > maxPublicPath {
+			http.Error(w, "request path too long", http.StatusRequestURITooLong)
+			return
+		}
 		// Access protection first: its own paths start with "/.", which the
 		// default block rules refuse.
 		next, pass := s.guardAccess(w, r, host, outlet.AdminHostname)
@@ -272,9 +284,7 @@ func (s *Store) PublicHandler() http.Handler {
 					// The person or access token access protection let in, never a
 					// value the client sent; the session cookie and the token stay
 					// with the Outlet.
-					pr.Out.Header.Del(accessEmailHeader)
-					pr.Out.Header.Del(accessServiceHeader)
-					pr.Out.Header.Del(accessTokenHeader)
+					dropAccessHeaders(pr.Out.Header)
 					if email, _ := pr.In.Context().Value(accessIdentityKey{}).(string); email != "" {
 						pr.Out.Header.Set(accessEmailHeader, email)
 					}

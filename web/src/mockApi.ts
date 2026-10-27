@@ -1,4 +1,5 @@
 import type { AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, Outlet, Route, Service, SsoSettings, Target, UsageBucket, UsageSeries, UsageUnit } from './types';
+import { accessMethods } from './types';
 
 const now = (): string => new Date().toISOString();
 const ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
@@ -243,8 +244,8 @@ let accessProvider: Omit<AccessProviderView, 'redirect_uri' | 'available'> = {
   session_hours: 24,
 };
 let accessPolicies: AccessPolicy[] = [
-  { id: 'vault-api', name: 'Vault API', enabled: true, action: 'bypass', hosts: ['vault.example.test'], all_paths: false, conditions: [{ operator: 'starts_with', value: '/v1/' }], allow_everyone: false, allowed_users: [], allowed_groups: [], allow_admins: false, allowed_tokens: [] },
-  { id: 'vault', name: 'Vault members', enabled: true, action: 'allow', hosts: ['vault.example.test'], all_paths: true, conditions: [], allow_everyone: false, allowed_users: ['@example.test'], allowed_groups: [], allow_admins: true, allowed_tokens: ['deploybot'] },
+  { id: 'vault-api', name: 'Vault API', enabled: true, action: 'bypass', hosts: ['vault.example.test'], all_paths: false, conditions: [{ operator: 'starts_with', value: '/v1/' }], methods: ['GET', 'POST'], allow_everyone: false, allowed_users: [], allowed_groups: [], allow_admins: false, allowed_tokens: [] },
+  { id: 'vault', name: 'Vault members', enabled: true, action: 'allow', hosts: ['vault.example.test'], all_paths: true, conditions: [], methods: [], allow_everyone: false, allowed_users: ['@example.test'], allowed_groups: [], allow_admins: true, allowed_tokens: ['deploybot'] },
 ];
 const accessPoliciesResponse = (): AccessPoliciesView => structuredClone({ policies: accessPolicies, addresses: publicAddresses() });
 // 접근 토큰 데모 상태. 값은 만들 때만 돌려줍니다.
@@ -871,6 +872,11 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
           return true;
         });
       }
+      // 서버처럼 메서드는 대문자로 바꿔 accessMethods 순서로 정리하고, 그 밖의 메서드(HEAD 포함)는 거부합니다.
+      if (policy.methods !== undefined && policy.methods !== null && (!Array.isArray(policy.methods) || policy.methods.some((entry) => typeof entry !== 'string'))) fail('invalid_access_policies');
+      const named = (policy.methods ?? []).map((entry) => entry.trim().toUpperCase());
+      if (named.some((entry) => !(accessMethods as readonly string[]).includes(entry))) fail('invalid_access_policies');
+      const methods = accessMethods.filter((entry) => named.includes(entry));
       let allowedUsers = entries(policy.allowed_users, true, (entry) => /^[^\s@]+@[^\s@]+$/.test(entry) || /^@[^\s@]+$/.test(entry));
       let allowedGroups = entries(policy.allowed_groups, false, (entry) => !/[\u0000-\u001f\u007f]/.test(entry));
       let allowedTokens = entries(policy.allowed_tokens, false, (entry) => accessTokens.some((token) => token.id === entry));
@@ -881,7 +887,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
       if (action !== 'allow' || everyone) [allowedUsers, allowedGroups, admins] = [[], [], false];
       // 아무도 허용하지 않는 허용 정책은 주소를 모두에게 닫아 버립니다.
       if (action === 'allow' && !everyone && allowedUsers.length + allowedGroups.length + allowedTokens.length === 0 && !admins) fail('invalid_access_policies');
-      return { id: policy.id, name, enabled: policy.enabled, action, hosts, all_paths: policy.all_paths, conditions, allow_everyone: everyone, allowed_users: allowedUsers, allowed_groups: allowedGroups, allow_admins: admins, allowed_tokens: allowedTokens };
+      return { id: policy.id, name, enabled: policy.enabled, action, hosts, all_paths: policy.all_paths, conditions, methods, allow_everyone: everyone, allowed_users: allowedUsers, allowed_groups: allowedGroups, allow_admins: admins, allowed_tokens: allowedTokens };
     });
     const ids = policies.map((policy) => policy.id).filter(Boolean);
     if (new Set(ids).size !== ids.length) fail('invalid_access_policies');
