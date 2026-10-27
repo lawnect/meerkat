@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -142,22 +143,59 @@ func TestAccessTokenStorage(t *testing.T) {
 	ctx := context.Background()
 	db := openRouting(t)
 	now := time.Now()
-	token, value, err := db.CreateAccessToken(ctx, " Deploy ", time.Time{}, now)
-	if err != nil || token.Name != "Deploy" || token.ExpiresAt != "" || token.SecretHash != AccessTokenHash(value) || !strings.HasPrefix(value, token.ID+".") || len(value) < 50 {
+	scope := func(name string) AccessTokenScope {
+		return AccessTokenScope{Name: name, Hosts: []string{"app.example.com"}}
+	}
+	token, value, err := db.CreateAccessToken(ctx, AccessTokenScope{Name: " Deploy ", Hosts: []string{" App.Example.com", "*.example.org", "app.example.com"}, Ranges: []string{"10.0.1.7/24", "2001:db8::1", " 10.0.1.0/24"}}, time.Time{}, now)
+	if err != nil || token.Name != "Deploy" || token.ExpiresAt != "" || token.SecretHash != AccessTokenHash(value) || !strings.HasPrefix(value, token.ID+".") || len(value) < 50 ||
+		fmt.Sprint(token.Hosts) != "[app.example.com *.example.org]" || fmt.Sprint(token.Ranges) != "[10.0.1.0/24 2001:db8::1/128]" {
 		t.Fatalf("token = %+v %q %v", token, value, err)
 	}
-	for name, expires := range map[string]time.Time{"": {}, "past": now.Add(-time.Minute), strings.Repeat("x", 65): {}, "a\nb": {}} {
-		if _, _, err := db.CreateAccessToken(ctx, name, expires, now); !errors.Is(err, ErrInvalidAccessToken) {
-			t.Fatalf("%q: %v", name, err)
+	for name, c := range map[string]struct {
+		scope   AccessTokenScope
+		expires time.Time
+	}{
+		"no name":     {AccessTokenScope{Hosts: []string{"app.example.com"}}, time.Time{}},
+		"past":        {scope("past"), now.Add(-time.Minute)},
+		"long name":   {scope(strings.Repeat("x", 65)), time.Time{}},
+		"control":     {scope("a\nb"), time.Time{}},
+		"no hosts":    {AccessTokenScope{Name: "x"}, time.Time{}},
+		"bad host":    {AccessTokenScope{Name: "x", Hosts: []string{"https://app.example.com"}}, time.Time{}},
+		"bad range":   {AccessTokenScope{Name: "x", Hosts: []string{"app.example.com"}, Ranges: []string{"10.0.0.0/33"}}, time.Time{}},
+		"zoned range": {AccessTokenScope{Name: "x", Hosts: []string{"app.example.com"}, Ranges: []string{"fe80::1%eth0"}}, time.Time{}},
+	} {
+		if _, _, err := db.CreateAccessToken(ctx, c.scope, c.expires, now); !errors.Is(err, ErrInvalidAccessToken) {
+			t.Fatalf("%s: %v", name, err)
 		}
 	}
 	for i := 1; i < MaxAccessTokens; i++ {
-		if _, _, err := db.CreateAccessToken(ctx, "t", now.Add(time.Hour), now); err != nil {
+		if _, _, err := db.CreateAccessToken(ctx, scope("t"), now.Add(time.Hour), now); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, _, err := db.CreateAccessToken(ctx, "one too many", time.Time{}, now); !errors.Is(err, ErrInvalidAccessToken) {
+	if _, _, err := db.CreateAccessToken(ctx, scope("one too many"), time.Time{}, now); !errors.Is(err, ErrInvalidAccessToken) {
 		t.Fatalf("over the cap: %v", err)
+	}
+	// The scope changes; the value stays.
+	updated, err := db.UpdateAccessToken(ctx, token.ID, AccessTokenScope{Name: "Deploy CI", Hosts: []string{"ci.example.com"}}, now)
+	if err != nil || updated.Name != "Deploy CI" || fmt.Sprint(updated.Hosts) != "[ci.example.com]" || len(updated.Ranges) != 0 || updated.SecretHash != token.SecretHash {
+		t.Fatalf("updated = %+v %v", updated, err)
+	}
+	if _, err := db.UpdateAccessToken(ctx, "nosuchtoken", scope("x"), now); !errors.Is(err, ErrAccessTokenNotFound) {
+		t.Fatalf("update a missing token: %v", err)
+	}
+	if _, err := db.UpdateAccessToken(ctx, token.ID, AccessTokenScope{Name: "x"}, now); !errors.Is(err, ErrInvalidAccessToken) {
+		t.Fatalf("update without hosts: %v", err)
+	}
+	// Last use keeps the later time, for tokens that exist.
+	if err := db.RecordAccessTokenUse(ctx, map[string]time.Time{token.ID: now, "nosuchtoken": now}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecordAccessTokenUse(ctx, map[string]time.Time{token.ID: now.Add(-time.Hour)}, now); err != nil {
+		t.Fatal(err)
+	}
+	if used, err := db.AccessTokenUse(ctx); err != nil || len(used) != 1 || !used[token.ID].Equal(now.Truncate(time.Second)) {
+		t.Fatalf("used = %v %v", used, err)
 	}
 	if _, err := db.SetAccessPolicies(ctx, AccessPolicies{Policies: []AccessPolicy{{Name: "CI", Hosts: []string{"app.example.com"}, AllPaths: true, AllowedTokens: []string{token.ID}}}}, now); err != nil {
 		t.Fatal(err)
@@ -171,6 +209,12 @@ func TestAccessTokenStorage(t *testing.T) {
 	if deleted, err := db.DeleteAccessToken(ctx, token.ID, now); err != nil || deleted.ID != token.ID {
 		t.Fatalf("delete: %+v %v", deleted, err)
 	}
+	if err := db.RecordAccessTokenUse(ctx, map[string]time.Time{}, now); err != nil {
+		t.Fatal(err)
+	}
+	if used, _ := db.AccessTokenUse(ctx); len(used) != 0 {
+		t.Fatalf("use of a deleted token kept: %v", used)
+	}
 	if _, err := db.DeleteAccessToken(ctx, token.ID, now); !errors.Is(err, ErrAccessTokenNotFound) {
 		t.Fatalf("delete again: %v", err)
 	}
@@ -180,5 +224,56 @@ func TestAccessTokenStorage(t *testing.T) {
 	}
 	if tokens, err := db.AccessTokens(ctx); err != nil || len(tokens) != 0 || tokens == nil {
 		t.Fatalf("unreadable tokens = %v %v", tokens, err)
+	}
+}
+
+// A bypass condition is kept as written, case and all, and must be a path
+// an app reads only one way.
+func TestBypassConditions(t *testing.T) {
+	for _, c := range []struct {
+		in BlockCondition
+		ok bool
+	}{
+		{BlockCondition{BlockStartsWith, "/API/v1/"}, true},
+		{BlockCondition{BlockStartsWith, "/files/report."}, true},
+		{BlockCondition{BlockEquals, "/health"}, true},
+		{BlockCondition{BlockEndsWith, ".PNG"}, true},
+		{BlockCondition{BlockContains, "/public/"}, true},
+		{BlockCondition{BlockMatches, "^/v[0-9]+/models$"}, true},
+		{BlockCondition{BlockStartsWith, "/v1/../admin/"}, false},
+		{BlockCondition{BlockStartsWith, "/v1./"}, false},
+		{BlockCondition{BlockStartsWith, "/v1 /"}, false},
+		{BlockCondition{BlockEquals, "/health."}, false},
+		{BlockCondition{BlockStartsWith, "//v1/"}, false},
+		{BlockCondition{BlockStartsWith, "/v1/./x"}, false},
+		{BlockCondition{BlockStartsWith, `/v1\x`}, false},
+		{BlockCondition{BlockStartsWith, "v1/"}, false},
+		{BlockCondition{BlockMatches, "("}, false},
+	} {
+		got, ok := bypassCondition(c.in)
+		if ok != c.ok || ok && got.Value != c.in.Value {
+			t.Errorf("%+v = %+v %v, want %v", c.in, got, ok, c.ok)
+		}
+	}
+	policy := AccessPolicy{Name: "API", Action: AccessBypass, Hosts: []string{"app.example.com"}, Conditions: []BlockCondition{{BlockStartsWith, "/API/"}}}
+	if normalized, ok := (AccessPolicies{Policies: []AccessPolicy{policy}}).Normalize(); !ok || normalized.Policies[0].Conditions[0].Value != "/API/" {
+		t.Fatalf("bypass policy = %+v %v", normalized, ok)
+	}
+	policy.Conditions = []BlockCondition{{BlockStartsWith, "/v1;x/"}}
+	if _, ok := (AccessPolicies{Policies: []AccessPolicy{policy}}).Normalize(); ok {
+		t.Fatal("bypass condition with a parameter accepted")
+	}
+}
+
+// A saved policy without an ID was damaged: it isn't given a new one.
+func TestAccessPoliciesSavedWithoutID(t *testing.T) {
+	ctx := context.Background()
+	db := openRouting(t)
+	raw := `{"policies":[{"name":"Open","enabled":true,"action":"bypass","hosts":["app.example.com"],"all_paths":true,"allowed_users":[],"allowed_groups":[],"allowed_tokens":[]}]}`
+	if err := putSetting(ctx, db.db, settingAccessPolicies, raw, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if policies, err := db.AccessPolicies(ctx); !errors.Is(err, ErrStoredAccessPolicies) || len(policies.Policies) != 1 || policies.Policies[0].ID != "" {
+		t.Fatalf("policies = %+v %v", policies, err)
 	}
 }

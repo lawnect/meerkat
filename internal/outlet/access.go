@@ -11,6 +11,7 @@ import (
 	"html"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"slices"
@@ -68,21 +69,85 @@ const (
 // leftEscape finds a percent escape still in a decoded path.
 var leftEscape = regexp.MustCompile(`%[0-9a-fA-F]{2}`)
 
-// accessRule is one enabled access policy, compiled for matching.
+// accessRule is one enabled access policy, compiled for matching. A
+// bypass policy's conditions are in exact instead: what opens a path is
+// compared with it exactly as the app gets it.
 type accessRule struct {
 	match  blockRule
+	exact  exactMatch
 	all    bool
 	policy control.AccessPolicy
+}
+
+// exactMatch is a bypass policy's conditions, compared with a request path
+// as is: case and all, and without the trailing slash rules add.
+type exactMatch struct {
+	equals                     map[string]bool
+	prefixes, suffixes, phrase []string
+	patterns                   []*regexp.Regexp
+}
+
+func compileExact(conditions []control.BlockCondition) exactMatch {
+	m := exactMatch{equals: map[string]bool{}}
+	for _, c := range conditions {
+		switch c.Operator {
+		case control.BlockEquals:
+			m.equals[c.Value] = true
+		case control.BlockStartsWith:
+			m.prefixes = append(m.prefixes, c.Value)
+		case control.BlockEndsWith:
+			m.suffixes = append(m.suffixes, c.Value)
+		case control.BlockContains:
+			m.phrase = append(m.phrase, c.Value)
+		case control.BlockMatches:
+			// Saving refused patterns that don't compile; one that doesn't
+			// now opens nothing.
+			if pattern, err := regexp.Compile(c.Value); err == nil {
+				m.patterns = append(m.patterns, pattern)
+			}
+		}
+	}
+	return m
+}
+
+func (m exactMatch) matches(p string) bool {
+	return m.equals[p] ||
+		slices.ContainsFunc(m.prefixes, func(prefix string) bool { return strings.HasPrefix(p, prefix) }) ||
+		slices.ContainsFunc(m.suffixes, func(suffix string) bool { return strings.HasSuffix(p, suffix) }) ||
+		slices.ContainsFunc(m.phrase, func(part string) bool { return strings.Contains(p, part) }) ||
+		slices.ContainsFunc(m.patterns, func(pattern *regexp.Regexp) bool { return pattern.MatchString(p) })
+}
+
+// plainPath reports whether apps can read u's path only one way, so that a
+// bypass condition can be compared with it as is: escaped as Go would
+// escape it, with no escape left after decoding, no backslash, ";",
+// control character or byte that isn't UTF-8, and no segment that is
+// empty, ".", "..", or ends in a dot or a space.
+func plainPath(u *url.URL) bool {
+	p := u.Path
+	if u.RawPath != "" || !strings.HasPrefix(p, "/") || leftEscape.MatchString(p) || !utf8.ValidString(p) || strings.ContainsAny(p, `\;`) || strings.IndexFunc(p, unicode.IsControl) >= 0 {
+		return false
+	}
+	segments := strings.Split(p[1:], "/")
+	for i, segment := range segments {
+		if segment == "" && i == len(segments)-1 {
+			continue
+		}
+		if segment == "" || segment == "." || segment == ".." || strings.TrimRight(segment, ". ") != segment {
+			return false
+		}
+	}
+	return true
 }
 
 type accessConfig struct{ rules []accessRule }
 
 // matching returns the first rule that covers a request for host and u's
-// path, or nil. A path an app may read differently from the form rules
-// compare is covered by every rule that protects a path, so it can't slip
-// past a condition, and by no rule that opens one; one with an escape
-// still in it after decoding is also compared decoded once more, as an app
-// decoding again reads it, and must match both ways to be opened.
+// path, or nil. Allow and block conditions compare the path broadly, in the
+// form rules take: a path an app may read differently matches them all, so
+// it can't slip past one, and one with an escape still in it after decoding
+// is also compared decoded once more, as an app decoding again reads it. A
+// bypass condition, which opens paths, matches only a plain path, exactly.
 func (c *accessConfig) matching(host string, u *url.URL) *accessRule {
 	if c == nil || len(c.rules) == 0 {
 		return nil
@@ -90,12 +155,13 @@ func (c *accessConfig) matching(host string, u *url.URL) *accessRule {
 	paths := []rulePath{newRulePath(u.Path)}
 	unclear := ambiguousPath(u.EscapedPath(), true)
 	if !unclear && leftEscape.MatchString(u.Path) {
-		if twice, err := url.PathUnescape(u.Path); err != nil || ambiguousPath(u.Path, false) {
+		if twice, err := url.PathUnescape(u.Path); err != nil || ambiguousPath(u.Path, true) {
 			unclear = true
 		} else {
 			paths = append(paths, newRulePath(twice))
 		}
 	}
+	plain := !unclear && plainPath(u)
 	for i := range c.rules {
 		rule := &c.rules[i]
 		switch {
@@ -103,7 +169,7 @@ func (c *accessConfig) matching(host string, u *url.URL) *accessRule {
 		case rule.all:
 			return rule
 		case rule.policy.Action == control.AccessBypass:
-			if !unclear && !slices.ContainsFunc(paths, func(p rulePath) bool { return !rule.match.matches(p) }) {
+			if plain && rule.exact.matches(u.Path) {
 				return rule
 			}
 		case unclear || slices.ContainsFunc(paths, rule.match.matches):
@@ -143,15 +209,23 @@ func ambiguousPath(escaped string, bytes bool) bool {
 }
 
 // signingIn returns the rules that let people into some path of host
-// after a sign-in.
+// after a sign-in: allow rules up to the first rule that takes every path
+// of host, after which none ever applies.
 func (c *accessConfig) signingIn(host string) []*accessRule {
 	if c == nil {
 		return nil
 	}
 	var out []*accessRule
 	for i := range c.rules {
-		if rule := &c.rules[i]; rule.policy.Action == control.AccessAllow && rule.match.covers(host) {
+		rule := &c.rules[i]
+		if !rule.match.covers(host) {
+			continue
+		}
+		if rule.policy.Action == control.AccessAllow {
 			out = append(out, rule)
+		}
+		if rule.all {
+			break
 		}
 	}
 	return out
@@ -223,8 +297,10 @@ type accessTicket struct {
 type accessState struct {
 	config atomic.Pointer[accessConfig]
 	key    atomic.Pointer[[]byte]
-	// tokens maps an access token's ID to it.
-	tokens atomic.Pointer[map[string]control.AccessToken]
+	// tokens maps an access token's ID to it; used maps an ID to when the
+	// token last let a request in, until saved (see flushAccessTokenUse).
+	tokens atomic.Pointer[map[string]accessTokenRule]
+	used   sync.Map
 	// enabled is the provider's switch: while it is off nobody can sign in,
 	// so protected addresses let nobody in.
 	enabled atomic.Bool
@@ -249,7 +325,11 @@ func compileAccess(policies control.AccessPolicies) *accessConfig {
 		if !policy.Enabled || len(policy.Hosts) == 0 {
 			continue
 		}
-		config.rules = append(config.rules, accessRule{match: compileBlockRule(policy.Hosts, policy.Conditions), all: policy.AllPaths, policy: policy})
+		rule := accessRule{match: compileBlockRule(policy.Hosts, policy.Conditions), all: policy.AllPaths, policy: policy}
+		if policy.Action == control.AccessBypass {
+			rule.match, rule.exact = compileBlockRule(policy.Hosts, nil), compileExact(policy.Conditions)
+		}
+		config.rules = append(config.rules, rule)
 	}
 	return config
 }
@@ -407,11 +487,13 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 		// A client that can't sign in sends an access token instead, which
 		// needs no provider.
 		token, ok := s.accessToken(r.Header.Get(accessTokenHeader))
+		ip, _ := requestOrigin(r)
 		if !ok {
 			accessPage(w, r, http.StatusUnauthorized, "token")
-		} else if !rule.policy.AllowsToken(token.ID) {
+		} else if !token.usableFrom(host, ip) || !rule.policy.AllowsToken(token.ID) {
 			accessPage(w, r, http.StatusForbidden, "denied")
 		} else {
+			s.access.used.Store(token.ID, s.now())
 			return r.WithContext(context.WithValue(r.Context(), accessServiceKey{}, token.Name)), true
 		}
 		return r, false
@@ -463,21 +545,44 @@ func accessLogout(w http.ResponseWriter, r *http.Request) {
 	accessPage(w, r, http.StatusOK, "signedOut")
 }
 
+// accessTokenRule is an access token compiled for checking where it is
+// used.
+type accessTokenRule struct {
+	control.AccessToken
+	hosts  blockRule
+	ranges []netip.Prefix
+	// unusable marks a token whose saved scope can't be read.
+	unusable bool
+}
+
+// usableFrom reports whether the token may be used on host by a client at
+// ip. A token with no hosts, which saving refuses, is usable nowhere.
+func (t accessTokenRule) usableFrom(host, ip string) bool {
+	if t.unusable || len(t.Hosts) == 0 || !t.hosts.covers(host) {
+		return false
+	}
+	if len(t.ranges) == 0 {
+		return true
+	}
+	addr, err := netip.ParseAddr(ip)
+	return err == nil && slices.ContainsFunc(t.ranges, func(prefix netip.Prefix) bool { return prefix.Contains(addr.Unmap()) })
+}
+
 // accessToken returns the access token whose value a request sent, if it
 // is one that hasn't expired.
-func (s *Store) accessToken(value string) (control.AccessToken, bool) {
+func (s *Store) accessToken(value string) (accessTokenRule, bool) {
 	id, _, _ := strings.Cut(value, ".")
 	tokens := s.access.tokens.Load()
 	if tokens == nil {
-		return control.AccessToken{}, false
+		return accessTokenRule{}, false
 	}
 	token, ok := (*tokens)[id]
 	if !ok || subtle.ConstantTimeCompare([]byte(control.AccessTokenHash(value)), []byte(token.SecretHash)) != 1 {
-		return control.AccessToken{}, false
+		return accessTokenRule{}, false
 	}
 	if token.ExpiresAt != "" {
 		if expires, err := time.Parse(time.RFC3339, token.ExpiresAt); err != nil || !s.now().Before(expires) {
-			return control.AccessToken{}, false
+			return accessTokenRule{}, false
 		}
 	}
 	return token, true
@@ -488,12 +593,37 @@ func (s *Store) reloadAccessTokens(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	byID := make(map[string]control.AccessToken, len(tokens))
+	byID := make(map[string]accessTokenRule, len(tokens))
 	for _, token := range tokens {
-		byID[token.ID] = token
+		rule := accessTokenRule{AccessToken: token, hosts: compileBlockRule(token.Hosts, nil)}
+		for _, value := range token.Ranges {
+			prefix, err := netip.ParsePrefix(value)
+			rule.ranges, rule.unusable = append(rule.ranges, prefix), rule.unusable || err != nil
+		}
+		byID[token.ID] = rule
 	}
 	s.access.tokens.Store(&byID)
 	return nil
+}
+
+// flushAccessTokenUse saves when tokens last let a request in, so the
+// console can show it across restarts.
+func (s *Store) flushAccessTokenUse(ctx context.Context) {
+	used := map[string]time.Time{}
+	s.access.used.Range(func(id, at any) bool {
+		used[id.(string)] = at.(time.Time)
+		return true
+	})
+	if len(used) == 0 || s.control == nil {
+		return
+	}
+	if err := s.control.RecordAccessTokenUse(ctx, used, s.now()); err != nil {
+		slog.Warn("access token use not saved", "error", err)
+		return
+	}
+	for id, at := range used {
+		s.access.used.CompareAndDelete(id, at)
+	}
 }
 
 func (s *Store) accessSession(r *http.Request, host string) (control.AccessIdentity, bool) {

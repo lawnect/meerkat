@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -389,19 +390,22 @@ func TestAccessBypassAndBlock(t *testing.T) {
 		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/internal/"}}},
 		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
 	)
-	for _, path := range []string{"/v1/chat/completions", "/v1", "/health", "/V1/models", "/v1./x"} {
+	for _, path := range []string{"/v1/chat/completions", "/v1/", "/health", "/v1/%EA%B2%8C%EC%8B%9C%ED%8C%90"} {
 		if w := f.visit("app.example.com", path); w.Code != 200 || !strings.Contains(w.Body.String(), "email= ") {
 			t.Errorf("open %s: %d %s", path, w.Code, w.Body.String())
 		}
 	}
-	for _, path := range []string{"/", "/login", "/workspace", "/healthz", "/v2/x"} {
+	// Bypass opens only what it plainly names, as the app gets it: not a
+	// path an app could route elsewhere.
+	for _, path := range []string{"/", "/login", "/workspace", "/healthz", "/v2/x", "/v1", "/V1/models", "/v1./models", "/v1%20/models", "/v1;private/models", "/v1%5cmodels", "/v1%2fmodels", "/v%31/models", "/v1//models", "/health/", "/HEALTH", "/v1/%ea%b2%8c"} {
 		if w := f.visit("app.example.com", path); w.Code != http.StatusFound {
 			t.Errorf("protected %s: %d", path, w.Code)
 		}
 	}
 	// Not opened, an unclear path meets the first policy that shuts paths:
 	// here the block policy.
-	for _, path := range []string{"/v1/%2e%2e/admin", "/v1/x%2f..%2f..%2fadmin", "/v1%5c..%5cadmin", "/v1/.../x", "/v1/x%00/../../admin", "/v1/%252e%252e/admin"} {
+	for _, path := range []string{"/v1/%2e%2e/admin", "/v1/x%2f..%2f..%2fadmin", "/v1%5c..%5cadmin", "/v1/.../x", "/v1/x%00/../../admin", "/v1/%252e%252e/admin",
+		"/v1/%2500private", "/v1/%250aprivate", "/v1/%25c0%25ae%25c0%25ae/private", "/v1/%25ff/private"} {
 		if w := f.visit("app.example.com", path); w.Code != http.StatusForbidden {
 			t.Errorf("unclear %s: %d", path, w.Code)
 		}
@@ -674,8 +678,9 @@ func TestAccessPathsAppsMayReadDifferently(t *testing.T) {
 		"/%2561dmin/x", "/public/..%20/admin/x", "/admin%c0%afx", "/a/.../b", "/a/%20/b", "/a/.%20/b",
 		// Dot segments that came escaped or next to a backslash, which many apps keep whole.
 		"/admin/%2e%2e/public", "/admin/a%2f..%2f..%2fpublic", "/admin/.%2E/x", "/admin%5c..%5cpublic", "/%252e%252e/admin/x",
-		// A NUL, which ends the path for some.
-		"/public%00/../admin/x",
+		// A NUL, which ends the path for some, also once decoded again, as
+		// are bytes that aren't UTF-8.
+		"/public%00/../admin/x", "/public/%2500/../admin", "/files/100%25ab.pdf",
 	} {
 		if w := f.visit("app.example.com", path); w.Code != http.StatusFound {
 			t.Errorf("%s: %d", path, w.Code)
@@ -683,7 +688,7 @@ func TestAccessPathsAppsMayReadDifferently(t *testing.T) {
 	}
 	for _, path := range []string{"/", "/public/page", "/administrator", "/secrets", "/100%25", "/%EA%B2%8C%EC%8B%9C%ED%8C%90/1", "/a..b/c", "/a/../public", "/admin/../public",
 		// Decoded once more, these name nothing protected.
-		"/x%252fy", "/files/100%25ab.pdf", "/data/a%253Fb%253Dc"} {
+		"/x%252fy", "/data/a%253Fb%253Dc"} {
 		if w := f.visit("app.example.com", path); w.Code != 200 {
 			t.Errorf("%s: %d", path, w.Code)
 		}
@@ -1172,7 +1177,7 @@ func TestAccessTokens(t *testing.T) {
 			Token accessTokenView `json:"token"`
 			Value string          `json:"value"`
 		}
-		w := request(h, "POST", "/api/v1/security/access-tokens", f.admin, map[string]any{"name": name, "expires_days": days})
+		w := request(h, "POST", "/api/v1/security/access-tokens", f.admin, map[string]any{"name": name, "hosts": []string{"app.example.com", "other.example.com"}, "ranges": []string{}, "expires_days": days})
 		if w.Code != http.StatusCreated || json.Unmarshal(w.Body.Bytes(), &created) != nil || created.Value == "" {
 			t.Fatalf("create %s: %d %s", name, w.Code, w.Body.String())
 		}
@@ -1186,7 +1191,14 @@ func TestAccessTokens(t *testing.T) {
 	if w := request(h, "GET", "/api/v1/security/access-tokens", f.admin, nil); w.Code != 200 || strings.Contains(w.Body.String(), "secret") || strings.Contains(w.Body.String(), deployValue[strings.Index(deployValue, ".")+1:]) || !strings.Contains(w.Body.String(), `"name":"Monitor"`) {
 		t.Fatalf("list: %d %s", w.Code, w.Body.String())
 	}
-	for _, body := range []map[string]any{{"name": " ", "expires_days": 0}, {"name": "x", "expires_days": -1}, {"name": "x", "expires_days": 3651}, {"name": strings.Repeat("x", 65), "expires_days": 0}} {
+	for _, body := range []map[string]any{
+		{"name": " ", "hosts": []string{"app.example.com"}, "ranges": []string{}, "expires_days": 0},
+		{"name": "x", "hosts": []string{"app.example.com"}, "ranges": []string{}, "expires_days": -1},
+		{"name": "x", "hosts": []string{"app.example.com"}, "ranges": []string{}, "expires_days": 3651},
+		{"name": strings.Repeat("x", 65), "hosts": []string{"app.example.com"}, "ranges": []string{}, "expires_days": 0},
+		{"name": "x", "hosts": []string{}, "ranges": []string{}, "expires_days": 0},
+		{"name": "x", "hosts": []string{"app.example.com"}, "ranges": []string{"not a range"}, "expires_days": 0},
+	} {
 		if w := request(h, "POST", "/api/v1/security/access-tokens", f.admin, body); w.Code != 400 {
 			t.Fatalf("create %v: %d", body, w.Code)
 		}
@@ -1276,5 +1288,112 @@ func TestAccessTokens(t *testing.T) {
 		if w := request(h, "GET", path, "", nil); w.Code != 401 {
 			t.Fatalf("%s without a session: %d", path, w.Code)
 		}
+	}
+}
+
+// A token works only on the addresses and from the client addresses it is
+// limited to, whatever the policies allow; its scope can change without a
+// new value. The console sees which policies allow it and when it was last
+// used, across restarts.
+func TestAccessTokenScope(t *testing.T) {
+	f := newAccessFixture(t)
+	h := f.store.Handler()
+	var created struct {
+		Token accessTokenView `json:"token"`
+		Value string          `json:"value"`
+	}
+	w := request(h, "POST", "/api/v1/security/access-tokens", f.admin, map[string]any{"name": "CI", "hosts": []string{"app.example.com"}, "ranges": []string{"198.51.100.0/24"}, "expires_days": 90})
+	if w.Code != http.StatusCreated || json.Unmarshal(w.Body.Bytes(), &created) != nil {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	f.setPolicies(t, control.AccessPolicy{Enabled: true, Hosts: []string{"*.example.com"}, AllPaths: true, AllowedTokens: []string{created.Token.ID}})
+	send := func(host, client string) int {
+		r := httptest.NewRequest("GET", "https://"+host+"/", nil)
+		r.Host = host
+		r.Header.Set("X-Forwarded-For", client)
+		r.Header.Set(accessTokenHeader, created.Value)
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, r)
+		return w.Code
+	}
+	if code := send("app.example.com", "198.51.100.30"); code != 200 {
+		t.Fatalf("in scope: %d", code)
+	}
+	if code := send("other.example.com", "198.51.100.30"); code != http.StatusForbidden {
+		t.Fatalf("another address the policy covers: %d", code)
+	}
+	if code := send("app.example.com", "203.0.113.9"); code != http.StatusForbidden {
+		t.Fatalf("from outside its ranges: %d", code)
+	}
+	var list accessTokensView
+	if w := request(h, "GET", "/api/v1/security/access-tokens", f.admin, nil); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &list) != nil || len(list.Tokens) != 1 ||
+		list.Tokens[0].LastUsedAt == "" || len(list.Tokens[0].Policies) != 1 || list.Tokens[0].Policies[0].Name != "policy 0" || !slices.Contains(list.Addresses, "app.example.com") {
+		t.Fatalf("list: %d %s", w.Code, w.Body.String())
+	}
+	// The scope changes in place; the value keeps working where it now may.
+	w = request(h, "PUT", "/api/v1/security/access-tokens/"+created.Token.ID, f.admin, map[string]any{"name": "CI", "hosts": []string{"*.example.com"}, "ranges": []string{}})
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"hosts":["*.example.com"]`) {
+		t.Fatalf("update: %d %s", w.Code, w.Body.String())
+	}
+	if code := send("other.example.com", "203.0.113.9"); code != 200 {
+		t.Fatalf("after widening: %d", code)
+	}
+	if event := f.lastAudit(t); event.Action != "security.access_token_update" || !strings.Contains(string(event.Detail), "*.example.com") {
+		t.Fatalf("audit: %s %s", event.Action, event.Detail)
+	}
+	for _, body := range []map[string]any{{"name": "CI", "hosts": []string{}, "ranges": []string{}}, {"name": "CI", "hosts": []string{"app.example.com"}, "ranges": []string{"10.0.0.0/40"}}} {
+		if w := request(h, "PUT", "/api/v1/security/access-tokens/"+created.Token.ID, f.admin, body); w.Code != 400 {
+			t.Fatalf("update %v: %d", body, w.Code)
+		}
+	}
+	if w := request(h, "PUT", "/api/v1/security/access-tokens/nosuchtoken", f.admin, map[string]any{"name": "CI", "hosts": []string{"app.example.com"}, "ranges": []string{}}); w.Code != 404 {
+		t.Fatalf("update a missing token: %d", w.Code)
+	}
+	// Last use is saved and survives a restart.
+	f.store.flushAccessTokenUse(context.Background())
+	f.store.access.used.Clear()
+	if used, err := f.db.AccessTokenUse(context.Background()); err != nil || used[created.Token.ID].IsZero() {
+		t.Fatalf("saved use: %v %v", used, err)
+	}
+	if w := request(h, "GET", "/api/v1/security/access-tokens", f.admin, nil); !strings.Contains(w.Body.String(), `"last_used_at":"20`) {
+		t.Fatalf("list after a restart: %s", w.Body.String())
+	}
+	// The policy audit names the tokens it allows.
+	if event := f.lastAuditAction(t); event != "security.access_token_update" {
+		t.Fatalf("audit: %s", event)
+	}
+	body := map[string]any{"policies": []map[string]any{{"name": "CI", "enabled": true, "hosts": []string{"app.example.com"}, "all_paths": true, "allowed_tokens": []string{created.Token.ID}}}}
+	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, body); w.Code != 200 {
+		t.Fatalf("policies: %d %s", w.Code, w.Body.String())
+	}
+	if event := f.lastAudit(t); !strings.Contains(string(event.Detail), `"allowed_tokens":["`+created.Token.ID+`"]`) {
+		t.Fatalf("policy audit: %s", event.Detail)
+	}
+}
+
+// A policy below one that takes every path of an address never applies
+// there, so it neither lets anyone sign in nor puts its groups in the
+// session.
+func TestAccessShadowedPoliciesSignNobodyIn(t *testing.T) {
+	var shadowed []control.AccessPolicy
+	everyone := control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowEveryone: true}
+	shadowed = append(shadowed, everyone)
+	var groups []string
+	for i := range 30 {
+		group := fmt.Sprintf("team-%02d-%s", i, strings.Repeat("x", 200))
+		groups = append(groups, group)
+		shadowed = append(shadowed, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: fmt.Sprintf("/team-%02d/", i)}}, AllowedGroups: []string{group}})
+	}
+	f := newAccessFixture(t, shadowed...)
+	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@else.example.org", "groups", groups)))
+	payload, _, _ := strings.Cut(session.Value, ".")
+	if raw, _ := base64.RawURLEncoding.DecodeString(payload); strings.Contains(string(raw), "team-") {
+		t.Fatalf("session carries shadowed groups: %s", raw)
+	}
+	// A shadowed allow policy alone doesn't let a sign-in start.
+	f.setPolicies(t, control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowEveryone: true})
+	if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash("browser")); w.Code != http.StatusNotFound {
+		t.Fatalf("start behind a block policy: %d", w.Code)
 	}
 }

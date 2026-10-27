@@ -71,6 +71,8 @@
     addCondition: 'Add condition',
     removeCondition: 'Remove condition',
     regexNote: 'RE2 syntax, case-insensitive',
+    bypassNote: 'Compared with the path exactly as the app gets it, case included',
+    bypassPaths: 'Enter bypass paths as the app gets them, without \\, //, or segments that are . or .. or end in a dot or space.',
     operators: { equals: 'equals', starts_with: 'starts with', ends_with: 'ends with', contains: 'contains', matches: 'matches regex' } as Record<BlockOperator, string>,
     placeholders: { equals: '/admin', starts_with: '/private/', ends_with: '.pdf', contains: '/internal', matches: '^/(admin|reports)/' } as Record<BlockOperator, string>,
     who: 'Who can access',
@@ -136,6 +138,8 @@
     addCondition: '조건 추가',
     removeCondition: '조건 삭제',
     regexNote: 'RE2 구문, 대소문자 구분 없음',
+    bypassNote: '앱이 받는 경로와 대소문자까지 그대로 비교',
+    bypassPaths: '우회 조건은 앱이 받는 경로 그대로 입력하십시오. \\, //, . 또는 .. 조각, 점이나 공백으로 끝나는 조각은 사용할 수 없습니다.',
     operators: { equals: '같음', starts_with: '다음으로 시작', ends_with: '다음으로 끝남', contains: '포함', matches: '정규식과 일치' },
     placeholders: { equals: '/admin', starts_with: '/private/', ends_with: '.pdf', contains: '/internal', matches: '^/(admin|reports)/' },
     who: '접근 허용 대상',
@@ -189,6 +193,16 @@
     ...(policy.allow_admins ? [{ text: t().administrators, mono: false }] : []),
     ...policy.allowed_tokens.map((id) => ({ text: tokenName(id), mono: false })),
   ];
+
+  // 서버의 bypassCondition과 같은 검사: \\, 빈 조각, ., .., 끝나는 곳이 확실한 조각 끝의 점·공백을 받지 않습니다.
+  const plainBypassValue = (condition: BlockCondition): boolean => {
+    const value = condition.value.trim();
+    if (condition.operator === 'matches') return true;
+    if (value.includes('\\')) return false;
+    const parts = value.split('/');
+    const whole = condition.operator === 'equals' || condition.operator === 'ends_with';
+    return parts.every((part, index) => ((index === 0 || index === parts.length - 1) && part === '') || (part !== '' && part !== '.' && part !== '..' && !((index < parts.length - 1 || whole) && /[. ]$/.test(part))));
+  };
 
   // 앞선 활성화된 정책이 주소마다 전체 경로에 적용되면, 뒤의 정책은 적용될 일이 없습니다.
   const hostCovers = (pattern: string, host: string): boolean => pattern === host || (pattern.startsWith('*.') && host.endsWith(pattern.slice(1)));
@@ -339,6 +353,11 @@
     // 요청 경로는 디코딩하고 ;매개변수를 뺀 형태로 비교하므로, 그런 값은 어떤 요청과도 일치하지 않습니다.
     if (form.paths === 'selected' && form.conditions.some((condition) => condition.operator !== 'matches' && /%[0-9a-f]{2}|;/i.test(condition.value))) {
       formError = t().decodedPaths;
+      return;
+    }
+    // 우회는 경로를 여는 만큼 앱이 받는 그대로 비교하므로, 앱마다 다르게 읽을 수 있는 값은 받지 않습니다(서버와 같은 검사).
+    if (form.action === 'bypass' && form.paths === 'selected' && form.conditions.some((condition) => !plainBypassValue(condition))) {
+      formError = t().bypassPaths;
       return;
     }
     const current = editing;
@@ -622,7 +641,7 @@
                 </div>
               {/each}
             </div>
-            {#if hasRegex}<Field.Description>{t().regexNote}</Field.Description>{/if}
+            {#if form.action === 'bypass'}<Field.Description>{t().bypassNote}</Field.Description>{:else if hasRegex}<Field.Description>{t().regexNote}</Field.Description>{/if}
             <div>
               <Button variant="outline" size="sm" disabled={form.conditions.length >= maxConditions} onclick={addCondition}><Add12 aria-hidden="true" />{t().addCondition}</Button>
             </div>
@@ -667,7 +686,10 @@
                         checked={form.tokens.includes(token.id)}
                         onCheckedChange={(checked) => { form.tokens = checked ? [...form.tokens, token.id] : form.tokens.filter((id) => id !== token.id); }}
                       />
-                      <Field.Label for={`access-policy-token-${token.id}`} class="font-normal">{token.name}</Field.Label>
+                      <Field.Label for={`access-policy-token-${token.id}`} class="min-w-0 font-normal">
+                        <span class="truncate">{token.name}</span>
+                        {#if token.hosts?.length}<span class="truncate font-mono text-muted-foreground">{token.hosts[0]}{token.hosts.length > 1 ? ` +${token.hosts.length - 1}` : ''}</span>{/if}
+                      </Field.Label>
                     </Field.Field>
                   {/each}
                 </Field.Group>

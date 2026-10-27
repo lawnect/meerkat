@@ -349,13 +349,15 @@ Policies are checked from the top, and the first enabled one that matches a requ
 
 Path conditions see only requests that reach the Outlet. A single-page app changes screens in the browser without one, so a condition on `/login` doesn't stop someone who opens `/` and lets the app navigate; protect all of such an app's paths and bypass the ones its clients call.
 
-**Access tokens** let scripts, CI and other services that can't sign in through Allow policies that name them: create one under Access tokens (its value is shown once), allow it in a policy, and send `X-Meerkat-Access-Token: <value>`. The app receives the token's name in `X-Meerkat-Access-Service`, never the token. Tokens can expire, and one a policy allows can't be deleted until the policy no longer names it.
+**Access tokens** let scripts, CI and other services that can't sign in through Allow policies that name them: create one under Access tokens (its value is shown once), allow it in a policy, and send `X-Meerkat-Access-Token: <value>`. A token works only on the addresses it is limited to and, if set, from the IP ranges it names, however widely a policy allows it; its scope can be changed later without a new value. The list shows the policies that allow each token and when it was last used. The app receives the token's name in `X-Meerkat-Access-Service`, never the token. Tokens expire after 90 days unless chosen otherwise, and one a policy allows can't be deleted until the policy no longer names it.
+
+Bypass conditions open paths, so they are compared exactly, as the app gets the path, case included and without adding a trailing slash: bypassing `/v1/` doesn't open `/V1/x`, `/v1./x`, `/v1;x/x`, `/v1%2fx`, or `/v1`. A request whose path an app could read more than one way never matches a bypass condition.
 
 Conditions work as in block rules and see the path decoded once, so write them decoded (`/files/100%`, not `/files/100%25`). A path an app could read another way, such as an encoded `..`, matches every Allow and Block condition and no Bypass condition; a double-encoded one is also compared decoded twice. For apps that interpret paths in unusual ways, protect all paths. Someone denied can **Sign in again** from the denied page, which is how groups added to a policy later take effect.
 
 A session lasts the configured hours (24 by default), only on the address it was issued for. **Sign everyone out** ends all of them. A group added to a policy counts from a person's next sign-in. The groups claim and scopes are set on the Access SSO card; add the scope your provider needs to send groups.
 
-The app receives the person's email in `X-Meerkat-Access-Email`; a value a client sends is removed, and the session cookie never reaches the app. Paths under `/.meerkat/access/` and cookie names starting with `__Host-meerkat_access` belong to the Outlet; `/.meerkat/access/logout` signs out of the address after a confirmation. While Access SSO is off, protected addresses let nobody in, even people already signed in.
+The app receives the person's email in `X-Meerkat-Access-Email`; a value a client sends is removed, and the session cookie never reaches the app. Paths under `/.meerkat/access/` and cookie names starting with `__Host-meerkat_access` belong to the Outlet; `/.meerkat/access/logout` signs out of the address after a confirmation. While Access SSO is off, Allow policies let no person in, even people already signed in; access tokens they allow still work.
 
 ### Block rules
 

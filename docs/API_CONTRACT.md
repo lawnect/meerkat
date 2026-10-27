@@ -303,6 +303,7 @@ GET    /api/v1/security/access-policies
 PUT    /api/v1/security/access-policies
 GET    /api/v1/security/access-tokens
 POST   /api/v1/security/access-tokens
+PUT    /api/v1/security/access-tokens/:id
 DELETE /api/v1/security/access-tokens/:id
 GET    /api/v1/access/start?host=<주소>&return=<경로>&bind=<해시>
 GET    /api/v1/access/callback
@@ -324,7 +325,8 @@ POST   https://<보호 주소>/.meerkat/access/logout
 - `hosts`는 하나 이상의 주소 또는 `*.도메인`이다.
 - `all_paths`가 `false`이면 `conditions`가 필요하다. 조건은 차단 규칙과 같은 연산자, 값 정리, 경로 비교를 쓴다. 요청 경로는 한 번 디코딩하고 `;` 매개변수를 뺀 형태로 비교하므로, 정규식이 아닌 값에 `%XX` 인코딩이나 `;`가 있으면 `400 invalid_access_policies`이다.
 - 경로 조건은 Outlet에 도달한 요청에만 적용된다. 단일 페이지 앱은 화면을 브라우저 안에서 바꾸므로, 앱 전체를 보호하고 외부 클라이언트가 부르는 경로만 우회한다.
-- 앱마다 다르게 읽을 수 있는 경로는 로그인 요구·차단 정책의 조건에는 모두 일치하고 우회 정책의 조건에는 일치하지 않는 것으로 본다. 곧 인코딩되어 온 `.`·`..`(`%2e%2e`, `a%2f..`)이나 `\` 옆의 `.`·`..`, `.`·`..`이 아니면서 점과 공백으로만 된 조각, UTF-8이 아니거나 제어 문자(NUL 포함)가 든 경로다. 디코딩 뒤에도 `%XX`가 남은 경로는 한 번 더 디코딩한 경로로도 비교해, 로그인 요구·차단은 둘 중 하나, 우회는 둘 다 일치해야 일치로 보며, 그 경로에 앞의 경우가 있으면 모호한 경로로 본다.
+- `bypass` 조건은 경로를 여는 만큼 넓히지 않고 그대로 비교한다. 값은 대소문자를 포함해 입력한 그대로 저장하며, `\`, 빈 조각, `.`·`..` 조각, 끝나는 곳이 확실한 조각 끝의 점이나 공백이 있으면 `400 invalid_access_policies`이다. 정규식은 대소문자를 구분한다. 요청은 Go가 인코딩하는 그대로 온 경로(다른 인코딩, `%2F` 등이 없음)이고, 디코딩 뒤 `%XX`·`\`·`;`·제어 문자·UTF-8이 아닌 바이트가 없으며, 빈·`.`·`..` 조각이나 점·공백으로 끝나는 조각이 없을 때만 디코딩한 경로 그대로(끝에 `/`를 붙이지 않고, 대소문자 구분) 비교한다. 그 밖의 요청은 우회 정책에 일치하지 않는다.
+- 앱마다 다르게 읽을 수 있는 경로는 로그인 요구·차단 정책의 조건에는 모두 일치하고 우회 정책의 조건에는 일치하지 않는 것으로 본다. 곧 인코딩되어 온 `.`·`..`(`%2e%2e`, `a%2f..`)이나 `\` 옆의 `.`·`..`, `.`·`..`이 아니면서 점과 공백으로만 된 조각, UTF-8이 아니거나 제어 문자(NUL 포함)가 든 경로다. 디코딩 뒤에도 `%XX`가 남은 경로는 한 번 더 디코딩한 경로로도 비교해 둘 중 하나가 일치하면 일치로 보며, 그 경로에 앞의 경우(UTF-8이 아니거나 제어 문자 포함)가 있으면 모호한 경로로 본다.
 - 허용 판단(`allow`): `allow_everyone`이면 접근 보호 SSO로 로그인한 모든 사용자를 들이며, 이때 사용자·그룹·관리자 허용은 비운다. 아니면 사용자(이메일 또는 `@도메인`)와 그룹은 둘 다 지정하면 둘 다 맞아야 한다. `allow_admins`는 접근 보호 SSO가 인증한 이메일이 Meerkat 관리자 이메일과 같으면 추가로 허용한다(관리자 SSO의 발급자·subject와는 대조하지 않는다). `allowed_tokens`의 접근 토큰은 로그인 없이 통과한다. 아무도 허용하지 않거나 없는 토큰을 지정한 `allow` 정책은 `400 invalid_access_policies`이다.
 - 저장하면 바로 적용하고 `security.access_policies`에 순서대로 정책마다 이름, 활성화, 동작, 주소, 허용 대상을 남긴다. 동시에 저장해도 마지막으로 저장된 정책이 적용된다.
 - 저장된 정책이 검사를 통과하지 못하면(손상, 업그레이드로 바뀐 검사) Outlet은 그대로 시작하고, 활성화된 정책이 순서대로 지정한 주소의 전체 경로를 닫은 채로 `allow` 정책에 저장된 허용 대상(이메일은 소문자로)만 들인다(`bypass`·`block`은 아무도 들이지 않는다). 유효한 주소가 없는 정책, ID가 없는 정책, 정책 목록이 없거나(`null`, `{}`) 읽을 수 없으면 모든 공개 주소를 닫는다. `GET`은 읽은 정책을 빈 목록은 `[]`로, 올바르지 않거나 겹치는 ID는 새 ID로 바꿔 `"damaged": true`와 함께 보여 주며, 고쳐 다시 저장하면 풀린다.
@@ -340,10 +342,12 @@ POST   https://<보호 주소>/.meerkat/access/logout
 - `__Host-meerkat_access`로 시작하는 쿠키 이름은 Outlet 전용이다. 요청에서는 이름의 앞뒤 공백과 대소문자에 관계없이 지워 앱에 전달하지 않고, 앱 응답이 이 이름으로 설정하는 `Set-Cookie`도 지운다.
 
 **접근 토큰**
-- 스크립트, CI, 다른 서비스처럼 로그인할 수 없는 클라이언트는 `X-Meerkat-Access-Token: <값>` 헤더를 보낸다. 처음 일치한 `allow` 정책의 `allowed_tokens`에 그 토큰이 있으면 로그인 없이 통과한다. 값이 맞지 않거나 만료되면 `401`, 정책이 허용하지 않으면 `403`이다.
+- 스크립트, CI, 다른 서비스처럼 로그인할 수 없는 클라이언트는 `X-Meerkat-Access-Token: <값>` 헤더를 보낸다. 토큰의 이용 범위 안에서, 처음 일치한 `allow` 정책의 `allowed_tokens`에 그 토큰이 있으면 로그인 없이 통과한다. 값이 맞지 않거나 만료되면 `401`, 범위 밖이거나 정책이 허용하지 않으면 `403`이다.
+- 이용 범위: 토큰은 `hosts`(주소 또는 `*.도메인`, 1~100개)에서만, `ranges`(CIDR 또는 단일 주소, 0~50개, 비면 모든 IP)가 있으면 그 대역의 클라이언트에서만 쓸 수 있다. 정책이 더 넓게 허용해도 이 범위를 넘지 않는다.
 - 앱에는 토큰 이름을 `X-Meerkat-Access-Service`로 전달한다. 토큰 헤더와 클라이언트가 보낸 같은 헤더는 지운다.
-- `GET`은 `{"tokens": [{"id", "name", "created_at", "expires_at"}]}`를 만든 순서로 반환한다(`expires_at`이 `""`이면 만료 없음). 값은 저장하지 않고 SHA-256 해시만 둔다.
-- `POST`는 `{"name", "expires_days"}`(이름 1~64자, 0이면 만료 없음, 최대 3650일)를 받아 `201 {"token", "value"}`로 답한다. `value`(`<id>.<비밀값>`)는 이때만 보여 준다. 토큰은 100개까지이며, 맞지 않으면 `400 invalid_access_token`이다(`security.access_token_create`).
+- `GET`은 `{"tokens": [{"id", "name", "hosts", "ranges", "created_at", "expires_at", "last_used_at", "policies"}], "addresses": [공개 주소]}`를 만든 순서로 반환한다. `expires_at`이 `""`이면 만료 없음, `last_used_at`이 `""`이면 사용 기록 없음이며, `policies`는 그 토큰을 허용한 정책(`{"id", "name"}`)이다. 값은 저장하지 않고 SHA-256 해시만 둔다. 마지막 사용 시각은 30초마다 저장한다.
+- `POST`는 `{"name", "hosts", "ranges", "expires_days"}`(이름 1~64자, 0이면 만료 없음, 최대 3650일)를 받아 `201 {"token", "value"}`로 답한다. `value`(`<id>.<비밀값>`)는 이때만 보여 준다. 토큰은 100개까지이며, 맞지 않으면 `400 invalid_access_token`이다(`security.access_token_create`).
+- `PUT`은 `{"name", "hosts", "ranges"}`로 이름과 이용 범위를 바꾼다. 값과 만료는 그대로다(`security.access_token_update`, 없으면 `404 access_token_not_found`).
 - `DELETE`는 `204`다. 정책이 허용 중인 토큰은 `409 access_token_in_use`, 없으면 `404 access_token_not_found`이다(`security.access_token_delete`). 삭제하거나 만료되면 바로 통과하지 못한다.
 
 **로그인 흐름**

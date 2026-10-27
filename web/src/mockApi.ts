@@ -1,4 +1,4 @@
-import type { AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, Outlet, Route, Service, SsoSettings, Target, UsageBucket, UsageSeries, UsageUnit } from './types';
+import type { AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, Outlet, Route, Service, SsoSettings, Target, UsageBucket, UsageSeries, UsageUnit } from './types';
 
 const now = (): string => new Date().toISOString();
 const ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
@@ -248,10 +248,27 @@ let accessPolicies: AccessPolicy[] = [
 ];
 const accessPoliciesResponse = (): AccessPoliciesView => structuredClone({ policies: accessPolicies, addresses: publicAddresses() });
 // 접근 토큰 데모 상태. 값은 만들 때만 돌려줍니다.
-let accessTokens: AccessToken[] = [
-  { id: 'deploybot', name: 'Deploy bot', created_at: '2026-10-20T03:00:00Z', expires_at: '' },
-  { id: 'monitor', name: 'Uptime monitor', created_at: '2026-10-22T09:30:00Z', expires_at: '2027-01-20T09:30:00Z' },
+let accessTokens: Array<Omit<AccessToken, 'policies'>> = [
+  { id: 'deploybot', name: 'Deploy bot', hosts: ['vault.example.test'], ranges: ['203.0.113.0/24'], created_at: '2026-10-20T03:00:00Z', expires_at: '', last_used_at: '2026-10-27T01:12:00Z' },
+  { id: 'monitor', name: 'Uptime monitor', hosts: ['*.example.test'], ranges: [], created_at: '2026-10-22T09:30:00Z', expires_at: '2027-01-20T09:30:00Z', last_used_at: '' },
 ];
+// 서버처럼 토큰마다 허용한 정책을 붙여 보여 줍니다.
+const tokenView = (token: Omit<AccessToken, 'policies'>): AccessToken => structuredClone({ ...token, policies: accessPolicies.filter((policy) => policy.allowed_tokens.includes(token.id)).map((policy) => ({ id: policy.id, name: policy.name })) });
+// 서버의 AccessTokenScope.Normalize: 이름, 주소(소문자, 1–100개), IP 대역(CIDR 또는 단일 주소, 0–50개)을 확인합니다.
+function tokenScope(body: Partial<AccessTokenInput>): Pick<AccessToken, 'name' | 'hosts' | 'ranges'> {
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  if (!name || name.length > 64 || /[\u0000-\u001f\u007f]/.test(name) || !Array.isArray(body.hosts) || body.hosts.length < 1 || body.hosts.length > 100 || !Array.isArray(body.ranges) || body.ranges.length > 50) fail('invalid_access_token');
+  const hosts = [...new Set(body.hosts.map((host) => (typeof host === 'string' ? host.trim().toLowerCase() : '')))];
+  if (hosts.some((host) => !validBlockHost(host))) fail('invalid_access_token');
+  const ranges = [...new Set(body.ranges.map((range) => {
+    const value = typeof range === 'string' ? range.trim() : '';
+    const v4 = value.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\/(\d{1,2}))?$/);
+    if (v4 && v4.slice(1, 5).every((part) => Number(part) <= 255) && (v4[5] === undefined || Number(v4[5]) <= 32)) return v4[5] === undefined ? `${value}/32` : value;
+    if (/^[0-9a-f:]+(?:\/\d{1,3})?$/i.test(value) && value.includes(':')) return value.includes('/') ? value.toLowerCase() : `${value.toLowerCase()}/128`;
+    return fail('invalid_access_token');
+  }))];
+  return { name, hosts, ranges };
+}
 
 // 감사 로그 데모: 최근 며칠 동안의 관리 작업을 만들어 둡니다.
 const AUDIT_SAMPLES: Array<[string, string, string, string]> = [
@@ -357,6 +374,22 @@ function normalizeCondition(raw: unknown): BlockCondition | null {
   if (operator === 'equals') value = normalizeBlockPath(value);
   else if (operator !== 'matches') value = conditionFragment(value, operator === 'ends_with');
   return { operator, value };
+}
+
+// 서버의 bypassCondition: 우회 조건은 대소문자를 그대로 두고, 앱이 한 가지로만 읽는 경로여야 합니다.
+function bypassCondition(raw: unknown): BlockCondition | null {
+  const entry = (raw ?? {}) as Partial<BlockCondition>;
+  if (typeof entry.operator !== 'string' || !BLOCK_OPERATORS.includes(entry.operator) || typeof entry.value !== 'string') return null;
+  const operator = entry.operator as BlockOperator;
+  const value = entry.value.trim();
+  if (!value || new TextEncoder().encode(value).length > 512 || /[\u0000-\u001f\u007f]/.test(value)) return null;
+  if (operator === 'matches') return validRegex(value) ? { operator, value } : null;
+  if ((operator === 'equals' || operator === 'starts_with') && !value.startsWith('/')) return null;
+  if (value.includes('\\')) return null;
+  const parts = value.split('/');
+  const whole = operator === 'equals' || operator === 'ends_with';
+  const plain = parts.every((part, index) => (index === 0 || index === parts.length - 1) && part === '' || part !== '' && part !== '.' && part !== '..' && (!(index < parts.length - 1 || whole) || !/[. ]$/.test(part)));
+  return plain ? { operator, value } : null;
 }
 
 // 실제 Outlet은 대표 도메인을 처음 등록할 때 8글자 이름을 만듭니다.
@@ -760,19 +793,25 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
   }
   if (path === '/api/v1/security/access/sessions/revoke' && method === 'POST') return {};
   if (path === '/api/v1/security/access-policies' && method === 'GET') return accessPoliciesResponse();
-  if (path === '/api/v1/security/access-tokens' && method === 'GET') return structuredClone({ tokens: accessTokens }) satisfies AccessTokensView;
+  if (path === '/api/v1/security/access-tokens' && method === 'GET') return { tokens: accessTokens.map(tokenView), addresses: publicAddresses() } satisfies AccessTokensView;
   if (path === '/api/v1/security/access-tokens' && method === 'POST') {
-    const body = input as { name?: unknown; expires_days?: unknown };
-    const name = typeof body.name === 'string' ? body.name.trim() : '';
-    const days = body.expires_days ?? 0;
-    if (!name || name.length > 64 || /[\u0000-\u001f\u007f]/.test(name) || typeof days !== 'number' || !Number.isInteger(days) || days < 0 || days > 3650 || accessTokens.length >= 100) fail('invalid_access_token');
+    const body = input as Partial<AccessTokenInput>;
+    const days = body.expires_days;
+    if (typeof days !== 'number' || !Number.isInteger(days) || days < 0 || days > 3650 || accessTokens.length >= 100) fail('invalid_access_token');
+    const scope = tokenScope(body);
     const now = new Date();
-    const token: AccessToken = { id: Math.random().toString(36).slice(2, 14), name, created_at: now.toISOString().replace(/\.\d+Z$/, 'Z'), expires_at: days ? new Date(now.getTime() + days * 86400000).toISOString().replace(/\.\d+Z$/, 'Z') : '' };
+    const token = { id: Math.random().toString(36).slice(2, 14), ...scope, created_at: now.toISOString().replace(/\.\d+Z$/, 'Z'), expires_at: days ? new Date(now.getTime() + days * 86400000).toISOString().replace(/\.\d+Z$/, 'Z') : '', last_used_at: '' };
     accessTokens = [...accessTokens, token];
     const secret = Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, '0')).join('');
-    return { token: structuredClone(token), value: `${token.id}.${secret}` } satisfies CreatedAccessToken;
+    return { token: tokenView(token), value: `${token.id}.${secret}` } satisfies CreatedAccessToken;
   }
   const tokenMatch = path.match(/^\/api\/v1\/security\/access-tokens\/([^/]+)$/);
+  if (tokenMatch && method === 'PUT') {
+    const id = decodeURIComponent(tokenMatch[1]);
+    const token = accessTokens.find((entry) => entry.id === id) ?? fail('access_token_not_found');
+    Object.assign(token, tokenScope(input as Partial<AccessTokenInput>));
+    return tokenView(token);
+  }
   if (tokenMatch && method === 'DELETE') {
     const id = decodeURIComponent(tokenMatch[1]);
     if (!accessTokens.some((token) => token.id === id)) fail('access_token_not_found');
@@ -808,7 +847,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
         conditions = policy.conditions.map((raw) => {
           const entry = (raw ?? {}) as Partial<BlockCondition>;
           if (entry.operator !== 'matches' && typeof entry.value === 'string' && /%[0-9a-f]{2}|;/i.test(entry.value)) fail('invalid_access_policies');
-          return normalizeCondition(raw) ?? fail('invalid_access_policies');
+          return (action === 'bypass' ? bypassCondition(raw) : normalizeCondition(raw)) ?? fail('invalid_access_policies');
         }).filter((entry) => {
           const key = `${entry.operator}\0${entry.value}`;
           if (seen.has(key)) return false;

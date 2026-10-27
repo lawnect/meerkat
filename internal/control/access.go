@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"regexp"
 	"slices"
 	"strings"
@@ -24,6 +25,7 @@ const (
 	settingAccessPolicies = "access_policies"
 	settingAccessKey      = "access_key"
 	settingAccessTokens   = "access_tokens"
+	settingAccessTokenUse = "access_token_use"
 
 	MaxAccessPolicies     = 100
 	maxAccessPolicyName   = 64
@@ -33,6 +35,8 @@ const (
 	maxAccessSessionHours = 720
 	MaxAccessTokens       = 100
 	maxAccessTokenName    = 64
+	maxAccessTokenHosts   = 100
+	maxAccessTokenRanges  = 50
 )
 
 var (
@@ -190,6 +194,9 @@ func (a AccessPolicies) Normalize() (AccessPolicies, bool) {
 			}
 		}
 		policy.Hosts = hosts
+		if policy.Action == "" {
+			policy.Action = AccessAllow
+		}
 		conditions := make([]BlockCondition, 0, len(policy.Conditions))
 		if !policy.AllPaths {
 			if len(policy.Conditions) == 0 || len(policy.Conditions) > maxAccessConditions {
@@ -201,6 +208,9 @@ func (a AccessPolicies) Normalize() (AccessPolicies, bool) {
 					return a, false
 				}
 				normalized, ok := normalizeCondition(c)
+				if policy.Action == AccessBypass {
+					normalized, ok = bypassCondition(c)
+				}
 				if !ok {
 					return a, false
 				}
@@ -229,8 +239,7 @@ func (a AccessPolicies) Normalize() (AccessPolicies, bool) {
 		}
 		policy.AllowedTokens = tokens
 		switch policy.Action {
-		case "", AccessAllow:
-			policy.Action = AccessAllow
+		case AccessAllow:
 		case AccessBypass, AccessBlock:
 			// Who may pass means nothing to these.
 			policy.AllowEveryone, policy.AllowedTokens = false, []string{}
@@ -274,6 +283,47 @@ func (a AccessPolicies) Readable() AccessPolicies {
 		out = append(out, policy)
 	}
 	return AccessPolicies{Policies: out}
+}
+
+// bypassCondition checks a condition of a bypass policy. Bypass opens what
+// it matches, so requests are compared with it exactly as the app gets
+// them, case and all, and a literal value must already be a path an app
+// reads only one way: no backslash, no empty, "." or ".." segment, and none
+// that ends in a dot or a space where it surely ends. Patterns are compared
+// with case too.
+func bypassCondition(c BlockCondition) (BlockCondition, bool) {
+	value := strings.TrimSpace(c.Value)
+	if value == "" || len(value) > maxBlockValueBytes || strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return c, false
+	}
+	switch c.Operator {
+	case BlockMatches:
+		_, err := regexp.Compile(value)
+		return BlockCondition{Operator: c.Operator, Value: value}, err == nil
+	case BlockEquals, BlockStartsWith:
+		if !strings.HasPrefix(value, "/") {
+			return c, false
+		}
+	case BlockEndsWith, BlockContains:
+	default:
+		return c, false
+	}
+	if strings.Contains(value, `\`) {
+		return c, false
+	}
+	parts := strings.Split(value, "/")
+	for i, part := range parts {
+		// The first part of a value starting with "/" is empty, and the last
+		// of starts_with and contains may go on in the request.
+		whole := i < len(parts)-1 || c.Operator == BlockEquals || c.Operator == BlockEndsWith
+		if i == 0 && part == "" || i == len(parts)-1 && part == "" {
+			continue
+		}
+		if part == "" || part == "." || part == ".." || whole && strings.TrimRight(part, ". ") != part {
+			return c, false
+		}
+	}
+	return BlockCondition{Operator: c.Operator, Value: value}, true
 }
 
 // AccessIdentity is a person the access provider vouched for.
@@ -360,6 +410,10 @@ func (d *Database) AccessPolicies(ctx context.Context) (AccessPolicies, error) {
 	if json.Unmarshal([]byte(raw), &stored) != nil || stored.Policies == nil {
 		return AccessPolicies{Policies: []AccessPolicy{}}, ErrStoredAccessPolicies
 	}
+	// Normalize gives a new policy an ID; a saved one without was damaged.
+	if slices.ContainsFunc(stored.Policies, func(policy AccessPolicy) bool { return policy.ID == "" }) {
+		return stored, ErrStoredAccessPolicies
+	}
 	policies, ok := stored.Normalize()
 	if !ok {
 		return stored, ErrStoredAccessPolicies
@@ -401,17 +455,63 @@ func (d *Database) SetAccessPolicies(ctx context.Context, policies AccessPolicie
 }
 
 // AccessToken lets a client that can't sign in, such as a script or another
-// service, through the allow policies that name it: it sends its value,
+// service, through the allow policies that name it, on the addresses and
+// from the client addresses it is limited to: it sends its value,
 // "<ID>.<secret>", in the X-Meerkat-Access-Token header.
 type AccessToken struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID string `json:"id"`
+	AccessTokenScope
 	// SecretHash is the secret's SHA-256, in hex: the secret itself is
 	// shown once, when the token is made.
 	SecretHash string `json:"secret_hash"`
 	CreatedAt  string `json:"created_at"`
 	// ExpiresAt is when the token stops working, RFC 3339; empty is never.
 	ExpiresAt string `json:"expires_at"`
+}
+
+// AccessTokenScope is what of an access token can be changed: its name and
+// where it can be used. A token works only on Hosts, hostnames or
+// "*.domain", at least one; and, when Ranges are set, only from client
+// addresses in them, as CIDR prefixes or single addresses.
+type AccessTokenScope struct {
+	Name   string   `json:"name"`
+	Hosts  []string `json:"hosts"`
+	Ranges []string `json:"ranges"`
+}
+
+// Normalize checks the scope and puts it in its saved form: hosts in lower
+// case, ranges as masked prefixes, none twice.
+func (a AccessTokenScope) Normalize() (AccessTokenScope, bool) {
+	a.Name = strings.TrimSpace(a.Name)
+	if a.Name == "" || len([]rune(a.Name)) > maxAccessTokenName || strings.IndexFunc(a.Name, unicode.IsControl) >= 0 || len(a.Hosts) == 0 || len(a.Hosts) > maxAccessTokenHosts || len(a.Ranges) > maxAccessTokenRanges {
+		return a, false
+	}
+	hosts := make([]string, 0, len(a.Hosts))
+	for _, host := range a.Hosts {
+		if host = strings.ToLower(strings.TrimSpace(host)); !validBlockHost(host) {
+			return a, false
+		}
+		if !slices.Contains(hosts, host) {
+			hosts = append(hosts, host)
+		}
+	}
+	ranges := make([]string, 0, len(a.Ranges))
+	for _, value := range a.Ranges {
+		value = strings.TrimSpace(value)
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			addr, err := netip.ParseAddr(value)
+			if err != nil || addr.Zone() != "" {
+				return a, false
+			}
+			prefix = netip.PrefixFrom(addr, addr.BitLen())
+		}
+		if value = prefix.Masked().String(); !slices.Contains(ranges, value) {
+			ranges = append(ranges, value)
+		}
+	}
+	a.Hosts, a.Ranges = hosts, ranges
+	return a, true
 }
 
 // AccessTokens returns the access tokens, oldest first. Saved tokens that
@@ -432,11 +532,19 @@ func accessTokens(ctx context.Context, q conn) ([]AccessToken, error) {
 	return tokens, nil
 }
 
-// CreateAccessToken makes an access token named name that stops working at
+func putAccessTokens(ctx context.Context, q conn, tokens []AccessToken, now time.Time) error {
+	raw, err := json.Marshal(tokens)
+	if err != nil {
+		return err
+	}
+	return putSetting(ctx, q, settingAccessTokens, string(raw), now)
+}
+
+// CreateAccessToken makes an access token with scope that stops working at
 // expires, or never when that is zero, and returns it with its value.
-func (d *Database) CreateAccessToken(ctx context.Context, name string, expires, now time.Time) (AccessToken, string, error) {
-	name = strings.TrimSpace(name)
-	if name == "" || len([]rune(name)) > maxAccessTokenName || strings.IndexFunc(name, unicode.IsControl) >= 0 || !expires.IsZero() && !expires.After(now) {
+func (d *Database) CreateAccessToken(ctx context.Context, scope AccessTokenScope, expires, now time.Time) (AccessToken, string, error) {
+	scope, ok := scope.Normalize()
+	if !ok || !expires.IsZero() && !expires.After(now) {
 		return AccessToken{}, "", ErrInvalidAccessToken
 	}
 	id, err := newRuleID()
@@ -448,7 +556,7 @@ func (d *Database) CreateAccessToken(ctx context.Context, name string, expires, 
 		return AccessToken{}, "", err
 	}
 	value := id + "." + base64.RawURLEncoding.EncodeToString(secret)
-	token := AccessToken{ID: id, Name: name, SecretHash: AccessTokenHash(value), CreatedAt: stamp(now)}
+	token := AccessToken{ID: id, AccessTokenScope: scope, SecretHash: AccessTokenHash(value), CreatedAt: stamp(now)}
 	if !expires.IsZero() {
 		token.ExpiresAt = stamp(expires)
 	}
@@ -464,14 +572,97 @@ func (d *Database) CreateAccessToken(ctx context.Context, name string, expires, 
 	if len(tokens) >= MaxAccessTokens {
 		return AccessToken{}, "", ErrInvalidAccessToken
 	}
-	raw, err := json.Marshal(append(tokens, token))
-	if err != nil {
-		return AccessToken{}, "", err
-	}
-	if err := putSetting(ctx, tx, settingAccessTokens, string(raw), now); err != nil {
+	if err := putAccessTokens(ctx, tx, append(tokens, token), now); err != nil {
 		return AccessToken{}, "", err
 	}
 	return token, value, tx.Commit()
+}
+
+// UpdateAccessToken changes the name and scope of the access token with ID
+// id; its value stays.
+func (d *Database) UpdateAccessToken(ctx context.Context, id string, scope AccessTokenScope, now time.Time) (AccessToken, error) {
+	scope, ok := scope.Normalize()
+	if !ok {
+		return AccessToken{}, ErrInvalidAccessToken
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return AccessToken{}, err
+	}
+	defer tx.Rollback()
+	tokens, err := accessTokens(ctx, tx)
+	if err != nil {
+		return AccessToken{}, err
+	}
+	i := slices.IndexFunc(tokens, func(token AccessToken) bool { return token.ID == id })
+	if i < 0 {
+		return AccessToken{}, ErrAccessTokenNotFound
+	}
+	tokens[i].AccessTokenScope = scope
+	if err := putAccessTokens(ctx, tx, tokens, now); err != nil {
+		return AccessToken{}, err
+	}
+	return tokens[i], tx.Commit()
+}
+
+// AccessTokenUse returns when each access token last let a request in, by
+// ID, as of the last RecordAccessTokenUse.
+func (d *Database) AccessTokenUse(ctx context.Context) (map[string]time.Time, error) {
+	return accessTokenUse(ctx, d.db)
+}
+
+func accessTokenUse(ctx context.Context, q conn) (map[string]time.Time, error) {
+	used := map[string]time.Time{}
+	raw, err := getSetting(ctx, q, settingAccessTokenUse)
+	if err != nil || raw == "" {
+		return used, err
+	}
+	var saved map[string]string
+	if json.Unmarshal([]byte(raw), &saved) != nil {
+		return used, nil
+	}
+	for id, at := range saved {
+		if t, err := time.Parse(time.RFC3339, at); err == nil {
+			used[id] = t
+		}
+	}
+	return used, nil
+}
+
+// RecordAccessTokenUse keeps the later of used and what is saved for each
+// token that still exists.
+func (d *Database) RecordAccessTokenUse(ctx context.Context, used map[string]time.Time, now time.Time) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	tokens, err := accessTokens(ctx, tx)
+	if err != nil {
+		return err
+	}
+	saved, err := accessTokenUse(ctx, tx)
+	if err != nil {
+		return err
+	}
+	out := map[string]string{}
+	for _, token := range tokens {
+		at := saved[token.ID]
+		if used[token.ID].After(at) {
+			at = used[token.ID]
+		}
+		if !at.IsZero() {
+			out[token.ID] = stamp(at)
+		}
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return err
+	}
+	if err := putSetting(ctx, tx, settingAccessTokenUse, string(raw), now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // AccessTokenHash is what a token's value is kept as: the SHA-256 of the
@@ -506,11 +697,7 @@ func (d *Database) DeleteAccessToken(ctx context.Context, id string, now time.Ti
 		return AccessToken{}, ErrAccessTokenInUse
 	}
 	token := tokens[i]
-	out, err := json.Marshal(slices.Delete(tokens, i, i+1))
-	if err != nil {
-		return AccessToken{}, err
-	}
-	if err := putSetting(ctx, tx, settingAccessTokens, string(out), now); err != nil {
+	if err := putAccessTokens(ctx, tx, slices.Delete(tokens, i, i+1), now); err != nil {
 		return AccessToken{}, err
 	}
 	return token, tx.Commit()

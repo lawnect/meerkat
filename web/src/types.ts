@@ -332,17 +332,30 @@ export interface AccessPolicy {
   allowed_tokens: string[]; // 로그인 없이 통과시킬 접근 토큰 ID. allow일 때만, 있는 토큰만
 }
 
-// 접근 토큰(GET/POST /api/v1/security/access-tokens, DELETE …/{id}). 로그인할 수 없는 클라이언트가
-// X-Meerkat-Access-Token 헤더에 값을 보내면, 그 토큰을 허용한 정책을 로그인 없이 통과합니다.
+// 접근 토큰(GET/POST /api/v1/security/access-tokens, PUT·DELETE …/{id}). 로그인할 수 없는 클라이언트가
+// X-Meerkat-Access-Token 헤더에 값을 보내면, 토큰의 이용 범위(주소, IP 대역) 안에서 그 토큰을 허용한 정책을 로그인 없이 통과합니다.
 export interface AccessToken {
   id: string;
   name: string; // 1–64자
+  hosts: string[]; // 쓸 수 있는 주소: 호스트 이름 또는 '*.도메인', 1–100개
+  ranges: string[]; // 쓸 수 있는 클라이언트 IP 대역(CIDR, 단일 주소는 /32·/128로 저장), 비어 있으면 모든 IP. 0–50개
   created_at: string; // RFC 3339
   expires_at: string; // RFC 3339, ''이면 만료 없음
+  last_used_at: string; // RFC 3339, ''이면 사용 기록 없음
+  policies: Array<{ id: string; name: string }>; // 이 토큰을 허용한 정책
 }
 
 export interface AccessTokensView {
   tokens: AccessToken[]; // 만든 순서
+  addresses: string[]; // 토큰을 한정할 수 있는 공개 주소(호스트 이름), 정렬됨
+}
+
+// POST 본문. PUT은 expires_days 없이 같은 모양이며 값은 바뀌지 않습니다.
+export interface AccessTokenInput {
+  name: string;
+  hosts: string[];
+  ranges: string[];
+  expires_days?: number; // 0이면 만료 없음, 1–3650
 }
 
 // POST 응답. value는 이때 한 번만 보여 줍니다.

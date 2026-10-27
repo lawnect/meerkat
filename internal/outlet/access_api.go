@@ -195,10 +195,11 @@ func (s *Store) putAccessPolicies(w http.ResponseWriter, r *http.Request) {
 		Users    []string `json:"allowed_users,omitempty"`
 		Groups   []string `json:"allowed_groups,omitempty"`
 		Admins   bool     `json:"allow_admins,omitempty"`
+		Tokens   []string `json:"allowed_tokens,omitempty"`
 	}
 	policies := make([]logged, 0, len(saved.Policies))
 	for _, p := range saved.Policies {
-		policies = append(policies, logged{p.Name, p.Enabled, p.Action, p.Hosts, p.AllowEveryone, p.AllowedUsers, p.AllowedGroups, p.AllowAdmins})
+		policies = append(policies, logged{p.Name, p.Enabled, p.Action, p.Hosts, p.AllowEveryone, p.AllowedUsers, p.AllowedGroups, p.AllowAdmins, p.AllowedTokens})
 	}
 	s.audited(r, "security.access_policies", "security", "access_policies", map[string]any{"policies": policies})
 	view, err := s.accessPoliciesView(r.Context(), saved)
@@ -210,16 +211,57 @@ func (s *Store) putAccessPolicies(w http.ResponseWriter, r *http.Request) {
 }
 
 // accessTokenView is an access token as the admin API shows it: never its
-// secret.
+// secret, and with where it is used: the policies that allow it and when it
+// last let a request in ("" never).
 type accessTokenView struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	CreatedAt string `json:"created_at"`
-	ExpiresAt string `json:"expires_at"`
+	ID string `json:"id"`
+	control.AccessTokenScope
+	CreatedAt  string            `json:"created_at"`
+	ExpiresAt  string            `json:"expires_at"`
+	LastUsedAt string            `json:"last_used_at"`
+	Policies   []accessPolicyRef `json:"policies"`
 }
 
-func newAccessTokenView(token control.AccessToken) accessTokenView {
-	return accessTokenView{ID: token.ID, Name: token.Name, CreatedAt: token.CreatedAt, ExpiresAt: token.ExpiresAt}
+type accessPolicyRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type accessTokensView struct {
+	Tokens []accessTokenView `json:"tokens"`
+	// Addresses are the public addresses a token can be limited to.
+	Addresses []string `json:"addresses"`
+}
+
+// accessTokenViews shows tokens with the policies that allow them and their
+// last use, saved or since the last save.
+func (s *Store) accessTokenViews(ctx context.Context, tokens []control.AccessToken) ([]accessTokenView, error) {
+	policies, err := s.control.AccessPolicies(ctx)
+	if err != nil && !errors.Is(err, control.ErrStoredAccessPolicies) {
+		return nil, err
+	}
+	used, err := s.control.AccessTokenUse(ctx)
+	if err != nil {
+		return nil, err
+	}
+	views := make([]accessTokenView, 0, len(tokens))
+	for _, token := range tokens {
+		view := accessTokenView{ID: token.ID, AccessTokenScope: token.AccessTokenScope, CreatedAt: token.CreatedAt, ExpiresAt: token.ExpiresAt, Policies: []accessPolicyRef{}}
+		last := used[token.ID]
+		if recent, ok := s.access.used.Load(token.ID); ok && recent.(time.Time).After(last) {
+			last = recent.(time.Time)
+		}
+		if !last.IsZero() {
+			view.LastUsedAt = last.UTC().Format(time.RFC3339)
+		}
+		for _, policy := range policies.Policies {
+			if policy.AllowsToken(token.ID) {
+				view.Policies = append(view.Policies, accessPolicyRef{policy.ID, policy.Name})
+			}
+		}
+		views = append(views, view)
+	}
+	return views, nil
 }
 
 func (s *Store) getAccessTokens(w http.ResponseWriter, r *http.Request) {
@@ -231,11 +273,17 @@ func (s *Store) getAccessTokens(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	views := make([]accessTokenView, 0, len(tokens))
-	for _, token := range tokens {
-		views = append(views, newAccessTokenView(token))
+	views, err := s.accessTokenViews(r.Context(), tokens)
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
 	}
-	reply(w, 200, map[string]any{"tokens": views})
+	routing, err := s.control.Routing(r.Context())
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	reply(w, 200, accessTokensView{Tokens: views, Addresses: routing.Hostnames()})
 }
 
 // createAccessToken makes an access token and answers with its value, the
@@ -245,11 +293,11 @@ func (s *Store) createAccessToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name string `json:"name"`
+		control.AccessTokenScope
 		// ExpiresDays is how many days the token works; 0 is for good.
 		ExpiresDays int `json:"expires_days"`
 	}
-	if !decode(w, r, &req, "name", "expires_days") {
+	if !decode(w, r, &req, "name", "hosts", "ranges", "expires_days") {
 		return
 	}
 	if req.ExpiresDays < 0 || req.ExpiresDays > 3650 {
@@ -261,7 +309,7 @@ func (s *Store) createAccessToken(w http.ResponseWriter, r *http.Request) {
 		expires = s.now().AddDate(0, 0, req.ExpiresDays)
 	}
 	s.saving.Lock()
-	token, value, err := s.control.CreateAccessToken(r.Context(), req.Name, expires, s.now())
+	token, value, err := s.control.CreateAccessToken(r.Context(), req.AccessTokenScope, expires, s.now())
 	if err == nil {
 		err = s.reloadAccessTokens(r.Context())
 	}
@@ -274,8 +322,49 @@ func (s *Store) createAccessToken(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	s.audited(r, "security.access_token_create", "access_token", token.ID, map[string]any{"name": token.Name, "expires_at": token.ExpiresAt})
-	reply(w, 201, map[string]any{"token": newAccessTokenView(token), "value": value})
+	s.audited(r, "security.access_token_create", "access_token", token.ID, map[string]any{"name": token.Name, "hosts": token.Hosts, "ranges": token.Ranges, "expires_at": token.ExpiresAt})
+	views, err := s.accessTokenViews(r.Context(), []control.AccessToken{token})
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	reply(w, 201, map[string]any{"token": views[0], "value": value})
+}
+
+// updateAccessToken changes a token's name and where it can be used; its
+// value stays.
+func (s *Store) updateAccessToken(w http.ResponseWriter, r *http.Request) {
+	if !s.alertsAdmin(w, r) {
+		return
+	}
+	var req control.AccessTokenScope
+	if !decode(w, r, &req, "name", "hosts", "ranges") {
+		return
+	}
+	s.saving.Lock()
+	token, err := s.control.UpdateAccessToken(r.Context(), r.PathValue("id"), req, s.now())
+	if err == nil {
+		err = s.reloadAccessTokens(r.Context())
+	}
+	s.saving.Unlock()
+	switch {
+	case errors.Is(err, control.ErrInvalidAccessToken):
+		fail(w, r, 400, "invalid_access_token")
+		return
+	case errors.Is(err, control.ErrAccessTokenNotFound):
+		fail(w, r, 404, "access_token_not_found")
+		return
+	case err != nil:
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	s.audited(r, "security.access_token_update", "access_token", token.ID, map[string]any{"name": token.Name, "hosts": token.Hosts, "ranges": token.Ranges})
+	views, err := s.accessTokenViews(r.Context(), []control.AccessToken{token})
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	reply(w, 200, views[0])
 }
 
 // deleteAccessToken deletes an access token no policy names.
@@ -287,6 +376,7 @@ func (s *Store) deleteAccessToken(w http.ResponseWriter, r *http.Request) {
 	token, err := s.control.DeleteAccessToken(r.Context(), r.PathValue("id"), s.now())
 	if err == nil {
 		err = s.reloadAccessTokens(r.Context())
+		s.access.used.Delete(token.ID)
 	}
 	s.saving.Unlock()
 	switch {

@@ -387,8 +387,10 @@ func (s *Store) persistLoop(ctx context.Context) {
 		select {
 		case <-ticker.C:
 			s.persist()
+			s.flushAccessTokenUse(ctx)
 		case <-ctx.Done():
 			s.persist()
+			s.flushAccessTokenUse(context.Background())
 			return
 		}
 	}
