@@ -2,6 +2,7 @@ package outlet
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -64,6 +65,60 @@ func TestBlockRulesMatchNormalizedPaths(t *testing.T) {
 		}
 		if got != c.want {
 			t.Errorf("%s%s: blocked by %q, want %q", c.host, c.path, got, c.want)
+		}
+	}
+}
+
+// Block rules saved under v0.3.6 keep their meaning: their values load as
+// they were saved, and a request matches whatever it matched then. A path
+// disguised with trailing dots or spaces in a segment matches as well.
+func TestBlockRulesKeepTheirReleasedMeaning(t *testing.T) {
+	s := &Store{}
+	saved := []control.BlockCondition{
+		{Operator: control.BlockContains, Value: "../"},
+		{Operator: control.BlockEndsWith, Value: "/."},
+		{Operator: control.BlockEndsWith, Value: "/.."},
+		{Operator: control.BlockMatches, Value: "/$"},
+		{Operator: control.BlockMatches, Value: `^/v1\./`},
+		{Operator: control.BlockStartsWith, Value: "/v2./"},
+		{Operator: control.BlockEquals, Value: "/admin."},
+		{Operator: control.BlockEquals, Value: "/private"},
+	}
+	rules := control.DefaultBlockRules()
+	for i, c := range saved {
+		rules.Rules = append(rules.Rules, control.BlockRule{ID: fmt.Sprint("r", i), Name: "r", Enabled: true, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{c}})
+	}
+	rules, ok := rules.Normalize()
+	if !ok {
+		t.Fatal("rules do not normalize")
+	}
+	for i, c := range saved {
+		if got := rules.Rules[3+i].Conditions[0]; got != c {
+			t.Fatalf("%+v loads as %+v", c, got)
+		}
+	}
+	s.applyBlockRules(rules)
+	for path, want := range map[string]string{
+		"/index.html": "",
+		"/public":     "",
+		"/":           "r3",
+		"/v1./secret": "r4",
+		"/v1/secret":  "",
+		"/v2./secret": "r5",
+		"/v2/secret":  "",
+		"/admin":      "",
+		"/.../secret": "hidden-files",
+		"/. /secret":  "hidden-files",
+		"/private":    "r7",
+		"/private.":   "r7",
+		"/private. /": "r7",
+	} {
+		got := ""
+		if rule := s.blockedBy("app.example.com", path); rule != nil {
+			got = rule.id
+		}
+		if got != want {
+			t.Errorf("%s: blocked by %q, want %q", path, got, want)
 		}
 	}
 }

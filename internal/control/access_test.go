@@ -25,9 +25,10 @@ func TestAccessPoliciesNormalize(t *testing.T) {
 		"duplicate id":        func(p *AccessPolicy) { p.ID = "same" },
 		"control in the name": func(p *AccessPolicy) { p.Name = "a\nb" },
 		// Request paths are compared decoded and without ";parameters".
-		"encoded path": func(p *AccessPolicy) { p.Conditions = []BlockCondition{{Operator: BlockEquals, Value: "/%61dmin"}} },
-		"encoded part": func(p *AccessPolicy) { p.Conditions = []BlockCondition{{Operator: BlockContains, Value: "%2F"}} },
-		"parameter":    func(p *AccessPolicy) { p.Conditions = []BlockCondition{{Operator: BlockStartsWith, Value: "/a;b/"}} },
+		"encoded path":            func(p *AccessPolicy) { p.Conditions = []BlockCondition{{Operator: BlockEquals, Value: "/%61dmin"}} },
+		"encoded part":            func(p *AccessPolicy) { p.Conditions = []BlockCondition{{Operator: BlockContains, Value: "%2F"}} },
+		"parameter":               func(p *AccessPolicy) { p.Conditions = []BlockCondition{{Operator: BlockStartsWith, Value: "/a;b/"}} },
+		"equals with a parameter": func(p *AccessPolicy) { p.Conditions = []BlockCondition{{Operator: BlockEquals, Value: "/admin;foo"}} },
 	} {
 		policy := ok
 		change(&policy)

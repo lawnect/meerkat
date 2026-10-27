@@ -503,17 +503,16 @@ func (s *Store) putRateLimit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.saving.Lock()
-	defer s.saving.Unlock()
 	saved, err := s.control.SetRateLimit(r.Context(), req, s.now())
+	if err == nil {
+		err = s.reloadRateLimit(r.Context())
+	}
+	s.saving.Unlock()
 	if errors.Is(err, control.ErrInvalidRateLimit) {
 		fail(w, r, 400, "invalid_rate_limit")
 		return
 	}
 	if err != nil {
-		fail(w, r, 503, "persistence_failed")
-		return
-	}
-	if err := s.reloadRateLimit(r.Context()); err != nil {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}

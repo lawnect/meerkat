@@ -168,9 +168,12 @@ func (a AccessPolicies) Normalize() (AccessPolicies, bool) {
 				return a, false
 			}
 			for _, c := range policy.Conditions {
-				normalized, ok := normalizeCondition(c)
 				// A path the policy could never match would leave it open.
-				if !ok || normalized.Operator != BlockMatches && (percentEscape.MatchString(normalized.Value) || strings.Contains(normalized.Value, ";")) {
+				if c.Operator != BlockMatches && (percentEscape.MatchString(c.Value) || strings.Contains(c.Value, ";")) {
+					return a, false
+				}
+				normalized, ok := normalizeCondition(c, true)
+				if !ok {
 					return a, false
 				}
 				if !containsCondition(conditions, normalized) {
@@ -194,6 +197,30 @@ func (a AccessPolicies) Normalize() (AccessPolicies, bool) {
 		out = append(out, policy)
 	}
 	return AccessPolicies{Policies: out}, true
+}
+
+// Readable gives saved policies that no longer pass the checks a form the
+// console can show and save again: every list there, and a valid ID each,
+// none twice.
+func (a AccessPolicies) Readable() AccessPolicies {
+	seen := map[string]bool{}
+	out := make([]AccessPolicy, 0, len(a.Policies))
+	for _, policy := range a.Policies {
+		for !validRuleID(policy.ID) || seen[policy.ID] {
+			policy.ID, _ = newRuleID()
+		}
+		seen[policy.ID] = true
+		for _, list := range []*[]string{&policy.Hosts, &policy.AllowedUsers, &policy.AllowedGroups} {
+			if *list == nil {
+				*list = []string{}
+			}
+		}
+		if policy.Conditions == nil {
+			policy.Conditions = []BlockCondition{}
+		}
+		out = append(out, policy)
+	}
+	return AccessPolicies{Policies: out}
 }
 
 // AccessIdentity is a person the access provider vouched for.
@@ -268,12 +295,11 @@ func (d *Database) AccessPolicies(ctx context.Context) (AccessPolicies, error) {
 	if err != nil || raw == "" {
 		return AccessPolicies{Policies: []AccessPolicy{}}, err
 	}
+	// Saved policies always have a list, perhaps empty: null, {} and the
+	// like are damage, not "no policies".
 	var stored AccessPolicies
-	if json.Unmarshal([]byte(raw), &stored) != nil {
+	if json.Unmarshal([]byte(raw), &stored) != nil || stored.Policies == nil {
 		return AccessPolicies{Policies: []AccessPolicy{}}, ErrStoredAccessPolicies
-	}
-	if stored.Policies == nil {
-		stored.Policies = []AccessPolicy{}
 	}
 	policies, ok := stored.Normalize()
 	if !ok {

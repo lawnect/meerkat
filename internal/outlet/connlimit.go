@@ -348,17 +348,16 @@ func (s *Store) putConnectionLimits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.saving.Lock()
-	defer s.saving.Unlock()
 	saved, err := s.control.SetConnectionLimits(r.Context(), req, s.now())
+	if err == nil {
+		err = s.reloadConnectionLimits(r.Context())
+	}
+	s.saving.Unlock()
 	if errors.Is(err, control.ErrInvalidConnectionLimits) {
 		fail(w, r, 400, "invalid_connection_limits")
 		return
 	}
 	if err != nil {
-		fail(w, r, 503, "persistence_failed")
-		return
-	}
-	if err := s.reloadConnectionLimits(r.Context()); err != nil {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}

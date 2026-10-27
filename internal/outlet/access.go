@@ -35,11 +35,14 @@ import (
 // The provider then needs one redirect URI, on the management host, however
 // many addresses are protected.
 const (
-	accessCookie      = "__Host-meerkat_access"
-	accessStateCookie = "__Host-meerkat_access_state"
-	// accessBindCookie ties a sign-in to the browser that was sent to it:
-	// the protected address sets it, and its ticket only works with it, so
-	// a ticket from someone else's sign-in can't sign this browser in.
+	accessCookie = "__Host-meerkat_access"
+	// accessStateCookie and accessBindCookie tie a sign-in to the browser
+	// that started it, on the management host and on the protected address:
+	// the callback and the ticket only work in a browser holding them, so a
+	// sign-in someone else started can't sign this browser in. A browser
+	// keeps one of each for all its sign-ins, so tabs signing in at once
+	// share them and they don't pile up.
+	accessStateCookie  = "__Host-meerkat_access_state"
 	accessBindCookie   = "__Host-meerkat_access_bind"
 	accessPathPrefix   = "/.meerkat/access/"
 	accessStartPath    = "/api/v1/access/start"
@@ -50,11 +53,12 @@ const (
 	// maxAccessCookie keeps the session cookie under the 4 KB browsers take.
 	maxAccessCookie = 3800
 	// maxAccessPerClient and accessStarts are how many sign-ins one client
-	// address may have in flight and begin a minute: people behind one
-	// office address sign in to protected addresses at once far more often
-	// than administrators do.
-	maxAccessPerClient = 32
-	accessStarts       = 30
+	// address may have in flight and begin a minute, and maxAccessPending
+	// how many all may have in flight: a whole office signs in to protected
+	// addresses from one address, far more people than administrators.
+	maxAccessPerClient = 512
+	accessStarts       = 120
+	maxAccessPending   = 32768
 )
 
 // leftEscape finds a percent escape still in a decoded path.
@@ -69,36 +73,58 @@ type accessRule struct {
 
 type accessConfig struct{ rules []accessRule }
 
-// covering returns the rules that protect a request for host and path. A
-// path an app may read differently from the form rules compare counts as
-// every path, so it can't slip past a condition.
-func (c *accessConfig) covering(host, requestPath string) []*accessRule {
+// covering returns the rules that protect a request for host and u's path.
+// A path an app may read differently from the forms rules compare counts as
+// every path, so it can't slip past a condition; one with an escape still
+// in it after decoding is also compared decoded once more, as an app
+// decoding again reads it.
+func (c *accessConfig) covering(host string, u *url.URL) []*accessRule {
 	if c == nil || len(c.rules) == 0 {
 		return nil
 	}
-	p, slashed := rulePath(requestPath)
-	every := ambiguousPath(requestPath)
+	paths := [][2]rulePath{rulePaths(u.Path)}
+	every := ambiguousPath(u.EscapedPath(), true)
+	if !every && leftEscape.MatchString(u.Path) {
+		if twice, err := url.PathUnescape(u.Path); err != nil || ambiguousPath(u.Path, false) {
+			every = true
+		} else {
+			paths = append(paths, rulePaths(twice))
+		}
+	}
 	var out []*accessRule
 	for i := range c.rules {
-		if rule := &c.rules[i]; rule.match.covers(host) && (rule.all || every || rule.match.matches(p, slashed)) {
+		rule := &c.rules[i]
+		if rule.match.covers(host) && (rule.all || every || slices.ContainsFunc(paths, rule.match.matches)) {
 			out = append(out, rule)
 		}
 	}
 	return out
 }
 
-// ambiguousPath reports a decoded request path whose meaning depends on the
-// app: an escape still in it, which an app decoding again turns into
-// another path; bytes that aren't UTF-8, which some read as overlong forms
-// of "/" or "."; or a segment of only dots and spaces other than "." and
-// "..", which servers resolve or keep in different ways.
-func ambiguousPath(p string) bool {
-	if leftEscape.MatchString(p) || !utf8.ValidString(p) {
+// ambiguousPath reports a path, given escaped, whose meaning decoded
+// depends on the app: "." or ".." that came escaped (%2e%2e, a%2f..) or
+// next to a backslash, which rules compare resolved but many apps keep
+// whole or read as a plain character; or a segment of only dots and spaces
+// other than "." and "..", which servers resolve or keep in different ways.
+// With bytes, so does one decoding to bytes that aren't UTF-8, which some
+// read as overlong forms of "/" or ".", or to control characters, a NUL
+// ending the path for some.
+func ambiguousPath(escaped string, bytes bool) bool {
+	p, err := url.PathUnescape(escaped)
+	if err != nil || bytes && (!utf8.ValidString(p) || strings.IndexFunc(p, unicode.IsControl) >= 0) {
 		return true
 	}
-	for _, segment := range strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' }) {
-		if segment, _, _ = strings.Cut(segment, ";"); segment != "." && segment != ".." && strings.Trim(segment, ". ") == "" {
+	backslash := strings.ContainsRune(p, '\\')
+	for _, raw := range strings.Split(escaped, "/") {
+		segment, err := url.PathUnescape(raw)
+		if err != nil {
 			return true
+		}
+		for _, part := range strings.FieldsFunc(segment, func(r rune) bool { return r == '/' || r == '\\' }) {
+			part, _, _ = strings.Cut(part, ";")
+			if dots := part == "." || part == ".."; dots && (segment != raw || backslash) || !dots && strings.Trim(part, ". ") == "" {
+				return true
+			}
 		}
 	}
 	return false
@@ -130,16 +156,44 @@ func policyGroups(rules []*accessRule) map[string]bool {
 	return out
 }
 
-// fewestGroups keeps, of groups, one that each rule naming groups allows.
+// fewestGroups keeps few of groups that still satisfy every rule naming
+// groups that groups satisfied: it takes the group that satisfies the most
+// rules left, the shorter on a tie, until none is left, then drops any it
+// took that the others make unneeded.
 func fewestGroups(rules []*accessRule, groups []string) []string {
-	var kept []string
+	var sets []map[string]bool
 	for _, rule := range rules {
-		allowed := func(group string) bool { return slices.Contains(rule.policy.AllowedGroups, group) }
-		if len(rule.policy.AllowedGroups) == 0 || slices.ContainsFunc(kept, allowed) {
-			continue
+		set := map[string]bool{}
+		for _, group := range rule.policy.AllowedGroups {
+			set[group] = true
 		}
-		if i := slices.IndexFunc(groups, allowed); i >= 0 {
-			kept = append(kept, groups[i])
+		if slices.ContainsFunc(groups, func(group string) bool { return set[group] }) {
+			sets = append(sets, set)
+		}
+	}
+	var kept []string
+	for open := slices.Clone(sets); len(open) > 0; {
+		best, most := "", 0
+		for _, group := range groups {
+			n := 0
+			for _, set := range open {
+				if set[group] {
+					n++
+				}
+			}
+			if n > most || n == most && n > 0 && len(group) < len(best) {
+				best, most = group, n
+			}
+		}
+		kept = append(kept, best)
+		open = slices.DeleteFunc(open, func(set map[string]bool) bool { return set[best] })
+	}
+	for i := len(kept) - 1; i >= 0; i-- {
+		without := slices.Delete(slices.Clone(kept), i, i+1)
+		if !slices.ContainsFunc(sets, func(set map[string]bool) bool {
+			return !slices.ContainsFunc(without, func(group string) bool { return set[group] })
+		}) {
+			kept = without
 		}
 	}
 	return kept
@@ -160,11 +214,13 @@ type accessState struct {
 	// so protected addresses let nobody in.
 	enabled atomic.Bool
 	// login holds sign-ins in flight and the provider's discovery; starts
-	// limits how often one client address begins one.
-	login   ssoState
-	starts  attemptLimiter
-	mu      sync.Mutex
-	tickets map[string]accessTicket
+	// limits how often one client address begins one, and failures how
+	// many failed sign-ins of one the audit log records a minute.
+	login    ssoState
+	starts   attemptLimiter
+	failures attemptLimiter
+	mu       sync.Mutex
+	tickets  map[string]accessTicket
 }
 
 type accessIdentityKey struct{}
@@ -175,7 +231,9 @@ func compileAccess(policies control.AccessPolicies) *accessConfig {
 		if !policy.Enabled || len(policy.Hosts) == 0 {
 			continue
 		}
-		config.rules = append(config.rules, accessRule{match: compileBlockRule(policy.Hosts, policy.Conditions), all: policy.AllPaths, policy: policy})
+		rule := accessRule{match: compileBlockRule(policy.Hosts, policy.Conditions), all: policy.AllPaths, policy: policy}
+		rule.match.slashed = true
+		config.rules = append(config.rules, rule)
 	}
 	return config
 }
@@ -184,7 +242,7 @@ func compileAccess(policies control.AccessPolicies) *accessConfig {
 // that they keep closed what they may have protected: each enabled one
 // covers every path of the addresses it names, or of every address when it
 // names no valid one, and lets in only whom it names as saved. With nothing
-// readable, every address is closed.
+// readable, or a policy that isn't, every address is closed.
 func closedAccess(policies control.AccessPolicies) *accessConfig {
 	config := &accessConfig{}
 	for _, policy := range policies.Policies {
@@ -197,9 +255,20 @@ func closedAccess(policies control.AccessPolicies) *accessConfig {
 				hosts = append(hosts, host)
 			}
 		}
+		// Whom it names, in the form sessions carry, as saving would put it.
+		users := make([]string, 0, len(policy.AllowedUsers))
+		for _, user := range policy.AllowedUsers {
+			users = append(users, strings.ToLower(strings.TrimSpace(user)))
+		}
+		groups := make([]string, 0, len(policy.AllowedGroups))
+		for _, group := range policy.AllowedGroups {
+			groups = append(groups, strings.TrimSpace(group))
+		}
+		policy.AllowedUsers, policy.AllowedGroups = users, groups
 		config.rules = append(config.rules, accessRule{match: compileBlockRule(hosts, nil), all: true, policy: policy})
 	}
-	if len(policies.Policies) == 0 {
+	// Every saved policy has an ID: one without was never readable.
+	if len(policies.Policies) == 0 || slices.ContainsFunc(policies.Policies, func(policy control.AccessPolicy) bool { return policy.ID == "" }) {
 		config.rules = append(config.rules, accessRule{match: compileBlockRule(nil, nil), all: true})
 	}
 	return config
@@ -292,6 +361,7 @@ func accessReturn(path string) string {
 // own paths under /.meerkat/access/, and returns false.
 func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminHost string) (*http.Request, bool) {
 	if strings.HasPrefix(r.URL.Path, accessPathPrefix) {
+		w.Header().Set("Cache-Control", "no-store")
 		switch r.URL.Path {
 		case accessPathPrefix + "finish":
 			s.accessFinish(w, r, host)
@@ -302,7 +372,7 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 		}
 		return r, false
 	}
-	rules := s.access.config.Load().covering(host, r.URL.Path)
+	rules := s.access.config.Load().covering(host, r.URL)
 	if len(rules) == 0 {
 		return r, true
 	}
@@ -317,33 +387,45 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 	}
 	// The database is asked only when the session alone doesn't settle it.
 	admin := sync.OnceValues(func() (bool, error) { return s.control.IsAdminEmail(r.Context(), identity.Email) })
+	// Denied, the person can sign in again, with another account or with
+	// groups a policy named after they signed in.
+	again := accessNext{action: accessPathPrefix + "logout?" + url.Values{"return": {accessReturn(r.URL.RequestURI())}}.Encode()}
 	for _, rule := range rules {
 		if rule.policy.Allows(identity, false) {
 			continue
 		}
 		if !rule.policy.AllowAdmins {
-			accessPage(w, r, http.StatusForbidden, "denied")
+			accessPageNext(w, r, http.StatusForbidden, "denied", again)
 			return r, false
 		}
 		if yes, err := admin(); err != nil {
 			accessPage(w, r, http.StatusServiceUnavailable, "unavailable")
 			return r, false
 		} else if !yes {
-			accessPage(w, r, http.StatusForbidden, "denied")
+			accessPageNext(w, r, http.StatusForbidden, "denied", again)
 			return r, false
 		}
 	}
 	return r.WithContext(context.WithValue(r.Context(), accessIdentityKey{}, identity.Email)), true
 }
 
-// accessLogout ends the session on this address. A sign-out that comes
-// from another site only asks first, so that site can't sign people out.
+// accessSameOrigin refuses a POST that comes from another site, sibling
+// addresses under the same domain included.
+var accessSameOrigin = http.NewCrossOriginProtection()
+
+// accessLogout ends the session on this address, then goes to return if
+// given. Only a POST from the address itself does: anything else gets the
+// button that sends one, so no other page can sign people out.
 func accessLogout(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
-		accessPage(w, r, http.StatusOK, "signOut")
+	if r.Method != http.MethodPost || accessSameOrigin.Check(r) != nil {
+		accessPageNext(w, r, http.StatusOK, "signOut", accessNext{action: r.URL.RequestURI()})
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: accessCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
+	if back := r.URL.Query().Get("return"); back != "" {
+		http.Redirect(w, r, accessReturn(back), http.StatusSeeOther)
+		return
+	}
 	accessPage(w, r, http.StatusOK, "signedOut")
 }
 
@@ -366,8 +448,8 @@ func (s *Store) accessChallenge(w http.ResponseWriter, r *http.Request, host, ad
 		accessPage(w, r, http.StatusUnauthorized, "required")
 		return
 	}
-	bind := Token()
-	http.SetCookie(w, &http.Cookie{Name: accessBindName(Hash(bind)), Value: bind, Path: "/", MaxAge: int(ssoStateTTL.Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
+	bind := browserCookie(r, accessBindCookie)
+	http.SetCookie(w, &http.Cookie{Name: accessBindCookie, Value: bind, Path: "/", MaxAge: int(ssoStateTTL.Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
 	query := url.Values{"host": {host}, "return": {accessReturn(r.URL.RequestURI())}, "bind": {Hash(bind)}}
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, "https://"+adminHost+accessStartPath+"?"+query.Encode(), http.StatusFound)
@@ -395,16 +477,17 @@ func (s *Store) accessStart(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	host, returnTo, bind := strings.ToLower(query.Get("host")), accessReturn(query.Get("return")), query.Get("bind")
 	ip, public := requestOrigin(r)
-	// bind is the hash of the binding cookie, which names the cookie too.
-	if s.control == nil || !public || len(s.access.config.Load().forHost(host)) == 0 || len(bind) != 64 || strings.Trim(bind, "0123456789abcdef") != "" {
+	// bind is the hash of the browser's binding cookie.
+	if s.control == nil || !public || !validation.Hostname(host) || len(s.access.config.Load().forHost(host)) == 0 || len(bind) != 64 || strings.Trim(bind, "0123456789abcdef") != "" {
 		accessPage(w, r, http.StatusNotFound, "unknown")
 		return
 	}
 	// Each start costs a pending sign-in and, at the callback, maybe a
 	// request to the provider and an audit entry.
+	back := accessNext{href: "https://" + host + returnTo}
 	if !s.access.starts.allow(clientKey(ip), s.now()) {
 		w.Header().Set("Retry-After", "60")
-		accessPage(w, r, http.StatusTooManyRequests, "busy")
+		accessPageNext(w, r, http.StatusTooManyRequests, "busy", back)
 		return
 	}
 	if routing, err := s.control.Routing(r.Context()); err != nil {
@@ -429,13 +512,14 @@ func (s *Store) accessStart(w http.ResponseWriter, r *http.Request) {
 		accessPage(w, r, http.StatusServiceUnavailable, "unavailable")
 		return
 	}
-	state, nonce, verifier := Token(), Token(), oauth2.GenerateVerifier()
+	state, nonce, verifier, browser := Token(), Token(), oauth2.GenerateVerifier(), browserCookie(r, accessStateCookie)
 	now := s.now()
-	if !s.access.login.put(state, ssoPending{nonce: nonce, verifier: verifier, returnTo: returnTo, host: host, bind: bind, client: clientKey(ip), expires: now.Add(ssoStateTTL)}, now) {
-		accessPage(w, r, http.StatusServiceUnavailable, "busy")
+	if !s.access.login.put(state, ssoPending{nonce: nonce, verifier: verifier, returnTo: returnTo, host: host, bind: bind, browser: Hash(browser), client: clientKey(ip), expires: now.Add(ssoStateTTL)}, now) {
+		w.Header().Set("Retry-After", "60")
+		accessPageNext(w, r, http.StatusServiceUnavailable, "busy", back)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: accessStateName(state), Value: state, Path: "/", MaxAge: int(ssoStateTTL.Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: accessStateCookie, Value: browser, Path: "/", MaxAge: int(ssoStateTTL.Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, accessOAuth(provider, oidcProvider, redirectURI).AuthCodeURL(state, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)), http.StatusFound)
 }
@@ -445,10 +529,9 @@ func (s *Store) accessStart(w http.ResponseWriter, r *http.Request) {
 func (s *Store) accessCallback(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	state := query.Get("state")
-	cookie, _ := r.Cookie(accessStateName(state))
-	http.SetCookie(w, &http.Cookie{Name: accessStateName(state), Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
+	cookie, _ := r.Cookie(accessStateCookie)
 	w.Header().Set("Cache-Control", "no-store")
-	if s.control == nil || cookie == nil || state == "" || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(state)) != 1 {
+	if s.control == nil || cookie == nil || state == "" {
 		accessPage(w, r, http.StatusBadRequest, "expired")
 		return
 	}
@@ -457,8 +540,16 @@ func (s *Store) accessCallback(w http.ResponseWriter, r *http.Request) {
 		accessPage(w, r, http.StatusBadRequest, "expired")
 		return
 	}
+	if subtle.ConstantTimeCompare([]byte(Hash(cookie.Value)), []byte(pending.browser)) != 1 {
+		accessPageNext(w, r, http.StatusBadRequest, "expired", accessNext{href: "https://" + pending.host + pending.returnTo})
+		return
+	}
 	failed := func(status int, page, reason, email string) {
-		s.audit(r, "access.login_failed", control.AuditEntry{ActorEmail: attemptedEmail(email), ResourceType: "address", ResourceID: pending.host, Detail: map[string]any{"reason": reason}})
+		// One client address gets a few failures a minute into the audit
+		// log, so failing on purpose can't flood it.
+		if ip, _ := requestOrigin(r); s.access.failures.allow(clientKey(ip), s.now()) {
+			s.audit(r, "access.login_failed", control.AuditEntry{ActorEmail: attemptedEmail(email), ResourceType: "address", ResourceID: pending.host, Detail: map[string]any{"reason": reason}})
+		}
 		accessPage(w, r, status, page)
 	}
 	if query.Get("error") != "" {
@@ -516,12 +607,18 @@ func (s *Store) accessCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	identity := control.AccessIdentity{Email: email, Groups: groups}
-	admin, err := s.control.IsAdminEmail(r.Context(), email)
-	if err != nil {
-		accessPage(w, r, http.StatusServiceUnavailable, "unavailable")
-		return
+	// One policy of the address must let the person in; the database is
+	// asked only when none does by the session alone.
+	allowed := slices.ContainsFunc(rules, func(rule *accessRule) bool { return rule.policy.Allows(identity, false) })
+	if !allowed && slices.ContainsFunc(rules, func(rule *accessRule) bool { return rule.policy.AllowAdmins }) {
+		admin, err := s.control.IsAdminEmail(r.Context(), email)
+		if err != nil {
+			accessPage(w, r, http.StatusServiceUnavailable, "unavailable")
+			return
+		}
+		allowed = admin
 	}
-	if !slices.ContainsFunc(rules, func(rule *accessRule) bool { return rule.policy.Allows(identity, admin) }) {
+	if !allowed {
 		failed(http.StatusForbidden, "denied", "not_allowed", email)
 		return
 	}
@@ -569,13 +666,9 @@ func (s *Store) accessFinish(w http.ResponseWriter, r *http.Request, host string
 	w.Header().Set("Cache-Control", "no-store")
 	ticket, ok := s.access.takeTicket(r.URL.Query().Get("ticket"), host, s.now())
 	key := s.access.key.Load()
-	var bind *http.Cookie
-	if ok {
-		bind, _ = r.Cookie(accessBindName(ticket.bind))
-		http.SetCookie(w, &http.Cookie{Name: accessBindName(ticket.bind), Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
-	}
+	bind, _ := r.Cookie(accessBindCookie)
 	if !ok || key == nil || s.control == nil || bind == nil || subtle.ConstantTimeCompare([]byte(Hash(bind.Value)), []byte(ticket.bind)) != 1 {
-		accessPage(w, r, http.StatusBadRequest, "expired")
+		accessPageNext(w, r, http.StatusBadRequest, "expired", accessNext{href: "https://" + host + "/"})
 		return
 	}
 	provider, err := s.control.AccessProvider(r.Context())
@@ -587,7 +680,7 @@ func (s *Store) accessFinish(w http.ResponseWriter, r *http.Request, host string
 	claims := accessClaims{Email: ticket.identity.Email, Groups: ticket.identity.Groups, Host: host, Expiry: expires.Unix()}
 	value, err := signAccess(*key, claims)
 	if err == nil && len(value) > maxAccessCookie {
-		// Too many groups for a cookie: one each policy allows will do.
+		// Too many groups for a cookie: fewer that satisfy the same policies.
 		claims.Groups = fewestGroups(s.access.config.Load().forHost(host), claims.Groups)
 		value, err = signAccess(*key, claims)
 	}
@@ -601,15 +694,30 @@ func (s *Store) accessFinish(w http.ResponseWriter, r *http.Request, host string
 	http.Redirect(w, r, accessReturn(ticket.returnTo), http.StatusSeeOther)
 }
 
-// accessStateName and accessBindName are the state and binding cookies of
-// one sign-in, by its state and the hash of its binding: each sign-in has
-// its own, so sign-ins started at once in two tabs don't undo each other.
-func accessStateName(state string) string {
-	return accessStateCookie + "_" + Hash(state)[:16]
+// browserCookie is the value of the browser's cookie name when the Outlet
+// made it, or a new one.
+func browserCookie(r *http.Request, name string) string {
+	if cookie, err := r.Cookie(name); err == nil && len(cookie.Value) == 43 && strings.Trim(cookie.Value, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") == "" {
+		return cookie.Value
+	}
+	return Token()
 }
 
-func accessBindName(hash string) string {
-	return accessBindCookie + "_" + hash[:min(len(hash), 16)]
+// dropAccessSetCookie keeps an app from setting the Outlet's cookies, which
+// would sign its visitors out or plant a binding it knows.
+func dropAccessSetCookie(header http.Header) {
+	lines := header.Values("Set-Cookie")
+	kept := slices.DeleteFunc(slices.Clone(lines), func(line string) bool {
+		name, _, _ := strings.Cut(line, "=")
+		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(name)), strings.ToLower(accessCookie))
+	})
+	if len(kept) == len(lines) {
+		return
+	}
+	header.Del("Set-Cookie")
+	for _, line := range kept {
+		header.Add("Set-Cookie", line)
+	}
 }
 
 // stripAccessCookie keeps the Outlet's cookies from the app: the session
@@ -652,19 +760,33 @@ var accessPages = map[string][2]string{
 	"signedOut":   {"Signed out.", "로그아웃되었습니다."},
 }
 
-// accessSignOut is the button of the "signOut" page.
-var accessSignOut = [2]string{"Sign out", "로그아웃"}
+// accessButtons are the buttons of the pages that have one.
+var accessButtons = map[string][2]string{
+	"signOut": {"Sign out", "로그아웃"},
+	"denied":  {"Sign in again", "다시 로그인"},
+}
+
+// accessNext is what a page offers next: its button, posting to action, or
+// a link to href.
+type accessNext struct{ action, href string }
 
 // accessPage answers with one of accessPages. Each depends on who asks, so
 // none is stored.
 func accessPage(w http.ResponseWriter, r *http.Request, status int, page string) {
+	accessPageNext(w, r, status, page, accessNext{})
+}
+
+func accessPageNext(w http.ResponseWriter, r *http.Request, status int, page string, next accessNext) {
 	i, lang := 0, "en"
 	if strings.HasPrefix(strings.ToLower(r.Header.Get("Accept-Language")), "ko") {
 		i, lang = 1, "ko"
 	}
 	body := `<p>` + html.EscapeString(accessPages[page][i]) + `</p>`
-	if page == "signOut" {
-		body += `<form method="post"><button>` + html.EscapeString(accessSignOut[i]) + `</button></form>`
+	if next.action != "" {
+		body += `<form method="post" action="` + html.EscapeString(next.action) + `"><button>` + html.EscapeString(accessButtons[page][i]) + `</button></form>`
+	}
+	if next.href != "" {
+		body += `<p><a href="` + html.EscapeString(next.href) + `">` + html.EscapeString(next.href) + `</a></p>`
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'")

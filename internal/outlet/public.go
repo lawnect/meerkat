@@ -291,6 +291,7 @@ func (s *Store) PublicHandler() http.Handler {
 				ModifyResponse: func(res *http.Response) error {
 					responded.Store(true)
 					s.answered(target.serviceID)
+					dropAccessSetCookie(res.Header)
 					if res.StatusCode < 500 {
 						s.noteServed(target.serviceID)
 					}

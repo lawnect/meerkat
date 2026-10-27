@@ -895,11 +895,14 @@ func (s *Store) updateOutlet(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	// The management host follows the primary domain; so do its saved limits.
+	// The management host follows the primary domain; so do its saved limits,
+	// saved and put in place as a rate limit save is (see Store.saving).
+	s.saving.Lock()
 	err = s.control.RenameRateLimitHost(r.Context(), previous.AdminHostname, outlet.AdminHostname, s.now())
 	if err == nil {
 		err = s.reloadRateLimit(r.Context())
 	}
+	s.saving.Unlock()
 	if err != nil {
 		fail(w, r, 503, "persistence_failed")
 		return

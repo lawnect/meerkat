@@ -125,6 +125,9 @@ type accessPoliciesView struct {
 	Policies []control.AccessPolicy `json:"policies"`
 	// Addresses are the public addresses a policy can protect.
 	Addresses []string `json:"addresses"`
+	// Damaged says the saved policies failed the checks, so what they name
+	// is closed (see closedAccess) until they are saved again.
+	Damaged bool `json:"damaged,omitempty"`
 }
 
 func (s *Store) accessPoliciesView(ctx context.Context, policies control.AccessPolicies) (accessPoliciesView, error) {
@@ -142,15 +145,20 @@ func (s *Store) getAccessPolicies(w http.ResponseWriter, r *http.Request) {
 	// Saved policies that no longer pass the checks show as read, to be
 	// fixed and saved again.
 	policies, err := s.control.AccessPolicies(r.Context())
-	if err != nil && !errors.Is(err, control.ErrStoredAccessPolicies) {
+	damaged := errors.Is(err, control.ErrStoredAccessPolicies)
+	if err != nil && !damaged {
 		fail(w, r, 503, "persistence_failed")
 		return
+	}
+	if damaged {
+		policies = policies.Readable()
 	}
 	view, err := s.accessPoliciesView(r.Context(), policies)
 	if err != nil {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
+	view.Damaged = damaged
 	reply(w, 200, view)
 }
 

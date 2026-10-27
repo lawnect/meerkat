@@ -193,7 +193,7 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 		return nil, err
 	}
 	s := &Store{path: filepath.Join(dir, "state.json"), managedPath: filepath.Join(dir, "managed-state.json"), proxyPath: filepath.Join(dir, "caddy", "Caddyfile"), tunnelPath: filepath.Join(dir, "rathole", "server.toml"), records: records, managed: map[string]Record{}, config: config, control: controlDB, now: time.Now}
-	s.access.login.perClient, s.access.starts.attempts = maxAccessPerClient, accessStarts
+	s.access.login.perClient, s.access.login.capacity, s.access.login.keep, s.access.starts.attempts = maxAccessPerClient, maxAccessPending, true, accessStarts
 	if controlDB != nil && config.Domain != "" {
 		outlet, err := controlDB.Outlet(context.Background())
 		if err != nil {

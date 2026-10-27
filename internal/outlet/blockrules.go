@@ -27,7 +27,11 @@ type blockRule struct {
 	suffixes []string
 	contains []string
 	patterns []*regexp.Regexp
-	hits     *atomic.Int64
+	// slashed tries patterns on the path with a trailing slash too, so that
+	// "^/admin/" covers "/admin" (access policies; block rules keep their
+	// released matching).
+	slashed bool
+	hits    *atomic.Int64
 }
 
 // blockRules holds the enabled rules in order, immutable once stored.
@@ -96,16 +100,27 @@ func compileBlockRule(hosts []string, conditions []control.BlockCondition) block
 	return b
 }
 
-// rulePath is a request path in the form rules compare (see
-// control.NormalizeBlockPath), and with a trailing slash so that
-// "/cgi-bin/" matches "/cgi-bin" as well.
-func rulePath(requestPath string) (p, slashed string) {
-	p = control.NormalizeBlockPath(requestPath)
-	slashed = p
-	if p != "/" {
-		slashed += "/"
+// rulePath is a request path in a form rules compare, and with a trailing
+// slash so that "/cgi-bin/" matches "/cgi-bin" as well.
+type rulePath struct{ p, slashed string }
+
+// rulePaths are the forms of a request path rules compare: as block rules
+// were released (control.NormalizeBlockPath without trailing dots and spaces
+// at the end), and with those dropped from every segment, as some servers
+// do (control.TrimmedBlockPath). A rule matching either form matches.
+func rulePaths(requestPath string) [2]rulePath {
+	released := strings.TrimRight(control.NormalizeBlockPath(requestPath), ". ")
+	if released == "" {
+		released = "/"
 	}
-	return p, slashed
+	return [2]rulePath{withSlash(released), withSlash(control.TrimmedBlockPath(requestPath))}
+}
+
+func withSlash(p string) rulePath {
+	if p == "/" {
+		return rulePath{p, p}
+	}
+	return rulePath{p, p + "/"}
 }
 
 func (s *Store) reloadBlockRules(ctx context.Context) error {
@@ -121,21 +136,20 @@ func (s *Store) reloadBlockRules(ctx context.Context) error {
 }
 
 // blockedBy returns the first enabled rule that blocks a request for host
-// and path, or nil. The path is compared in the form rules are stored in,
-// with trailing dots and spaces dropped as some servers do, and paths under
-// /.well-known/ are never blocked: certificate checks and service discovery
-// live there.
+// and path, or nil. The path is compared in the forms of rulePaths, and
+// paths under /.well-known/ are never blocked: certificate checks and
+// service discovery live there.
 func (s *Store) blockedBy(host, requestPath string) *blockRule {
 	config := s.blocks.config.Load()
 	if config == nil || len(config.rules) == 0 {
 		return nil
 	}
-	p, slashed := rulePath(requestPath)
-	if p == "/.well-known" || strings.HasPrefix(p, "/.well-known/") {
+	paths := rulePaths(requestPath)
+	if p := paths[0].p; p == "/.well-known" || strings.HasPrefix(p, "/.well-known/") {
 		return nil
 	}
 	for i := range config.rules {
-		if rule := &config.rules[i]; rule.covers(host) && rule.matches(p, slashed) {
+		if rule := &config.rules[i]; rule.covers(host) && rule.matches(paths) {
 			return rule
 		}
 	}
@@ -155,10 +169,14 @@ func (rule *blockRule) covers(host string) bool {
 	return false
 }
 
-// matches reports whether any condition holds for the normalized path p;
-// slashed is p with a trailing slash, which patterns are tried on too, so
-// "^/admin/" holds for "/admin" as starts_with "/admin/" does.
-func (rule *blockRule) matches(p, slashed string) bool {
+// matches reports whether any condition holds for a form of the path.
+func (rule *blockRule) matches(paths [2]rulePath) bool {
+	return rule.matchesPath(paths[0].p, paths[0].slashed) || rule.matchesPath(paths[1].p, paths[1].slashed)
+}
+
+// matchesPath reports whether any condition holds for the normalized path
+// p; slashed is p with a trailing slash.
+func (rule *blockRule) matchesPath(p, slashed string) bool {
 	if rule.equals[p] {
 		return true
 	}
@@ -178,7 +196,7 @@ func (rule *blockRule) matches(p, slashed string) bool {
 		}
 	}
 	for _, pattern := range rule.patterns {
-		if pattern.MatchString(p) || pattern.MatchString(slashed) {
+		if pattern.MatchString(p) || rule.slashed && pattern.MatchString(slashed) {
 			return true
 		}
 	}

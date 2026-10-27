@@ -47,6 +47,7 @@ type ssoPending struct {
 	nonce, verifier, returnTo string
 	host                      string // the protected address an access sign-in returns to
 	bind                      string // Hash of that browser's accessBindCookie
+	browser                   string // Hash of that browser's accessStateCookie
 	client                    string // clientKey of the address that started it
 	expires                   time.Time
 }
@@ -64,9 +65,12 @@ type ssoState struct {
 	mu      sync.Mutex
 	pending map[string]ssoPending
 	// perClient is how many sign-ins one client address may have in
-	// flight; zero is maxSSOPerClient.
-	perClient int
-	provider  *ssoProvider
+	// flight, zero being maxSSOPerClient, and capacity how many all may,
+	// zero being maxSSOPending. With keep, a client at perClient is refused
+	// instead of losing its oldest: many people share an office address.
+	perClient, capacity int
+	keep                bool
+	provider            *ssoProvider
 	// discovering serializes discovery, so a burst of starts makes one
 	// request to the provider; failedAt delays the next after a failure.
 	discovering sync.Mutex
@@ -97,8 +101,11 @@ func (st *ssoState) put(state string, p ssoPending, now time.Time) bool {
 		}
 	}
 	if mine >= cmp.Or(st.perClient, maxSSOPerClient) {
+		if st.keep {
+			return false
+		}
 		delete(st.pending, oldest)
-	} else if len(st.pending) >= maxSSOPending {
+	} else if len(st.pending) >= cmp.Or(st.capacity, maxSSOPending) {
 		return false
 	}
 	st.pending[Hash(state)] = p

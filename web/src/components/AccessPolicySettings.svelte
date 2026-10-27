@@ -32,6 +32,9 @@
     title: 'Access policies',
     tip: 'Requests that match any enabled policy need a sign-in with the access SSO provider before they reach a tunnel. A request must satisfy every policy that covers it. Within a policy, allowed users and allowed groups must both match when both are set, and Allow administrators also lets in anyone whose email is a Meerkat administrator\'s. The signed-in email reaches the app in the X-Meerkat-Access-Email header.',
     providerOff: 'Access SSO is off, so no one can sign in to protected addresses.',
+    damaged: 'Saved policies are invalid, so their addresses are closed.',
+    damagedEmpty: 'Saved policies can\'t be read, so every public address is closed.',
+    saveAgain: 'Save again',
     add: 'Add policy',
     enabled: 'Enabled',
     name: 'Name',
@@ -80,6 +83,9 @@
     title: '접근 정책',
     tip: '활성화된 정책 중 하나라도 일치하는 요청은 터널로 전달되기 전에 접근 보호 SSO 로그인이 필요합니다. 요청은 해당 요청에 적용되는 모든 정책을 충족해야 합니다. 한 정책에서 허용 사용자와 허용 그룹을 모두 지정한 경우 두 조건을 모두 충족해야 하며, 관리자 허용을 활성화하면 이메일이 Meerkat 관리자의 이메일인 사용자도 허용됩니다. 로그인한 사용자의 이메일은 X-Meerkat-Access-Email 헤더로 앱에 전달됩니다.',
     providerOff: '접근 보호 SSO가 비활성화되어 보호 대상 주소에 로그인할 수 없습니다.',
+    damaged: '저장된 정책이 올바르지 않아 해당 주소를 차단 중입니다.',
+    damagedEmpty: '저장된 정책을 읽을 수 없어 모든 공개 주소를 차단 중입니다.',
+    saveAgain: '다시 저장',
     add: '정책 추가',
     enabled: '활성화',
     name: '이름',
@@ -149,6 +155,7 @@
 
   let policies = $state<AccessPolicy[] | null>(null);
   let addresses = $state<string[]>([]);
+  let damaged = $state(false);
   let loadError = $state('');
   let error = $state('');
   let busy = $state(false);
@@ -169,7 +176,23 @@
   const adopt = (view: AccessPoliciesView) => {
     policies = view.policies;
     addresses = view.addresses ?? [];
+    damaged = view.damaged ?? false;
   };
+
+  // 손상된 저장값은 지금 목록을 그대로 다시 저장해 복구합니다. 올바르지 않은 정책이 남아 있으면 오류를 보여줍니다.
+  async function saveAgain(): Promise<void> {
+    if (!policies || busy) return;
+    busy = true;
+    error = '';
+    try {
+      await put($state.snapshot(policies));
+      toast.success(t().saved);
+    } catch (cause) {
+      error = describe(errorMessage(cause));
+    } finally {
+      busy = false;
+    }
+  }
 
   async function put(next: AccessPolicy[]): Promise<void> {
     adopt(await api<AccessPoliciesView>('/api/v1/security/access-policies', { method: 'PUT', body: JSON.stringify({ policies: next }) }));
@@ -295,6 +318,13 @@
     {:else if !policies}
       <Skeleton class="h-40 w-full" />
     {:else}
+      {#if damaged}
+        <Alert.Root variant="destructive">
+          <Warning aria-hidden="true" />
+          <Alert.Description class="break-keep pr-24">{policies.length ? t().damaged : t().damagedEmpty}</Alert.Description>
+          <Alert.Action><Button variant="outline" size="sm" disabled={busy} onclick={saveAgain}>{t().saveAgain}</Button></Alert.Action>
+        </Alert.Root>
+      {/if}
       {#if providerEnabled === false}<Alert.Root><Warning aria-hidden="true" /><Alert.Description class="break-keep">{t().providerOff}</Alert.Description></Alert.Root>{/if}
       {#if error}<Alert.Root variant="destructive"><Warning aria-hidden="true" /><Alert.Description>{error}</Alert.Description></Alert.Root>{/if}
       {#if policies.length}

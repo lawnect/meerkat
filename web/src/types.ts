@@ -328,4 +328,5 @@ export interface AccessPolicy {
 export interface AccessPoliciesView {
   policies: AccessPolicy[];
   addresses: string[]; // 정책을 한정할 수 있는 공개 주소(호스트 이름), 정렬됨
+  damaged?: boolean; // 저장된 정책이 검사를 통과하지 못해, 지정한 주소(읽을 수 없으면 모든 공개 주소)를 차단 중. 다시 저장하면 해제
 }
