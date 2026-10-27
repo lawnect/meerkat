@@ -49,6 +49,9 @@ type Connector struct {
 	Status      string    `json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
 	LastSeen    string    `json:"last_seen,omitempty"`
+	// Version is the release the Connector reported in its last heartbeat;
+	// the Outlet fills it, and it isn't stored here.
+	Version string `json:"version,omitempty"`
 }
 
 func (d *Database) CreateConnector(ctx context.Context, name string) (Connector, error) {

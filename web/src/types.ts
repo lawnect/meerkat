@@ -56,6 +56,8 @@ export interface Connector {
   status: string;
   created_at: string;
   last_seen?: string;
+  // Connector가 마지막 하트비트로 알린 릴리스 버전(예: "0.5.1"). 첫 하트비트 전에는 없습니다.
+  version?: string;
 }
 
 export interface Target {
@@ -145,7 +147,8 @@ export interface TraceSnapshot {
   };
 }
 
-export type UsageUnit = 'hour' | 'day' | 'month' | 'year';
+// minute는 대시보드 트래픽만 받습니다(Outlet 전체 합계를 분 단위로 7일 보관).
+export type UsageUnit = 'minute' | 'hour' | 'day' | 'month' | 'year';
 
 export interface UsageBucket {
   start: string;
@@ -403,8 +406,26 @@ export interface AccessMetrics {
   policies: Record<string, AccessCounts>; // 정책 ID별 기간 합계. 지워진 정책도 남습니다
 }
 
-// 요청 기록은 접근(access)과 실패(failures) 두 가지이며, 각각 별도 파일과 설정을 가집니다.
-// GET·PUT /api/v1/observe/access-log, /api/v1/observe/failure-log. 기록은 처음에는 꺼져 있습니다.
+// GET /api/v1/observe/latency?unit&from&to&tz. 기간을 단위에 맞추는 방식은 access-metrics와 같습니다.
+// Outlet 처리(outlet)는 요청을 받은 뒤 서비스로 보낼 연결을 확보하기까지, 업스트림 응답(upstream)은 요청을 보낸 뒤 응답의 첫 바이트까지(터널 왕복과 앱의 처리 포함)입니다.
+// Outlet이 거부했거나 전달하지 못한 요청은 재지 않습니다. 시간별 분포를 400일 보관하고, 백분위수는 분포의 구간에서 추정한 값입니다.
+export interface LatencyStats {
+  count: number; // 잰 요청 수
+  avg_ms: number;
+  p50_ms: number;
+  p95_ms: number;
+  p99_ms: number; // 밀리초(실수). Outlet 처리는 1ms보다 훨씬 짧은 경우가 많습니다
+}
+
+export interface LatencySeries {
+  unit: UsageUnit;
+  buckets: Array<{ start: string; outlet: LatencyStats; upstream: LatencyStats }>; // 기간의 모든 구간, 오래된 것부터 (잰 요청이 없으면 0, RFC 3339)
+  outlet: LatencyStats; // 기간 전체
+  upstream: LatencyStats;
+}
+
+// 기록은 접근(access), 실패(failure), 요청(request) 세 가지이며, 각각 별도 파일과 설정을 가집니다.
+// GET·PUT /api/v1/observe/access-log, /api/v1/observe/failure-log, /api/v1/observe/request-log. 기록은 처음에는 꺼져 있습니다.
 export interface LogSettings {
   enabled: boolean;
   max_mib: number; // 16–4096. 파일 크기 상한, 넘으면 오래된 기록부터 지웁니다
@@ -416,7 +437,7 @@ export interface LogView<Entry> {
   available: boolean; // 기록 파일을 열었는지. false이면 켤 수 없습니다(409 log_unavailable)
   size_bytes: number;
   dropped: number; // Outlet 시작 이후 대기열이 넘쳐 기록하지 못한 수
-  suppressed: number; // Outlet 시작 이후 클라이언트별 분당 한도(60건)를 넘어 기록하지 않고 세기만 한 반복 요청 수
+  suppressed: number; // Outlet 시작 이후 클라이언트별 분당 한도를 넘어 기록하지 않고 세기만 한 반복 요청 수
   total: number; // 필터에 맞는 전체 수
   entries: Entry[]; // 최신순
 }
@@ -462,6 +483,52 @@ export interface FailureLogEntry {
   service: string; // 서비스 이름, 없으면 ''
   duration_ms: number;
   routine: boolean; // Outlet이 거부한 원인(rate_limited·blocked·trapped·banned·too_long·too_large·busy)이면 true
+}
+
+// 요청 기록: 공개 주소로 온 모든 요청(Outlet이 거부한 요청 포함). GET·PUT /api/v1/observe/request-log, 통계는 GET …/top.
+// class 필터는 상태 코드의 종류입니다.
+export const requestClasses = ['1xx', '2xx', '3xx', '4xx', '5xx'] as const;
+export type RequestClass = (typeof requestClasses)[number];
+export interface RequestLogEntry {
+  id: number;
+  at: string;
+  host: string;
+  method: string;
+  path: string; // 쿼리 없이, 512바이트까지
+  client: string;
+  source: string; // 기록 한도와 통계가 클라이언트를 세는 단위: IPv4 주소, IPv6는 /56
+  status: number; // 클라이언트가 받은 상태 코드. 업그레이드(웹소켓)는 101, 클라이언트가 끊으면 499
+  cause: FailureCause | ''; // Outlet이 거부했거나 서비스가 실패한 요청의 원인(실패 요청과 같은 값). 아니면 ''
+  service: string; // 응답했거나 마지막으로 시도한 서비스 이름, 없으면 ''
+  duration_ms: number;
+  outlet_us: number; // Outlet 처리 시간(마이크로초). 전달하지 않은 요청은 0
+  upstream_us: number; // 업스트림 응답 시간(마이크로초). 전달하지 않은 요청은 0
+  bytes: number; // 클라이언트에 보낸 응답 본문 바이트
+  agent: string; // User-Agent, 256바이트까지
+  routine: boolean; // 4xx이면 true(누구나 마음대로 만들 수 있어 한도와 삭제 순서에서 뒤로 밀립니다)
+}
+
+// GET /api/v1/observe/request-log/top: 요청 기록에 남아 있는 요청을 엔드포인트(주소+경로) 또는 클라이언트별로 묶은 통계.
+export const requestTopPeriods = ['1h', '24h', '7d', '30d', 'all'] as const;
+export type RequestTopPeriod = (typeof requestTopPeriods)[number];
+export const requestTopSorts = ['requests', 'client_errors', 'server_errors', 'distinct', 'last_at'] as const;
+export type RequestTopSort = (typeof requestTopSorts)[number];
+export interface RequestTopRow {
+  host?: string; // by=endpoint
+  path?: string; // by=endpoint
+  client?: string; // by=client
+  requests: number;
+  client_errors: number; // 4xx
+  server_errors: number; // 5xx
+  distinct: number; // by=endpoint는 서로 다른 클라이언트 수, by=client는 서로 다른 엔드포인트 수
+  last_at: string;
+}
+export interface RequestTopView {
+  settings: LogSettings;
+  available: boolean;
+  from: string | null; // 기간의 시작(all이면 null)
+  total: number; // 묶음 수
+  rows: RequestTopRow[];
 }
 
 export interface AccessTokensView {

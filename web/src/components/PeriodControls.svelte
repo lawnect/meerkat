@@ -10,7 +10,7 @@
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import { intlLocale, translations } from '../i18n.svelte';
   import { CalendarLtr12, ChevronLeft, ChevronRight } from '../icons';
-  import { periodUnits, type Period } from '../period.svelte';
+  import type { Period } from '../period.svelte';
   import type { UsageUnit } from '../types';
   import IconButton from './IconButton.svelte';
 
@@ -20,14 +20,14 @@
   let { period }: { period: Period } = $props();
 
   const t = translations({
-    units: { hour: 'Hourly', day: 'Daily', month: 'Monthly', year: 'Yearly' } as Record<UsageUnit, string>,
+    units: { minute: 'By minute', hour: 'Hourly', day: 'Daily', month: 'Monthly', year: 'Yearly' } as Record<UsageUnit, string>,
     unitsAria: 'Chart interval',
     previous: 'Previous period',
     next: 'Next period',
     pickDate: 'Pick a date',
     autoRefresh: 'Auto-refresh every 5 seconds',
   }, {
-    units: { hour: '시간별', day: '일별', month: '월별', year: '연별' },
+    units: { minute: '분별', hour: '시간별', day: '일별', month: '월별', year: '연별' },
     unitsAria: '그래프 단위',
     previous: '이전 기간',
     next: '다음 기간',
@@ -57,13 +57,13 @@
     <ButtonGroup.Root>
       <ButtonGroup.Root>
         <NativeSelect.Root size="sm" aria-label={t().unitsAria} bind:value={() => period.unit, (next) => { if (next) period.setUnit(next as UsageUnit); }}>
-          {#each periodUnits as option (option)}
+          {#each period.units as option (option)}
             <NativeSelect.Option value={option}>{t().units[option]}</NativeSelect.Option>
           {/each}
         </NativeSelect.Root>
       </ButtonGroup.Root>
       <ButtonGroup.Root>
-        <IconButton variant="outline" label={t().previous} icon={ChevronLeft} onclick={() => period.move(-1)} />
+        <IconButton variant="outline" label={t().previous} icon={ChevronLeft} disabled={period.atEarliest} onclick={() => period.move(-1)} />
         <Popover.Root bind:open={calendarOpen}>
           <Popover.Trigger>
             {#snippet child({ props })}
@@ -73,7 +73,7 @@
             {/snippet}
           </Popover.Trigger>
           <Popover.Content class="w-auto p-0" align="end">
-            <Calendar type="single" preventDeselect value={period.selectedDate} onValueChange={pick} maxValue={today(getLocalTimeZone())} locale={intlLocale()} captionLayout="dropdown" />
+            <Calendar type="single" preventDeselect value={period.selectedDate} onValueChange={pick} minValue={period.earliest ? today(getLocalTimeZone()).subtract({ days: 7 }) : undefined} maxValue={today(getLocalTimeZone())} locale={intlLocale()} captionLayout="dropdown" />
           </Popover.Content>
         </Popover.Root>
         <IconButton variant="outline" label={t().next} icon={ChevronRight} side="left" disabled={period.isCurrent} onclick={() => period.move(1)} />

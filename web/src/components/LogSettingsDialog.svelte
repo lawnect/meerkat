@@ -16,7 +16,7 @@
   // 저장하면 지금의 스위치 값과 함께 PUT /api/v1/observe/{kind}-log로 바로 서버에 반영합니다. 응답은 onSaved로 넘깁니다.
   let { open = $bindable(false), kind, settings, onSaved }: {
     open?: boolean;
-    kind: 'access' | 'failure';
+    kind: 'access' | 'failure' | 'request';
     settings: LogSettings;
     onSaved: (view: LogView<unknown>) => void;
   } = $props();

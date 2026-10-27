@@ -215,11 +215,11 @@
     "/api/v1/usage": {
       "get": {
         "operationId": "getOutletUsage",
-        "summary": "Outlet-wide request usage grouped into hour, day, month or year buckets",
+        "summary": "Outlet-wide request usage grouped into minute, hour, day, month or year buckets",
         "description": "Sums the Outlet-wide hourly totals, which are kept for 10 years, into calendar buckets of the requested time zone. Buckets cover [from, to) and are aligned to the unit in tz; a from that is not on a boundary is aligned down. Every bucket in the range is returned, with zeros when nothing was recorded. Hour buckets are one elapsed hour long, and day, month and year buckets follow the calendar, so a daylight-saving day can be 23 or 25 hours.",
         "security": [{ "adminToken": [] }],
         "parameters": [
-          { "name": "unit", "in": "query", "required": true, "schema": { "type": "string", "enum": ["hour", "day", "month", "year"] } },
+          { "name": "unit", "in": "query", "required": true, "description": "minute reads the per-minute totals, kept for 7 days", "schema": { "type": "string", "enum": ["minute", "hour", "day", "month", "year"] } },
           { "name": "from", "in": "query", "required": true, "description": "Inclusive start, RFC 3339", "schema": { "type": "string", "format": "date-time" } },
           { "name": "to", "in": "query", "required": true, "description": "Exclusive end, RFC 3339; must be after from", "schema": { "type": "string", "format": "date-time" } },
           { "name": "tz", "in": "query", "required": false, "description": "IANA time zone used to align buckets", "schema": { "type": "string", "default": "UTC", "example": "Asia/Seoul" } }
@@ -231,7 +231,7 @@
               "type": "object",
               "required": ["unit", "buckets", "connectors"],
               "properties": {
-                "unit": { "type": "string", "enum": ["hour", "day", "month", "year"] },
+                "unit": { "type": "string", "enum": ["minute", "hour", "day", "month", "year"] },
                 "updated_at": { "type": "string", "format": "date-time", "description": "Last collection time; omitted before the first collection" },
                 "buckets": { "type": "array", "maxItems": 1000, "items": { "type": "object", "required": ["start", "requests", "request_bytes", "response_bytes", "error_responses", "rate_limited"], "properties": {
                   "start": { "type": "string", "format": "date-time", "description": "Bucket start in the requested time zone", "example": "2026-10-01T00:00:00+09:00" },

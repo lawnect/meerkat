@@ -1,5 +1,5 @@
-import type { AccessCounts, AccessLogEntry, AccessMetrics, AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ClientBan, ClientBanSettings, ClientBansView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, FailureCause, FailureLogEntry, LogSettings, LogView, Outlet, Route, Service, SsoSettings, Target, TunnelGuardSettings, TunnelGuardView, UsageBucket, UsageSeries, UsageUnit } from './types';
-import { accessDecisions, accessMethods, accessRequesters, failureCauseGroups, failureCauses, refusedCauses, serviceCauses } from './types';
+import type { AccessCounts, AccessLogEntry, AccessMetrics, AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ClientBan, ClientBanSettings, ClientBansView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, FailureCause, FailureLogEntry, LatencySeries, LatencyStats, LogSettings, LogView, Outlet, RequestLogEntry, RequestTopRow, RequestTopView, Route, Service, SsoSettings, Target, TunnelGuardSettings, TunnelGuardView, UsageBucket, UsageSeries, UsageUnit } from './types';
+import { accessDecisions, accessMethods, accessRequesters, failureCauseGroups, failureCauses, refusedCauses, requestClasses, requestTopPeriods, requestTopSorts, serviceCauses } from './types';
 
 const now = (): string => new Date().toISOString();
 const ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
@@ -86,9 +86,12 @@ function newRoute(fields: Omit<Route, 'priority' | 'address_mode' | 'address_sti
   return { priority: 0, address_mode: 'failover', address_sticky: false, address_backends: 1, ...fields };
 }
 
+// Connectors that last reported an older release; drafts never connected and have no version.
+const OLD_CONNECTORS = ['raspberry-pi', 'legacy-erp', 'minecraft', 'docs-site'];
+
 function seed() {
   const day = 86400000;
-  const connectors: Connector[] = [{ id: seedId('connector-home'), name: 'home-server', description: '집 서버 · whoami 테스트 앱', status: 'connected', created_at: now(), last_seen: now() }];
+  const connectors: Connector[] = [{ id: seedId('connector-home'), name: 'home-server', description: '집 서버 · whoami 테스트 앱', status: 'connected', created_at: now(), last_seen: now(), version: '0.5.1' }];
   const services: Service[] = [{
     id: seedId('service-whoami'), connector_id: seedId('connector-home'), name: 'whoami', protocol: 'http',
     target: { host: 'app', port: 80 }, enabled: true, observed_status: 'connected', created_at: now(), updated_at: now(),
@@ -101,7 +104,7 @@ function seed() {
     const created = new Date(Date.now() - (index + 2) * 3.7 * day).toISOString();
     const seen = status === 'draft' ? undefined : new Date(Date.now() - (status === 'connected' ? (index % 4) * 20000 : (index + 1) * 5 * 3600000)).toISOString();
     const connectorId = seedId(`connector-${name}`);
-    connectors.push({ id: connectorId, name, display_name: SEED_LABELS[name] ?? '', description: SEED_NOTES[name] ?? '', status, created_at: created, last_seen: seen });
+    connectors.push({ id: connectorId, name, display_name: SEED_LABELS[name] ?? '', description: SEED_NOTES[name] ?? '', status, created_at: created, last_seen: seen, ...(status === 'draft' ? {} : { version: OLD_CONNECTORS.includes(name) ? '0.5.0' : '0.5.1' }) });
     for (const [serviceName, host, port, hostnames] of items) {
       const serviceId = seedId(`service-${name}-${serviceName}`);
       services.push({
@@ -498,6 +501,7 @@ function bodyOf(body: BodyInit | null | undefined): MockInput {
 
 const HOUR_MS = 3600000;
 const USAGE_UNITS: readonly UsageUnit[] = ['hour', 'day', 'month', 'year'];
+const MINUTE_MS = 60000;
 const MAX_USAGE_BUCKETS = 1000;
 const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 // Synthetic traffic grows slowly from this hour so older years look smaller.
@@ -540,7 +544,9 @@ function rfc3339Local(date: Date): string {
 function usageBoundaries(unit: UsageUnit, from: Date, to: Date): Date[] {
   const first = new Date(from);
   if (unit === 'hour') first.setMinutes(0, 0, 0);
+  if (unit === 'minute') first.setSeconds(0, 0);
   const boundary = (index: number): Date => {
+    if (unit === 'minute') return new Date(first.getTime() + index * MINUTE_MS);
     if (unit === 'hour') return new Date(first.getTime() + index * HOUR_MS);
     if (unit === 'day') return new Date(from.getFullYear(), from.getMonth(), from.getDate() + index);
     if (unit === 'month') return new Date(from.getFullYear(), from.getMonth() + index, 1);
@@ -595,11 +601,12 @@ function usageConnectors(totals: Omit<UsageBucket, 'start'>): UsageSeries['conne
 }
 
 // Validates unit/from/to/tz like the real API and returns the unit-aligned bucket boundaries.
-function usageRange(params: URLSearchParams): { unit: UsageUnit; boundaries: Date[] } {
+// minutes는 Outlet 사용량(/api/v1/usage)만 받습니다. 접근 판정·지연 시간은 시간 단위로만 보관합니다.
+function usageRange(params: URLSearchParams, minutes = false): { unit: UsageUnit; boundaries: Date[] } {
   const unit = params.get('unit') as UsageUnit;
   const rawFrom = params.get('from') || '';
   const rawTo = params.get('to') || '';
-  if (!USAGE_UNITS.includes(unit) || !RFC3339.test(rawFrom) || !RFC3339.test(rawTo)) fail('invalid_usage_range');
+  if (!(USAGE_UNITS.includes(unit) || (minutes && unit === 'minute')) || !RFC3339.test(rawFrom) || !RFC3339.test(rawTo)) fail('invalid_usage_range');
   const from = new Date(rawFrom);
   const to = new Date(rawTo);
   if (!(from.getTime() < to.getTime())) fail('invalid_usage_range');
@@ -611,8 +618,30 @@ function usageRange(params: URLSearchParams): { unit: UsageUnit; boundaries: Dat
   return { unit, boundaries: usageBoundaries(unit, from, to) };
 }
 
+// 분별은 그 시간의 합계를 분마다 고르지 않게 나눈 값이고, 지금 이후는 0입니다.
+function minuteSeries(boundaries: Date[]): UsageBucket[] {
+  const offsetHours = Math.round(-new Date().getTimezoneOffset() / 60);
+  return boundaries.slice(0, -1).map((start): UsageBucket => {
+    const bucket: UsageBucket = { start: rfc3339Local(start), requests: 0, request_bytes: 0, response_bytes: 0, error_responses: 0 };
+    if (start.getTime() > Date.now()) return bucket;
+    const minute = Math.floor(start.getTime() / MINUTE_MS);
+    const hour = syntheticHour(Math.floor(start.getTime() / HOUR_MS), offsetHours);
+    const share = (0.4 + 1.2 * hashUnit(minute)) / 60;
+    bucket.requests = Math.round(hour.requests * share);
+    bucket.request_bytes = Math.round(hour.request_bytes * share);
+    bucket.response_bytes = Math.round(hour.response_bytes * share);
+    bucket.error_responses = hashUnit(minute * 7 + 3) < 0.04 ? 1 : 0;
+    return bucket;
+  });
+}
+
 function usageSeries(params: URLSearchParams): UsageSeries {
-  const { unit, boundaries } = usageRange(params);
+  const { unit, boundaries } = usageRange(params, true);
+  if (unit === 'minute') {
+    const buckets = minuteSeries(boundaries);
+    const totals = buckets.reduce((sum, bucket) => ({ requests: sum.requests + bucket.requests, request_bytes: sum.request_bytes + bucket.request_bytes, response_bytes: sum.response_bytes + bucket.response_bytes, error_responses: sum.error_responses + bucket.error_responses }), { requests: 0, request_bytes: 0, response_bytes: 0, error_responses: 0 });
+    return { unit, updated_at: now(), buckets, connectors: usageConnectors(totals) };
+  }
   // Data exists for the last three years only, up to and including this hour.
   const earliest = new Date();
   earliest.setFullYear(earliest.getFullYear() - 3);
@@ -644,7 +673,7 @@ function usageSeries(params: URLSearchParams): UsageSeries {
   return { unit, updated_at: now(), buckets, connectors: usageConnectors(totals) };
 }
 
-// ---- Observe: access decision metrics and the two request logs (GET/PUT /api/v1/observe/…) ----
+// ---- Observe: access decision metrics and the three request logs (GET/PUT /api/v1/observe/…) ----
 
 const ACCESS_HISTORY_DAYS = 400;
 // A policy that was deleted still shows up in the metrics with the counts it had.
@@ -692,6 +721,48 @@ function accessMetrics(params: URLSearchParams): AccessMetrics {
     return bucket;
   });
   return { unit, buckets, policies };
+}
+
+const NO_LATENCY: LatencyStats = { count: 0, avg_ms: 0, p50_ms: 0, p95_ms: 0, p99_ms: 0 };
+
+// Deterministic latency of one UTC hour, busier by day like accessHour. Outlet processing stays around half a millisecond, upstream answers take
+// tens to a few hundred milliseconds and slow down under load, with the odd slow hour. Quiet night hours may have no timed request at all.
+function latencyHour(hour: number, localOffsetHours: number): { outlet: LatencyStats; upstream: LatencyStats } {
+  const localHour = hour + localOffsetHours;
+  const hourOfDay = ((localHour % 24) + 24) % 24;
+  const weekday = (((Math.floor(localHour / 24) + 4) % 7) + 7) % 7;
+  const daily = 0.12 + 0.88 * (0.5 + 0.5 * Math.sin(((hourOfDay - 9) / 24) * 2 * Math.PI));
+  const load = daily * (weekday === 0 || weekday === 6 ? 0.5 : 1);
+  if (load < 0.4 && hashUnit(hour * 7 + 1) < 0.4) return { outlet: NO_LATENCY, upstream: NO_LATENCY };
+  const count = Math.max(1, Math.round(load * 900 * (0.75 + 0.5 * hashUnit(hour * 7 + 2))));
+  const stats = (avg: number, tail: number): LatencyStats => ({ count, avg_ms: avg, p50_ms: avg * 0.7, p95_ms: avg * tail, p99_ms: avg * tail * 1.7 });
+  const slow = hashUnit(hour * 7 + 5) < 0.04 ? 2.5 : 1;
+  return {
+    outlet: stats(0.3 + 0.5 * (0.6 * load + 0.4 * hashUnit(hour * 7 + 3)), 3.3 + 0.45 * hashUnit(hour * 7 + 6)),
+    upstream: stats((80 + 170 * (0.5 * load + 0.5 * hashUnit(hour * 7 + 4))) * slow, 3.4 + 0.4 * hashUnit(hour * 7 + 8)),
+  };
+}
+
+// Several hours folded into one: counts add up and the other figures are averaged by count (the real server estimates them from merged histograms).
+function mergeLatency(parts: LatencyStats[]): LatencyStats {
+  const count = parts.reduce((sum, part) => sum + part.count, 0);
+  if (!count) return NO_LATENCY;
+  const weighted = (pick: (part: LatencyStats) => number): number => parts.reduce((sum, part) => sum + pick(part) * part.count, 0) / count;
+  return { count, avg_ms: weighted((part) => part.avg_ms), p50_ms: weighted((part) => part.p50_ms), p95_ms: weighted((part) => part.p95_ms), p99_ms: weighted((part) => part.p99_ms) };
+}
+
+function latencySeries(params: URLSearchParams): LatencySeries {
+  const { unit, boundaries } = usageRange(params);
+  const firstHour = Math.ceil((Date.now() - ACCESS_HISTORY_DAYS * 24 * HOUR_MS) / HOUR_MS);
+  const lastHour = Math.floor(Date.now() / HOUR_MS);
+  const offsetHours = Math.round(-new Date().getTimezoneOffset() / 60);
+  const buckets = boundaries.slice(0, -1).map((start, index) => {
+    const hours: Array<{ outlet: LatencyStats; upstream: LatencyStats }> = [];
+    const last = Math.min(lastHour, Math.ceil(boundaries[index + 1].getTime() / HOUR_MS) - 1);
+    for (let hour = Math.max(firstHour, Math.ceil(start.getTime() / HOUR_MS)); hour <= last; hour += 1) hours.push(latencyHour(hour, offsetHours));
+    return { start: rfc3339Local(start), outlet: mergeLatency(hours.map((item) => item.outlet)), upstream: mergeLatency(hours.map((item) => item.upstream)) };
+  });
+  return { unit, buckets, outlet: mergeLatency(buckets.map((bucket) => bucket.outlet)), upstream: mergeLatency(buckets.map((bucket) => bucket.upstream)) };
 }
 
 interface MockLog<Entry> {
@@ -787,6 +858,94 @@ const failureLog: MockLog<FailureLogEntry> = {
   }),
 };
 
+// The request log holds every public request, so it gets the most entries: about nine days, denser towards now so the periods of the top lists differ.
+const REQUEST_AGENTS = {
+  browsers: [
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+    'Mozilla/5.0 (X11; Linux x86_64; rv:127.0) Gecko/20100101 Firefox/127.0',
+  ],
+  tools: ['curl/8.4.0', 'Go-http-client/2.0', 'Prometheus/2.51.2', 'okhttp/4.12.0'],
+  bots: ['Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)', 'Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)'],
+  scanners: ['Nuclei - Open-source project (github.com/projectdiscovery/nuclei)', 'Mozilla/5.0 zgrab/0.x', 'python-requests/2.31.0', 'masscan/1.3', ''],
+};
+const SCANNER_PATHS = ['/wp-login.php', '/phpmyadmin/', '/xmlrpc.php', '/cgi-bin/luci', '/admin/config.php', '/actuator/env', '/.env', ...BAN_PATHS];
+const SCANNER_CLIENTS = ['203.0.113.66', '192.0.2.113', '198.51.100.250', '203.0.113.9'];
+// A handful of regular visitors, a few of them far busier than the rest.
+const REGULAR_CLIENTS = Array.from({ length: 20 }, (_, index) => clientIp(hashUnit(index + 400)));
+const REQUEST_COUNT = 320;
+const REQUEST_SPAN_MS = 9 * 24 * HOUR_MS;
+
+function mockRequestEntry(index: number): RequestLogEntry {
+  const roll = (salt: number) => hashUnit(index * 41 + salt + 7000);
+  // Newest first. The exponent packs the entries towards now.
+  const at = new Date(Date.now() - 20000 - Math.pow((index + roll(1)) / REQUEST_COUNT, 2.2) * REQUEST_SPAN_MS).toISOString();
+  const [host, service, paths] = pick(FAILURE_SITES, roll(2));
+  const kind = roll(3);
+  const regular = REGULAR_CLIENTS[Math.floor(roll(5) ** 2 * REGULAR_CLIENTS.length)];
+  const entry: RequestLogEntry = {
+    id: 20000 - index, at, host, method: 'GET', path: pick(paths, roll(4)), client: regular, source: '', status: 200, cause: '', service,
+    duration_ms: 4 + Math.round(roll(6) ** 2 * 400), outlet_us: 0, upstream_us: 0, bytes: 800 + Math.round(roll(7) ** 3 * 400000), agent: pick(REQUEST_AGENTS.browsers, roll(8)), routine: false,
+  };
+  if (kind < 0.5) {
+    const outcome = roll(9);
+    if (outcome < 0.1) return { ...entry, method: 'POST', status: 201, bytes: 120 };
+    if (outcome < 0.2) return { ...entry, status: 304, bytes: 0 };
+    if (outcome < 0.25) return { ...entry, status: 302, bytes: 0, duration_ms: 3 };
+    if (outcome < 0.3) return { ...entry, agent: pick(REQUEST_AGENTS.tools, roll(10)) };
+    return entry;
+  }
+  if (kind < 0.54) return { ...entry, path: pick(['/ws', '/api/socket'], roll(10)), status: 101, duration_ms: 30000 + Math.round(roll(11) * 600000), bytes: 90 };
+  if (kind < 0.6) return { ...entry, path: pick(['/favicon.ico', '/robots.txt', '/apple-touch-icon.png', '/sitemap.xml'], roll(10)), status: 404, bytes: 146, routine: true };
+  if (kind < 0.78) {
+    // Scanners come from a few addresses and ask for paths no site uses; the Outlet refuses most of them, some reach the app and get a 404.
+    const path = pick(SCANNER_PATHS, roll(10));
+    const base = { ...entry, path, client: pick(SCANNER_CLIENTS, roll(11)), agent: pick(REQUEST_AGENTS.scanners, roll(12)), duration_ms: 0, bytes: 0, routine: true };
+    const outcome = roll(13);
+    if (BAN_PATHS.includes(path) && outcome < 0.7) return { ...base, status: 403, cause: 'trapped', service: '' };
+    if (outcome < 0.25) return { ...base, status: 403, cause: 'banned', service: '' };
+    if (outcome < 0.4) return { ...base, status: 429, cause: 'rate_limited', service: '' };
+    if (outcome < 0.55) return { ...base, status: 403, cause: 'blocked', service: '' };
+    return { ...base, status: 404, duration_ms: 2 + Math.round(roll(14) * 30), bytes: 146 };
+  }
+  if (kind < 0.85) return { ...entry, agent: pick(REQUEST_AGENTS.bots, roll(10)), status: roll(11) < 0.15 ? 404 : 200, routine: roll(11) < 0.15 };
+  if (kind < 0.93) {
+    const cause = pick(['app_error', 'app_error', 'unreachable', 'timeout'] as const, roll(10));
+    if (cause === 'app_error') return { ...entry, status: pick([500, 500, 503], roll(11)), cause, duration_ms: 20 + Math.round(roll(12) * 900), bytes: 310 };
+    if (cause === 'unreachable') return { ...entry, status: 502, cause, duration_ms: 2 + Math.round(roll(12) * 40), bytes: 150 };
+    return { ...entry, status: 504, cause, duration_ms: 30000, bytes: 150 };
+  }
+  if (kind < 0.96) return { ...entry, status: 499, duration_ms: 2000 + Math.round(roll(10) * 8000), bytes: 0, routine: true };
+  const refused = pick(['too_large', 'too_long', 'busy'] as const, roll(10));
+  if (refused === 'too_large') return { ...entry, method: 'POST', status: 413, cause: refused, duration_ms: 100 + Math.round(roll(11) * 2400), bytes: 0, routine: true };
+  if (refused === 'too_long') return { ...entry, path: `/search/${'a'.repeat(20)}…`, status: 414, cause: refused, service: '', duration_ms: 0, bytes: 0, routine: true };
+  return { ...entry, status: 503, cause: refused, service: '', duration_ms: 1, bytes: 0 };
+}
+
+// 서버의 clientKey를 흉내 냅니다: IPv4는 주소 그대로, IPv6는 /56 접두사(목업은 앞 세 묶음만 남깁니다).
+const sourceOf = (client: string): string => (client.includes(':') ? `${client.split(':').slice(0, 3).join(':')}::/56` : client);
+
+// What the Outlet timed for a request it forwarded: its own processing well under a few milliseconds, then the wait for the service's first byte
+// (an upgrade is over once the 101 is back, so the connection time doesn't count). Refused requests, those with no service and those the Outlet couldn't
+// reach the service for weren't forwarded and aren't timed.
+function withLatency(entry: RequestLogEntry): RequestLogEntry {
+  const roll = (salt: number) => hashUnit(entry.id * 13 + salt);
+  const forwarded = entry.service !== '' && entry.cause !== 'unreachable' && entry.cause !== 'no_service' && !(refusedCauses as readonly string[]).includes(entry.cause);
+  if (!forwarded) return { ...entry, outlet_us: 0, upstream_us: 0 };
+  const outletUs = 120 + Math.round(roll(1) ** 2 * 1600);
+  const upstreamMs = entry.status === 101 ? 20 + roll(2) * 180 : Math.max(0.4, entry.duration_ms - outletUs / 1000);
+  return { ...entry, outlet_us: outletUs, upstream_us: Math.round(upstreamMs * 1000) };
+}
+
+const requestLog: MockLog<RequestLogEntry> = {
+  settings: { enabled: true, max_mib: 512, retention_days: 30 },
+  available: true,
+  dropped: 0,
+  suppressed: 18204,
+  entries: Array.from({ length: REQUEST_COUNT }, (_, index) => mockRequestEntry(index)).map((entry) => withLatency({ ...entry, source: sourceOf(entry.client) })),
+};
+
 function logPageParam(params: URLSearchParams, name: string, fallback: number, max: number): number {
   const value = params.get(name);
   if (value === null) return fallback;
@@ -821,7 +980,7 @@ function logView<Entry>(log: MockLog<Entry>, params: URLSearchParams, matches: (
   });
 }
 
-function saveLogSettings<Entry>(kind: 'access' | 'failures', log: MockLog<Entry>, input: Partial<LogSettings>): void {
+function saveLogSettings<Entry>(kind: 'access' | 'failures' | 'requests', log: MockLog<Entry>, input: Partial<LogSettings>): void {
   const integer = (value: unknown, min: number, max: number): value is number => typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max;
   if (typeof input.enabled !== 'boolean' || !integer(input.max_mib, 16, 4096) || !integer(input.retention_days, 1, 365)) fail('invalid_log_settings');
   if (input.enabled && !log.available) fail('log_unavailable');
@@ -935,8 +1094,57 @@ function tunnelGuardApi(method: string, input: unknown): unknown {
   return fail('not_found');
 }
 
+const TOP_PERIOD_MS: Record<string, number> = { '1h': HOUR_MS, '24h': 24 * HOUR_MS, '7d': 7 * 24 * HOUR_MS, '30d': 30 * 24 * HOUR_MS };
+
+// GET /api/v1/observe/request-log/top: the requests still in the log inside the period, grouped by endpoint (host + path) or by client.
+function requestTop(params: URLSearchParams): RequestTopView {
+  const by = params.get('by') ?? 'endpoint';
+  const period = params.get('period') ?? '24h';
+  const [sortKey, direction = 'desc'] = (params.get('sort') ?? 'requests.desc').split('.');
+  const host = params.get('host') ?? '';
+  const q = logSearch(params);
+  if ((by !== 'endpoint' && by !== 'client') || !(requestTopPeriods as readonly string[]).includes(period)
+    || !(requestTopSorts as readonly string[]).includes(sortKey) || (direction !== 'asc' && direction !== 'desc')) fail('invalid_log_filter');
+  const page = logPageParam(params, 'page', 1, Number.MAX_SAFE_INTEGER);
+  const perPage = logPageParam(params, 'per_page', 50, 200);
+  const from = period === 'all' ? null : new Date(Date.now() - TOP_PERIOD_MS[period]);
+
+  const groups = new Map<string, { row: RequestTopRow; others: Set<string> }>();
+  for (const entry of requestLog.entries) {
+    if ((from && Date.parse(entry.at) < from.getTime()) || (host && entry.host !== host) || !includesText(q, entry.host, entry.path, entry.client, entry.service, entry.agent)) continue;
+    const endpoint = `${entry.host}\u0000${entry.path}`;
+    const key = by === 'client' ? entry.source : endpoint;
+    let group = groups.get(key);
+    if (!group) {
+      group = { row: { ...(by === 'client' ? { client: entry.source } : { host: entry.host, path: entry.path }), requests: 0, client_errors: 0, server_errors: 0, distinct: 0, last_at: entry.at }, others: new Set() };
+      groups.set(key, group);
+    }
+    group.row.requests += 1;
+    if (entry.status >= 400 && entry.status < 500) group.row.client_errors += 1;
+    if (entry.status >= 500 && entry.status < 600) group.row.server_errors += 1;
+    if (entry.at > group.row.last_at) group.row.last_at = entry.at;
+    group.others.add(by === 'client' ? endpoint : entry.source);
+  }
+  // 서버처럼 같은 값은 묶은 열(주소, 경로 또는 출처)의 바이트 순서로 놓습니다.
+  const compare = (x: string, y: string): number => (x < y ? -1 : x > y ? 1 : 0);
+  const keys = (row: RequestTopRow): string[] => (row.client !== undefined ? [row.client] : [row.host ?? '', row.path ?? '']);
+  const sign = direction === 'asc' ? 1 : -1;
+  const rows = [...groups.values()].map(({ row, others }) => ({ ...row, distinct: others.size })).sort((a, b) => {
+    const order = sortKey === 'last_at' ? compare(a.last_at, b.last_at) : (a[sortKey as 'requests'] - b[sortKey as 'requests']);
+    return sign * order || keys(a).map((key, index) => compare(key, keys(b)[index])).find((result) => result !== 0) || 0;
+  });
+  return structuredClone({
+    settings: requestLog.settings,
+    available: requestLog.available,
+    from: from ? from.toISOString() : null,
+    total: rows.length,
+    rows: rows.slice((page - 1) * perPage, page * perPage),
+  });
+}
+
 function observe(path: string, method: string, params: URLSearchParams, input: unknown): unknown {
   if (path === '/api/v1/observe/access-metrics' && method === 'GET') return accessMetrics(params);
+  if (path === '/api/v1/observe/latency' && method === 'GET') return latencySeries(params);
   if (path === '/api/v1/observe/access-log') {
     if (method === 'PUT') {
       saveLogSettings('access', accessLog, input as Partial<LogSettings>);
@@ -966,6 +1174,25 @@ function observe(path: string, method: string, params: URLSearchParams, input: u
       // `service` and `refused` stand for the four and the five causes of each group.
       const causes: readonly string[] = cause === 'service' ? serviceCauses : cause === 'refused' ? refusedCauses : cause ? [cause] : [];
       return logView(failureLog, params, (entry) => (!causes.length || causes.includes(entry.cause)) && (!host || entry.host === host) && includesText(q, entry.host, entry.path, entry.client, entry.service));
+    }
+  }
+  if (path === '/api/v1/observe/request-log/top' && method === 'GET') return requestTop(params);
+  if (path === '/api/v1/observe/request-log') {
+    if (method === 'PUT') {
+      saveLogSettings('requests', requestLog, input as Partial<LogSettings>);
+      return logView(requestLog, new URLSearchParams(), () => true);
+    }
+    if (method === 'GET') {
+      const cls = params.get('class') ?? '';
+      const host = params.get('host') ?? '';
+      const exactPath = params.get('path') ?? '';
+      const source = params.get('source') ?? '';
+      const q = logSearch(params);
+      if (cls && !(requestClasses as readonly string[]).includes(cls)) fail('invalid_log_filter');
+      if (new TextEncoder().encode(exactPath).length > 512) fail('invalid_log_filter');
+      const hundreds = cls ? Number(cls[0]) * 100 : 0;
+      return logView(requestLog, params, (entry) => (!cls || (entry.status >= hundreds && entry.status < hundreds + 100)) && (!host || entry.host === host)
+        && (!exactPath || entry.path === exactPath) && (!source || entry.source === source) && includesText(q, entry.host, entry.path, entry.client, entry.service, entry.agent));
     }
   }
   return fail('not_found');

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -15,6 +16,8 @@ const (
 	// are small and are kept long enough for the yearly overview graph.
 	routeUsageRetention = 30 * 24 * time.Hour
 	totalUsageRetention = 10 * 365 * 24 * time.Hour
+	// minuteUsageRetention keeps a week of Outlet-wide minutes.
+	minuteUsageRetention = 7 * 24 * time.Hour
 	// MaxUsageBuckets bounds one Outlet usage series response.
 	MaxUsageBuckets = 1000
 )
@@ -170,13 +173,18 @@ func (d *Database) RecordUsage(ctx context.Context, samples map[string]UsageSamp
 		total.ErrorResponses += delta.ErrorResponses
 	}
 	// Outlet-wide totals are independent of routes so deleting a route never
-	// rewrites history.
-	if _, err := tx.ExecContext(ctx, `INSERT INTO usage_total_hourly(hour, requests, request_bytes, response_bytes, error_responses)
-		VALUES (?, ?, ?, ?, ?) ON CONFLICT(hour) DO UPDATE SET
-		requests = requests + excluded.requests, request_bytes = request_bytes + excluded.request_bytes,
-		response_bytes = response_bytes + excluded.response_bytes, error_responses = error_responses + excluded.error_responses`,
-		hour, total.Requests, total.RequestBytes, total.ResponseBytes, total.ErrorResponses); err != nil {
-		return err
+	// rewrites history. They are kept by minute too, for a while.
+	for _, totals := range []struct{ table, column, at string }{
+		{"usage_total_hourly", "hour", hour},
+		{"usage_total_minutely", "minute", at.UTC().Truncate(time.Minute).Format(time.RFC3339)},
+	} {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %[1]s(%[2]s, requests, request_bytes, response_bytes, error_responses)
+			VALUES (?, ?, ?, ?, ?) ON CONFLICT(%[2]s) DO UPDATE SET
+			requests = requests + excluded.requests, request_bytes = request_bytes + excluded.request_bytes,
+			response_bytes = response_bytes + excluded.response_bytes, error_responses = error_responses + excluded.error_responses`, totals.table, totals.column),
+			totals.at, total.Requests, total.RequestBytes, total.ResponseBytes, total.ErrorResponses); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO outlet_settings(key, value, updated_at) VALUES ('usage_updated_at', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, at.UTC().Format(time.RFC3339), at.UTC().Format(time.RFC3339)); err != nil {
 		return err
@@ -185,6 +193,9 @@ func (d *Database) RecordUsage(ctx context.Context, samples map[string]UsageSamp
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_total_hourly WHERE hour < ?`, at.UTC().Add(-totalUsageRetention).Truncate(time.Hour).Format(time.RFC3339)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_total_minutely WHERE minute < ?`, at.UTC().Add(-minuteUsageRetention).Truncate(time.Minute).Format(time.RFC3339)); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_hourly WHERE route_id NOT IN (SELECT id FROM routes)`); err != nil {
@@ -197,11 +208,23 @@ func (d *Database) RecordUsage(ctx context.Context, samples map[string]UsageSamp
 	return tx.Commit()
 }
 
-// AddRateLimited adds rejected requests to the hour they happened in.
-func (d *Database) AddRateLimited(ctx context.Context, hour time.Time, rejected int64) error {
-	_, err := d.db.ExecContext(ctx, `INSERT INTO usage_total_hourly(hour, rate_limited) VALUES (?, ?)
-		ON CONFLICT(hour) DO UPDATE SET rate_limited = rate_limited + excluded.rate_limited`, hour.UTC().Truncate(time.Hour).Format(time.RFC3339), rejected)
-	return err
+// AddRateLimited adds rejected requests to the hour and the minute they
+// happened in.
+func (d *Database) AddRateLimited(ctx context.Context, minute time.Time, rejected int64) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO usage_total_hourly(hour, rate_limited) VALUES (?, ?)
+		ON CONFLICT(hour) DO UPDATE SET rate_limited = rate_limited + excluded.rate_limited`, minute.UTC().Truncate(time.Hour).Format(time.RFC3339), rejected); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO usage_total_minutely(minute, rate_limited) VALUES (?, ?)
+		ON CONFLICT(minute) DO UPDATE SET rate_limited = rate_limited + excluded.rate_limited`, minute.UTC().Truncate(time.Minute).Format(time.RFC3339), rejected); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (d *Database) ConnectorUsage(ctx context.Context, connectorID string, now time.Time) (ConnectorUsage, error) {
@@ -273,6 +296,9 @@ func UsageBoundaries(unit string, from, to time.Time, loc *time.Location) ([]tim
 	local := from.In(loc)
 	var boundary func(i int) time.Time
 	switch unit {
+	case "minute":
+		first := local.Truncate(time.Minute)
+		boundary = func(i int) time.Time { return first.Add(time.Duration(i) * time.Minute) }
 	case "hour":
 		// Whole elapsed hours keep the overlapping hour of a clock change distinct.
 		first := local.Add(-time.Duration(local.Minute())*time.Minute - time.Duration(local.Second())*time.Second - time.Duration(local.Nanosecond()))
@@ -322,8 +348,12 @@ func (d *Database) OutletUsageSeries(ctx context.Context, unit string, from, to 
 	if err := d.db.QueryRowContext(ctx, `SELECT value FROM outlet_settings WHERE key = 'usage_updated_at'`).Scan(&result.UpdatedAt); err != nil && err != sql.ErrNoRows {
 		return result, err
 	}
-	rows, err := d.db.QueryContext(ctx, `SELECT hour, requests, request_bytes, response_bytes, error_responses, rate_limited
-		FROM usage_total_hourly WHERE hour >= ? AND hour < ? ORDER BY hour`,
+	table, column := "usage_total_hourly", "hour"
+	if unit == "minute" {
+		table, column = "usage_total_minutely", "minute"
+	}
+	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT %[2]s, requests, request_bytes, response_bytes, error_responses, rate_limited
+		FROM %[1]s WHERE %[2]s >= ? AND %[2]s < ? ORDER BY %[2]s`, table, column),
 		boundaries[0].UTC().Format(time.RFC3339), boundaries[buckets].UTC().Format(time.RFC3339))
 	if err != nil {
 		return result, err
@@ -337,7 +367,7 @@ func (d *Database) OutletUsageSeries(ctx context.Context, unit string, from, to 
 		}
 		at, err := time.Parse(time.RFC3339, hour)
 		if err != nil {
-			return result, fmt.Errorf("usage_total_hourly hour %q: %w", hour, err)
+			return result, fmt.Errorf("%s %s %q: %w", table, column, hour, err)
 		}
 		// The first boundary after the hour ends its bucket.
 		index := sort.Search(buckets, func(i int) bool { return boundaries[i].After(at) })
@@ -355,8 +385,40 @@ func (d *Database) OutletUsageSeries(ctx context.Context, unit string, from, to 
 		return result, err
 	}
 	rows.Close()
-	result.Connectors, err = d.connectorTotals(ctx, boundaries[0], boundaries[buckets])
-	return result, err
+	if unit != "minute" {
+		result.Connectors, err = d.connectorTotals(ctx, boundaries[0], boundaries[buckets])
+		return result, err
+	}
+	// Tunnels are counted by hour. A range of minutes splits its own totals
+	// among them as the hours it touches do, so the shares add up to the
+	// chart.
+	result.Connectors, err = d.connectorTotals(ctx, boundaries[0].UTC().Truncate(time.Hour), boundaries[buckets].UTC().Add(time.Hour-time.Nanosecond).Truncate(time.Hour))
+	if err != nil {
+		return result, err
+	}
+	var window, hours UsageBucket
+	for _, bucket := range result.Buckets {
+		window.Requests, window.RequestBytes, window.ResponseBytes, window.ErrorResponses = window.Requests+bucket.Requests, window.RequestBytes+bucket.RequestBytes, window.ResponseBytes+bucket.ResponseBytes, window.ErrorResponses+bucket.ErrorResponses
+	}
+	for _, c := range result.Connectors {
+		hours.Requests, hours.RequestBytes, hours.ResponseBytes, hours.ErrorResponses = hours.Requests+c.Requests, hours.RequestBytes+c.RequestBytes, hours.ResponseBytes+c.ResponseBytes, hours.ErrorResponses+c.ErrorResponses
+	}
+	share := func(n, part, whole int64) int64 {
+		if whole == 0 {
+			return 0
+		}
+		return int64(math.Round(float64(n) * float64(part) / float64(whole)))
+	}
+	kept := result.Connectors[:0]
+	for _, c := range result.Connectors {
+		c.Requests, c.RequestBytes = share(c.Requests, window.Requests, hours.Requests), share(c.RequestBytes, window.RequestBytes, hours.RequestBytes)
+		c.ResponseBytes, c.ErrorResponses = share(c.ResponseBytes, window.ResponseBytes, hours.ResponseBytes), share(c.ErrorResponses, window.ErrorResponses, hours.ErrorResponses)
+		if c.Requests > 0 {
+			kept = append(kept, c)
+		}
+	}
+	result.Connectors = kept
+	return result, nil
 }
 
 // connectorTotals sums the per-route hours of [from, to) by tunnel. Hours of

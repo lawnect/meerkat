@@ -67,6 +67,10 @@ func (d *Database) RecordAccessCounts(ctx context.Context, counts map[AccessCoun
 // was counted.
 func (d *Database) AccessSeries(ctx context.Context, unit string, from, to time.Time, loc *time.Location) (AccessSeries, error) {
 	result := AccessSeries{Unit: unit, Buckets: []AccessBucket{}, Policies: map[string]AccessCounts{}}
+	// Decisions are kept by hour.
+	if unit == "minute" {
+		return result, ErrInvalidUsageRange
+	}
 	boundaries, err := UsageBoundaries(unit, from, to, loc)
 	if err != nil {
 		return result, err

@@ -424,13 +424,13 @@ func TestAccessSeries(t *testing.T) {
 	}
 }
 
-// Log settings are off at 256 MiB and 30 days until saved, saved within
+// Log settings are off at 256 MiB (the request log 512) and 30 days until saved, saved within
 // their limits, and read back as the defaults when damaged.
 func TestLogSettings(t *testing.T) {
 	ctx := context.Background()
 	db := openRouting(t)
 	now := time.Now()
-	if got, err := db.LogSettings(ctx, LogAccess); err != nil || got != DefaultLogSettings() || got.Enabled {
+	if got, err := db.LogSettings(ctx, LogAccess); err != nil || got != DefaultLogSettings(LogAccess) || got.Enabled {
 		t.Fatalf("defaults: %+v %v", got, err)
 	}
 	want := LogSettings{Enabled: true, MaxMiB: 1024, RetentionDays: 7}
@@ -454,7 +454,17 @@ func TestLogSettings(t *testing.T) {
 	if err := putSetting(ctx, db.db, "log_"+LogFailures, `{"enabled":true,"max_mib":1}`, now); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := db.LogSettings(ctx, LogFailures); got != DefaultLogSettings() {
+	if got, _ := db.LogSettings(ctx, LogFailures); got != DefaultLogSettings(LogFailures) {
 		t.Fatalf("damaged: %+v", got)
+	}
+	// The request log, which fills fastest, starts at 512 MiB.
+	if got, err := db.LogSettings(ctx, LogRequests); err != nil || got != (LogSettings{MaxMiB: 512, RetentionDays: 30}) {
+		t.Fatalf("request log defaults: %+v %v", got, err)
+	}
+	if _, err := db.SetLogSettings(ctx, LogRequests, want, now); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.LogSettings(ctx, LogRequests); got != want {
+		t.Fatalf("request log saved: %+v", got)
 	}
 }

@@ -155,7 +155,7 @@ func (d *Database) ListServices(ctx context.Context, connectorID string) ([]Serv
 		return nil, ErrConnectorNotFound
 	}
 	rows, err := d.db.QueryContext(ctx, `SELECT id, connector_id, name, protocol, target_host, target_port, enabled, observed_status, created_at, updated_at
-		FROM services WHERE connector_id = ? ORDER BY created_at DESC`, connectorID)
+		FROM services WHERE connector_id = ? ORDER BY rowid DESC`, connectorID)
 	if err != nil {
 		return nil, err
 	}

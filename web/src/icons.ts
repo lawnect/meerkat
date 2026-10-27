@@ -156,3 +156,7 @@ export { default as ChevronRight12 } from '~icons/fluent/chevron-right-12-regula
 export { default as CalendarLtr12 } from '~icons/fluent/calendar-ltr-12-regular';
 export { default as Shield20 } from '~icons/fluent/shield-20-regular';
 export { default as ErrorCircle12 } from '~icons/fluent/error-circle-12-regular';
+export { default as ArrowBidirectionalUpDown12 } from '~icons/fluent/arrow-bidirectional-up-down-12-regular';
+export { default as Dismiss12 } from '~icons/fluent/dismiss-12-regular';
+export { default as TextBulletListLtr20 } from '~icons/fluent/text-bullet-list-ltr-20-regular';
+export { default as Timer20 } from '~icons/fluent/timer-20-regular';

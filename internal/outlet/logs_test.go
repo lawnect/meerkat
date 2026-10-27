@@ -26,6 +26,9 @@ type budgetLog struct {
 	read    func() (logged int, suppressed int64)
 }
 
+// The access and failure logs' budgets, as the tests count entries.
+var routineBudget, notableBudget = int64(refusalBudget.routine), int64(refusalBudget.notable)
+
 // fromClient is a request that came from ip.
 func fromClient(ip string) *http.Request {
 	r := httptest.NewRequest("GET", "https://app.example.com/x", nil)
@@ -149,7 +152,7 @@ func TestRoutineBudget(t *testing.T) {
 func TestRoutineFloodNeverReachesTheQueue(t *testing.T) {
 	f := newProxyFixture(t)
 	// This log's writer isn't started.
-	l := openOutletLog(context.Background(), f.db, t.TempDir(), "failure-log.db", control.LogFailures, failureEntries)
+	l := openOutletLog(context.Background(), f.db, t.TempDir(), "failure-log.db", control.LogFailures, failureEntries, refusalBudget)
 	if l == nil {
 		t.Fatal("log not opened")
 	}
@@ -180,7 +183,7 @@ func TestRoutineFloodNeverReachesTheQueue(t *testing.T) {
 // Many requests at once from one client take the budget exactly: no lock
 // is held, and none of them takes more than its share.
 func TestRoutineBudgetUnderContention(t *testing.T) {
-	l := &outletLog[failureEntry]{seed: maphash.MakeSeed()}
+	l := &outletLog[failureEntry]{limits: refusalBudget, seed: maphash.MakeSeed()}
 	now := time.Date(2026, 10, 27, 15, 0, 0, 0, time.UTC)
 	var wg sync.WaitGroup
 	var allowed atomic.Int64
@@ -202,7 +205,7 @@ func TestRoutineBudgetUnderContention(t *testing.T) {
 // Clients can share a slot, however many slots there are; they share its
 // budget, which is stricter for them and never looser.
 func TestRoutineBudgetSharedSlot(t *testing.T) {
-	l := &outletLog[failureEntry]{seed: maphash.MakeSeed()}
+	l := &outletLog[failureEntry]{limits: refusalBudget, seed: maphash.MakeSeed()}
 	now := time.Date(2026, 10, 27, 15, 0, 0, 0, time.UTC)
 	var other string
 	for i := 0; other == ""; i++ {
@@ -238,7 +241,7 @@ func readLog[E any](tb testing.TB, f proxyFixture, name, query string) logView[E
 func BenchmarkRoutineBudget(b *testing.B) {
 	for _, ip := range []string{"203.0.113.9", "2001:db8:0:123:4:5:6:7"} {
 		b.Run(ip, func(b *testing.B) {
-			l := &outletLog[failureEntry]{seed: maphash.MakeSeed()}
+			l := &outletLog[failureEntry]{limits: refusalBudget, seed: maphash.MakeSeed()}
 			now := time.Now()
 			b.ReportAllocs()
 			for b.Loop() {
@@ -252,7 +255,7 @@ func BenchmarkRoutineBudget(b *testing.B) {
 // anyone can make an app answer 5xx, or ask for a service that is down, so
 // one client can't fill a log with them either.
 func TestNotableBudget(t *testing.T) {
-	l := &outletLog[failureEntry]{seed: maphash.MakeSeed()}
+	l := &outletLog[failureEntry]{limits: refusalBudget, seed: maphash.MakeSeed()}
 	now := time.Date(2026, 10, 27, 15, 0, 0, 0, time.UTC)
 	for range notableBudget {
 		if !l.admit("10.0.0.1", now, false) {

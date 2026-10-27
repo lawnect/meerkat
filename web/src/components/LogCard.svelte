@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import { type ColumnDef, type FilterFn, createColumnHelper, createTable, renderSnippet } from '@tanstack/svelte-table';
   import * as Alert from '$lib/components/ui/alert/index.js';
+  import { Badge } from '$lib/components/ui/badge/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import * as Card from '$lib/components/ui/card/index.js';
   import * as Empty from '$lib/components/ui/empty/index.js';
@@ -12,28 +13,31 @@
   import { cn } from '$lib/utils.js';
   import { toast } from 'svelte-sonner';
   import { api, errorMessage } from '../api';
-  import { formatClock, formatDay } from '../format';
+  import { csvHref, formatClock, formatDay } from '../format';
   import { intlLocale, translations } from '../i18n.svelte';
-  import { ArrowReset20, ArrowSync, Settings, Warning, type IconComponent } from '../icons';
+  import { ArrowReset20, ArrowSync, Dismiss12, Settings, Warning, type IconComponent } from '../icons';
   import type { LogView } from '../types';
-  import type { LogFilter } from './logFilter';
+  import { isChipFilter, type LogChipFilter, type LogFilter, type LogSelectFilter } from './logFilter';
   import DataTable from './data-table/DataTable.svelte';
   import DataTablePagination from './data-table/DataTablePagination.svelte';
   import DataTableSearch from './data-table/DataTableSearch.svelte';
   import { features, type DataTableFeatures } from './data-table/features';
   import { urlTableState, type UrlFilter } from './data-table/urlTable.svelte';
+  import CsvDownload from './CsvDownload.svelte';
   import IconButton from './IconButton.svelte';
   import InfoTooltip from './InfoTooltip.svelte';
   import LogSettingsDialog from './LogSettingsDialog.svelte';
+  import TruncateText from './TruncateText.svelte';
 
-  // 관찰의 요청 기록 카드(접근 기록, 실패 요청). 머리글에 사용 중인 크기, 새로 고침, 기록 설정, 기록 스위치를 두고,
-  // 본문은 필터 줄(검색, 선택, 초기화, 생략한 반복 요청 수), 표, 위·아래 페이지 이동입니다.
+  // 관찰의 요청 기록 카드(접근 기록, 실패 요청, 요청 기록). 머리글에 사용 중인 크기, CSV 내려받기, 새로 고침, 기록 설정, 기록 스위치를 두고,
+  // 본문은 필터 줄(검색, 선택, 칩, 초기화, 생략한 반복 요청 수), 표, 위·아래 페이지 이동입니다.
   // 표는 shadcn Data Table 구성(TanStack + DataTable + DataTablePagination)이지만 거르기와 페이지 나누기는 서버가 합니다:
   // manualFiltering·manualPagination, rowCount는 서버의 total. 검색어(q)·필터·페이지는 주소 query가 단일 출처이고(urlTableState),
   // 필터는 보이지 않는 열로 두며 기록은 GET /api/v1/observe/{kind}-log에서 받습니다.
-  // 부모는 시각 다음의 열(columns: columnHelper + renderSnippet 셀)과 검색 외의 필터 선택(filters)을 채웁니다.
+  // CSV 내려받기는 지금의 검색어·필터(페이지 제외)를 GET …/{kind}-log/export에 붙인 링크라서 조건에 맞는 모든 기록을 받습니다.
+  // 부모는 시각 다음의 열(columns: columnHelper + renderSnippet 셀)과 검색 외의 필터(filters: 선택 상자, 또는 값이 있을 때만 칩으로 보이는 chip 필터)를 채웁니다.
   let { kind, title, tip, suppressedTip, searchLabel, emptyTitle, offTitle, offHint, emptyIcon: EmptyIcon, loadFailed, filters, columns }: {
-    kind: 'access' | 'failure';
+    kind: 'access' | 'failure' | 'request';
     title: string;
     tip: string;
     suppressedTip: string; // 한도를 넘어 생략한 요청이 무엇인지 설명하는 툴팁
@@ -53,6 +57,7 @@
     settings: 'Log settings',
     time: 'Time',
     reset: 'Reset filters',
+    removeFilter: (name: string) => `Remove filter: ${name}`,
     filteredEmpty: 'No matching entries',
     skipped: (count: number, text: string) => `${text} repeated ${count === 1 ? 'request' : 'requests'} skipped`,
     unavailable: 'The log file couldn\'t be opened, so nothing is logged.',
@@ -67,6 +72,7 @@
     settings: '기록 설정',
     time: '시각',
     reset: '필터 초기화',
+    removeFilter: (name: string) => `${name} 필터 해제`,
     filteredEmpty: '조건에 해당하는 기록이 없습니다',
     skipped: (_count: number, text: string) => `반복 요청 ${text}건 생략`,
     unavailable: '기록 파일을 열 수 없어 기록하지 않습니다.',
@@ -83,8 +89,13 @@
 
   // 검색어(q)와 선택 필터는 표의 숨은 열입니다(열 id는 부모가 정한 열과 겹치지 않게 filter_ 접두사). 주소·서버 query의 이름은 param입니다.
   const columnOf = (param: string): string => `filter_${param}`;
-  const optionValues = (filter: LogFilter): string[] => filter.options.flatMap((option) => ('group' in option ? option.options : [option])).map((option) => option.value).filter(Boolean);
-  const urlFilters = $derived<UrlFilter[]>([{ param: 'q', column: columnOf('q') }, ...filters.map((filter) => ({ param: filter.param, column: columnOf(filter.param), allowed: filter.free ? undefined : optionValues(filter) }))]);
+  const optionValues = (filter: LogSelectFilter): string[] => filter.options.flatMap((option) => ('group' in option ? option.options : [option])).map((option) => option.value).filter(Boolean);
+  const selects = $derived(filters.filter((filter): filter is LogSelectFilter => !isChipFilter(filter)));
+  const chips = $derived(filters.filter(isChipFilter));
+  const urlFilters = $derived<UrlFilter[]>([
+    { param: 'q', column: columnOf('q') },
+    ...filters.map((filter) => ({ param: filter.param, column: columnOf(filter.param), allowed: isChipFilter(filter) || filter.free ? undefined : optionValues(filter) })),
+  ]);
   const urlTable = urlTableState({ get filters() { return urlFilters; }, sortable: [], defaultSort: [], pageSize });
   const tableState = $derived(urlTable.state);
 
@@ -116,11 +127,18 @@
 
   const filtered = $derived(tableState.columnFilters.length > 0);
   const filterValue = (param: string): string => (tableState.columnFilters.find((filter) => filter.id === columnOf(param))?.value as string | undefined) ?? '';
+  // 검색어와 필터만 담은 query. 목록은 여기에 page·per_page를 붙이고, CSV 내려받기는 페이지 없이 조건에 맞는 모든 기록을 받습니다.
+  const filterQuery = $derived.by(() => {
+    const params = new URLSearchParams();
+    for (const filter of urlFilters) if (filterValue(filter.param)) params.set(filter.param, filterValue(filter.param));
+    return params;
+  });
   const query = $derived.by(() => {
     const params = new URLSearchParams({ page: String(tableState.pagination.pageIndex + 1), per_page: String(tableState.pagination.pageSize) });
-    for (const filter of urlFilters) if (filterValue(filter.param)) params.set(filter.param, filterValue(filter.param));
+    for (const [name, value] of filterQuery) params.set(name, value);
     return params.toString();
   });
+  const exportHref = $derived(csvHref(`${endpoint}/export`, filterQuery));
 
   let loadError = $state('');
   let reloads = $state(0);
@@ -131,7 +149,9 @@
     void reloads;
     const current = query;
     let active = true;
-    api<LogView<Entry>>(`${endpoint}?${current}`)
+    // 조건이 바뀌면 이전 요청은 취소해, 큰 기록의 검색이 서버에 쌓이지 않게 합니다.
+    const controller = new AbortController();
+    api<LogView<Entry>>(`${endpoint}?${current}`, { signal: controller.signal })
       .then((next) => {
         if (!active) return;
         // Go는 빈 목록을 null로 보낼 수 있습니다.
@@ -141,7 +161,7 @@
         if (next.total > 0 && !next.entries?.length && tableState.pagination.pageIndex > 0) table.setPageIndex(0);
       })
       .catch((cause) => { if (active) loadError = loadFailed(errorMessage(cause)); });
-    return () => { active = false; };
+    return () => { active = false; controller.abort(); };
   });
 
   // 설정을 저장한 응답은 필터 없는 첫 페이지이므로, 설정과 크기만 반영하고 목록은 지금 조건으로 다시 받습니다.
@@ -178,6 +198,17 @@
   </div>
 {/snippet}
 
+{#snippet chip(filter: LogChipFilter)}
+  {@const value = filterValue(filter.param)}
+  {#if value}
+    <Badge variant="secondary" class="h-6 max-w-full gap-1 pe-0">
+      <span class="shrink-0 text-muted-foreground">{filter.label}</span>
+      <TruncateText text={value} class="max-w-48 font-mono" />
+      <IconButton size="icon-xs" label={t().removeFilter(`${filter.label} ${value}`)} icon={Dismiss12} onclick={() => { table.getColumn(columnOf(filter.param))?.setFilterValue(undefined); }} />
+    </Badge>
+  {/if}
+{/snippet}
+
 <Card.Root size="sm" role="region" aria-labelledby={`${id}-title`}>
   <Card.Header class="@max-md/card-header:grid-cols-1 @max-md/card-header:gap-3">
     <Card.Title id={`${id}-title`} class="flex items-center gap-1">{title}<InfoTooltip id={`${id}-tip`} label={title} description={tip} /></Card.Title>
@@ -185,6 +216,7 @@
       <Card.Action class="@max-md/card-header:col-start-1 @max-md/card-header:row-start-2 @max-md/card-header:justify-self-start">
         <div class="flex items-center gap-2">
           <span class="me-1 text-xs text-muted-foreground tabular-nums">{mib(view.size_bytes)} MiB / {number(view.settings.max_mib)} MiB</span>
+          <CsvDownload href={exportHref} disabled={!view.available} />
           <IconButton label={t().refresh} icon={ArrowSync} onclick={() => { reloads += 1; }} />
           <IconButton label={t().settings} icon={Settings} onclick={() => { settingsOpen = true; }} />
           <Field.Label for={`${id}-enabled`} class="text-muted-foreground">{t().enabled}</Field.Label>
@@ -210,7 +242,7 @@
       {/if}
       <div class="flex flex-wrap items-center gap-2" role="search" aria-label={searchLabel}>
         <DataTableSearch {table} column={columnOf('q')} label={searchLabel} class="sm:max-w-72" />
-        {#each filters as filter (filter.param)}
+        {#each selects as filter (filter.param)}
           <NativeSelect.Root class={cn('w-full', filter.class)} aria-label={filter.label} bind:value={() => filterValue(filter.param), (next) => { table.getColumn(columnOf(filter.param))?.setFilterValue(next || undefined); }}>
             {#each filter.options as option, index (index)}
               {#if 'group' in option}
@@ -222,6 +254,9 @@
               {/if}
             {/each}
           </NativeSelect.Root>
+        {/each}
+        {#each chips as filter (filter.param)}
+          {@render chip(filter)}
         {/each}
         {#if filtered}<IconButton variant="outline" size="icon" label={t().reset} icon={ArrowReset20} onclick={resetFilters} />{/if}
         {#if view.suppressed > 0}

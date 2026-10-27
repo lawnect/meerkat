@@ -61,14 +61,15 @@
   }
 </script>
 
-<Sidebar.Root collapsible="offcanvas">
+<!-- 메뉴는 끌거나 글자를 선택하지 않습니다: 링크·로고는 draggable="false", 사이드바 전체는 select-none. -->
+<Sidebar.Root collapsible="offcanvas" class="select-none">
   <Sidebar.Header class="border-b border-dashed">
     <!-- sidebar-07 블록처럼 브랜드는 큰 메뉴 버튼이며, 누르면 개요로 갑니다. -->
     <Sidebar.Menu>
       <Sidebar.MenuItem>
         <Sidebar.MenuButton size="lg" class="h-auto gap-3 py-2">
           {#snippet child({ props })}
-            <a {...props} href={pageHref('overview')} onclick={(event) => follow(event, 'overview')}>
+            <a {...props} href={pageHref('overview')} draggable="false" onclick={(event) => follow(event, 'overview')}>
               <BrandMark class="size-9 shrink-0" />
               <span class="grid min-w-0 gap-1">
                 <span class="truncate text-sm leading-4 font-semibold">Meerkat <span class="font-medium text-muted-foreground">Outlet</span>{#if version}<span class="ms-1.5 align-top font-mono text-xs leading-4 font-normal text-muted-foreground opacity-0 group-hover/menu-button:opacity-100 group-focus-visible/menu-button:opacity-100">v{version}</span>{/if}</span>
@@ -95,7 +96,7 @@
             <Sidebar.MenuItem>
               <Sidebar.MenuButton isActive={view === item.page}>
                 {#snippet child({ props })}
-                  <a href={pageHref(item.page)} {...props} aria-current={view === item.page ? 'page' : undefined} onclick={(event) => follow(event, item.page)}>
+                  <a href={pageHref(item.page)} {...props} draggable="false" aria-current={view === item.page ? 'page' : undefined} onclick={(event) => follow(event, item.page)}>
                     {#if view === item.page}<item.activeIcon aria-hidden="true" />{:else}<item.icon aria-hidden="true" />{/if}
                     <span>{t()[item.page]}</span>
                   </a>

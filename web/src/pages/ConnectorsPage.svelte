@@ -42,6 +42,7 @@
   import TruncateText from '../components/TruncateText.svelte';
   import TunnelPreview from '../components/TunnelPreview.svelte';
   import UsageChart from '../components/UsageChart.svelte';
+  import VersionBadge from '../components/VersionBadge.svelte';
   import { connectorDetailPath, pageHref } from '../navigation';
   import type { Connector, ConnectorUsage, DashboardData, EnrollmentToken } from '../types';
 
@@ -422,7 +423,7 @@
   let serviceBusy = $state(false);
   // 화면 상태(탭·기간·서비스·보기 방식)는 주소 query가 단일 출처입니다: ?tab=routes&period=7d&service=…&view=table
   const detailTab = $derived(oneOf<DetailTab>('tab', ['overview', 'routes', 'usage'], 'overview'));
-  const setDetailTab = (next: DetailTab): void => setParams({ tab: next }, { tab: 'overview' });
+  const setDetailTab = (next: DetailTab): void => setParams({ tab: next }, { tab: 'overview' }, { push: true });
   let usage = $state<ConnectorUsage | null>(null);
   let usageConnectorId = '';
   const periodParams = { 24: '24h', 168: '7d', 720: '30d' } as const;
@@ -1017,11 +1018,14 @@
 </script>
 
 {#snippet nameCell(row: TunnelRow)}
-  <TunnelPreview id={row.connector.id} name={connectorLabel(row.connector)} hostnames={row.hostnames} {onOpenDetail}>
-    {#snippet trigger(props)}
-      <a {...props} class="block max-w-56 truncate text-sm font-medium outline-none after:absolute after:inset-0 text-link focus-visible:ring-3 focus-visible:ring-ring/50" href={connectorDetailPath(row.connector.id)} onclick={(event) => openDetailFromLink(event, row.connector.id)}>{connectorLabel(row.connector)}</a>
-    {/snippet}
-  </TunnelPreview>
+  <span class="flex min-w-0 items-center gap-2">
+    <TunnelPreview id={row.connector.id} name={connectorLabel(row.connector)} hostnames={row.hostnames} {onOpenDetail}>
+      {#snippet trigger(props)}
+        <a {...props} class="block min-w-0 max-w-56 truncate text-sm font-medium outline-none after:absolute after:inset-0 text-link focus-visible:ring-3 focus-visible:ring-ring/50" href={connectorDetailPath(row.connector.id)} onclick={(event) => openDetailFromLink(event, row.connector.id)}>{connectorLabel(row.connector)}</a>
+      {/snippet}
+    </TunnelPreview>
+    <VersionBadge version={row.connector.version} />
+  </span>
 {/snippet}
 
 {#snippet addressCell(row: TunnelRow)}
@@ -1088,6 +1092,10 @@
   <Button onclick={openCreateDialog}><Add aria-hidden="true" />{t().newTunnel}</Button>
 {/snippet}
 
+{#snippet detailBadge()}
+  <VersionBadge version={selected?.version} tip />
+{/snippet}
+
 {#snippet detailActions()}
   {#if selected && selected.status !== 'connected'}
     <Button variant="outline" disabled={checkingConnection} onclick={checkConnection}>
@@ -1099,7 +1107,7 @@
 <div class="min-w-0">
   {#if detailId}
     {#if selected}
-      <PageHead title={connectorLabel(selected)} crumbs={[{ label: t().tunnels, href: pageHref('connectors'), onclick: backFromLink }, { label: connectorLabel(selected) }]} action={detailActions} />
+      <PageHead title={connectorLabel(selected)} badge={detailBadge} crumbs={[{ label: t().tunnels, href: pageHref('connectors'), onclick: backFromLink }, { label: connectorLabel(selected) }]} action={detailActions} />
       {#if connectionCheck}
         <Alert.Root class="mb-4" variant={connectionCheck === 'failed' ? 'destructive' : 'default'} role="status">
           {#if connectionCheck === 'pending'}<Info aria-hidden="true" />{:else}<Warning aria-hidden="true" />{/if}
@@ -1409,10 +1417,11 @@
                   <a class="group/link flex w-full outline-none focus-visible:ring-3 focus-visible:ring-ring/50" href={connectorDetailPath(connector.id)} aria-label={t().detailsAria(connectorLabel(connector))} onclick={(event) => openDetailFromLink(event, connector.id)}>
                     <Card.Root size="sm" class="w-full transition-colors group-hover/link:bg-muted/30 group-hover/link:border-foreground/60">
                       <Card.Header>
-                        <Card.Title class="min-w-0">
+                        <Card.Title class="flex min-w-0 items-center gap-2">
                           <TunnelPreview id={connector.id} name={connectorLabel(connector)} {hostnames} {onOpenDetail} nested>
-                            {#snippet trigger(props)}<span {...props} class="block truncate">{connectorLabel(connector)}</span>{/snippet}
+                            {#snippet trigger(props)}<span {...props} class="block min-w-0 truncate">{connectorLabel(connector)}</span>{/snippet}
                           </TunnelPreview>
+                          <VersionBadge version={connector.version} />
                         </Card.Title>
                         {#if connector.description}<Card.Description class="min-w-0"><TruncateText text={connector.description} /></Card.Description>{/if}
                         <Card.Action><Status label={statusLabel(connector.status)} value={connector.status} /></Card.Action>

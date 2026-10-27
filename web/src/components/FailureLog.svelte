@@ -1,11 +1,12 @@
 <script lang="ts">
   import { createColumnHelper, renderSnippet } from '@tanstack/svelte-table';
-  import { Badge } from '$lib/components/ui/badge/index.js';
-  import * as Tooltip from '$lib/components/ui/tooltip/index.js';
-  import { intlLocale, translations } from '../i18n.svelte';
+  import { causeText } from '../failureCauses.svelte';
+  import { formatDuration } from '../format';
+  import { translations } from '../i18n.svelte';
   import { Warning20 } from '../icons';
   import { refusedCauses, serviceCauses, type FailureCause, type FailureLogEntry } from '../types';
   import { param } from '../urlState.svelte';
+  import CauseBadge from './CauseBadge.svelte';
   import type { DataTableFeatures } from './data-table/features';
   import LogCard from './LogCard.svelte';
   import type { LogFilter } from './logFilter';
@@ -33,23 +34,6 @@
     serviceGroup: 'Service errors',
     refusedGroup: 'Outlet refusals',
     allHosts: 'All addresses',
-    causes: {
-      app_error: 'App error', unreachable: 'Unreachable', timeout: 'Timeout', no_service: 'No service', rate_limited: 'Rate limited',
-      blocked: 'Blocked', trapped: 'Honeypot hit', banned: 'Banned client', too_long: 'Path too long', too_large: 'Body too large', busy: 'Connection limit',
-    } as Record<FailureCause, string>,
-    meanings: {
-      app_error: 'The app answered with a 5xx.',
-      unreachable: 'The Outlet couldn\'t reach the service through its tunnel.',
-      timeout: 'The service didn\'t answer in time.',
-      no_service: 'The address has no live service.',
-      rate_limited: 'Refused by a rate limit.',
-      blocked: 'Refused by a block rule.',
-      trapped: 'Matched a honeypot rule, so the client was banned.',
-      banned: 'Refused because the client is banned.',
-      too_long: 'The path was over 8,192 bytes.',
-      too_large: 'The request body was over the upload limit.',
-      busy: 'Refused by a connection limit.',
-    } as Record<FailureCause, string>,
     request: 'Request',
     result: 'Result',
     client: 'Client',
@@ -70,23 +54,6 @@
     serviceGroup: '서비스 오류',
     refusedGroup: 'Outlet 거부',
     allHosts: '모든 주소',
-    causes: {
-      app_error: '앱 오류', unreachable: '연결 실패', timeout: '응답 시간 초과', no_service: '서비스 없음', rate_limited: '요청 제한',
-      blocked: '차단', trapped: '허니팟 감지', banned: '차단된 클라이언트', too_long: '경로 길이 초과', too_large: '본문 크기 초과', busy: '동시 연결 제한',
-    },
-    meanings: {
-      app_error: '앱이 5xx로 응답했습니다.',
-      unreachable: 'Outlet이 터널을 통해 서비스에 연결하지 못했습니다.',
-      timeout: '서비스가 제한 시간 내에 응답하지 않았습니다.',
-      no_service: '이 주소에 연결된 활성 서비스가 없습니다.',
-      rate_limited: '요청 제한으로 거부되었습니다.',
-      blocked: '차단 규칙으로 거부되었습니다.',
-      trapped: '허니팟 규칙에 해당하여 클라이언트를 차단했습니다.',
-      banned: '차단된 클라이언트의 요청을 거부했습니다.',
-      too_long: '경로가 8,192바이트를 초과했습니다.',
-      too_large: '요청 본문이 업로드 제한을 초과했습니다.',
-      busy: '연결 제한으로 거부되었습니다.',
-    },
     request: '요청',
     result: '결과',
     client: '클라이언트',
@@ -95,7 +62,7 @@
 
   const host = $derived(param('host') ?? '');
   const hosts = $derived([...new Set([...addresses, ...(host ? [host] : [])])].sort());
-  const causeOption = (value: FailureCause) => ({ value, label: t().causes[value] });
+  const causeOption = (value: FailureCause) => ({ value, label: causeText().causes[value] });
 
   const filters = $derived<LogFilter[]>([
     {
@@ -122,7 +89,6 @@
 
   // 서비스 쪽 문제(앱, 연결, 서비스)는 붉은색, Outlet이 규칙에 따라 거부한 요청(routine)은 보조 색입니다.
   const badge = (entry: FailureLogEntry) => (entry.routine ? 'secondary' : 'destructive');
-  const duration = (ms: number): string => (ms < 1000 ? `${ms.toLocaleString(intlLocale())} ms` : `${(ms / 1000).toLocaleString(intlLocale(), { maximumFractionDigits: 1 })} s`);
 </script>
 
 {#snippet requestCell(entry: FailureLogEntry)}
@@ -135,12 +101,7 @@
 {#snippet resultCell(entry: FailureLogEntry)}
   <div class="grid gap-0.5">
     <span class="flex min-w-0 items-center gap-1.5">
-      <Tooltip.Root>
-        <Tooltip.Trigger class="inline-flex shrink-0 outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
-          <Badge variant={badge(entry)} class="cursor-default select-none">{t().causes[entry.cause] ?? entry.cause}</Badge>
-        </Tooltip.Trigger>
-        <Tooltip.Content class="max-w-xs">{t().meanings[entry.cause] ?? entry.cause}</Tooltip.Content>
-      </Tooltip.Root>
+      <CauseBadge cause={entry.cause} variant={badge(entry)} />
       <span class="font-mono text-muted-foreground tabular-nums">{entry.status}</span>
     </span>
     <TruncateText text={entry.service || '—'} class="text-muted-foreground" />
@@ -150,7 +111,7 @@
 {#snippet clientCell(entry: FailureLogEntry)}
   <div class="grid gap-0.5">
     <span class="font-mono">{entry.client}</span>
-    <span class="text-muted-foreground tabular-nums">{duration(entry.duration_ms)}</span>
+    <span class="text-muted-foreground tabular-nums">{formatDuration(entry.duration_ms)}</span>
   </div>
 {/snippet}
 

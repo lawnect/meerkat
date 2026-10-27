@@ -65,26 +65,23 @@ func refused(cause string) bool {
 	return false
 }
 
-// failureStart is when a public request began, for the duration of a
-// failure; zero while the log is off, so a request pays one atomic load.
-func (s *Store) failureStart() time.Time {
-	if s.logs.failures.on() {
-		return time.Now()
-	}
-	return time.Time{}
-}
-
 // logFailure records a public request that failed or was refused, when the
-// failure log is on: began is from failureStart, status what the client got,
+// failure log is on: began is when the request came, status what the client got,
 // service the one that answered or was tried last, if any. Refusals are
-// routine, so each client gets a budget of them. It never waits and never
-// fails the request.
+// routine, so each client gets a budget of them. The cause goes in the
+// request log's entry too. It never waits and never fails the request.
 func (s *Store) logFailure(r *http.Request, host string, began time.Time, cause string, status int, service string) {
 	l := s.logs.failures
-	if !l.on() {
+	if !l.on() && !s.logs.requests.on() {
 		return
 	}
 	defer keepResponse()
+	if record := recordOf(r); record != nil {
+		record.cause = cause
+	}
+	if !l.on() {
+		return
+	}
 	ip, _ := requestOrigin(r)
 	now := s.now()
 	routine := refused(cause)
@@ -99,11 +96,12 @@ func (s *Store) logFailure(r *http.Request, host string, began time.Time, cause 
 }
 
 // logTurnedAway records a refusal made before the address is looked up, the
-// rate limit and the per-client connection limit, when the log is on and
-// host is routed: a request for any other host is not logged. A route lookup
-// reads the cached routing, and happens only for a request being refused.
-func (s *Store) logTurnedAway(r *http.Request, host, cause string, status int) {
-	if !s.logs.failures.on() {
+// rate limit and the per-client connection limit, in the failure and request
+// logs that are on, when host is routed: a request for any other host is
+// not logged. A route lookup reads the cached routing, and happens only for
+// a request being refused.
+func (s *Store) logTurnedAway(r *http.Request, host string, began time.Time, cause string, status int) {
+	if !s.logs.failures.on() && !s.logs.requests.on() {
 		return
 	}
 	defer keepResponse()
@@ -113,6 +111,7 @@ func (s *Store) logTurnedAway(r *http.Request, host, cause string, status int) {
 	}
 	if plans, _ := routing.Routes(host); len(plans) != 0 {
 		s.logFailure(r, host, time.Time{}, cause, status, "")
+		s.logRequest(r, host, began, &requestRecord{status: status, cause: cause})
 	}
 }
 
@@ -120,12 +119,14 @@ func (s *Store) logTurnedAway(r *http.Request, host, cause string, status int) {
 // reported and never reaches the response.
 func keepResponse() {
 	if p := recover(); p != nil {
-		slog.Error("failure log skipped a request", "panic", p)
+		slog.Error("a log skipped a request", "panic", p)
 	}
 }
 
+var failureFilters = []logFilter{{name: "cause", values: failureCauses, groups: map[string]bool{"service": false, "refused": true}}, {name: "host"}}
+
 func (s *Store) getFailureLog(w http.ResponseWriter, r *http.Request) {
-	serveLog(s, w, r, control.LogFailures, s.logs.failures, logFilter{name: "cause", values: failureCauses, groups: map[string]bool{"service": false, "refused": true}}, logFilter{name: "host"})
+	serveLog(s, w, r, control.LogFailures, s.logs.failures, failureFilters...)
 }
 
 func (s *Store) putFailureLog(w http.ResponseWriter, r *http.Request) {

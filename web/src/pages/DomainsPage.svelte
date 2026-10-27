@@ -260,7 +260,7 @@
   // 목록 화면의 탭(도메인 목록 / 라우팅 경로)과 라우팅 경로에서 볼 도메인은 주소(?tab=routing&domain=)에 둡니다.
   type ListTab = 'domains' | 'routing';
   const listTab = $derived(oneOf<ListTab>('tab', ['domains', 'routing'], 'domains'));
-  const setListTab = (next: ListTab): void => setParams({ tab: next }, { tab: 'domains' });
+  const setListTab = (next: ListTab): void => setParams({ tab: next }, { tab: 'domains' }, { push: true });
   let domainInput = $state('');
   let modeInput = $state<DomainMode>('wildcard');
   let modeBusy = $state<Record<string, boolean>>({});

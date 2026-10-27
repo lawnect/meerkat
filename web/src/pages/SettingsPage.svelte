@@ -297,7 +297,7 @@
 {:else if !settings || !rules}
   <div class="grid gap-4"><Skeleton class="h-56 w-full" /><Skeleton class="h-72 w-full" /></div>
 {:else}
-  <Tabs.Root bind:value={() => tab, (next) => { setParams({ tab: next, bans_q: '', bans_page: '' }, { tab: 'alerts' }); }} class="min-w-0 gap-4">
+  <Tabs.Root bind:value={() => tab, (next) => { setParams({ tab: next, bans_q: '', bans_page: '' }, { tab: 'alerts' }, { push: true }); }} class="min-w-0 gap-4">
     <Tabs.List aria-label={t().tabsAria}>
       <Tabs.Trigger value="alerts"><Alert12 class="size-3" aria-hidden="true" />{t().tabAlerts}</Tabs.Trigger>
       <Tabs.Trigger value="security"><Shield12 class="size-3" aria-hidden="true" />{t().tabSecurity}</Tabs.Trigger>

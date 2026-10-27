@@ -262,7 +262,7 @@ func TestHoneypotMigration(t *testing.T) {
 		if list := ids(db); !slices.Equal(list, c.want) {
 			t.Errorf("%s: rules %v, want %v", c.name, list, c.want)
 		}
-		if version, err := db.Version(ctx); err != nil || version != 15 {
+		if version, err := db.Version(ctx); err != nil || version != migrations[len(migrations)-1].version {
 			t.Errorf("%s: version %d, %v", c.name, version, err)
 		}
 	}

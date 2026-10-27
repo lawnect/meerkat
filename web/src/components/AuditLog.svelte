@@ -9,7 +9,7 @@
   import { Skeleton } from '$lib/components/ui/skeleton/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import { api, errorMessage } from '../api';
-  import { formatClock, formatDay } from '../format';
+  import { csvHref, formatClock, formatDay } from '../format';
   import { translations } from '../i18n.svelte';
   import { ArrowReset20, History20, Warning } from '../icons';
   import type { AuditEvent, AuditPage } from '../types';
@@ -18,6 +18,7 @@
   import DataTableSearch from './data-table/DataTableSearch.svelte';
   import { features, type DataTableFeatures } from './data-table/features';
   import { urlTableState } from './data-table/urlTable.svelte';
+  import CsvDownload from './CsvDownload.svelte';
   import IconButton from './IconButton.svelte';
   import TruncateText from './TruncateText.svelte';
 
@@ -44,7 +45,7 @@
       'tunnel.update': 'Changed tunnel address',
       'telegram.update': 'Saved Telegram settings', 'telegram.test': 'Sent Telegram test', 'telegram.delete': 'Disconnected Telegram', 'alert_rules.update': 'Changed alert rules', 'second_factor.update': 'Changed two-step verification', 'security.rate_limit': 'Changed rate limits', 'security.connection_limits': 'Changed connection limits', 'security.block_rules': 'Changed block rules', 'security.sso': 'Changed SSO settings', 'security.sso_reset': 'Reverted SSO to environment', 'security.access_provider': 'Changed access SSO settings', 'security.access_policies': 'Changed access policies', 'security.access_sessions_revoke': 'Signed everyone out of protected addresses', 'security.access_token_create': 'Created access token', 'security.access_token_update': 'Changed access token', 'security.access_token_delete': 'Deleted access token', 'security.client_bans': 'Changed ban settings', 'security.client_ban_release': 'Released banned clients', 'security.tunnel_guard': 'Changed tunnel port protection',
       'access.login': 'Signed in to a protected address', 'access.login_failed': 'Protected address sign-in failed', 'access.token_failed': 'Access token refused',
-      'observe.log_settings': 'Changed request log settings',
+      'observe.log_settings': 'Changed log settings',
     } as Record<string, string>,
     empty: 'No matching records',
     loadFailed: (code: string) => `Couldn't load the audit log: ${code}`,
@@ -69,7 +70,7 @@
       'tunnel.update': '터널 주소 변경',
       'telegram.update': 'Telegram 설정 변경', 'telegram.test': 'Telegram 테스트 메시지 전송', 'telegram.delete': 'Telegram 연결 해제', 'alert_rules.update': '알림 규칙 변경', 'second_factor.update': '2단계 인증 설정 변경', 'security.rate_limit': '요청 제한 변경', 'security.connection_limits': '연결 제한 변경', 'security.block_rules': '차단 규칙 변경', 'security.sso': 'SSO 설정 변경', 'security.sso_reset': 'SSO 환경 변수 값 복원', 'security.access_provider': '접근 보호 SSO 설정 변경', 'security.access_policies': '접근 정책 변경', 'security.access_sessions_revoke': '접근 보호 세션 전체 종료', 'security.access_token_create': '접근 토큰 생성', 'security.access_token_update': '접근 토큰 변경', 'security.access_token_delete': '접근 토큰 삭제', 'security.client_bans': '클라이언트 차단 설정 변경', 'security.client_ban_release': '클라이언트 차단 해제', 'security.tunnel_guard': '터널 포트 보호 설정 변경',
       'access.login': '보호 주소 로그인', 'access.login_failed': '보호 주소 로그인 실패', 'access.token_failed': '접근 토큰 거부',
-      'observe.log_settings': '요청 기록 설정 변경',
+      'observe.log_settings': '기록 설정 변경',
     },
     empty: '조건에 해당하는 기록이 없습니다',
     loadFailed: (code: string) => `감사 로그를 불러오는 중 오류가 발생했습니다: ${code}`,
@@ -90,6 +91,13 @@
   const action = $derived(filterValue('category'));
   const query = $derived(filterValue('q'));
   const filtered = $derived(tableState.columnFilters.length > 0);
+  // CSV 내려받기는 지금의 검색어·분류로 걸러진 모든 기록(페이지 제외)입니다.
+  const exportHref = $derived.by(() => {
+    const params = new URLSearchParams();
+    if (action) params.set('action', action);
+    if (query) params.set('q', query);
+    return csvHref('/api/v1/audit/export', params);
+  });
 
   let result = $state<AuditPage | null>(null);
   let error = $state('');
@@ -179,6 +187,7 @@
       {/each}
     </NativeSelect.Root>
     {#if filtered}<IconButton variant="outline" size="icon" label={t().reset} icon={ArrowReset20} onclick={clearFilters} />{/if}
+    <CsvDownload href={exportHref} variant="outline" size="icon" class="ms-auto" />
   </div>
 
   {#if error}

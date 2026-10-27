@@ -75,3 +75,53 @@ func TestOutletUsageSplitsTheRangeByTunnel(t *testing.T) {
 		t.Fatalf("after deleting the route: %+v", series.Connectors)
 	}
 }
+
+// The Outlet's totals are kept by minute too, for a week: a scrape and the
+// rate limit's rejections land in their minute, and a range of minutes is
+// read from them, its tunnels from the hours it touches.
+func TestOutletUsageByMinute(t *testing.T) {
+	ctx, db := context.Background(), openUsageDB(t)
+	at := mustTime(t, "2026-10-21T14:05:20Z")
+	if err := db.RecordUsage(ctx, map[string]UsageSample{"r1": {Requests: 10, RequestBytes: 100, ResponseBytes: 1000, ErrorResponses: 1}}, at, "g"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecordUsage(ctx, map[string]UsageSample{"r1": {Requests: 13, RequestBytes: 130, ResponseBytes: 1300, ErrorResponses: 1}}, at.Add(50*time.Second), "g"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddRateLimited(ctx, at.Add(time.Second), 4); err != nil {
+		t.Fatal(err)
+	}
+	series, err := db.OutletUsageSeries(ctx, "minute", mustTime(t, "2026-10-21T14:00:00Z"), mustTime(t, "2026-10-21T15:00:00Z"), time.UTC)
+	if err != nil || len(series.Buckets) != 60 {
+		t.Fatalf("%d buckets, %v", len(series.Buckets), err)
+	}
+	five, six := series.Buckets[5], series.Buckets[6]
+	if five.Start != "2026-10-21T14:05:00Z" || five.Requests != 10 || five.RateLimited != 4 || six.Requests != 3 || six.ResponseBytes != 300 {
+		t.Fatalf("14:05 %+v, 14:06 %+v", five, six)
+	}
+	hourly, _ := db.OutletUsageSeries(ctx, "hour", mustTime(t, "2026-10-21T14:00:00Z"), mustTime(t, "2026-10-21T15:00:00Z"), time.UTC)
+	if hourly.Buckets[0].Requests != 13 || hourly.Buckets[0].RateLimited != 4 {
+		t.Fatalf("hour: %+v", hourly.Buckets[0])
+	}
+	// The tunnels split the range's own totals, as the hours it touches do.
+	if len(series.Connectors) != 1 || series.Connectors[0].Requests != 13 {
+		t.Fatalf("tunnels: %+v", series.Connectors)
+	}
+	part, _ := db.OutletUsageSeries(ctx, "minute", mustTime(t, "2026-10-21T14:06:00Z"), mustTime(t, "2026-10-21T14:10:00Z"), time.UTC)
+	if len(part.Connectors) != 1 || part.Connectors[0].Requests != 3 || part.Connectors[0].ResponseBytes != 300 {
+		t.Fatalf("tunnels of part of the hour: %+v", part.Connectors)
+	}
+	// A week later the minutes are gone; the hour stays.
+	if err := db.RecordUsage(ctx, nil, at.Add(8*24*time.Hour), "g"); err != nil {
+		t.Fatal(err)
+	}
+	if series, _ = db.OutletUsageSeries(ctx, "minute", mustTime(t, "2026-10-21T14:00:00Z"), mustTime(t, "2026-10-21T15:00:00Z"), time.UTC); series.Buckets[5].Requests != 0 {
+		t.Fatalf("kept past a week: %+v", series.Buckets[5])
+	}
+	if _, err := db.AccessSeries(ctx, "minute", at, at.Add(time.Hour), time.UTC); err == nil {
+		t.Fatal("access decisions by minute")
+	}
+	if _, err := db.LatencySeries(ctx, "minute", at, at.Add(time.Hour), time.UTC); err == nil {
+		t.Fatal("latency by minute")
+	}
+}

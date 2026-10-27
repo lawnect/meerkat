@@ -250,7 +250,7 @@
     <Sidebar.Provider>
       <AppSidebar {view} domain={data.outlet.domain} version={data.outlet.version} onNavigate={(page) => { void navigate(page); }} onLogout={logout} />
       <Sidebar.Inset class="min-w-0 bg-muted dark:bg-background">
-        <header class="sticky top-0 z-20 flex h-12 items-center gap-2 border-b bg-background px-3 md:hidden">
+        <header class="sticky top-0 z-20 flex h-12 items-center gap-2 border-b bg-background px-3 select-none md:hidden">
           <Sidebar.Trigger />
           {@render brand()}
           <div class="ms-auto flex items-center gap-0.5">

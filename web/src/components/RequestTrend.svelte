@@ -5,7 +5,7 @@
   import { api } from '../api';
   import { translations } from '../i18n.svelte';
   import { Warning } from '../icons';
-  import { axisLabel, bucketTitle, createPeriod, trackPeriod } from '../period.svelte';
+  import { axisLabel, bucketTitle, createPeriod, trackPeriod, trafficUnits } from '../period.svelte';
   import type { UsageSeries, UsageUnit } from '../types';
   import { param, setParams } from '../urlState.svelte';
   import PeriodControls from './PeriodControls.svelte';
@@ -21,15 +21,16 @@
 
   const t = translations({
     title: 'Traffic',
-    average: { hour: 'Avg per hour', day: 'Avg per day', month: 'Avg per month', year: 'Avg per year' } as Record<UsageUnit, string>,
+    average: { minute: 'Avg per minute', hour: 'Avg per hour', day: 'Avg per day', month: 'Avg per month', year: 'Avg per year' } as Record<UsageUnit, string>,
     loadFailed: (code: string) => `Couldn't load request counts: ${code}`,
   }, {
     title: '트래픽',
-    average: { hour: '시간당 평균', day: '일 평균', month: '월 평균', year: '연 평균' },
+    average: { minute: '분당 평균', hour: '시간당 평균', day: '일 평균', month: '월 평균', year: '연 평균' },
     loadFailed: (code: string) => `요청 처리 건수를 불러오지 못했습니다: ${code}`,
   });
 
-  const period = createPeriod();
+  // 트래픽만 분별을 받습니다(Outlet 전체 합계를 분 단위로 7일 보관).
+  const period = createPeriod({ units: trafficUnits });
 
   // 표시할 지표는 metrics=requests,error_responses처럼 적고, 알 수 없는 값만 있거나 비어 있으면 모두 보여줍니다.
   function metricsFromUrl(): Metric[] {

@@ -283,15 +283,12 @@ func TestFailureLogKeepsNothingWhileOff(t *testing.T) {
 		}
 	}
 	failing()
-	if view := f.failureLog(t, ""); view.Settings != control.DefaultLogSettings() || !view.Available || view.Total != 0 || len(view.Entries) != 0 {
+	if view := f.failureLog(t, ""); view.Settings != control.DefaultLogSettings(control.LogFailures) || !view.Available || view.Total != 0 || len(view.Entries) != 0 {
 		t.Fatalf("off: %+v", view)
-	}
-	if !f.store.failureStart().IsZero() {
-		t.Fatal("a request read the clock for a log that is off")
 	}
 	f.failureLogging(t, true)
 	failing()
-	if view := f.failureLog(t, ""); view.Total != 2 || f.store.failureStart().IsZero() {
+	if view := f.failureLog(t, ""); view.Total != 2 {
 		t.Fatalf("on: %+v", view)
 	}
 	f.failureLogging(t, false)
@@ -317,7 +314,7 @@ func TestFailureLogCannotHarmAResponse(t *testing.T) {
 	f := newProxyFixture(t)
 	f.failureLogging(t, true)
 	f.store.logFailure(nil, "app.example.com", time.Now(), failBlocked, http.StatusForbidden, "")
-	f.store.logTurnedAway(nil, "app.example.com", failBusy, http.StatusTooManyRequests)
+	f.store.logTurnedAway(nil, "app.example.com", time.Now(), failBusy, http.StatusTooManyRequests)
 	if view := f.failureLog(t, ""); view.Total != 0 {
 		t.Fatalf("entries from nothing: %+v", view)
 	}
@@ -350,7 +347,7 @@ func TestFailureLogAPI(t *testing.T) {
 	}
 	// The two logs have settings of their own.
 	var access logView[accessEntry]
-	if w := request(h, "GET", "/api/v1/observe/access-log", f.admin, nil); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &access) != nil || access.Settings != control.DefaultLogSettings() {
+	if w := request(h, "GET", "/api/v1/observe/access-log", f.admin, nil); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &access) != nil || access.Settings != control.DefaultLogSettings(control.LogAccess) {
 		t.Fatalf("access log: %d %s", w.Code, w.Body.String())
 	}
 	for _, body := range []map[string]any{{"enabled": true, "max_mib": 8, "retention_days": 7}, {"enabled": true, "max_mib": 64, "retention_days": 0}, {"enabled": true}} {

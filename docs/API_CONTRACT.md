@@ -43,7 +43,7 @@ Outlet 응답의 `modes`는 도메인마다 DNS 방식을 담는다. `wildcard`�
 
 `POST /api/v1/outlet/tunnel/check`는 `{"address":"..."}`의 주소를, 비어 있으면 현재 터널 주소를 Outlet에서 DNS 조회한 뒤 조회된 IP마다(최대 8개) TCP 연결을 시도해 `reachable`과 IP별 `results`(`latency_ms`, `error`: `connection_refused`, `timeout`, `unreachable`, `connection_failed`, `address_not_allowed`)를 반환한다. 루프백, 링크 로컬, 멀티캐스트 주소는 Connector가 접속할 수 없는 주소이므로 연결하지 않고 `address_not_allowed`로 표시한다. DNS 조회 실패는 `error: dns_lookup_failed`로 표시한다. 응답한 서버가 이 Outlet인지와 Connector 쪽 방화벽은 확인하지 않는다. 터널 주소가 없으면 `409 tunnel_address_unset`을 반환한다.
 
-`POST /api/v1/connectors`는 `name`과 선택 항목 `description`(관리자 메모, 줄바꿈을 제외한 제어 문자 없이 최대 500자)을 받는다. `PATCH /api/v1/connectors/{id}`에 `{"description":"..."}`나 `{"display_name":"..."}`(관리 화면에 보일 이름, 64자까지, 비우면 `name`을 보여줌)를 보내 바꾼다. 둘 다 없으면 `400 invalid_request`, 형식이 잘못되면 `400 invalid_description`/`invalid_display_name`, 없는 Connector면 `404 connector_not_found`다. `name`은 Connector 등록과 설치 명령·컨테이너 이름에 쓰이므로 바꿀 수 없다. 메모는 관리 화면에만 쓰이고 Connector 설정에는 포함되지 않는다.
+`POST /api/v1/connectors`는 `name`과 선택 항목 `description`(관리자 메모, 줄바꿈을 제외한 제어 문자 없이 최대 500자)을 받는다. `PATCH /api/v1/connectors/{id}`에 `{"description":"..."}`나 `{"display_name":"..."}`(관리 화면에 보일 이름, 64자까지, 비우면 `name`을 보여줌)를 보내 바꾼다. 둘 다 없으면 `400 invalid_request`, 형식이 잘못되면 `400 invalid_description`/`invalid_display_name`, 없는 Connector면 `404 connector_not_found`다. `name`은 Connector 등록과 설치 명령·컨테이너 이름에 쓰이므로 바꿀 수 없다. 메모는 관리 화면에만 쓰이고 Connector 설정에는 포함되지 않는다. `GET /api/v1/connectors`의 각 Connector는 마지막 heartbeat가 알린 Connector 버전을 `version`(예: `0.5.2`)으로 담으며, heartbeat를 받기 전에는 없다.
 
 Connector 폐기는 관련 Service·Route의 새 연결을 먼저 차단한 뒤 identity를 폐기한다.
 
@@ -147,6 +147,7 @@ POST   /api/v1/security/sso/test
 GET    /api/v1/session/sso/start
 GET    /api/v1/session/sso/callback
 GET    /api/v1/audit
+GET    /api/v1/audit/export
 ~~~
 
 오류 응답은 항상 `{"code": "...", "request_id": "..."}`이다. 아래 경로는 `GET /api/v1/alerts`부터 모두 관리자 세션이 필요하다.
@@ -193,7 +194,7 @@ Telegram 메시지는 HTML(`parse_mode`)이며 이모지와 굵은 제목 한 �
 
 SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없이 세션을 만든다. 운영자가 서버에 SSH로 들어갈 수 있으면 언제든 복구할 수 있다는 뜻이다. 요청이 공개 경로를 거쳤는지는 헤더가 아니라 Outlet이 `PublicHandler` 안에서만 요청 컨텍스트에 남기는 표시로 판단하므로 클라이언트가 위조할 수 없다. 접속 주소는 Caddy가 붙인 `X-Forwarded-For`의 마지막 항목만 쓰고, 로컬 포트에서는 어떤 헤더도 믿지 않는다.
 
-**감사 로그.** `GET /api/v1/audit?limit=50&offset=0&action=<접두사>&q=<텍스트>`는 최신순으로 반환한다. `limit`은 1–200(기본 50), `offset`은 0 이상이며 어긋나면 `400 invalid_audit_query`다. `action`은 동작 이름의 앞부분(`connector.` 등), `q`는 `actor_email`, `resource_id`, `detail`을 대소문자 구분 없이 부분 일치로 찾는다(128자까지).
+**감사 로그.** `GET /api/v1/audit?limit=50&offset=0&action=<접두사>&q=<텍스트>`는 최신순으로 반환한다. `limit`은 1–200(기본 50), `offset`은 0 이상이며 어긋나면 `400 invalid_audit_query`다. `action`은 동작 이름의 앞부분(`connector.` 등), `q`는 `actor_email`, `resource_id`, `detail`을 대소문자 구분 없이 부분 일치로 찾는다(128자까지). `GET /api/v1/audit/export?action=&q=&utc_offset=`는 같은 조건의 모든 항목을 같은 순서로 CSV로 내려받는다(아래 **CSV 내려받기**). 열은 `id`, `at`, `action`, `actor_email`, `resource_type`, `resource_id`, `source`, `ip`, `user_agent`, `detail`(JSON)이고, 시작할 때의 마지막 항목까지만 담아 그사이 추가된 항목 때문에 쪽이 어긋나지 않는다.
 
 ~~~
 {"events": [{"id": "m_…", "created_at": "2026-10-26T14:00:00.000Z", "actor_email": "admin@example.com",
@@ -415,14 +416,21 @@ POST   https://<보호 주소>/.meerkat/access/logout
 
 ### 관찰
 
-콘솔의 **관찰** 페이지는 접근 보호의 지표, 접근 기록, 실패 요청, 감사 로그(위)를 모아 보여 준다.
+콘솔의 **관찰** 페이지는 접근 보호의 지표, 요청 기록과 그 통계, 접근 기록, 실패 요청, 감사 로그(위)를 모아 보여 준다.
 
 ~~~
 GET    /api/v1/observe/access-metrics?unit=hour|day|month|year&from=<RFC3339>&to=<RFC3339>&tz=<IANA>
+GET    /api/v1/observe/latency?unit=hour|day|month|year&from=<RFC3339>&to=<RFC3339>&tz=<IANA>
+GET    /api/v1/observe/request-log?page=&per_page=&class=&host=&path=&source=&q=
+PUT    /api/v1/observe/request-log
+GET    /api/v1/observe/request-log/export?class=&host=&path=&source=&q=&utc_offset=
+GET    /api/v1/observe/request-log/top?by=endpoint|client&period=1h|24h|7d|30d|all&sort=&host=&q=&page=&per_page=&format=csv&utc_offset=
 GET    /api/v1/observe/access-log?page=&per_page=&decision=&policy=&who=&q=
 PUT    /api/v1/observe/access-log
+GET    /api/v1/observe/access-log/export?decision=&policy=&who=&q=&utc_offset=
 GET    /api/v1/observe/failure-log?page=&per_page=&cause=&host=&q=
 PUT    /api/v1/observe/failure-log
+GET    /api/v1/observe/failure-log/export?cause=&host=&q=&utc_offset=
 ~~~
 
 **접근 판정 지표**
@@ -430,13 +438,19 @@ PUT    /api/v1/observe/failure-log
 - 요청은 잠금 없이 메모리에서 세고 30초마다(그리고 아래 `GET` 때) 제어 DB에 저장하며, 400일 지난 시간은 지운다. 저장하지 못한 수는 다음에 더한다.
 - `GET /api/v1/observe/access-metrics`는 `GET /api/v1/usage`와 같이 `from`·`to`를 `tz`의 단위 경계로 맞춰 `{"unit", "buckets": [{"start", "passed", "challenged", "denied"}], "policies": {"<정책 ID>": {"passed", "challenged", "denied"}}}`를 반환한다. `buckets`는 범위의 모든 구간이고 `policies`는 범위 합계다(지운 정책도 남는다). 맞지 않는 범위는 `400 invalid_usage_range`이다.
 
+**지연 시간**
+- 서비스로 보낸 요청마다 걸린 시간을 둘로 나눠 잰다. `outlet`은 Outlet이 요청을 받은 때부터 서비스로 가는 연결을 얻을 때까지(요청 제한·차단·접근 보호·경로 확인, 터널 연결 열기)로 Meerkat이 더한 시간이고, `upstream`은 요청을 본문까지 다 보낸 때부터 최종 응답 헤더까지(터널 왕복과 앱의 처리)에, 재시도 전에 실패한 서비스에 쓴 시간을 더한 것이다. 클라이언트의 느린 업로드는 어느 쪽에도 넣지 않는다. `100 Continue`나 `103 Early Hints` 같은 1xx는 응답으로 치지 않으므로 그 뒤 최종 응답까지도 `upstream`이다. 앱이 본문을 다 받기 전에 답하면 헤더를 보낸 때부터 센다. Outlet에서는 터널 왕복과 앱의 처리를 나눌 수 없으므로 터널 왕복은 `upstream`에 들어간다. Outlet이 막았거나 서비스로 보내지 못한 요청은 재지 않는다. 요청 기록과 관계없이 항상 잰다.
+- 요청은 잠금 없이 메모리의 시간별 히스토그램(상한 0.1·0.25·0.5·1·2.5·5·10·25·50·100·250·500ms, 1·2.5·5·10·30초와 그 너머)에 더하고, 접근 판정 지표와 함께 30초마다(그리고 아래 `GET` 때) 제어 DB의 `latency_hourly`에 저장하며 400일 지난 시간은 지운다.
+- `GET /api/v1/observe/latency`는 접근 판정 지표와 같은 범위 규칙으로 `{"unit", "buckets": [{"start", "outlet", "upstream"}], "outlet", "upstream"}`을 반환한다. 각 값은 `{"count", "avg_ms", "p50_ms", "p95_ms", "p99_ms"}`이고, 평균은 정확한 값, 백분위수는 히스토그램 칸 안에 고르게 퍼져 있다고 보고 추정한 값이다(마지막 칸은 30초로 센다). 센 요청이 없으면 모두 0이다. 맞지 않는 범위는 `400 invalid_usage_range`이다.
+
 **기록 공통**
-- 접근 기록(`access`)과 실패 요청(`failures`)은 데이터 디렉터리의 별도 SQLite 파일(`access-log.db`, `failure-log.db`)에 두어 제어 DB와 연결도 용량도 나누지 않는다.
-- 기록마다 설정 `{"enabled", "max_mib", "retention_days"}`가 있다. 처음에는 꺼져 있고(256MiB, 30일), `max_mib`는 16~4096, `retention_days`는 1~365이다. SQLite가 파일 크기를 `max_mib`로(`max_page_count`), WAL을 16MiB로 막고, 가득 차면 가장 오래된 10분의 1을 지우고(일상 항목부터, 아래) 다시 쓴다. 보관 기간이 지난 기록은 한 시간마다 지우고, 상한을 낮추면 바로 상한의 90%까지 지워 파일을 줄인다. 삭제는 1만 건씩 나누어 하므로 그사이 콘솔 조회가 기다리지 않는다. 다른 빌드가 만든 다른 형식의 파일은 비우고 새로 시작한다.
-- 요청은 기록을 기다리지 않는다. 기록이 꺼져 있으면 아무것도 하지 않고, 켜져 있으면 8192건짜리 대기열에 넣기만 하며 차 있으면 버린다. 백그라운드가 1초마다(또는 500건마다) 묶어 쓰고, 쓰기에 실패하면 2만 건까지 메모리에 두었다가 최대 30초 간격으로 다시 쓰며, 넘는 것은 버린다. 디스크에 따로 쌓지 않는다.
+- 요청 기록(`requests`), 접근 기록(`access`), 실패 요청(`failures`)은 데이터 디렉터리의 별도 SQLite 파일(`request-log.db`, `access-log.db`, `failure-log.db`)에 두어 제어 DB와 연결도 용량도 나누지 않는다.
+- 기록마다 설정 `{"enabled", "max_mib", "retention_days"}`가 있다. 처음에는 꺼져 있고(256MiB, 가장 빨리 차는 요청 기록은 512MiB, 30일), `max_mib`는 16~4096, `retention_days`는 1~365이다. SQLite가 파일 크기를 `max_mib`로(`max_page_count`) 막고, 가득 차면 가장 오래된 10분의 1을 최대 1만 건까지 지우고(일상 항목부터, 아래) 다시 쓴다. 큰 파일도 한 번에 1만 건만 지우므로 쓰기가 오래 멈추지 않는다. 보관 기간이 지난 기록은 한 시간마다 지우고, 상한을 낮추면 바로 상한의 90%까지 지운 뒤 빈 페이지를 4096개씩 돌려주어 파일을 줄인다. WAL은 체크포인트 뒤 16MiB로 줄인다. 읽기가 겹쳐 SQLite가 WAL을 처음부터 다시 쓰지 못한 채 64MiB를 넘으면, 쓰기와 별도로 읽기가 없는 순간을 2초까지 찾아 비우고, 찾지 못하면 다음 쓰기 때 다시 한다. 이때 읽기는 기다리지 않는다. 256MiB를 넘으면 진행 중인 통계를 멈추고(체크포인트가 끝난 뒤 한 번 다시 실행) 새 읽기가 진행 중인 읽기의 끝을 기다리게 해 비운다. 그래서 WAL은 256MiB와 그 사이 쓰인 만큼을 넘지 않는다. 통계는 한 번에 하나씩, 1분까지 실행한다. 다른 빌드가 만든 다른 형식의 파일은 비우고 새로 시작한다.
+- 쓰기는 연결 하나로, 읽기(목록, 통계, 내려받기)는 그와 별도의 연결 네 개까지로 한다. WAL이라 오래 걸리는 통계나 내려받기가 쓰기를 막지 않고, 쓰기도 읽기를 막지 않는다. 시각은 UTC로 나노초까지 고정 폭(`2006-01-02T15:04:05.000000000Z`)으로 적어 문자열 순서가 시간 순서와 같다(0.5.1이 남긴 항목은 초 단위까지만 맞고, 보관 기간이 지나면 사라진다).
+- 요청은 기록을 기다리지 않는다. 기록이 꺼져 있으면 아무것도 하지 않고, 켜져 있으면 8192건짜리 대기열에 넣기만 하며 차 있으면 버린다. 백그라운드가 1초마다(또는 5000건마다) 묶어 쓰고, 쓰기에 실패하면 2만 건까지 메모리에 두었다가 최대 30초 간격으로 다시 쓰며, 넘는 것은 버린다. 디스크에 따로 쌓지 않는다.
 - 항목은 **일상**(`routine: true`)이거나 **주목할 만한** 항목이다. 일상 항목은 누구나 자격 없이, 서비스가 멀쩡해도 마음대로 만들 수 있는 것(Outlet이 막은 요청, 익명의 로그인 요구)이고, 사람이나 토큰이 드러나거나 서비스에 문제가 있는 항목은 주목할 만하다. 요청을 쏟아부어 실제 실패를 밀어내거나 묻지 못하도록 두 가지를 둔다.
-  - 클라이언트마다 기록별로 1분에 일상 항목은 60건, 주목할 만한 항목은 600건까지만 남긴다. 앱의 5xx나 내려간 서비스로 가는 요청처럼 주목할 만한 항목도 누구나 만들 수 있기 때문이다. 클라이언트는 연결 제한과 같은 키(IPv4 주소, IPv6 /56)다. 넘는 항목은 대기열에 넣기 전에 버리고 `suppressed`로 센다. 예산은 분과 건수를 담은 `atomic.Uint64` 1024칸에 두고, 칸은 프로세스마다 무작위 시드를 쓰는 해시로 고른다. 클라이언트가 얼마나 많아도 메모리가 일정하고 잠금이 없으며, 칸을 같이 쓰는 클라이언트는 예산도 같이 쓴다(더 엄격해질 뿐이다). 접근 지표는 모든 판정을 그대로 센다.
-  - 파일이 가득 차거나 상한을 넘으면 가장 오래된 일상 항목부터 지우고, 일상 항목이 남지 않았을 때만 주목할 만한 항목 중 가장 오래된 것을 지운다. 보관 기간은 모든 항목에 적용한다.
+  - 클라이언트마다 기록별로 1분에 일상 항목은 60건, 주목할 만한 항목은 600건까지만 남긴다(요청 기록은 아래와 같이 600건, 6,000건). 앱의 5xx나 내려간 서비스로 가는 요청처럼 주목할 만한 항목도 누구나 만들 수 있기 때문이다. 클라이언트는 연결 제한과 같은 키(IPv4 주소, IPv6 /56)다. 넘는 항목은 대기열에 넣기 전에 버리고 `suppressed`로 센다. 예산은 분과 건수를 담은 `atomic.Uint64` 1024칸에 두고, 칸은 프로세스마다 무작위 시드를 쓰는 해시로 고른다. 클라이언트가 얼마나 많아도 메모리가 일정하고 잠금이 없으며, 칸을 같이 쓰는 클라이언트는 예산도 같이 쓴다(더 엄격해질 뿐이다). 접근 지표는 모든 판정을 그대로 센다.
+  - 파일이 가득 차거나 상한을 넘으면 가장 오래된 일상 항목부터 지우고, 일상 항목이 남지 않았을 때만 주목할 만한 항목 중 가장 오래된 것을 지운다(요청 기록은 아래와 같이 종류와 관계없이 가장 오래된 것부터). 보관 기간은 모든 항목에 적용한다. 가득 찬 파일을 비우는 일은 쓰기 한 번(5초)과 따로 2분까지 걸릴 수 있다.
 - `GET`은 `{"settings", "available", "size_bytes", "dropped", "suppressed", "total", "entries": [...]}`를 최신순으로 반환한다. `available`은 파일을 열었는지, `size_bytes`는 파일 크기, `dropped`는 Outlet 시작 이후 대기열이 차서 버린 수, `suppressed`는 같은 기간에 예산을 넘어 남기지 않은 항목 수, `total`은 조건에 맞는 수다. `page`(1부터)와 `per_page`(1~200, 기본 50)로 나누어 받는다. `q`는 128바이트까지의 텍스트 검색으로, 아래 열에서 부분 문자열을 ASCII 대소문자 구분 없이 찾고 `%`와 `_`는 문자 그대로 본다. 읽기 전에 대기 중인 기록을 쓴다. 맞지 않는 값(128바이트를 넘는 `q` 포함)은 `400 invalid_log_filter`이다.
 - `PUT`은 설정을 받아 저장하고 바로 적용하며 `GET`의 첫 쪽으로 답한다. 맞지 않는 값은 `400 invalid_log_settings`, 파일을 열 수 없는데 켜려면 `409 log_unavailable`이다. `observe.log_settings`에 `{"log", "enabled", "max_mib", "retention_days"}`를 남긴다.
 
@@ -449,10 +463,24 @@ PUT    /api/v1/observe/failure-log
 - 경로가 있는 공개 주소로 온 요청 중 실패했거나 Outlet이 앱에 보내기 전에 막은 요청을 기록한다. 경로가 없는 주소와 접근 보호가 막은 요청(접근 기록)은 남기지 않는다. 다른 서비스로 다시 보낸 요청은 마지막 결과로 한 번만 남긴다.
 - 항목은 `{"id", "at", "host", "method", "path", "client", "cause", "status", "service", "duration_ms", "routine"}`이며 `cause`와 `host`로 거르고, `q`는 `host`, `path`, `client`, `service`에서 찾는다. `cause`는 `app_error`(앱이 5xx로 응답), `unreachable`(서비스에 닿지 못함, `502`), `timeout`(연결이나 응답 헤더 시간 초과, `504`), `no_service`(살아 있는 서비스 없음, `404`), `rate_limited`(요청 제한, `429`), `blocked`(차단 규칙, `403`), `too_long`(경로 길이, `414`), `too_large`(업로드 크기, `413`), `busy`(연결 제한, 클라이언트별 `429`·전체 `503`), `trapped`(`ban` 규칙이 거부하고 클라이언트를 차단, `403`), `banned`(이미 차단된 클라이언트, `403`)이고, `status`는 클라이언트가 받은 상태 코드, `duration_ms`는 요청을 받은 때부터 실패까지(앱의 5xx는 응답 헤더까지)다. `rate_limited`·`blocked`·`too_long`·`too_large`·`busy`·`trapped`·`banned`(Outlet이 막은 요청)는 일상(`routine: true`), 나머지(서비스에 문제가 있는 요청)는 주목할 만한 항목이다. `cause`는 두 묶음도 받는다. `refused`는 일상 항목 일곱 가지 전체이고 `service`는 `app_error`·`unreachable`·`timeout`·`no_service` 전체다. 클라이언트 쪽 오류(`400`, `408`, `499`)는 남기지 않는다. 요청 제한과 클라이언트별 연결 제한은 주소를 보기 전에 거부하므로, 경로가 있는 주소로 온 요청일 때만 남긴다.
 
+**요청 기록**
+- 경로가 있는 공개 주소로 온 요청을 결과와 관계없이 모두 기록한다. 공격 지점을 찾고 요청을 세는 데 쓴다. Outlet이 막은 요청, 접근 보호가 막은 요청도 남기며, 경로가 없는 주소, 관리 주소, Outlet 도메인의 Connector API는 남기지 않는다. 응답이 끝난 뒤(업그레이드한 연결은 연결이 끝난 뒤) 한 번 남긴다.
+- 항목은 `{"id", "at", "host", "method", "path", "client", "source", "status", "class", "cause", "service", "duration_ms", "outlet_us", "upstream_us", "bytes", "agent", "routine"}`이다. `path`는 쿼리 없이 512바이트까지(UTF-8이 아닌 바이트는 U+FFFD로 바꾸어 JSON에 보이는 그대로 묶고 거른다), `source`는 한도와 통계가 클라이언트를 세는 단위(IPv4 주소, IPv6 /56), `status`는 클라이언트가 받은 상태 코드(업그레이드는 `101`, 응답 헤더 전에 클라이언트가 떠나면 `499`, 헤더 뒤에 떠나면 앱의 상태 코드와 그때까지 보낸 바이트), `class`는 그 묶음(`1xx`~`5xx`), `cause`는 Outlet이 막았거나 서비스가 실패한 이유(실패 요청의 `cause`와 같은 값, 없으면 빈 문자열), `service`는 응답했거나 마지막으로 시도한 서비스, `duration_ms`는 요청을 받은 때부터 응답이 끝날 때까지, `outlet_us`와 `upstream_us`는 그 가운데 Outlet의 시간과 서비스의 시간(위 **지연 시간**, 마이크로초, 서비스로 보내지 않은 요청은 0), `bytes`는 클라이언트에 보낸 응답 본문 바이트(주소를 보기 전에 거부한 요청 제한·클라이언트별 연결 제한은 0), `agent`는 `User-Agent` 256바이트까지다. 4xx는 일상(`routine: true`), 나머지는 주목할 만한 항목이다.
+- 기록이 다른 기록보다 훨씬 많으므로 클라이언트(`source`)마다 1분에 일상 항목 600건, 주목할 만한 항목 6,000건까지 남긴다. 스캐너의 4xx는 초당 10건까지, 주소 하나 뒤의 사무실이 보내는 요청은 대부분 남는다. 누구나 2xx도 4xx만큼 쉽게 만들 수 있으므로 파일이 차면 일상 여부와 관계없이 가장 오래된 항목부터 지운다. 그래야 값싼 요청을 쏟아부어 스캐너 흔적만 먼저 밀어낼 수 없다.
+- `class`(`1xx`~`5xx`), `host`, `path`(512바이트까지), `source`로 정확히 거르고, `q`는 `host`, `path`, `client`, `service`, `agent`에서 찾는다. `path`와 `source`는 통계의 행에서 해당 기록으로 갈 때 쓴다.
+- `GET /api/v1/observe/request-log/top`은 기간 안의 기록을 묶어 센다. `by=endpoint`(기본)는 `host`와 `path`로, `by=client`는 `source`로 묶는다(IPv6 주소를 바꿔 가며 보내도 한 클라이언트로 센다). `period`는 `1h`, `24h`(기본), `7d`, `30d`, `all`이고, `host`(정확히)와 `q`(목록과 같은 열)로 거른다. 거르는 열이 없으면 기간의 항목만 시각 인덱스로 읽는다. 응답은 `{"settings", "available", "from", "total", "rows": [...]}`이며 `from`은 기간의 시작(`all`이면 `null`), `total`은 묶음 수다. 행은 `{"host", "path"}` 또는 `{"client"}`(`source` 값)와 `requests`, `client_errors`(4xx), `server_errors`(5xx), `distinct`(엔드포인트별이면 클라이언트(`source`) 수, 클라이언트별이면 엔드포인트 수), `last_at`(마지막 요청)이다. `sort`는 `<열>.<asc|desc>`로 열은 `requests`(기본 `requests.desc`), `client_errors`, `server_errors`, `distinct`, `last_at`이고, 같은 값은 묶음 열 순서로 놓는다. `page`, `per_page`(1~200, 기본 50)로 나누어 받는다. `format=csv`면 같은 조건의 묶음을 1만 개까지 CSV로 내려받는다. 기록이 남아 있는 만큼만 세므로 상한, 보관 기간, 클라이언트별 한도에 따라 실제보다 적을 수 있다. 맞지 않는 값은 `400 invalid_log_filter`이다.
+
+**CSV 내려받기**
+- 목록, 통계, 내려받기처럼 Outlet에 부담이 되는 읽기는 콘솔 자신의 페이지에서만 받는다. 모든 공개 주소가 관리 주소와 같은 사이트라 `SameSite=Strict` 세션 쿠키도 터널로 연결된 앱의 페이지에서 보내지므로, `Sec-Fetch-Site`가 `same-origin`이나 `none`이 아닌 요청은 `403 cross_origin_request`다(헤더를 보내지 않는 스크립트는 그대로 받는다). 내려받기는 동시에 두 개까지 하고 나머지는 차례를 기다린다.
+- `…/export`와 `top?format=csv`는 목록과 같은 조건(쪽 없이)에 맞는 항목을 모두 최신순으로 `text/csv; charset=utf-8`, `Content-Disposition: attachment; filename="meerkat-<기록>-<UTC 시각>.csv"`로 내려받는다. 스프레드시트가 UTF-8로 읽도록 BOM으로 시작한다. 콘솔은 링크로 내려받으므로 세션 쿠키로 인증한다.
+- 첫 행은 열 이름이다. 기록은 `id`, `at`, 그리고 항목의 열(`routine` 제외) 순서다. `utc_offset`(UTC에서 동쪽으로 몇 분, -840~840, 기본 0)으로 시각을 `2006-01-02 15:04:05.000` 꼴로 적고, 그 열 이름에 `at (UTC+09:00)`처럼 오프셋을 적는다.
+- 경로, `User-Agent` 같은 값은 클라이언트가 보낸 그대로이므로 `=`, `+`, `-`, `@`, 탭, 줄바꿈으로 시작하는 칸은 앞에 `'`를 붙여 스프레드시트가 수식으로 실행하지 않게 한다.
+- 1000행씩 읽고 쓰므로 Outlet 메모리와 기록 파일의 연결을 오래 잡지 않으며, 1000행마다 쓰기 기한을 1분씩 늘려 큰 파일도 끝까지 받는다. 받기 시작한 뒤 추가된 항목은 담지 않는다. 감사 로그는 오프셋이 아니라 마지막으로 읽은 항목 다음부터 읽어 제어 DB를 오래 잡지 않는다. 기록 파일을 열 수 없으면 `409 log_unavailable`, 맞지 않는 값은 `400 invalid_log_filter`(감사 로그는 `400 invalid_audit_query`)이다. 첫 행을 보내기 전에 읽기가 실패하면 `503 log_failed`(감사 로그는 `503 persistence_failed`)로 답하고, 보낸 뒤에 실패하면 연결을 끊어 브라우저가 잘린 파일을 완성된 것처럼 저장하지 않게 한다.
+
 ### Outlet 사용량
 
 ~~~
-GET /api/v1/usage?unit=hour|day|month|year&from=<RFC3339>&to=<RFC3339>&tz=<IANA>
+GET /api/v1/usage?unit=minute|hour|day|month|year&from=<RFC3339>&to=<RFC3339>&tz=<IANA>
 ~~~
 
 `unit` 경계에 맞춘 `from`(포함)부터 `to`(미포함)까지의 Outlet 전체 합계를 `tz` 달력 기준 구간으로 나누어 반환한다. 각 `buckets` 항목은 `start`, `requests`, `request_bytes`, `response_bytes`, `error_responses`와 Outlet이 429로 거부한 요청 수 `rate_limited`를 담는다. 같은 범위의 터널별 합계는 `connectors`에 요청 수가 많은 순서로 담기며 요청이 없는 터널은 빠진다.
@@ -462,7 +490,7 @@ GET /api/v1/usage?unit=hour|day|month|year&from=<RFC3339>&to=<RFC3339>&tz=<IANA>
  "connectors": [{"connector_id": "m_…", "name": "home-server", "requests": 120, "request_bytes": 1200, "response_bytes": 9000, "error_responses": 3}]}
 ~~~
 
-터널별 합계는 경로별 시간 집계로 계산하므로 보관 기간(30일)이 지난 구간은 포함되지 않고, 삭제된 공개 주소의 기록은 빠진다. Outlet 전체 합계는 10년 동안 보관한다.
+터널별 합계는 경로별 시간 집계로 계산하므로 보관 기간(30일)이 지난 구간은 포함되지 않고, 삭제된 공개 주소의 기록은 빠진다. Outlet 전체 합계는 시간별로 10년, 분별로 7일 보관한다. `unit=minute`은 분 단위 구간(최대 1000개)으로 분별 합계를 나누고, 이때 터널별 합계는 범위가 걸친 시간들의 비율로 범위의 합계를 나눈 값이다(합이 그래프와 같다). 접근 판정 지표와 지연 시간은 시간별로만 보관하므로 `minute`이면 `400 invalid_usage_range`이다.
 
 ## 3. Connector 등록
 

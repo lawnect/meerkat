@@ -44,7 +44,7 @@ func BenchmarkAccessLog(b *testing.B) {
 				if err := p.store.reloadAccess(ctx); err != nil {
 					b.Fatal(err)
 				}
-				settings := control.DefaultLogSettings()
+				settings := control.DefaultLogSettings(control.LogAccess)
 				settings.Enabled = logging
 				p.store.logs.access.apply(settings)
 				p.run(b, "app.example.com", c.path, c.want)

@@ -282,7 +282,33 @@ CREATE TABLE access_hourly (
   PRIMARY KEY(policy_id, hour)
 );
 CREATE INDEX access_hourly_by_hour ON access_hourly(hour);
-`}, {version: 15, apply: addHoneypotRule}}
+`}, {version: 15, apply: addHoneypotRule}, {version: 16, sql: `
+-- How long forwarded requests took, by hour: the Outlet's own time and the
+-- service's, as histograms (LatencyBounds, in microseconds).
+CREATE TABLE latency_hourly (
+  kind TEXT NOT NULL CHECK (kind IN ('outlet', 'upstream')),
+  hour TEXT NOT NULL,
+  count INTEGER NOT NULL DEFAULT 0,
+  sum_us INTEGER NOT NULL DEFAULT 0,
+  b0 INTEGER NOT NULL DEFAULT 0, b1 INTEGER NOT NULL DEFAULT 0, b2 INTEGER NOT NULL DEFAULT 0, b3 INTEGER NOT NULL DEFAULT 0,
+  b4 INTEGER NOT NULL DEFAULT 0, b5 INTEGER NOT NULL DEFAULT 0, b6 INTEGER NOT NULL DEFAULT 0, b7 INTEGER NOT NULL DEFAULT 0,
+  b8 INTEGER NOT NULL DEFAULT 0, b9 INTEGER NOT NULL DEFAULT 0, b10 INTEGER NOT NULL DEFAULT 0, b11 INTEGER NOT NULL DEFAULT 0,
+  b12 INTEGER NOT NULL DEFAULT 0, b13 INTEGER NOT NULL DEFAULT 0, b14 INTEGER NOT NULL DEFAULT 0, b15 INTEGER NOT NULL DEFAULT 0,
+  b16 INTEGER NOT NULL DEFAULT 0, b17 INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(kind, hour)
+);
+CREATE INDEX latency_hourly_by_hour ON latency_hourly(hour);
+`}, {version: 17, sql: `
+-- Outlet-wide totals by minute, for the last days in the traffic chart.
+CREATE TABLE usage_total_minutely (
+  minute TEXT PRIMARY KEY,
+  requests INTEGER NOT NULL DEFAULT 0,
+  request_bytes INTEGER NOT NULL DEFAULT 0,
+  response_bytes INTEGER NOT NULL DEFAULT 0,
+  error_responses INTEGER NOT NULL DEFAULT 0,
+  rate_limited INTEGER NOT NULL DEFAULT 0
+);
+`}}
 
 func migrate(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {

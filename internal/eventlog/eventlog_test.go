@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -74,7 +75,7 @@ func TestLogQueryAndRetention(t *testing.T) {
 	if _, total, _ = log.Query(ctx, Query{}); total != 3 {
 		t.Fatalf("after the retention: %d", total)
 	}
-	if Clip("가나다", 4) != "가" || Clip("abc", 5) != "abc" {
+	if Clip("가나다", 4) != "가" || Clip("abc", 5) != "abc" || Clip("/x\xff", 512) != "/x\uFFFD" || Clip("/x\xfe", 512) != Clip("/x\xff", 512) || Clip("\xff가", 4) != "\uFFFD" {
 		t.Fatal("clip")
 	}
 }
@@ -507,5 +508,453 @@ func TestLogShedsInChunksAndMeetsALoweredCap(t *testing.T) {
 	}
 	if after, _ := log.Size(ctx); after > limits.MaxBytes {
 		t.Fatalf("one prune left %d bytes over a cap of %d", after, limits.MaxBytes)
+	}
+}
+
+// Each hands over every matching entry once, newest first, across chunks,
+// and leaves out what was added after it began.
+func TestLogEachReadsInChunks(t *testing.T) {
+	ctx := context.Background()
+	log, _ := openTest(t, Limits{MaxBytes: 64 << 20, Retention: 30 * 24 * time.Hour})
+	now := time.Date(2026, 10, 27, 15, 0, 0, 0, time.UTC)
+	const n = 2*eachChunk + 7
+	entries := make([]testEntry, n)
+	for i := range entries {
+		state := "passed"
+		if i%3 == 0 {
+			state = "denied"
+		}
+		entries[i] = testEntry{At: now.Add(time.Duration(i) * time.Second), Path: fmt.Sprintf("/%d", i), State: state}
+	}
+	if err := log.Append(ctx, entries); err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	added := false
+	if err := log.Each(ctx, Query{Where: map[string]string{"state": "denied"}, Offset: 5, Limit: 1}, func(e *testEntry) error {
+		seen = append(seen, e.Path)
+		if !added {
+			added = true
+			return log.Append(ctx, []testEntry{{At: now.Add(time.Hour), Path: "/late", State: "denied"}})
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for i := n - 1; i >= 0; i-- {
+		if i%3 == 0 {
+			want = append(want, fmt.Sprintf("/%d", i))
+		}
+	}
+	if !slices.Equal(seen, want) {
+		t.Fatalf("%d entries, want %d; first %v", len(seen), len(want), seen[:min(3, len(seen))])
+	}
+	stop := errors.New("stop")
+	calls := 0
+	if err := log.Each(ctx, Query{}, func(*testEntry) error { calls++; return stop }); !errors.Is(err, stop) || calls != 1 {
+		t.Fatalf("an error didn't stop it: %v after %d", err, calls)
+	}
+	if err := log.Each(ctx, Query{Since: now.Add(50 * time.Minute)}, func(e *testEntry) error {
+		if e.Path != "/late" {
+			return fmt.Errorf("%s is before since", e.Path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Tally groups entries by columns, sorts by a measure or the latest entry,
+// breaks ties by the columns, and pages with the number of groups.
+func TestLogTally(t *testing.T) {
+	ctx := context.Background()
+	log, _ := openTest(t, Limits{MaxBytes: 64 << 20, Retention: 30 * 24 * time.Hour})
+	now := time.Date(2026, 10, 27, 15, 0, 0, 0, time.UTC)
+	var entries []testEntry
+	add := func(path, state string, ago time.Duration, n int) {
+		for range n {
+			entries = append(entries, testEntry{At: now.Add(-ago), Path: path, State: state})
+		}
+	}
+	add("/a", "passed", time.Minute, 5)
+	add("/a", "denied", 2*time.Hour, 1)
+	add("/b", "denied", 3*time.Minute, 4)
+	add("/c", "passed", 2*time.Minute, 2)
+	add("/d", "passed", 4*time.Minute, 2)
+	if err := log.Append(ctx, entries); err != nil {
+		t.Fatal(err)
+	}
+	measures := []string{"COUNT(*)", "SUM(state = 'denied')"}
+	tally := func(t *testing.T, tally Tally) ([]string, int) {
+		t.Helper()
+		tally.By, tally.Measures = []string{"path"}, measures
+		groups, total, err := log.Tally(ctx, tally)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := make([]string, len(groups))
+		for i, g := range groups {
+			lines[i] = fmt.Sprintf("%s %d %d", g.Keys[0], g.Measures[0], g.Measures[1])
+		}
+		return lines, total
+	}
+	for _, c := range []struct {
+		name  string
+		tally Tally
+		want  []string
+		total int
+	}{
+		{"most first, ties by path", Tally{Sort: 0}, []string{"/a 6 1", "/b 4 4", "/c 2 0", "/d 2 0"}, 4},
+		{"fewest first", Tally{Sort: 0, Ascending: true}, []string{"/c 2 0", "/d 2 0", "/b 4 4", "/a 6 1"}, 4},
+		{"by another measure", Tally{Sort: 1}, []string{"/b 4 4", "/a 6 1", "/c 2 0", "/d 2 0"}, 4},
+		{"latest first", Tally{Sort: -1}, []string{"/a 6 1", "/c 2 0", "/b 4 4", "/d 2 0"}, 4},
+		{"a page", Tally{Query: Query{Offset: 1, Limit: 2}, Sort: 0}, []string{"/b 4 4", "/c 2 0"}, 4},
+		{"past the last page", Tally{Query: Query{Offset: 10, Limit: 2}, Sort: 0}, []string{}, 4},
+		{"since", Tally{Query: Query{Since: now.Add(-time.Hour)}, Sort: 0}, []string{"/a 5 0", "/b 4 4", "/c 2 0", "/d 2 0"}, 4},
+		{"filtered", Tally{Query: Query{Where: map[string]string{"state": "denied"}}, Sort: 0}, []string{"/b 4 4", "/a 1 1"}, 2},
+		{"searched", Tally{Query: Query{Text: "/c"}, Sort: 0}, []string{"/c 2 0"}, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got, total := tally(t, c.tally); !slices.Equal(got, c.want) || total != c.total {
+				t.Fatalf("%v (%d groups), want %v (%d)", got, total, c.want, c.total)
+			}
+		})
+	}
+	groups, _, err := log.Tally(ctx, Tally{By: []string{"path"}, Measures: measures, Sort: 0, Query: Query{Limit: 1}})
+	if err != nil || len(groups) != 1 || !groups[0].Last.Equal(now.Add(-time.Minute)) {
+		t.Fatalf("latest entry of /a: %+v %v", groups, err)
+	}
+	if _, _, err := log.Tally(ctx, Tally{By: []string{"path"}, Measures: measures, Sort: 2}); err == nil {
+		t.Fatal("sorted by a measure it doesn't have")
+	}
+}
+
+// A long read, a tally or an export, holds up no write: reads have
+// connections of their own beside the writer's.
+func TestLogReadsDontHoldUpWrites(t *testing.T) {
+	ctx := context.Background()
+	log, _ := openTest(t, Limits{MaxBytes: 64 << 20, Retention: 30 * 24 * time.Hour})
+	if err := log.Append(ctx, []testEntry{{At: time.Now(), Path: "/a", State: "passed"}, {At: time.Now(), Path: "/b", State: "passed"}}); err != nil {
+		t.Fatal(err)
+	}
+	// A read left open, as a slow tally would keep it.
+	rows, err := log.read.QueryContext(ctx, "SELECT path FROM events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		t.Fatal("no rows")
+	}
+	done := make(chan error, 1)
+	go func() {
+		write, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		done <- log.Append(write, []testEntry{{At: time.Now(), Path: "/c", State: "passed"}})
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("write beside a read: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a write waited for a read")
+	}
+	if _, err := log.read.ExecContext(ctx, "DELETE FROM events"); err == nil {
+		t.Fatal("a read connection wrote")
+	}
+}
+
+// Times are kept to the nanosecond in text that sorts as they do, so a
+// period starts where it says and a group's latest entry is its latest.
+func TestLogTimesSortWithinASecond(t *testing.T) {
+	ctx := context.Background()
+	log, _ := openTest(t, Limits{MaxBytes: 64 << 20, Retention: 30 * 24 * time.Hour})
+	second := time.Date(2026, 10, 27, 15, 0, 0, 0, time.UTC)
+	if err := log.Append(ctx, []testEntry{
+		{At: second, Path: "/a", State: "passed"},
+		{At: second.Add(900 * time.Millisecond), Path: "/a", State: "passed"},
+		{At: second.Add(510 * time.Millisecond), Path: "/a", State: "passed"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, total, err := log.Query(ctx, Query{Since: second.Add(500 * time.Millisecond)})
+	if err != nil || total != 2 || len(got) != 2 {
+		t.Fatalf("since half a second in: %d %v", total, err)
+	}
+	groups, _, err := log.Tally(ctx, Tally{By: []string{"path"}, Measures: []string{"COUNT(*)"}, Query: Query{Where: map[string]string{"state": "passed"}, Since: second}})
+	if err != nil || len(groups) != 1 || !groups[0].Last.Equal(second.Add(900*time.Millisecond)) {
+		t.Fatalf("latest: %+v %v", groups, err)
+	}
+}
+
+// A kind that is OldestFirst sheds the oldest entries, routine or not.
+func TestLogShedsOldestFirst(t *testing.T) {
+	kind := testKind
+	kind.Table, kind.OldestFirst = "fair", true
+	log, err := Open(context.Background(), filepath.Join(t.TempDir(), "fair.db"), kind, Limits{MaxBytes: 64 << 20, Retention: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	ctx := context.Background()
+	if err := log.Append(ctx, []testEntry{{At: time.Now(), Path: "/notable"}, {At: time.Now(), Path: "/routine", Routine: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.shed(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := log.Query(ctx, Query{}); len(got) != 1 || got[0].Path != "/routine" {
+		t.Fatalf("kept %+v", got)
+	}
+}
+
+// slowShedStore sheds slower than a write may take.
+type slowShedStore struct {
+	fakeStore
+	took time.Duration
+}
+
+func (s *slowShedStore) Shed(ctx context.Context) error {
+	select {
+	case <-time.After(s.took):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return s.fakeStore.Shed(ctx)
+}
+
+// Making room in a full file has a time of its own: a shed that takes
+// longer than a write still lets the write through.
+func TestWriterShedsOnItsOwnTime(t *testing.T) {
+	store := &slowShedStore{fakeStore: fakeStore{full: 1}, took: 300 * time.Millisecond}
+	w := NewWriter[testEntry](store, "test", 4)
+	w.WriteTimeout, w.Tick = 100*time.Millisecond, time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+	w.Add(testEntry{Path: "/x"})
+	w.Flush()
+	if written, sheds := store.state(); written != 1 || sheds != 1 {
+		t.Fatalf("%d written after %d sheds", written, sheds)
+	}
+}
+
+// Reads that overlap writes keep SQLite from starting its write-ahead log
+// over; past its limit, a checkpoint makes new reads wait for the ones under
+// way, and empties it.
+func TestLogCheckpointEmptiesTheWriteAheadLog(t *testing.T) {
+	previous := walLimit
+	walLimit = 64 << 10
+	defer func() { walLimit = previous }()
+	ctx := context.Background()
+	log, _ := openTest(t, Limits{MaxBytes: 64 << 20, Retention: time.Hour})
+	if err := log.Checkpoint(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// A read holds a snapshot while entries are written.
+	log.gate.RLock()
+	rows, err := log.read.QueryContext(ctx, "SELECT path FROM events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 20 {
+		entries := make([]testEntry, 200)
+		for i := range entries {
+			entries[i] = testEntry{At: time.Now(), Path: strings.Repeat("x", 200)}
+		}
+		if err := log.Append(ctx, entries); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if log.WALSize() <= walLimit {
+		t.Fatalf("write-ahead log %d bytes", log.WALSize())
+	}
+	done := make(chan error, 1)
+	go func() { done <- log.Checkpoint(ctx) }()
+	select {
+	case err := <-done:
+		t.Fatalf("checkpointed under a read: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	rows.Close()
+	log.gate.RUnlock()
+	if err := <-done; err != nil || log.WALSize() != 0 {
+		t.Fatalf("after the read: %d bytes, %v", log.WALSize(), err)
+	}
+	if got, total, err := log.Query(ctx, Query{Limit: 1}); err != nil || total != 4000 || len(got) != 1 {
+		t.Fatalf("entries: %d %v", total, err)
+	}
+}
+
+// checkpointStore is a store with a write-ahead log too big.
+type checkpointStore struct {
+	fakeStore
+	checkpoints atomic.Int32
+}
+
+func (c *checkpointStore) WALSize() int64 { return walLimit + 1 }
+
+func (c *checkpointStore) Checkpoint(context.Context) error {
+	c.checkpoints.Add(1)
+	return nil
+}
+
+// The writer checkpoints beside its writes once the log grew too big.
+func TestWriterCheckpoints(t *testing.T) {
+	store := &checkpointStore{}
+	w := NewWriter[testEntry](store, "test", 4)
+	w.Tick = time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { w.Run(ctx); close(done) }()
+	w.Add(testEntry{Path: "/x"})
+	w.Flush()
+	cancel()
+	<-done
+	if store.checkpoints.Load() == 0 {
+		t.Fatal("no checkpoint")
+	}
+}
+
+// A big file sheds a chunk at a time, so a write waits for one chunk only.
+func TestLogShedsAChunkAtMost(t *testing.T) {
+	ctx := context.Background()
+	log, _ := openTest(t, Limits{MaxBytes: 256 << 20, Retention: time.Hour})
+	const n = 12 * shedChunk
+	for i := 0; i < n; i += 20_000 {
+		entries := make([]testEntry, 20_000)
+		for j := range entries {
+			entries[j] = testEntry{At: time.Now(), Path: "/x", Routine: true}
+		}
+		if err := log.Append(ctx, entries); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := log.Shed(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, total, _ := log.Query(ctx, Query{Limit: 1}); total != n-shedChunk {
+		t.Fatalf("%d left of %d", total, n)
+	}
+}
+
+// A file made without incremental auto-vacuum gives no pages back; Prune
+// stops trying rather than loop.
+func TestLogPruneEndsOnAFileWithoutIncrementalVacuum(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.db")
+	plain, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := plain.Exec("CREATE TABLE events (id INTEGER PRIMARY KEY, at TEXT NOT NULL, routine INTEGER NOT NULL, path TEXT NOT NULL, state TEXT NOT NULL)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := plain.Exec(fmt.Sprintf("PRAGMA user_version = %d", layout<<16|testKind.Version)); err != nil {
+		t.Fatal(err)
+	}
+	plain.Close()
+	log, err := Open(context.Background(), path, testKind, Limits{MaxBytes: 64 << 20, Retention: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	old := make([]testEntry, 2000)
+	for i := range old {
+		old[i] = testEntry{At: time.Now().Add(-2 * time.Hour), Path: strings.Repeat("x", 100)}
+	}
+	if err := log.Append(context.Background(), old); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := log.Prune(ctx, time.Now()); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+}
+
+// Past its limit, a checkpoint never makes reads wait or stops a tally: with
+// a read that won't end it gives up, for the next write to try again. Past
+// the ceiling, it stops the tally under way, which starts over and still
+// answers, and new reads wait for it.
+func TestCheckpointYieldsToReadsAndPreemptsTallies(t *testing.T) {
+	limit, ceiling := walLimit, walCeiling
+	walLimit, walCeiling = 1, 1<<40
+	defer func() { walLimit, walCeiling = limit, ceiling }()
+	ctx := context.Background()
+	log, _ := openTest(t, Limits{MaxBytes: 256 << 20, Retention: time.Hour})
+	entries := make([]testEntry, 200_000)
+	for i := range entries {
+		entries[i] = testEntry{At: time.Now(), Path: fmt.Sprintf("/%d", i%50_000), State: fmt.Sprintf("s%d", i%7)}
+	}
+	if err := log.Append(ctx, entries); err != nil {
+		t.Fatal(err)
+	}
+	tally := func() <-chan error {
+		done := make(chan error, 1)
+		go func() {
+			groups, _, err := log.Tally(ctx, Tally{By: []string{"path"}, Measures: []string{"COUNT(DISTINCT state)"}, Sort: 0})
+			if err == nil && len(groups) != 10_000 {
+				err = fmt.Errorf("%d groups", len(groups))
+			}
+			done <- err
+		}()
+		return done
+	}
+
+	// Past the limit, with a read that won't end and a tally running.
+	log.gate.RLock()
+	tallied := tally()
+	time.Sleep(20 * time.Millisecond)
+	for range 2 {
+		start := time.Now()
+		if err := log.Checkpoint(ctx); err != nil || time.Since(start) > checkpointWait+time.Second {
+			t.Fatalf("checkpoint: %v after %v", err, time.Since(start))
+		}
+	}
+	start := time.Now()
+	if _, _, err := log.Query(ctx, Query{Limit: 1}); err != nil || time.Since(start) > time.Second {
+		t.Fatalf("a read waited %v for a checkpoint: %v", time.Since(start), err)
+	}
+	log.gate.RUnlock()
+	if err := <-tallied; err != nil {
+		t.Fatalf("a tally stopped under the ceiling: %v", err)
+	}
+
+	// Past the ceiling.
+	walCeiling = 1
+	tallied = tally()
+	time.Sleep(20 * time.Millisecond)
+	if err := log.Checkpoint(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-tallied; err != nil {
+		t.Fatalf("tally after a checkpoint: %v", err)
+	}
+	if log.WALSize() != 0 {
+		t.Fatalf("write-ahead log %d bytes after the checkpoint", log.WALSize())
+	}
+}
+
+// Prune finds old entries through the index on at, not a scan of the file.
+func TestPruneUsesTheTimeIndex(t *testing.T) {
+	log, _ := openTest(t, Limits{MaxBytes: 64 << 20, Retention: time.Hour})
+	rows, err := log.db.Query("EXPLAIN QUERY PLAN SELECT id FROM events WHERE at < ? ORDER BY at LIMIT 10", time.Now().Format(stampLayout))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	if text := strings.Join(plan, "; "); !strings.Contains(text, "events_at") || strings.Contains(text, "TEMP B-TREE") {
+		t.Fatalf("plan: %s", text)
 	}
 }

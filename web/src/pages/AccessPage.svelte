@@ -40,7 +40,7 @@
 
 <PageHead title={t().title} />
 
-<Tabs.Root bind:value={() => tab, (next) => { setParams({ tab: next }, { tab: 'policies' }); }} class="min-w-0 gap-4">
+<Tabs.Root bind:value={() => tab, (next) => { setParams({ tab: next }, { tab: 'policies' }, { push: true }); }} class="min-w-0 gap-4">
   <Tabs.List aria-label={t().tabsAria}>
     <Tabs.Trigger value="policies"><Shield12 class="size-3" aria-hidden="true" />{t().tabPolicies}</Tabs.Trigger>
     <Tabs.Trigger value="sso"><PersonCircle12 class="size-3" aria-hidden="true" />{t().tabSso}</Tabs.Trigger>

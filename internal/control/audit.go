@@ -127,8 +127,9 @@ func likePattern(text string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(text)
 }
 
-// Audit returns one page, newest first, and the number of matching entries.
-func (d *Database) Audit(ctx context.Context, f AuditFilter) ([]AuditEvent, int, error) {
+// auditWhere is the WHERE clause, and its arguments, for the events f
+// matches.
+func auditWhere(f AuditFilter) (string, []any) {
 	where, args := " WHERE 1 = 1", []any{}
 	if f.Action != "" {
 		where += ` AND action LIKE ? ESCAPE '\'`
@@ -139,22 +140,21 @@ func (d *Database) Audit(ctx context.Context, f AuditFilter) ([]AuditEvent, int,
 		pattern := "%" + likePattern(f.Query) + "%"
 		args = append(args, pattern, pattern, pattern)
 	}
-	var total int
-	if err := d.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM audit_events"+where, args...).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-	rows, err := d.db.QueryContext(ctx, `SELECT id, created_at, actor_email, action, resource_type, resource_id, COALESCE(source, ''), ip, user_agent, detail
-		FROM audit_events`+where+" ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?", append(args, f.Limit, f.Offset)...)
-	if err != nil {
-		return nil, 0, err
-	}
+	return where, args
+}
+
+const auditColumns = `id, created_at, actor_email, action, resource_type, resource_id, COALESCE(source, ''), ip, user_agent, detail`
+
+// scanAudit reads the events a SELECT of auditColumns, and anything after
+// them into more, returns.
+func scanAudit(rows *sql.Rows, more ...any) ([]AuditEvent, error) {
 	defer rows.Close()
 	events := []AuditEvent{}
 	for rows.Next() {
 		var e AuditEvent
 		var email, ip, agent, detail sql.NullString
-		if err := rows.Scan(&e.ID, &e.CreatedAt, &email, &e.Action, &e.ResourceType, &e.ResourceID, &e.Source, &ip, &agent, &detail); err != nil {
-			return nil, 0, err
+		if err := rows.Scan(append([]any{&e.ID, &e.CreatedAt, &email, &e.Action, &e.ResourceType, &e.ResourceID, &e.Source, &ip, &agent, &detail}, more...)...); err != nil {
+			return nil, err
 		}
 		for text, target := range map[*sql.NullString]**string{&email: &e.ActorEmail, &ip: &e.IP, &agent: &e.UserAgent} {
 			if text.Valid {
@@ -166,5 +166,62 @@ func (d *Database) Audit(ctx context.Context, f AuditFilter) ([]AuditEvent, int,
 		}
 		events = append(events, e)
 	}
-	return events, total, rows.Err()
+	return events, rows.Err()
+}
+
+// Audit returns one page, newest first, and the number of matching entries.
+func (d *Database) Audit(ctx context.Context, f AuditFilter) ([]AuditEvent, int, error) {
+	where, args := auditWhere(f)
+	var total int
+	if err := d.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM audit_events"+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := d.db.QueryContext(ctx, "SELECT "+auditColumns+" FROM audit_events"+where+" ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?", append(args, f.Limit, f.Offset)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	events, err := scanAudit(rows)
+	return events, total, err
+}
+
+// auditChunk is how many events EachAudit reads at a time.
+const auditChunk = 500
+
+// EachAudit calls fn with every event f matches, newest first as Audit
+// lists them; f's Limit and Offset don't apply. It reads a chunk at a time,
+// each after the last one read rather than at an offset, and calls fn
+// between reads, so the database's one connection is never held while fn
+// writes to a client. Events added meanwhile are left out; fn's error stops
+// it.
+func (d *Database) EachAudit(ctx context.Context, f AuditFilter, fn func(AuditEvent) error) error {
+	where, args := auditWhere(f)
+	var last int64
+	if err := d.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(rowid), 0) FROM audit_events").Scan(&last); err != nil {
+		return err
+	}
+	where, args = where+" AND rowid <= ?", append(args, last)
+	after, cursor := "", []any{}
+	for {
+		var row int64
+		rows, err := d.db.QueryContext(ctx, "SELECT "+auditColumns+", rowid FROM audit_events"+where+after+" ORDER BY created_at DESC, rowid DESC LIMIT ?", append(append(append([]any{}, args...), cursor...), auditChunk)...)
+		if err != nil {
+			return err
+		}
+		events, err := scanAudit(rows, &row)
+		if err != nil {
+			return err
+		}
+		for _, e := range events {
+			if err := fn(e); err != nil {
+				return err
+			}
+		}
+		if len(events) < auditChunk {
+			return nil
+		}
+		// row holds the last event's: the next chunk starts after it.
+		at := events[len(events)-1].CreatedAt
+		// Bounded by created_at first, so the index starts at the cursor.
+		after, cursor = " AND created_at <= ? AND (created_at < ? OR rowid < ?)", []any{at, at, row}
+	}
 }

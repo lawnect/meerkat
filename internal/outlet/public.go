@@ -162,7 +162,7 @@ func (s *Store) PublicHandler() http.Handler {
 			}
 			return
 		}
-		began := s.failureStart()
+		began := time.Now()
 		limits := s.connectionLimits()
 		w, body := guardTransfer(w, r, limits)
 		defer finishTransfer(w, body)
@@ -172,12 +172,12 @@ func (s *Store) PublicHandler() http.Handler {
 			return
 		}
 		if s.limitRequest(w, r, host) {
-			s.logTurnedAway(r, host, failRateLimited, http.StatusTooManyRequests)
+			s.logTurnedAway(r, host, began, failRateLimited, http.StatusTooManyRequests)
 			return
 		}
 		client, ok := s.admitClient(w, r, limits)
 		if !ok {
-			s.logTurnedAway(r, host, failBusy, http.StatusTooManyRequests)
+			s.logTurnedAway(r, host, began, failBusy, http.StatusTooManyRequests)
 			return
 		}
 		if client != "" {
@@ -205,6 +205,12 @@ func (s *Store) PublicHandler() http.Handler {
 		if len(plans) == 0 {
 			http.NotFound(w, r)
 			return
+		}
+		// The request log keeps every request to a routed address from here,
+		// whatever becomes of it.
+		w, r, logged := s.recordRequest(w, r, host, began)
+		if logged != nil {
+			defer logged()
 		}
 		// Rules compare the whole path, so one longer than apps take (see
 		// maxPublicPath) would only make them slow.
@@ -272,13 +278,22 @@ func (s *Store) PublicHandler() http.Handler {
 		// it can be sent again (see retryable). The next one is chosen afresh:
 		// by then its route may be gone or the service down.
 		tried := map[string]bool{}
+		// waited is the time spent on attempts that failed, the services'.
+		var waited time.Duration
 		var serve func(target backend)
+		record := recordOf(r)
 		serve = func(target backend) {
 			tried[target.serviceID] = true
+			if record != nil {
+				record.service = target.service
+			}
 			// wrote says whether any attempt, the transport's own retries
 			// included, put the request on a connection; responded, whether
-			// the service answered. Either limits what may go on.
+			// the service answered. Either limits what may go on. timed
+			// splits the time to the answer: the Outlet's, and the service's.
 			var wrote, responded atomic.Bool
+			attempt := time.Now()
+			timed := &timing{began: began, waited: waited}
 			upstream := &url.URL{Scheme: "http", Host: target.address}
 			proxy := &httputil.ReverseProxy{
 				Transport:  transport,
@@ -322,10 +337,23 @@ func (s *Store) PublicHandler() http.Handler {
 					if forwardedFor != "" {
 						pr.Out.Header.Set("X-Forwarded-For", forwardedFor)
 					}
-					pr.Out = pr.Out.WithContext(httptrace.WithClientTrace(pr.Out.Context(), &httptrace.ClientTrace{WroteHeaders: func() { wrote.Store(true) }}))
+					pr.Out = pr.Out.WithContext(httptrace.WithClientTrace(pr.Out.Context(), &httptrace.ClientTrace{
+						GotConn: func(httptrace.GotConnInfo) { timed.ready.Store(time.Now().UnixNano()) },
+						WroteHeaders: func() {
+							timed.sent.Store(time.Now().UnixNano())
+							wrote.Store(true)
+						},
+						WroteRequest: func(httptrace.WroteRequestInfo) { timed.written.Store(time.Now().UnixNano()) },
+					}))
 				},
 				ModifyResponse: func(res *http.Response) error {
 					responded.Store(true)
+					if outlet, upstream, ok := timed.latencies(time.Now()); ok {
+						s.countLatencies(outlet, upstream)
+						if record != nil {
+							record.outletUS, record.upstreamUS = outlet.Microseconds(), upstream.Microseconds()
+						}
+					}
 					s.answered(target.serviceID)
 					dropAccessSetCookie(res.Header)
 					if res.StatusCode < 500 {
@@ -343,6 +371,7 @@ func (s *Store) PublicHandler() http.Handler {
 					// upgraded connection taken over: never another try.
 					if !responded.Load() && retryable(r, err, wrote.Load()) {
 						if next, ok := s.nextBackend(host, origin, tried); ok {
+							waited += time.Since(attempt)
 							serve(next)
 							return
 						}

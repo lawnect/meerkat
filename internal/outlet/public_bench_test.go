@@ -68,6 +68,14 @@ func BenchmarkPublicProxy(b *testing.B) {
 	p.run(b, "app.example.com", "/", 200)
 }
 
+// BenchmarkPublicProxyRequestLog is the same with the request log on: what
+// a request pays for being kept.
+func BenchmarkPublicProxyRequestLog(b *testing.B) {
+	p := newPublicBench(b, 0)
+	p.requestLogging(b, true)
+	p.run(b, "app.example.com", "/", 200)
+}
+
 func BenchmarkPublicProxyManyRoutes(b *testing.B) {
 	p := newPublicBench(b, 10000)
 	b.ReportAllocs()

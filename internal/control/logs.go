@@ -8,11 +8,12 @@ import (
 )
 
 // The Outlet's logs, each in a file of its own: the requests access
-// protection decided, and the public requests that failed or the Outlet
-// refused.
+// protection decided, the public requests that failed or the Outlet
+// refused, and every public request.
 const (
 	LogAccess   = "access"
 	LogFailures = "failures"
+	LogRequests = "requests"
 )
 
 // ErrInvalidLogSettings reports settings outside the limits below.
@@ -26,8 +27,12 @@ type LogSettings struct {
 	RetentionDays int  `json:"retention_days"`
 }
 
-// DefaultLogSettings keep a log off, at 256 MiB and 30 days once on.
-func DefaultLogSettings() LogSettings {
+// DefaultLogSettings keep a log off, at 256 MiB and 30 days once on; the
+// request log, which fills fastest, at 512 MiB.
+func DefaultLogSettings(name string) LogSettings {
+	if name == LogRequests {
+		return LogSettings{MaxMiB: 512, RetentionDays: 30}
+	}
 	return LogSettings{MaxMiB: 256, RetentionDays: 30}
 }
 
@@ -37,7 +42,7 @@ func (s LogSettings) valid() bool {
 
 // LogSettings returns a log's settings, the defaults until saved.
 func (d *Database) LogSettings(ctx context.Context, name string) (LogSettings, error) {
-	settings := DefaultLogSettings()
+	settings := DefaultLogSettings(name)
 	raw, err := getSetting(ctx, d.db, "log_"+name)
 	if err != nil || raw == "" {
 		return settings, err
@@ -45,14 +50,14 @@ func (d *Database) LogSettings(ctx context.Context, name string) (LogSettings, e
 	// Saved settings that can't be read, or that fail the checks, are the
 	// defaults: off.
 	if json.Unmarshal([]byte(raw), &settings) != nil || !settings.valid() {
-		return DefaultLogSettings(), nil
+		return DefaultLogSettings(name), nil
 	}
 	return settings, nil
 }
 
 // SetLogSettings saves a log's settings.
 func (d *Database) SetLogSettings(ctx context.Context, name string, settings LogSettings, now time.Time) (LogSettings, error) {
-	if (name != LogAccess && name != LogFailures) || !settings.valid() {
+	if (name != LogAccess && name != LogFailures && name != LogRequests) || !settings.valid() {
 		return settings, ErrInvalidLogSettings
 	}
 	raw, err := json.Marshal(settings)

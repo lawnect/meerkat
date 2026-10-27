@@ -49,7 +49,7 @@ func TestAccessLog(t *testing.T) {
 	}
 	// Off until turned on: nothing is logged.
 	f.visit("app.example.com", "/workspace")
-	if view := read(""); view.Settings != control.DefaultLogSettings() || !view.Available || len(view.Entries) != 0 || view.SizeBytes == 0 {
+	if view := read(""); view.Settings != control.DefaultLogSettings(control.LogAccess) || !view.Available || len(view.Entries) != 0 || view.SizeBytes == 0 {
 		t.Fatalf("off: %+v", view)
 	}
 	on := map[string]any{"enabled": true, "max_mib": 64, "retention_days": 7}

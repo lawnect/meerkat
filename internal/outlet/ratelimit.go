@@ -258,9 +258,9 @@ type rejectionSummary struct {
 // rejectionStats remembers the last ten minutes for the alert and counts
 // rejections per hour until they are written to the database.
 type rejectionStats struct {
-	mu    sync.Mutex
-	slots [rejectionSlots]rejectionSlot
-	hours map[time.Time]int64
+	mu      sync.Mutex
+	slots   [rejectionSlots]rejectionSlot
+	minutes map[time.Time]int64 // rejections not yet stored, by minute
 }
 
 func (r *rejectionStats) record(now time.Time, hit rejection) {
@@ -280,10 +280,10 @@ func (r *rejectionStats) record(now time.Time, hit rejection) {
 	if hit.endpoint != "" {
 		tally(slot.endpoints, hit.endpoint)
 	}
-	if r.hours == nil {
-		r.hours = map[time.Time]int64{}
+	if r.minutes == nil {
+		r.minutes = map[time.Time]int64{}
 	}
-	r.hours[now.UTC().Truncate(time.Hour)]++
+	r.minutes[now.UTC().Truncate(time.Minute)]++
 }
 
 func (r *rejectionStats) recent(now time.Time) rejectionSummary {
@@ -312,19 +312,19 @@ func (r *rejectionStats) recent(now time.Time) rejectionSummary {
 func (r *rejectionStats) drain() map[time.Time]int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	pending := r.hours
-	r.hours = nil
+	pending := r.minutes
+	r.minutes = nil
 	return pending
 }
 
 func (r *rejectionStats) restore(pending map[time.Time]int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.hours == nil {
-		r.hours = map[time.Time]int64{}
+	if r.minutes == nil {
+		r.minutes = map[time.Time]int64{}
 	}
-	for hour, n := range pending {
-		r.hours[hour] += n
+	for minute, n := range pending {
+		r.minutes[minute] += n
 	}
 }
 
@@ -466,9 +466,9 @@ func (s *Store) RunRateLimits(ctx context.Context) {
 func (s *Store) flushRejections(ctx context.Context) {
 	pending := s.limiter.stats.drain()
 	failed := map[time.Time]int64{}
-	for hour, n := range pending {
-		if err := s.control.AddRateLimited(ctx, hour, n); err != nil {
-			failed[hour] = n
+	for minute, n := range pending {
+		if err := s.control.AddRateLimited(ctx, minute, n); err != nil {
+			failed[minute] = n
 			slog.Warn("rate limit counts not stored", "error", err)
 		}
 	}

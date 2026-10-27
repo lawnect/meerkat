@@ -94,6 +94,7 @@ type Store struct {
 	logs struct {
 		access   *outletLog[accessEntry]
 		failures *outletLog[failureEntry]
+		requests *outletLog[requestEntry]
 	}
 	mu          sync.RWMutex
 	path        string
@@ -132,6 +133,11 @@ type Store struct {
 	// served maps a service ID to an *atomic.Int64: when, in Unix
 	// nanoseconds, it last answered proxied traffic below 500.
 	served sync.Map
+	// exports holds a slot for each download under way (see maxExports).
+	exports chan struct{}
+	// latency holds this hour's histograms of forwarded requests' latencies,
+	// by latencyKey, until flushLatencies saves them.
+	latency sync.Map
 	// balance counts the requests of each balanced address, to take turns.
 	balance sync.Map
 	// suspect maps a service ID to when a request to it last failed before
@@ -215,7 +221,7 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 	if err := securefs.Directory(dir); err != nil {
 		return nil, err
 	}
-	s := &Store{path: filepath.Join(dir, "state.json"), managedPath: filepath.Join(dir, "managed-state.json"), proxyPath: filepath.Join(dir, "caddy", "Caddyfile"), tunnelPath: filepath.Join(dir, "rathole", "server.toml"), records: records, managed: map[string]Record{}, config: config, control: controlDB, now: time.Now}
+	s := &Store{path: filepath.Join(dir, "state.json"), managedPath: filepath.Join(dir, "managed-state.json"), proxyPath: filepath.Join(dir, "caddy", "Caddyfile"), tunnelPath: filepath.Join(dir, "rathole", "server.toml"), records: records, managed: map[string]Record{}, config: config, control: controlDB, now: time.Now, exports: make(chan struct{}, maxExports)}
 	s.access.login.perClient, s.access.login.capacity, s.access.login.keep, s.access.starts.attempts = maxAccessPerClient, maxAccessPending, true, accessStarts
 	if controlDB != nil && config.Domain != "" {
 		outlet, err := controlDB.Outlet(context.Background())
@@ -326,11 +332,14 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 		s.workers.Go(func() { s.journal.run(workers) })
 		// Each log has a file of its own; without it the Outlet runs on,
 		// only not keeping that log.
-		if s.logs.access = openOutletLog(context.Background(), controlDB, dir, "access-log.db", control.LogAccess, accessEntries); s.logs.access != nil {
+		if s.logs.access = openOutletLog(context.Background(), controlDB, dir, "access-log.db", control.LogAccess, accessEntries, refusalBudget); s.logs.access != nil {
 			s.workers.Go(func() { s.logs.access.writer.Run(workers) })
 		}
-		if s.logs.failures = openOutletLog(context.Background(), controlDB, dir, "failure-log.db", control.LogFailures, failureEntries); s.logs.failures != nil {
+		if s.logs.failures = openOutletLog(context.Background(), controlDB, dir, "failure-log.db", control.LogFailures, failureEntries, refusalBudget); s.logs.failures != nil {
 			s.workers.Go(func() { s.logs.failures.writer.Run(workers) })
+		}
+		if s.logs.requests = openOutletLog(context.Background(), controlDB, dir, "request-log.db", control.LogRequests, requestEntries, requestBudget); s.logs.requests != nil {
+			s.workers.Go(func() { s.logs.requests.writer.Run(workers) })
 		}
 	}
 	s.workers.Go(func() { s.persistLoop(workers) })
@@ -448,10 +457,12 @@ func (s *Store) persistLoop(ctx context.Context) {
 			s.bans.sweep(s.now())
 			s.flushAccessTokenUse(ctx)
 			s.flushAccessCounts(ctx)
+			s.flushLatencies(ctx)
 		case <-ctx.Done():
 			s.persist()
 			s.flushAccessTokenUse(context.Background())
 			s.flushAccessCounts(context.Background())
+			s.flushLatencies(context.Background())
 			return
 		}
 	}
@@ -469,6 +480,7 @@ func (s *Store) Close() {
 		s.guard.close()
 		s.logs.access.close()
 		s.logs.failures.close()
+		s.logs.requests.close()
 	})
 }
 

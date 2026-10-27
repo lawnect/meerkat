@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -17,18 +18,25 @@ import (
 	"github.com/lawnect/meerkat/internal/eventlog"
 )
 
-const (
-	// routineBudget is how many routine entries one client may add to a log
-	// in a minute: enough for a person's mistakes, far from a flood.
-	routineBudget = 60
-	// notableBudget is the same for the other entries. Anyone can make
-	// some of those too, a 5xx from an app or a request to a service
+// logBudget is how many routine entries, and how many notable ones, one
+// client may add to a log in a minute.
+type logBudget struct{ routine, notable uint64 }
+
+var (
+	// refusalBudget is the access and failure logs'. Routine entries are
+	// enough for a person's mistakes, far from a flood. Anyone can make
+	// some notable ones too, a 5xx from an app or a request to a service
 	// that is down, so they have a budget, one a busy person stays under.
-	notableBudget = 600
-	// budgetSlots is how many clients' budgets a log tells apart. More
-	// clients share slots, which only makes them stricter.
-	budgetSlots = 1024
+	refusalBudget = logBudget{routine: 60, notable: 600}
+	// requestBudget is the request log's, which keeps every request: a
+	// scanner's 4xx up to ten a second, and what a busy office behind one
+	// address asks for.
+	requestBudget = logBudget{routine: 600, notable: 6000}
 )
+
+// budgetSlots is how many clients' budgets a log tells apart. More clients
+// share slots, which only makes them stricter.
+const budgetSlots = 1024
 
 // outletLog is one of the Outlet's logs: its file, the writer that fills it
 // behind the requests, and its switch. A nil *outletLog, a file that
@@ -38,10 +46,11 @@ const (
 // them, and the rest are only counted. Without it a flood would fill the
 // queue, and then the file, and push out the entries that matter.
 type outletLog[E any] struct {
-	name    string // control.LogAccess, control.LogFailures
+	name    string // control.LogAccess, control.LogFailures, control.LogRequests
 	log     *eventlog.Log[E]
 	writer  *eventlog.Writer[E]
 	enabled atomic.Bool
+	limits  logBudget
 
 	// budget holds, per slot, the minute (high half) and how many routine
 	// entries were added in it (low half); a slot is picked by a hash with
@@ -49,24 +58,24 @@ type outletLog[E any] struct {
 	budget     [budgetSlots]atomic.Uint64
 	notable    [budgetSlots]atomic.Uint64 // the same for notable entries
 	seed       maphash.Seed
-	suppressed atomic.Int64 // routine entries given up for a budget
+	suppressed atomic.Int64 // entries given up for a budget
 }
 
 // openOutletLog opens a log's file in dir and applies its saved settings;
 // the caller starts its writer. It returns nil, with a warning, when the
 // file can't be opened.
-func openOutletLog[E any](ctx context.Context, db *control.Database, dir, file, name string, kind eventlog.Kind[E]) *outletLog[E] {
+func openOutletLog[E any](ctx context.Context, db *control.Database, dir, file, name string, kind eventlog.Kind[E], limits logBudget) *outletLog[E] {
 	settings, err := db.LogSettings(ctx, name)
 	if err != nil {
 		slog.Warn("log settings unreadable, the log stays off", "log", name, "error", err)
-		settings = control.DefaultLogSettings()
+		settings = control.DefaultLogSettings(name)
 	}
 	log, err := eventlog.Open(ctx, filepath.Join(dir, file), kind, logLimits(settings))
 	if err != nil {
 		slog.Warn("log unavailable", "log", name, "error", err)
 		return nil
 	}
-	l := &outletLog[E]{name: name, log: log, writer: eventlog.NewWriter[E](log, name, 8192), seed: maphash.MakeSeed()}
+	l := &outletLog[E]{name: name, log: log, writer: eventlog.NewWriter[E](log, name, 8192), limits: limits, seed: maphash.MakeSeed()}
 	l.enabled.Store(settings.Enabled)
 	return l
 }
@@ -94,12 +103,12 @@ func (l *outletLog[E]) admit(client string, now time.Time, routine bool) bool {
 	if routine {
 		return l.allow(client, now)
 	}
-	return l.take(&l.notable, notableBudget, client, now)
+	return l.take(&l.notable, l.limits.notable, client, now)
 }
 
 // allow takes one of client's routine entries for the minute of now.
 func (l *outletLog[E]) allow(client string, now time.Time) bool {
-	return l.take(&l.budget, routineBudget, client, now)
+	return l.take(&l.budget, l.limits.routine, client, now)
 }
 
 // take spends one of the limit entries client may add in the minute of now.
@@ -144,8 +153,8 @@ func (l *outletLog[E]) close() {
 // logView is a page of a log, newest first, with its settings: available
 // says whether its file could be opened, size_bytes how much it takes,
 // dropped how many entries were given up since the Outlet started because
-// the queue was full, suppressed how many routine ones because a client was
-// over its budget, and total how many match the filters.
+// the queue was full, suppressed how many because a client was over its
+// budget, and total how many match the filters.
 type logView[E any] struct {
 	Settings   control.LogSettings `json:"settings"`
 	Available  bool                `json:"available"`
@@ -163,44 +172,48 @@ const maxLogText = 128
 // same name, and the values it takes; none means any. A group is a value
 // that stands for all the routine entries (true) or all the notable ones
 // (false) and is no column's value; a filter with groups takes nothing else.
+// A value takes at most size bytes, 255 when zero.
 type logFilter struct {
 	name   string
 	values []string
 	groups map[string]bool
+	size   int
 }
 
-// serveLog answers GET for a log: a page of entries matching filters.
-func serveLog[E any](s *Store, w http.ResponseWriter, r *http.Request, name string, l *outletLog[E], filters ...logFilter) {
-	if !s.alertsAdmin(w, r) {
-		return
-	}
-	query := r.URL.Query()
+// pageOf reads the page and per_page parameters, at most most a page.
+func pageOf(query url.Values, most int) (offset, limit int, ok bool) {
 	page, perPage := 1, 50
 	for _, p := range []struct {
 		name     string
 		into     *int
 		min, max int
-	}{{"page", &page, 1, 1 << 20}, {"per_page", &perPage, 1, eventlog.MaxPage}} {
+	}{{"page", &page, 1, 1 << 20}, {"per_page", &perPage, 1, most}} {
 		if value := query.Get(p.name); value != "" {
 			n, err := strconv.Atoi(value)
 			if err != nil || n < p.min || n > p.max {
-				fail(w, r, 400, "invalid_log_filter")
-				return
+				return 0, 0, false
 			}
 			*p.into = n
 		}
 	}
-	q := eventlog.Query{Where: map[string]string{}, Text: query.Get("q"), Offset: (page - 1) * perPage, Limit: perPage}
+	return (page - 1) * perPage, perPage, true
+}
+
+// logQuery reads a log's search text and filters from query.
+func logQuery(query url.Values, filters []logFilter) (eventlog.Query, bool) {
+	q := eventlog.Query{Where: map[string]string{}, Text: query.Get("q")}
 	if len(q.Text) > maxLogText {
-		fail(w, r, 400, "invalid_log_filter")
-		return
+		return q, false
 	}
 	for _, f := range filters {
 		value := query.Get(f.name)
 		routine, group := f.groups[value]
-		if value != "" && (len(value) > 255 || !group && (f.values != nil || f.groups != nil) && !slices.Contains(f.values, value)) {
-			fail(w, r, 400, "invalid_log_filter")
-			return
+		size := f.size
+		if size == 0 {
+			size = 255
+		}
+		if value != "" && (len(value) > size || !group && (f.values != nil || f.groups != nil) && !slices.Contains(f.values, value)) {
+			return q, false
 		}
 		if group {
 			q.Routine = &routine
@@ -208,6 +221,24 @@ func serveLog[E any](s *Store, w http.ResponseWriter, r *http.Request, name stri
 			q.Where[f.name] = value
 		}
 	}
+	return q, true
+}
+
+// serveLog answers GET for a log: a page of entries matching filters.
+func serveLog[E any](s *Store, w http.ResponseWriter, r *http.Request, name string, l *outletLog[E], filters ...logFilter) {
+	if !s.alertsAdmin(w, r) || !ownPage(w, r) {
+		return
+	}
+	// A search of a big file can take longer than the management port lets
+	// a response wait.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(csvWriteTimeout))
+	q, ok := logQuery(r.URL.Query(), filters)
+	offset, limit, paged := pageOf(r.URL.Query(), eventlog.MaxPage)
+	if !ok || !paged {
+		fail(w, r, 400, "invalid_log_filter")
+		return
+	}
+	q.Offset, q.Limit = offset, limit
 	view, err := logPageOf(r.Context(), s, name, l, q)
 	if err != nil {
 		fail(w, r, 503, "log_failed")

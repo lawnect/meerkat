@@ -123,7 +123,43 @@ func TestAuditPaginationAndFilters(t *testing.T) {
 			t.Errorf("%s: %d events, total %d, %v (want total %d)", name, len(events), total, err, tc.total)
 		}
 	}
-	events, _, _ := db.Audit(ctx, AuditFilter{Limit: 200})
+	// EachAudit reads everything a filter matches, in Audit's order, in
+	// chunks after the last one read, leaving out events added meanwhile.
+	for i := 33; i < 33+2*auditChunk; i++ {
+		// Many at the same time: the chunks must break ties as Audit does.
+		add(33, AuditEntry{ActorEmail: "admin@example.com", Action: "connector.create", ResourceType: "connector", ResourceID: fmt.Sprintf("m_bulk%04d", i)})
+	}
+	want, _, err := db.Audit(ctx, AuditFilter{Limit: 2 * auditChunk, Action: "connector."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	more, _, _ := db.Audit(ctx, AuditFilter{Limit: 2 * auditChunk, Offset: 2 * auditChunk, Action: "connector."})
+	want = append(want, more...)
+	var got []AuditEvent
+	added := false
+	if err := db.EachAudit(ctx, AuditFilter{Action: "connector."}, func(e AuditEvent) error {
+		got = append(got, e)
+		if !added {
+			added = true
+			add(40, AuditEntry{Action: "connector.create", ResourceType: "connector", ResourceID: "m_late"})
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 30+2*auditChunk || len(got) != len(want) {
+		t.Fatalf("%d events, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if got[i].ID != want[i].ID {
+			t.Fatalf("event %d: %s, want %s", i, got[i].ID, want[i].ID)
+		}
+	}
+	stop := errors.New("stop")
+	if err := db.EachAudit(ctx, AuditFilter{}, func(AuditEvent) error { return stop }); !errors.Is(err, stop) {
+		t.Fatalf("an error didn't stop it: %v", err)
+	}
+	events, _, _ := db.Audit(ctx, AuditFilter{Limit: 200, Action: "telegram."})
 	raw, _ := json.Marshal(events[0])
 	if !strings.Contains(string(raw), `"detail":null`) || !strings.Contains(string(raw), `"actor_email":null`) {
 		t.Fatalf("absent values should be null: %s", raw)

@@ -60,8 +60,10 @@ func (s *Store) logAccess(r *http.Request, host, policy string, outcome int, rea
 	l.add(accessEntry{At: now, Host: host, Method: eventlog.Clip(r.Method, 16), Path: eventlog.Clip(r.URL.Path, 512), Client: ip, Policy: policy, Decision: decisions[outcome], Reason: reason, Email: email, Token: token, Routine: routine})
 }
 
+var accessFilters = []logFilter{{name: "decision", values: decisions[:]}, {name: "policy"}, {name: "who", groups: map[string]bool{"named": false, "anonymous": true}}}
+
 func (s *Store) getAccessLog(w http.ResponseWriter, r *http.Request) {
-	serveLog(s, w, r, control.LogAccess, s.logs.access, logFilter{name: "decision", values: decisions[:]}, logFilter{name: "policy"}, logFilter{name: "who", groups: map[string]bool{"named": false, "anonymous": true}})
+	serveLog(s, w, r, control.LogAccess, s.logs.access, accessFilters...)
 }
 
 func (s *Store) putAccessLog(w http.ResponseWriter, r *http.Request) {

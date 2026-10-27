@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -13,6 +14,13 @@ type Store[E any] interface {
 	Append(ctx context.Context, entries []E) error
 	Shed(ctx context.Context) error
 	Prune(ctx context.Context, now time.Time) error
+}
+
+// checkpointer is a Store whose write-ahead log Run keeps in bounds, as
+// *Log's (see Log.Checkpoint).
+type checkpointer interface {
+	WALSize() int64
+	Checkpoint(ctx context.Context) error
 }
 
 // Writer writes a log behind the requests: Add never waits and never
@@ -38,7 +46,12 @@ type Writer[E any] struct {
 	Tick         time.Duration // how often Run writes what it holds
 	RetryMax     time.Duration // the longest pause after failed writes
 	WriteTimeout time.Duration // one Append
+	ShedTimeout  time.Duration // one Shed
 	PruneEvery   time.Duration // how often Run prunes
+
+	// A checkpoint runs beside Run, one at a time.
+	checkpointing atomic.Bool
+	checkpoints   sync.WaitGroup
 
 	// Owned by Run.
 	buffer   []E
@@ -53,7 +66,7 @@ type Writer[E any] struct {
 func NewWriter[E any](store Store[E], name string, queue int) *Writer[E] {
 	return &Writer[E]{
 		store: store, name: name, queue: make(chan E, queue), flushes: make(chan chan struct{}), prune: make(chan struct{}, 1),
-		BatchSize: 500, BufferCap: 20000, Tick: time.Second, RetryMax: 30 * time.Second, WriteTimeout: 5 * time.Second, PruneEvery: time.Hour,
+		BatchSize: 5000, BufferCap: 20000, Tick: time.Second, RetryMax: 30 * time.Second, WriteTimeout: 5 * time.Second, ShedTimeout: 2 * time.Minute, PruneEvery: time.Hour,
 	}
 }
 
@@ -116,6 +129,7 @@ func (w *Writer[E]) Run(ctx context.Context) {
 		case <-ctx.Done():
 			w.drain()
 			w.write(context.Background(), true)
+			w.checkpoints.Wait()
 			return
 		}
 	}
@@ -123,9 +137,25 @@ func (w *Writer[E]) Run(ctx context.Context) {
 
 func (w *Writer[E]) pruneNow(ctx context.Context) {
 	w.prunedAt = time.Now()
-	if err := w.store.Prune(ctx, w.prunedAt); err != nil {
+	if err := w.store.Prune(ctx, w.prunedAt); err != nil && !errors.Is(err, context.Canceled) {
 		slog.Warn("log not pruned", "log", w.name, "error", err)
 	}
+	w.checkpointSoon(ctx)
+}
+
+// checkpointSoon starts a checkpoint beside Run when the write-ahead log
+// grew past its limit, and none is running.
+func (w *Writer[E]) checkpointSoon(ctx context.Context) {
+	c, ok := w.store.(checkpointer)
+	if !ok || c.WALSize() <= walLimit || !w.checkpointing.CompareAndSwap(false, true) {
+		return
+	}
+	w.checkpoints.Go(func() {
+		defer w.checkpointing.Store(false)
+		if err := c.Checkpoint(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("log not checkpointed", "log", w.name, "error", err)
+		}
+	})
 }
 
 func (w *Writer[E]) take(entry E) {
@@ -157,12 +187,20 @@ func (w *Writer[E]) write(ctx context.Context, now bool) {
 		n := min(len(w.buffer), w.BatchSize)
 		attempt, cancel := context.WithTimeout(ctx, w.WriteTimeout)
 		err := w.store.Append(attempt, w.buffer[:n])
+		cancel()
+		// A full file sheds a tenth of its entries, which takes longer than
+		// a write on a big one; it has a time of its own, and the write
+		// another try after it.
 		if errors.Is(err, ErrFull) {
-			if err = w.store.Shed(attempt); err == nil {
+			shedding, stop := context.WithTimeout(ctx, w.ShedTimeout)
+			err = w.store.Shed(shedding)
+			stop()
+			if err == nil {
+				attempt, cancel = context.WithTimeout(ctx, w.WriteTimeout)
 				err = w.store.Append(attempt, w.buffer[:n])
+				cancel()
 			}
 		}
-		cancel()
 		if err != nil {
 			w.backoff = min(max(2*w.backoff, time.Second), w.RetryMax)
 			w.retryAt = time.Now().Add(w.backoff)
@@ -172,4 +210,5 @@ func (w *Writer[E]) write(ctx context.Context, now bool) {
 		w.buffer, w.backoff = w.buffer[n:], 0
 	}
 	w.buffer = nil
+	w.checkpointSoon(ctx)
 }

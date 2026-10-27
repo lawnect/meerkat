@@ -108,6 +108,7 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/session/second-factor", s.secondFactor)
 	mux.HandleFunc("DELETE /api/v1/session", s.logout)
 	mux.HandleFunc("GET /api/v1/audit", s.getAudit)
+	mux.HandleFunc("GET /api/v1/audit/export", s.exportAudit)
 	mux.HandleFunc("GET /api/v1/security/rate-limit", s.getRateLimit)
 	mux.HandleFunc("PUT /api/v1/security/rate-limit", s.putRateLimit)
 	mux.HandleFunc("GET /api/v1/security/connection-limits", s.getConnectionLimits)
@@ -163,10 +164,17 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/security/access-policies", s.getAccessPolicies)
 	mux.HandleFunc("PUT /api/v1/security/access-policies", s.putAccessPolicies)
 	mux.HandleFunc("GET /api/v1/observe/access-metrics", s.getAccessMetrics)
+	mux.HandleFunc("GET /api/v1/observe/latency", s.getLatency)
 	mux.HandleFunc("GET /api/v1/observe/access-log", s.getAccessLog)
 	mux.HandleFunc("PUT /api/v1/observe/access-log", s.putAccessLog)
+	mux.HandleFunc("GET /api/v1/observe/access-log/export", s.exportAccessLog)
 	mux.HandleFunc("GET /api/v1/observe/failure-log", s.getFailureLog)
 	mux.HandleFunc("PUT /api/v1/observe/failure-log", s.putFailureLog)
+	mux.HandleFunc("GET /api/v1/observe/failure-log/export", s.exportFailureLog)
+	mux.HandleFunc("GET /api/v1/observe/request-log", s.getRequestLog)
+	mux.HandleFunc("PUT /api/v1/observe/request-log", s.putRequestLog)
+	mux.HandleFunc("GET /api/v1/observe/request-log/export", s.exportRequestLog)
+	mux.HandleFunc("GET /api/v1/observe/request-log/top", s.getRequestTop)
 	mux.HandleFunc("GET /api/v1/security/access-tokens", s.getAccessTokens)
 	mux.HandleFunc("POST /api/v1/security/access-tokens", s.createAccessToken)
 	mux.HandleFunc("PUT /api/v1/security/access-tokens/{id}", s.updateAccessToken)
@@ -1332,6 +1340,9 @@ func (s *Store) list(w http.ResponseWriter, r *http.Request) {
 					connectors[i].LastSeen = record.LastSeen.UTC().Format(time.RFC3339)
 				} else if record.LastHeartbeat != nil {
 					connectors[i].LastSeen = record.LastHeartbeat.ObservedAt.UTC().Format(time.RFC3339)
+				}
+				if record.LastHeartbeat != nil {
+					connectors[i].Version = record.LastHeartbeat.Version
 				}
 			}
 		}
