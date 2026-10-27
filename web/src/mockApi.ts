@@ -1,5 +1,5 @@
 import type { AccessCounts, AccessLogEntry, AccessMetrics, AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, FailureCause, FailureLogEntry, LogSettings, LogView, Outlet, Route, Service, SsoSettings, Target, UsageBucket, UsageSeries, UsageUnit } from './types';
-import { accessDecisions, accessMethods, failureCauses } from './types';
+import { accessDecisions, accessMethods, accessRequesters, failureCauseGroups, failureCauses, refusedCauses, serviceCauses } from './types';
 
 const now = (): string => new Date().toISOString();
 const ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
@@ -669,6 +669,7 @@ interface MockLog<Entry> {
   settings: LogSettings;
   available: boolean;
   dropped: number;
+  suppressed: number; // routine entries over a client's budget, counted but not logged
   entries: Entry[]; // newest first
 }
 
@@ -688,16 +689,17 @@ const accessLog: MockLog<AccessLogEntry> = {
   settings: { enabled: true, max_mib: 256, retention_days: 30 },
   available: true,
   dropped: 0,
+  suppressed: 0,
   entries: mockEntries(420, (index, at, roll): AccessLogEntry => {
-    const base = { id: 5000 - index, at, host: 'vault.example.test', client: clientIp(roll(1)), email: '', token: '' };
+    const base = { id: 5000 - index, at, host: 'vault.example.test', client: clientIp(roll(1)), email: '', token: '', routine: true };
     const kind = Math.floor(roll(2) * 9);
-    if (kind === 0) return { ...base, method: 'POST', path: '/v1/secret/data/app', policy: 'vault-api', decision: 'passed', reason: 'bypass', token: 'deploybot' };
-    if (kind === 1) return { ...base, method: 'GET', path: '/v1/sys/health', policy: 'vault-api', decision: 'passed', reason: 'bypass', token: 'monitor' };
+    if (kind === 0) return { ...base, method: 'POST', path: '/v1/secret/data/app', policy: 'vault-api', decision: 'passed', reason: 'bypass', token: 'deploybot', routine: false };
+    if (kind === 1) return { ...base, method: 'GET', path: '/v1/sys/health', policy: 'vault-api', decision: 'passed', reason: 'bypass', token: 'monitor', routine: false };
     if (kind === 2) return { ...base, method: 'GET', path: '/ui/', policy: 'vault', decision: 'challenged', reason: 'no_session' };
-    if (kind === 3) return { ...base, method: 'GET', path: '/ui/vault/secrets', policy: 'vault', decision: 'passed', reason: 'session', email: 'alice@example.test' };
-    if (kind === 4) return { ...base, method: 'GET', path: '/ui/vault/policies/acl/' + 'team-'.repeat(1 + Math.floor(roll(3) * 12)) + 'readers', policy: 'vault', decision: 'passed', reason: 'session', email: 'bob@example.test' };
-    if (kind === 5) return { ...base, method: 'GET', path: '/ui/vault/auth', policy: 'vault', decision: 'denied', reason: 'not_allowed', email: 'contractor@partner.example' };
-    if (kind === 6) return { ...base, method: 'POST', path: '/v1/auth/token/create', policy: 'vault-api', decision: 'denied', reason: 'token_expired', token: 'monitor' };
+    if (kind === 3) return { ...base, method: 'GET', path: '/ui/vault/secrets', policy: 'vault', decision: 'passed', reason: 'session', email: 'alice@example.test', routine: false };
+    if (kind === 4) return { ...base, method: 'GET', path: '/ui/vault/policies/acl/' + 'team-'.repeat(1 + Math.floor(roll(3) * 12)) + 'readers', policy: 'vault', decision: 'passed', reason: 'session', email: 'bob@example.test', routine: false };
+    if (kind === 5) return { ...base, method: 'GET', path: '/ui/vault/auth', policy: 'vault', decision: 'denied', reason: 'not_allowed', email: 'contractor@partner.example', routine: false };
+    if (kind === 6) return { ...base, method: 'POST', path: '/v1/auth/token/create', policy: 'vault-api', decision: 'denied', reason: 'token_expired', token: 'monitor', routine: false };
     if (kind === 7) return { ...base, method: 'PUT', path: '/v1/sys/policy/admin', policy: 'vault-api', decision: 'denied', reason: 'token_invalid' };
     return { ...base, method: 'GET', path: '/old/console', policy: REMOVED_POLICY, decision: 'denied', reason: 'blocked' };
   }),
@@ -730,6 +732,7 @@ const failureLog: MockLog<FailureLogEntry> = {
   settings: { enabled: true, max_mib: 256, retention_days: 30 },
   available: true,
   dropped: 7,
+  suppressed: 2345,
   entries: mockEntries(360, (index, at, roll): FailureLogEntry => {
     const total = failureCauses.reduce((sum, cause) => sum + FAILURE_SHAPES[cause].weight, 0);
     let target = roll(4) * total;
@@ -744,6 +747,7 @@ const failureLog: MockLog<FailureLogEntry> = {
       cause, status: pick(shape.statuses, roll(9)),
       service: cause === 'no_service' || (refused && roll(10) < 0.4) ? '' : service,
       duration_ms: shape.duration(roll(11)),
+      routine: (refusedCauses as readonly string[]).includes(cause),
     };
   }),
 };
@@ -756,6 +760,15 @@ function logPageParam(params: URLSearchParams, name: string, fallback: number, m
   return number;
 }
 
+// `q` is at most 128 bytes and matches a case-insensitive substring of the given columns.
+function logSearch(params: URLSearchParams): string {
+  const q = params.get('q') ?? '';
+  if (new TextEncoder().encode(q).length > 128) fail('invalid_log_filter');
+  return q.toLowerCase();
+}
+
+const includesText = (q: string, ...values: string[]): boolean => !q || values.some((value) => value.toLowerCase().includes(q));
+
 function logView<Entry>(log: MockLog<Entry>, params: URLSearchParams, matches: (entry: Entry) => boolean): LogView<Entry> {
   const page = logPageParam(params, 'page', 1, Number.MAX_SAFE_INTEGER);
   const perPage = logPageParam(params, 'per_page', 50, 200);
@@ -767,6 +780,7 @@ function logView<Entry>(log: MockLog<Entry>, params: URLSearchParams, matches: (
     available: log.available,
     size_bytes: sizeBytes,
     dropped: log.dropped,
+    suppressed: log.suppressed,
     total: matched.length,
     entries: matched.slice((page - 1) * perPage, page * perPage),
   });
@@ -793,8 +807,12 @@ function observe(path: string, method: string, params: URLSearchParams, input: u
     if (method === 'GET') {
       const decision = params.get('decision') ?? '';
       const policy = params.get('policy') ?? '';
+      const who = params.get('who') ?? '';
+      const q = logSearch(params);
       if (decision && !(accessDecisions as readonly string[]).includes(decision)) fail('invalid_log_filter');
-      return logView(accessLog, params, (entry) => (!decision || entry.decision === decision) && (!policy || entry.policy === policy));
+      if (who && !(accessRequesters as readonly string[]).includes(who)) fail('invalid_log_filter');
+      return logView(accessLog, params, (entry) => (!decision || entry.decision === decision) && (!policy || entry.policy === policy)
+        && (!who || entry.routine === (who === 'anonymous')) && includesText(q, entry.host, entry.path, entry.client, entry.email, entry.token));
     }
   }
   if (path === '/api/v1/observe/failure-log') {
@@ -805,8 +823,11 @@ function observe(path: string, method: string, params: URLSearchParams, input: u
     if (method === 'GET') {
       const cause = params.get('cause') ?? '';
       const host = params.get('host') ?? '';
-      if (cause && !(failureCauses as readonly string[]).includes(cause)) fail('invalid_log_filter');
-      return logView(failureLog, params, (entry) => (!cause || entry.cause === cause) && (!host || entry.host === host));
+      const q = logSearch(params);
+      if (cause && !(failureCauses as readonly string[]).includes(cause) && !(failureCauseGroups as readonly string[]).includes(cause)) fail('invalid_log_filter');
+      // `service` and `refused` stand for the four and the five causes of each group.
+      const causes: readonly string[] = cause === 'service' ? serviceCauses : cause === 'refused' ? refusedCauses : cause ? [cause] : [];
+      return logView(failureLog, params, (entry) => (!causes.length || causes.includes(entry.cause)) && (!host || entry.host === host) && includesText(q, entry.host, entry.path, entry.client, entry.service));
     }
   }
   return fail('not_found');

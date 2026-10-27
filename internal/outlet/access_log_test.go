@@ -114,7 +114,40 @@ func TestAccessLog(t *testing.T) {
 	if next := read("?per_page=4&page=2"); len(next.Entries) != 2 || next.Total != 6 || next.Entries[0].ID >= first.Entries[3].ID {
 		t.Fatalf("second page: %+v", next)
 	}
-	for _, query := range []string{"?decision=maybe", "?page=0", "?page=x", "?per_page=0", "?per_page=201"} {
+	// Entries that name no one are routine; the log can be asked for either kind, or searched.
+	for i, routine := range []bool{false, false, true, true, false, true} {
+		if view.Entries[i].Routine != routine {
+			t.Fatalf("entry %d is routine: %v", i, view.Entries[i].Routine)
+		}
+	}
+	for _, c := range []struct {
+		query string
+		total int
+	}{
+		{"?who=named", 3},
+		{"?who=anonymous", 3},
+		{"?who=", 6},
+		{"?who=named&decision=denied", 1},
+		{"?who=anonymous&decision=denied", 2},
+		{"?q=bob", 1},
+		{"?q=CORP.EXAMPLE", 2},
+		{"?q=198.51.100.9", 2},
+		{"?q=/internal", 1},
+		{"?q=" + created.Token.ID, 1},
+		{"?q=workspace", 4},
+		{"?q=workspace&who=anonymous", 2},
+		{"?q=%25", 0},
+		{"?q=nobody", 0},
+		{"?q=" + strings.Repeat("a", 128), 0},
+	} {
+		if view := read(c.query); view.Total != c.total || len(view.Entries) != c.total {
+			t.Fatalf("%s: %d entries of %d, want %d", c.query, len(view.Entries), view.Total, c.total)
+		}
+	}
+	if w := request(h, "GET", "/api/v1/observe/access-log?who=anonymous&per_page=1", f.admin, nil); !strings.Contains(w.Body.String(), `"suppressed":0`) || !strings.Contains(w.Body.String(), `"routine":true`) {
+		t.Fatalf("view: %s", w.Body.String())
+	}
+	for _, query := range []string{"?decision=maybe", "?who=maybe", "?who=named,anonymous", "?q=" + strings.Repeat("a", 129), "?page=0", "?page=x", "?per_page=0", "?per_page=201"} {
 		if w := request(h, "GET", "/api/v1/observe/access-log"+query, f.admin, nil); w.Code != 400 {
 			t.Fatalf("%s: %d", query, w.Code)
 		}
@@ -129,5 +162,40 @@ func TestAccessLog(t *testing.T) {
 	}
 	if w := request(h, "GET", "/api/v1/observe/access-log", "", nil); w.Code != 401 {
 		t.Fatalf("without a session: %d", w.Code)
+	}
+}
+
+// A client that floods the log with refusals gets 60 a minute kept and the
+// rest counted, and nothing changes for the client: it is refused all the
+// same. People who sign in are logged whatever the flood.
+func TestAccessLogSuppressesAFlood(t *testing.T) {
+	f := newAccessFixture(t)
+	policies := func(users ...string) {
+		f.setPolicies(t,
+			control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/internal/"}}},
+			control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: users},
+		)
+	}
+	// Alice signs in, and then is no longer allowed.
+	policies("@corp.example.com")
+	alice, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
+	policies("bob@corp.example.com")
+	if w := request(f.store.Handler(), "PUT", "/api/v1/observe/access-log", f.admin, map[string]any{"enabled": true, "max_mib": 64, "retention_days": 7}); w.Code != 200 {
+		t.Fatalf("turn on: %d", w.Code)
+	}
+	refused := f.visit("app.example.com", "/internal/x").Code
+	for range 69 {
+		if code := f.visit("app.example.com", "/internal/x").Code; code != refused {
+			t.Fatalf("a refusal that was not logged: %d, want %d", code, refused)
+		}
+	}
+	for range 70 {
+		f.visit("app.example.com", "/workspace", alice)
+	}
+	if view := readLog[accessEntry](t, f.proxyFixture, "access-log", ""); view.Total != 60+70 || view.Suppressed != 10 || view.Dropped != 0 {
+		t.Fatalf("log: %d entries, %d suppressed, %d dropped", view.Total, view.Suppressed, view.Dropped)
+	}
+	if view := readLog[accessEntry](t, f.proxyFixture, "access-log", "?who=named"); view.Total != 70 || view.Entries[0].Email != "alice@corp.example.com" {
+		t.Fatalf("named: %+v", view)
 	}
 }

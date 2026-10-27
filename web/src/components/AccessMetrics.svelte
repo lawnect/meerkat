@@ -1,22 +1,27 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { createColumnHelper, createTable, renderComponent, renderSnippet } from '@tanstack/svelte-table';
   import * as Alert from '$lib/components/ui/alert/index.js';
   import { Badge } from '$lib/components/ui/badge/index.js';
   import * as Card from '$lib/components/ui/card/index.js';
   import * as Empty from '$lib/components/ui/empty/index.js';
   import { Spinner } from '$lib/components/ui/spinner/index.js';
-  import * as Table from '$lib/components/ui/table/index.js';
   import * as ToggleGroup from '$lib/components/ui/toggle-group/index.js';
   import { api, errorMessage } from '../api';
   import { intlLocale, translations } from '../i18n.svelte';
   import { Shield20, Warning } from '../icons';
   import { axisLabel, bucketTitle, createPeriod, trackPeriod } from '../period.svelte';
   import type { AccessAction, AccessCounts, AccessMetrics, AccessPoliciesView, AccessPolicy } from '../types';
+  import DataTable from './data-table/DataTable.svelte';
+  import { features, type DataTableFeatures } from './data-table/features';
+  import SortHeader from './data-table/SortHeader.svelte';
+  import { urlTableState } from './data-table/urlTable.svelte';
   import InfoTooltip from './InfoTooltip.svelte';
   import PeriodControls from './PeriodControls.svelte';
   import TrendChart from './TrendChart.svelte';
 
   // 관찰의 지표 탭. 접근 정책이 판정한 요청을 통과·로그인 요구·거부로 나눠 기간의 추이와 정책별 합계로 보여 줍니다.
+  // 정책별 합계는 shadcn Data Table 구성(클라이언트 표)이며 판정 열로 정렬합니다(?sort=denied.desc, 기본은 정책 순서).
   // 기간(단위, 기준 날짜, 자동 새로고침)은 대시보드의 트래픽 카드와 같은 PeriodControls·period.svelte.ts를 쓰고 주소(?unit=&date=&live=)가 단일 출처입니다.
   type Outcome = keyof AccessCounts;
 
@@ -94,7 +99,7 @@
     return buckets.filter((_, index) => index % every === 0).map((bucket) => new Date(bucket.start));
   });
 
-  // 정책별 합계는 지금 정책 순서대로 보여 주고, 지워진 정책의 판정은 한 줄로 모읍니다.
+  // 정책별 합계는 지금 정책 순서대로 보여 주고, 지워진 정책의 판정은 한 줄로 모읍니다(정렬해도 맨 아래).
   const zero: AccessCounts = { passed: 0, challenged: 0, denied: 0 };
   const removed = $derived.by(() => {
     const current = new Set(policies?.map((policy) => policy.id));
@@ -105,7 +110,63 @@
     return outcomes.some((outcome) => sum[outcome]) ? sum : null;
   });
   const number = (value: number) => value.toLocaleString(intlLocale());
+
+  type PolicyRow = { id: string; order: number; policy: AccessPolicy | null; counts: AccessCounts };
+  const rows = $derived<PolicyRow[]>([
+    ...(policies ?? []).map((policy, index) => ({ id: policy.id, order: index + 1, policy, counts: metrics?.policies[policy.id] ?? zero })),
+    ...(removed ? [{ id: 'removed', order: 0, policy: null, counts: removed }] : []),
+  ]);
+  const columnHelper = createColumnHelper<DataTableFeatures, PolicyRow>();
+  type SortColumn = { getIsSorted: () => false | 'asc' | 'desc'; getToggleSortingHandler: () => ((event: unknown) => void) | undefined };
+  const sortHeader = (column: SortColumn, label: string) => renderComponent(SortHeader, { label, sorted: column.getIsSorted(), onclick: column.getToggleSortingHandler(), align: 'end' });
+  const columns = columnHelper.columns([
+    columnHelper.accessor('order', { header: () => renderSnippet(orderHead), cell: ({ row }) => renderSnippet(orderCell, row.original), enableSorting: false, meta: { class: 'w-12' } }),
+    columnHelper.accessor((row) => row.policy?.name ?? '', { id: 'name', header: () => t().name, cell: ({ row }) => renderSnippet(nameCell, row.original), enableSorting: false }),
+    columnHelper.accessor((row) => row.policy?.action ?? '', { id: 'action', header: () => t().action, cell: ({ row }) => renderSnippet(actionCell, row.original), enableSorting: false }),
+    // 지워진 정책 줄은 값이 없는 것으로 보고 정렬 방향과 관계없이 맨 아래에 둡니다.
+    ...outcomes.map((outcome) => columnHelper.accessor((row) => (row.policy ? row.counts[outcome] : undefined), {
+      id: outcome,
+      header: ({ column }) => sortHeader(column, t().outcomes[outcome]),
+      cell: ({ row }) => renderSnippet(countCell, { row: row.original, outcome }),
+      sortFn: 'basic',
+      sortUndefined: 'last',
+      meta: { class: 'text-right' },
+    })),
+  ]);
+  // 정책 수만큼 한 번에 보여 주므로 페이지로 나누지 않습니다.
+  const urlTable = urlTableState({ filters: [], sortable: outcomes, defaultSort: [], pageSize: Number.MAX_SAFE_INTEGER });
+  const table = createTable({
+    features,
+    get data() { return rows; },
+    columns,
+    getRowId: (row) => row.id,
+    sortDescFirst: false,
+    ...urlTable.handlers,
+    get state() { return urlTable.state; },
+  });
 </script>
+
+{#snippet orderHead()}<span class="sr-only">#</span>{/snippet}
+
+{#snippet orderCell(row: PolicyRow)}
+  <span class="text-muted-foreground tabular-nums">{row.order ? number(row.order) : ''}</span>
+{/snippet}
+
+{#snippet nameCell(row: PolicyRow)}
+  {#if row.policy}
+    <span class={['block max-w-64 truncate font-medium', !row.policy.enabled && 'text-muted-foreground']}>{row.policy.name}</span>
+  {:else}
+    <span class="text-muted-foreground">{t().removed}</span>
+  {/if}
+{/snippet}
+
+{#snippet actionCell(row: PolicyRow)}
+  {#if row.policy}<Badge variant={row.policy.action === 'block' ? 'destructive' : row.policy.action === 'bypass' ? 'secondary' : 'outline'} class="select-none">{t().actions[row.policy.action]}</Badge>{/if}
+{/snippet}
+
+{#snippet countCell({ row, outcome }: { row: PolicyRow; outcome: Outcome })}
+  <span class={['tabular-nums', (!row.counts[outcome] || !(row.policy?.enabled ?? false)) && 'text-muted-foreground']}>{number(row.counts[outcome])}</span>
+{/snippet}
 
 <Card.Root size="sm" role="region" aria-labelledby="access-metrics-title">
   <Card.Header class="@max-md/card-header:grid-cols-1 @max-md/card-header:gap-3">
@@ -159,40 +220,7 @@
     {:else if !ready || !policies}
       {#if !loadError}<div class="flex justify-center py-8"><Spinner /></div>{/if}
     {:else if policies.length || removed}
-      <div class="overflow-x-auto border">
-        <Table.Root>
-          <Table.Header class="bg-muted">
-            <Table.Row class="hover:bg-transparent">
-              <Table.Head class="w-12 pl-4"><span class="sr-only">#</span></Table.Head>
-              <Table.Head>{t().name}</Table.Head>
-              <Table.Head>{t().action}</Table.Head>
-              {#each outcomes as outcome (outcome)}<Table.Head class="text-right last:pr-4">{t().outcomes[outcome]}</Table.Head>{/each}
-            </Table.Row>
-          </Table.Header>
-          <Table.Body>
-            {#each policies as policy, index (policy.id)}
-              {@const counts = metrics?.policies[policy.id] ?? zero}
-              <Table.Row class={[!policy.enabled && 'text-muted-foreground']}>
-                <Table.Cell class="pl-4 text-muted-foreground tabular-nums">{number(index + 1)}</Table.Cell>
-                <Table.Cell><span class="block max-w-64 truncate font-medium">{policy.name}</span></Table.Cell>
-                <Table.Cell><Badge variant={policy.action === 'block' ? 'destructive' : policy.action === 'bypass' ? 'secondary' : 'outline'} class="select-none">{t().actions[policy.action]}</Badge></Table.Cell>
-                {#each outcomes as outcome (outcome)}
-                  <Table.Cell class={['text-right tabular-nums last:pr-4', !counts[outcome] && 'text-muted-foreground']}>{number(counts[outcome])}</Table.Cell>
-                {/each}
-              </Table.Row>
-            {/each}
-            {#if removed}
-              <Table.Row class="text-muted-foreground">
-                <Table.Cell class="pl-4"></Table.Cell>
-                <Table.Cell colspan={2}>{t().removed}</Table.Cell>
-                {#each outcomes as outcome (outcome)}
-                  <Table.Cell class="text-right tabular-nums last:pr-4">{number(removed[outcome])}</Table.Cell>
-                {/each}
-              </Table.Row>
-            {/if}
-          </Table.Body>
-        </Table.Root>
-      </div>
+      <DataTable {table} ariaLabel={t().byPolicy} />
     {:else}
       <Empty.Root class="border border-dashed">
         <Empty.Header>

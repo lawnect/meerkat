@@ -39,14 +39,21 @@ type Limits struct {
 }
 
 // Kind describes one log's entries: their table, the columns after id and
-// at as "name TYPE", the columns queries filter on (each indexed), pointers
-// to an entry's fields for those columns, in order, and to its id and time.
+// at as "name TYPE", the columns queries filter on (each indexed), the ones
+// a text search looks in, pointers to an entry's fields for the columns, in
+// order, to its id and time, and to its routine flag.
+//
+// An entry is routine when anyone can make it happen at will, as a flood
+// would; the rest are notable. The flag has a column of its own, so that
+// shedding can keep notable entries longest.
 type Kind[E any] struct {
 	Table   string
 	Columns []string
 	Filters []string
+	Search  []string
 	Fields  func(*E) []any
 	Stamp   func(*E) (*int64, *time.Time)
+	Routine func(*E) *bool
 }
 
 // Log is one log's database; names are its columns' names.
@@ -61,6 +68,9 @@ type Log[E any] struct {
 func Open[E any](ctx context.Context, path string, kind Kind[E], limits Limits) (*Log[E], error) {
 	if path == "" {
 		return nil, errors.New("event log path is required")
+	}
+	if kind.Routine == nil {
+		return nil, errors.New("event log kind needs its routine flag")
 	}
 	if err := securefs.Directory(filepath.Dir(path)); err != nil {
 		return nil, err
@@ -77,8 +87,10 @@ func Open[E any](ctx context.Context, path string, kind Kind[E], limits Limits) 
 	for i, column := range kind.Columns {
 		columns[i], names[i] = column+" NOT NULL", strings.Fields(column)[0]
 	}
-	statements := []string{fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id INTEGER PRIMARY KEY, at TEXT NOT NULL, %s)", kind.Table, strings.Join(columns, ", ")),
-		fmt.Sprintf("CREATE INDEX IF NOT EXISTS %[1]s_at ON %[1]s(at)", kind.Table)}
+	statements := []string{fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id INTEGER PRIMARY KEY, at TEXT NOT NULL, routine INTEGER NOT NULL, %s)", kind.Table, strings.Join(columns, ", ")),
+		fmt.Sprintf("CREATE INDEX IF NOT EXISTS %[1]s_at ON %[1]s(at)", kind.Table),
+		// Shedding takes the oldest routine entries, and a list can show only them or only the rest.
+		fmt.Sprintf("CREATE INDEX IF NOT EXISTS %[1]s_routine ON %[1]s(routine, id)", kind.Table)}
 	for _, column := range kind.Filters {
 		statements = append(statements, fmt.Sprintf("CREATE INDEX IF NOT EXISTS %[1]s_%[2]s ON %[1]s(%[2]s, id)", kind.Table, column))
 	}
@@ -113,14 +125,14 @@ func (l *Log[E]) Append(ctx context.Context, entries []E) error {
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA max_page_count = %d", max(l.Limits().MaxBytes/pageSize, 1))); err != nil {
 		return err
 	}
-	insert, err := tx.PrepareContext(ctx, fmt.Sprintf("INSERT INTO %s(at, %s) VALUES (?%s)", l.kind.Table, l.names, strings.Repeat(", ?", len(l.kind.Columns))))
+	insert, err := tx.PrepareContext(ctx, fmt.Sprintf("INSERT INTO %s(at, routine, %s) VALUES (?, ?%s)", l.kind.Table, l.names, strings.Repeat(", ?", len(l.kind.Columns))))
 	if err != nil {
 		return err
 	}
 	defer insert.Close()
 	for i := range entries {
 		_, at := l.kind.Stamp(&entries[i])
-		if _, err := insert.ExecContext(ctx, append([]any{at.UTC().Format(time.RFC3339Nano)}, l.kind.Fields(&entries[i])...)...); err != nil {
+		if _, err := insert.ExecContext(ctx, append([]any{at.UTC().Format(time.RFC3339Nano), *l.kind.Routine(&entries[i])}, l.kind.Fields(&entries[i])...)...); err != nil {
 			return full(err)
 		}
 	}
@@ -137,14 +149,30 @@ func full(err error) error {
 }
 
 // Shed forgets the oldest tenth of the entries, so writes fit again: freed
-// pages are reused rather than the file growing.
+// pages are reused rather than the file growing. The routine ones go first,
+// and the notable ones only for what the routine ones can't make up, so a
+// flood can't push out what matters.
 func (l *Log[E]) Shed(ctx context.Context) error {
-	_, err := l.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %[1]s WHERE id <= (SELECT MIN(id) + (MAX(id) - MIN(id)) / 10 FROM %[1]s)", l.kind.Table))
+	var count int64
+	if err := l.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+l.kind.Table).Scan(&count); err != nil {
+		return err
+	}
+	tenth := max(count/10, 1)
+	done, err := l.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %[1]s WHERE id IN (SELECT id FROM %[1]s WHERE routine = 1 ORDER BY id LIMIT ?)", l.kind.Table), tenth)
+	if err != nil {
+		return err
+	}
+	gone, err := done.RowsAffected()
+	if err != nil || gone >= tenth {
+		return err
+	}
+	_, err = l.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %[1]s WHERE id IN (SELECT id FROM %[1]s ORDER BY id LIMIT ?)", l.kind.Table), tenth-gone)
 	return err
 }
 
-// Prune forgets entries older than the retention before now, then sheds
-// the oldest until the file, its free pages given back, fits the cap.
+// Prune forgets entries older than the retention before now, then sheds,
+// routine entries first, until the file, its free pages given back, fits
+// the cap.
 func (l *Log[E]) Prune(ctx context.Context, now time.Time) error {
 	limits := l.Limits()
 	if _, err := l.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE at < ?", l.kind.Table), now.UTC().Add(-limits.Retention).Format(time.RFC3339Nano)); err != nil {
@@ -178,12 +206,19 @@ func (l *Log[E]) Size(ctx context.Context) (int64, error) {
 }
 
 // Query is a page of entries, newest first: those whose Where columns, all
-// filter columns, have the given values, skipping Offset, at most Limit.
+// filter columns, have the given values, that contain Text in a search
+// column, and are routine or not as Routine says (nil: either), skipping
+// Offset, at most Limit.
 type Query struct {
-	Where  map[string]string
-	Offset int
-	Limit  int
+	Where   map[string]string
+	Text    string
+	Routine *bool
+	Offset  int
+	Limit   int
 }
+
+// likeEscaper makes text match itself in a LIKE pattern.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
 // Query returns a page of entries and how many match in all.
 func (l *Log[E]) Query(ctx context.Context, q Query) ([]E, int, error) {
@@ -198,6 +233,17 @@ func (l *Log[E]) Query(ctx context.Context, q Query) ([]E, int, error) {
 			where, args = append(where, column+" = ?"), append(args, value)
 		}
 	}
+	if q.Text != "" && len(l.kind.Search) > 0 {
+		match := make([]string, len(l.kind.Search))
+		for i, column := range l.kind.Search {
+			match[i] = column + ` LIKE ? ESCAPE '\'`
+			args = append(args, "%"+likeEscaper.Replace(q.Text)+"%")
+		}
+		where = append(where, "("+strings.Join(match, " OR ")+")")
+	}
+	if q.Routine != nil {
+		where, args = append(where, "routine = ?"), append(args, *q.Routine)
+	}
 	clause := ""
 	if len(where) > 0 {
 		clause = " WHERE " + strings.Join(where, " AND ")
@@ -206,7 +252,7 @@ func (l *Log[E]) Query(ctx context.Context, q Query) ([]E, int, error) {
 	if err := l.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+l.kind.Table+clause, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := l.db.QueryContext(ctx, fmt.Sprintf("SELECT id, at, %s FROM %s%s ORDER BY id DESC LIMIT ? OFFSET ?", l.names, l.kind.Table, clause), append(args, limit, max(q.Offset, 0))...)
+	rows, err := l.db.QueryContext(ctx, fmt.Sprintf("SELECT id, at, routine, %s FROM %s%s ORDER BY id DESC LIMIT ? OFFSET ?", l.names, l.kind.Table, clause), append(args, limit, max(q.Offset, 0))...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -216,7 +262,7 @@ func (l *Log[E]) Query(ctx context.Context, q Query) ([]E, int, error) {
 		var entry E
 		var at string
 		id, stamp := l.kind.Stamp(&entry)
-		if err := rows.Scan(append([]any{id, &at}, l.kind.Fields(&entry)...)...); err != nil {
+		if err := rows.Scan(append([]any{id, &at, l.kind.Routine(&entry)}, l.kind.Fields(&entry)...)...); err != nil {
 			return nil, 0, err
 		}
 		*stamp, _ = time.Parse(time.RFC3339Nano, at)

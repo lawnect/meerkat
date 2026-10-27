@@ -3,7 +3,9 @@ package outlet
 import (
 	"context"
 	"errors"
+	"hash/maphash"
 	"log/slog"
+	"math"
 	"net/http"
 	"path/filepath"
 	"slices"
@@ -15,14 +17,34 @@ import (
 	"github.com/lawnect/meerkat/internal/eventlog"
 )
 
+const (
+	// routineBudget is how many routine entries one client may add to a log
+	// in a minute: enough for a person's mistakes, far from a flood.
+	routineBudget = 60
+	// budgetSlots is how many clients' budgets a log tells apart. More
+	// clients share slots, which only makes them stricter.
+	budgetSlots = 1024
+)
+
 // outletLog is one of the Outlet's logs: its file, the writer that fills it
 // behind the requests, and its switch. A nil *outletLog, a file that
 // couldn't be opened, logs nothing.
+//
+// Anyone can make routine entries at will, so each client has a budget of
+// them, and the rest are only counted. Without it a flood would fill the
+// queue, and then the file, and push out the entries that matter.
 type outletLog[E any] struct {
 	name    string // control.LogAccess, control.LogFailures
 	log     *eventlog.Log[E]
 	writer  *eventlog.Writer[E]
 	enabled atomic.Bool
+
+	// budget holds, per slot, the minute (high half) and how many routine
+	// entries were added in it (low half); a slot is picked by a hash with
+	// a seed of this process, so a client can't aim at another's slot.
+	budget     [budgetSlots]atomic.Uint64
+	seed       maphash.Seed
+	suppressed atomic.Int64 // routine entries given up for a budget
 }
 
 // openOutletLog opens a log's file in dir and applies its saved settings;
@@ -39,7 +61,7 @@ func openOutletLog[E any](ctx context.Context, db *control.Database, dir, file, 
 		slog.Warn("log unavailable", "log", name, "error", err)
 		return nil
 	}
-	l := &outletLog[E]{name: name, log: log, writer: eventlog.NewWriter[E](log, name, 8192)}
+	l := &outletLog[E]{name: name, log: log, writer: eventlog.NewWriter[E](log, name, 8192), seed: maphash.MakeSeed()}
 	l.enabled.Store(settings.Enabled)
 	return l
 }
@@ -52,6 +74,32 @@ func logLimits(settings control.LogSettings) eventlog.Limits {
 func (l *outletLog[E]) add(entry E) {
 	if l != nil && l.enabled.Load() {
 		l.writer.Add(entry)
+	}
+}
+
+// slot returns the budget of client, a key from clientKey.
+func (l *outletLog[E]) slot(client string) *atomic.Uint64 {
+	return &l.budget[maphash.String(l.seed, client)%budgetSlots]
+}
+
+// allow takes one of client's routine entries for the minute of now, or
+// counts the entry as suppressed when the budget is spent. It takes no lock
+// and never allocates; a minute that passed starts the budget over.
+func (l *outletLog[E]) allow(client string, now time.Time) bool {
+	slot, minute := l.slot(client), uint64(now.Unix()/60)<<32
+	for {
+		packed := slot.Load()
+		used := uint64(0)
+		if packed&^math.MaxUint32 == minute {
+			used = packed & math.MaxUint32
+		}
+		if used >= routineBudget {
+			l.suppressed.Add(1)
+			return false
+		}
+		if slot.CompareAndSwap(packed, minute|(used+1)) {
+			return true
+		}
 	}
 }
 
@@ -75,22 +123,30 @@ func (l *outletLog[E]) close() {
 
 // logView is a page of a log, newest first, with its settings: available
 // says whether its file could be opened, size_bytes how much it takes,
-// dropped how many entries were given up since the Outlet started, and
-// total how many match the filters.
+// dropped how many entries were given up since the Outlet started because
+// the queue was full, suppressed how many routine ones because a client was
+// over its budget, and total how many match the filters.
 type logView[E any] struct {
-	Settings  control.LogSettings `json:"settings"`
-	Available bool                `json:"available"`
-	SizeBytes int64               `json:"size_bytes"`
-	Dropped   int64               `json:"dropped"`
-	Total     int                 `json:"total"`
-	Entries   []E                 `json:"entries"`
+	Settings   control.LogSettings `json:"settings"`
+	Available  bool                `json:"available"`
+	SizeBytes  int64               `json:"size_bytes"`
+	Dropped    int64               `json:"dropped"`
+	Suppressed int64               `json:"suppressed"`
+	Total      int                 `json:"total"`
+	Entries    []E                 `json:"entries"`
 }
 
+// maxLogText is the longest text a log is searched for.
+const maxLogText = 128
+
 // logFilter is a query parameter that filters a log, by the column of the
-// same name, and the values it takes; none means any.
+// same name, and the values it takes; none means any. A group is a value
+// that stands for all the routine entries (true) or all the notable ones
+// (false) and is no column's value; a filter with groups takes nothing else.
 type logFilter struct {
 	name   string
 	values []string
+	groups map[string]bool
 }
 
 // serveLog answers GET for a log: a page of entries matching filters.
@@ -114,16 +170,25 @@ func serveLog[E any](s *Store, w http.ResponseWriter, r *http.Request, name stri
 			*p.into = n
 		}
 	}
-	where := map[string]string{}
+	q := eventlog.Query{Where: map[string]string{}, Text: query.Get("q"), Offset: (page - 1) * perPage, Limit: perPage}
+	if len(q.Text) > maxLogText {
+		fail(w, r, 400, "invalid_log_filter")
+		return
+	}
 	for _, f := range filters {
 		value := query.Get(f.name)
-		if value != "" && (len(value) > 255 || f.values != nil && !slices.Contains(f.values, value)) {
+		routine, group := f.groups[value]
+		if value != "" && (len(value) > 255 || !group && (f.values != nil || f.groups != nil) && !slices.Contains(f.values, value)) {
 			fail(w, r, 400, "invalid_log_filter")
 			return
 		}
-		where[f.name] = value
+		if group {
+			q.Routine = &routine
+		} else {
+			q.Where[f.name] = value
+		}
 	}
-	view, err := logPageOf(r.Context(), s, name, l, eventlog.Query{Where: where, Offset: (page - 1) * perPage, Limit: perPage})
+	view, err := logPageOf(r.Context(), s, name, l, q)
 	if err != nil {
 		fail(w, r, 503, "log_failed")
 		return
@@ -147,7 +212,7 @@ func logPageOf[E any](ctx context.Context, s *Store, name string, l *outletLog[E
 		return view, err
 	}
 	view.SizeBytes, err = l.log.Size(ctx)
-	view.Available, view.Dropped = true, l.writer.Dropped()
+	view.Available, view.Dropped, view.Suppressed = true, l.writer.Dropped(), l.suppressed.Load()
 	return view, err
 }
 

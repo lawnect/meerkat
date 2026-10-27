@@ -34,7 +34,7 @@
 
   // Tabs.Content는 숨겨진 탭도 그려 두므로, 탭마다 같은 주소 query(page, 필터)를 읽는 컴포넌트는 고른 탭에서만 그립니다.
   // 탭을 옮기면 이전 탭의 기간·필터·페이지·검색어는 주소에서 지웁니다.
-  const tabParams = ['unit', 'date', 'live', 'page', 'per_page', 'decision', 'policy', 'cause', 'host', 'q', 'category'];
+  const tabParams = ['unit', 'date', 'live', 'sort', 'page', 'q', 'decision', 'policy', 'who', 'cause', 'host', 'category'];
   function setTab(next: (typeof tabs)[number]): void {
     setParams({ ...Object.fromEntries(tabParams.map((name) => [name, null])), tab: next }, { tab: 'metrics' });
   }

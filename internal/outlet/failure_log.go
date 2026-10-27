@@ -22,16 +22,20 @@ type failureEntry struct {
 	Status     int       `json:"status"`
 	Service    string    `json:"service"`
 	DurationMS int64     `json:"duration_ms"`
+	// Routine entries are refusals: anyone can make them.
+	Routine bool `json:"routine"`
 }
 
 var failureEntries = eventlog.Kind[failureEntry]{
 	Table:   "failure_log",
 	Columns: []string{"host TEXT", "method TEXT", "path TEXT", "client TEXT", "cause TEXT", "status INTEGER", "service TEXT", "duration_ms INTEGER"},
 	Filters: []string{"cause", "host"},
+	Search:  []string{"host", "path", "client", "service"},
 	Fields: func(e *failureEntry) []any {
 		return []any{&e.Host, &e.Method, &e.Path, &e.Client, &e.Cause, &e.Status, &e.Service, &e.DurationMS}
 	},
-	Stamp: func(e *failureEntry) (*int64, *time.Time) { return &e.ID, &e.At },
+	Stamp:   func(e *failureEntry) (*int64, *time.Time) { return &e.ID, &e.At },
+	Routine: func(e *failureEntry) *bool { return &e.Routine },
 }
 
 // What went wrong, as the failure log and the console read it.
@@ -49,6 +53,16 @@ const (
 
 var failureCauses = []string{failAppError, failUnreachable, failTimeout, failNoService, failRateLimited, failBlocked, failTooLong, failTooLarge, failBusy}
 
+// refused says whether the Outlet turned the request away, which anyone can
+// make it do at will, rather than something being wrong with a service.
+func refused(cause string) bool {
+	switch cause {
+	case failRateLimited, failBlocked, failTooLong, failTooLarge, failBusy:
+		return true
+	}
+	return false
+}
+
 // failureStart is when a public request began, for the duration of a
 // failure; zero while the log is off, so a request pays one atomic load.
 func (s *Store) failureStart() time.Time {
@@ -60,8 +74,9 @@ func (s *Store) failureStart() time.Time {
 
 // logFailure records a public request that failed or was refused, when the
 // failure log is on: began is from failureStart, status what the client got,
-// service the one that answered or was tried last, if any. It never waits
-// and never fails the request.
+// service the one that answered or was tried last, if any. Refusals are
+// routine, so each client gets a budget of them. It never waits and never
+// fails the request.
 func (s *Store) logFailure(r *http.Request, host string, began time.Time, cause string, status int, service string) {
 	l := s.logs.failures
 	if !l.on() {
@@ -69,11 +84,16 @@ func (s *Store) logFailure(r *http.Request, host string, began time.Time, cause 
 	}
 	defer keepResponse()
 	ip, _ := requestOrigin(r)
+	now := s.now()
+	routine := refused(cause)
+	if routine && !l.allow(clientKey(ip), now) {
+		return
+	}
 	var took time.Duration
 	if !began.IsZero() {
 		took = time.Since(began)
 	}
-	l.add(failureEntry{At: s.now(), Host: host, Method: eventlog.Clip(r.Method, 16), Path: eventlog.Clip(r.URL.Path, 512), Client: ip, Cause: cause, Status: status, Service: service, DurationMS: took.Milliseconds()})
+	l.add(failureEntry{At: now, Host: host, Method: eventlog.Clip(r.Method, 16), Path: eventlog.Clip(r.URL.Path, 512), Client: ip, Cause: cause, Status: status, Service: service, DurationMS: took.Milliseconds(), Routine: routine})
 }
 
 // logTurnedAway records a refusal made before the address is looked up, the
@@ -103,7 +123,7 @@ func keepResponse() {
 }
 
 func (s *Store) getFailureLog(w http.ResponseWriter, r *http.Request) {
-	serveLog(s, w, r, control.LogFailures, s.logs.failures, logFilter{"cause", failureCauses}, logFilter{name: "host"})
+	serveLog(s, w, r, control.LogFailures, s.logs.failures, logFilter{name: "cause", values: failureCauses, groups: map[string]bool{"service": false, "refused": true}}, logFilter{name: "host"})
 }
 
 func (s *Store) putFailureLog(w http.ResponseWriter, r *http.Request) {

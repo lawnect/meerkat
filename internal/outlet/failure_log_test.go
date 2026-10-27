@@ -125,8 +125,33 @@ func TestFailureLogCauses(t *testing.T) {
 	if got := failureLines(view.Entries); !slices.Equal(got, want) || view.Total != len(want) {
 		t.Fatalf("log (%d):\n%s\nwant:\n%s", view.Total, strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	if !view.Settings.Enabled || !view.Available || view.Dropped != 0 || view.SizeBytes == 0 {
+	if !view.Settings.Enabled || !view.Available || view.Dropped != 0 || view.Suppressed != 0 || view.SizeBytes == 0 {
 		t.Fatalf("view: %+v", view)
+	}
+	// Refusals are routine, anyone can have them; the rest mean a service is in trouble. The log
+	// can be asked for either group, or searched.
+	for _, e := range view.Entries {
+		if routine := slices.Contains([]string{"rate_limited", "blocked", "too_long", "too_large", "busy"}, e.Cause); e.Routine != routine {
+			t.Fatalf("%s is routine: %v", e.Cause, e.Routine)
+		}
+	}
+	for _, c := range []struct {
+		query string
+		total int
+	}{
+		{"?cause=service", 5},
+		{"?cause=refused", 5},
+		{"?cause=timeout", 1},
+		{"?q=svc-", 5},
+		{"?q=SVC-0", 2},
+		{"?q=limited", 1},
+		{"?cause=service&q=slow", 1},
+		{"?cause=refused&q=big", 2},
+		{"?cause=refused&q=svc-0", 0},
+	} {
+		if got := f.failureLog(t, c.query); got.Total != c.total || len(got.Entries) != c.total {
+			t.Fatalf("%s: %d entries of %d, want %d", c.query, len(got.Entries), got.Total, c.total)
+		}
 	}
 	entries := slices.Clone(view.Entries)
 	slices.Reverse(entries)
@@ -353,6 +378,14 @@ func TestFailureLogAPI(t *testing.T) {
 		{"?cause=blocked&host=other.example.com", 2},
 		{"?cause=too_long&host=other.example.com", 1},
 		{"?host=nowhere.example.com", 0},
+		{"?cause=refused", 7},
+		{"?cause=service", 0},
+		{"?cause=refused&host=other.example.com", 3},
+		{"?q=other", 3},
+		{"?q=.ENV", 2},
+		{"?q=198.51.100.30", 7},
+		{"?q=%25", 0},
+		{"?cause=blocked&q=other", 2},
 	} {
 		if view := read(c.query); view.Total != c.total || len(view.Entries) != c.total {
 			t.Fatalf("%s: %d entries of %d, want %d", c.query, len(view.Entries), view.Total, c.total)
@@ -364,7 +397,15 @@ func TestFailureLogAPI(t *testing.T) {
 		second.Entries[0].ID >= first.Entries[2].ID || third.Entries[0].ID >= second.Entries[2].ID {
 		t.Fatalf("pages: %+v %+v %+v", first, second, third)
 	}
-	for _, query := range []string{"?cause=maybe", "?cause=", "?page=0", "?page=x", "?per_page=0", "?per_page=201", "?host=" + strings.Repeat("a", 256)} {
+	for _, e := range read("").Entries {
+		if !e.Routine {
+			t.Fatalf("a refusal that is not routine: %+v", e)
+		}
+	}
+	if w := request(h, "GET", "/api/v1/observe/failure-log?per_page=1", f.admin, nil); !strings.Contains(w.Body.String(), `"suppressed":0`) || !strings.Contains(w.Body.String(), `"routine":true`) {
+		t.Fatalf("view: %s", w.Body.String())
+	}
+	for _, query := range []string{"?cause=maybe", "?cause=", "?cause=refused,service", "?q=" + strings.Repeat("a", 129), "?page=0", "?page=x", "?per_page=0", "?per_page=201", "?host=" + strings.Repeat("a", 256)} {
 		w := request(h, "GET", "/api/v1/observe/failure-log"+query, f.admin, nil)
 		if query == "?cause=" {
 			// An empty filter is no filter.
@@ -382,6 +423,45 @@ func TestFailureLogAPI(t *testing.T) {
 	}
 	if w := request(h, "PUT", "/api/v1/observe/failure-log", "", on); w.Code != 401 {
 		t.Fatalf("save without a session: %d", w.Code)
+	}
+}
+
+// A client that floods the log with refusals gets 60 a minute kept and the
+// rest counted, and nothing changes for the client: it is refused all the
+// same. Another client's refusals, and a service's failures, are logged
+// whatever the flood.
+func TestFailureLogSuppressesAFlood(t *testing.T) {
+	f := newProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) }))
+	f.route(t, 0, "app.example.com")
+	f.failureLogging(t, true)
+	for range 70 {
+		if w := f.hit("GET", "app.example.com", "/.env", nil); w.Code != 403 {
+			t.Fatalf("a refusal that was not logged: %d", w.Code)
+		}
+	}
+	if view := f.failureLog(t, ""); view.Total != 60 || view.Suppressed != 10 || view.Dropped != 0 {
+		t.Fatalf("after the flood: %d entries, %d suppressed, %d dropped", view.Total, view.Suppressed, view.Dropped)
+	}
+	// Another client, one with a budget of its own.
+	other := apart(f.store.logs.failures.slot, "203.0.113.%d", "203.0.113.5")
+	if code, _ := f.from("GET", "app.example.com", other, ""); code != 500 {
+		t.Fatalf("app: %d", code)
+	}
+	r := httptest.NewRequest("GET", "/.git/config", nil)
+	r.Host = "app.example.com"
+	r.Header.Set("X-Forwarded-For", other)
+	f.handler.ServeHTTP(httptest.NewRecorder(), r)
+	for range 70 {
+		f.hit("GET", "app.example.com", "/", nil)
+	}
+	if view := f.failureLog(t, ""); view.Total != 60+1+1+70 || view.Suppressed != 10 {
+		t.Fatalf("after the app failed: %d entries, %d suppressed", view.Total, view.Suppressed)
+	}
+	if view := f.failureLog(t, "?cause=service"); view.Total != 71 || view.Entries[0].Routine {
+		t.Fatalf("service: %+v", view)
+	}
+	if view := f.failureLog(t, "?cause=refused"); view.Total != 61 || !view.Entries[0].Routine {
+		t.Fatalf("refused: %+v", view)
 	}
 }
 

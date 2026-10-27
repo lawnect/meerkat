@@ -127,7 +127,6 @@ export { default as ArrowSortDown } from '~icons/fluent/arrow-sort-down-16-regul
 export { default as Search20 } from '~icons/fluent/search-20-regular';
 export { default as DataTrending } from '~icons/fluent/data-trending-16-regular';
 export { default as ArrowReset20 } from '~icons/fluent/arrow-reset-20-regular';
-export { default as FilterDismiss } from '~icons/fluent/filter-dismiss-16-regular';
 export { default as ArrowUndo } from '~icons/fluent/arrow-undo-16-regular';
 export { default as Save } from '~icons/fluent/save-16-regular';
 export { default as Settings } from '~icons/fluent/settings-16-regular';

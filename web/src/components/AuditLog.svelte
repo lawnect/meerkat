@@ -1,26 +1,30 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+  import { type FilterFn, createColumnHelper, createTable, renderSnippet } from '@tanstack/svelte-table';
   import * as Alert from '$lib/components/ui/alert/index.js';
   import { Badge } from '$lib/components/ui/badge/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import * as Empty from '$lib/components/ui/empty/index.js';
-  import * as InputGroup from '$lib/components/ui/input-group/index.js';
   import * as NativeSelect from '$lib/components/ui/native-select/index.js';
   import { Skeleton } from '$lib/components/ui/skeleton/index.js';
-  import * as Table from '$lib/components/ui/table/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import { api, errorMessage } from '../api';
   import { formatClock, formatDay } from '../format';
-  import { untrack } from 'svelte';
   import { translations } from '../i18n.svelte';
-  import { intParam, oneOf, param, setParams } from '../urlState.svelte';
-  import { ArrowReset20, History20, Search, Warning } from '../icons';
-  import type { AuditPage } from '../types';
-  import PaginationBar from './PaginationBar.svelte';
+  import { ArrowReset20, History20, Warning } from '../icons';
+  import type { AuditEvent, AuditPage } from '../types';
+  import DataTable from './data-table/DataTable.svelte';
+  import DataTablePagination from './data-table/DataTablePagination.svelte';
+  import DataTableSearch from './data-table/DataTableSearch.svelte';
+  import { features, type DataTableFeatures } from './data-table/features';
+  import { urlTableState } from './data-table/urlTable.svelte';
+  import IconButton from './IconButton.svelte';
   import TruncateText from './TruncateText.svelte';
 
-  // 감사 로그. 서버가 페이지를 나눠 주므로 표 아래 Pagination이 offset을 바꿔 다시 불러옵니다.
+  // 감사 로그. 서버가 거르고 페이지를 나눠 주므로 표는 manualFiltering·manualPagination이고(rowCount는 서버의 total), 페이지가 바뀌면 offset을 바꿔 다시 불러옵니다.
   // 기록은 서버에서 지울 수 없게 막혀 있어 이 화면에도 삭제 기능이 없습니다.
   const t = translations({
+    title: 'Audit log',
     search: 'Search by user, target or detail',
     category: 'Category',
     categories: { '': 'All actions', 'session.': 'Sign-in', 'setup.': 'Setup', 'connector.': 'Tunnels', 'service.': 'Services', 'route.': 'Public addresses', 'domain.': 'Domains', 'tunnel.': 'Tunnel address', 'telegram.': 'Telegram', 'alert_rules.': 'Alert rules', 'second_factor.': 'Two-step verification', 'security.': 'Security limits', 'access.': 'Access protection', 'observe.': 'Observe' } as Record<string, string>,
@@ -45,6 +49,7 @@
     empty: 'No matching records',
     loadFailed: (code: string) => `Couldn't load the audit log: ${code}`,
   }, {
+    title: '감사 로그',
     search: '사용자, 대상, 내용 검색',
     category: '분류',
     categories: { '': '모든 작업', 'session.': '로그인', 'setup.': '초기 설정', 'connector.': '터널', 'service.': '서비스', 'route.': '공개 주소', 'domain.': '도메인', 'tunnel.': '터널 주소', 'telegram.': 'Telegram', 'alert_rules.': '알림 규칙', 'second_factor.': '2단계 인증', 'security.': '보안', 'access.': '접근 보호', 'observe.': '관찰' },
@@ -72,23 +77,47 @@
 
   const perPage = 20;
   const categories = ['', 'session.', 'setup.', 'connector.', 'service.', 'route.', 'domain.', 'tunnel.', 'telegram.', 'alert_rules.', 'second_factor.', 'security.', 'access.', 'observe.'];
-  // 검색어·분류·페이지는 주소(?q=&category=&page=)가 단일 출처입니다. 입력칸은 잠시 멈춘 뒤에 주소에 반영합니다.
-  const page = $derived(intParam('page', 1));
-  const action = $derived(oneOf('category', categories, ''));
-  const query = $derived(param('q') ?? '');
-  let q = $state(untrack(() => param('q') ?? ''));
+  // 검색어·분류·페이지는 주소(?q=&category=&page=)가 단일 출처입니다(urlTableState). 검색어와 분류는 보이지 않는 열의 필터입니다.
+  const urlTable = urlTableState({
+    filters: [{ param: 'q', column: 'q' }, { param: 'category', column: 'category', allowed: categories.filter(Boolean) }],
+    sortable: [],
+    defaultSort: [],
+    pageSize: perPage,
+  });
+  const tableState = $derived(urlTable.state);
+  const filterValue = (column: string): string => (tableState.columnFilters.find((filter) => filter.id === column)?.value as string | undefined) ?? '';
+  const page = $derived(tableState.pagination.pageIndex + 1);
+  const action = $derived(filterValue('category'));
+  const query = $derived(filterValue('q'));
+  const filtered = $derived(tableState.columnFilters.length > 0);
+
   let result = $state<AuditPage | null>(null);
   let error = $state('');
 
-  $effect(() => {
-    const fromUrl = query;
-    if (untrack(() => q.trim()) !== fromUrl) q = fromUrl;
-  });
-
-  $effect(() => {
-    const value = q.trim();
-    const timer = window.setTimeout(() => { if (value !== untrack(() => query)) setParams({ q: value, page: 1 }, { page: 1 }); }, 250);
-    return () => window.clearTimeout(timer);
+  const columnHelper = createColumnHelper<DataTableFeatures, AuditEvent>();
+  // 거르는 일은 서버가 하므로 필터 함수는 모든 행을 통과시킵니다.
+  const serverFiltered: FilterFn<DataTableFeatures, AuditEvent> = () => true;
+  const filterColumn = (id: string) => columnHelper.accessor(() => '', { id, header: () => '', cell: () => '', enableSorting: false, filterFn: serverFiltered });
+  const columns = columnHelper.columns([
+    columnHelper.accessor((event) => event.created_at, { id: 'time', header: () => t().colTime, cell: ({ row }) => renderSnippet(timeCell, row.original), enableSorting: false }),
+    columnHelper.accessor((event) => event.actor_email ?? '', { id: 'actor', header: () => t().colActor, cell: ({ row }) => renderSnippet(actorCell, row.original), enableSorting: false, meta: { class: 'max-w-48' } }),
+    columnHelper.accessor((event) => event.action, { id: 'action', header: () => t().colAction, cell: ({ row }) => renderSnippet(actionCell, row.original), enableSorting: false }),
+    columnHelper.accessor((event) => event.resource_id, { id: 'target', header: () => t().colTarget, cell: ({ row }) => renderSnippet(targetCell, row.original), enableSorting: false, meta: { class: 'max-w-56' } }),
+    columnHelper.display({ id: 'source', header: () => t().colSource, cell: ({ row }) => renderSnippet(sourceCell, row.original), enableSorting: false, meta: { class: 'max-w-44' } }),
+    filterColumn('q'),
+    filterColumn('category'),
+  ]);
+  const table = createTable({
+    features,
+    get data() { return result?.events ?? []; },
+    columns,
+    getRowId: (event) => event.id,
+    manualPagination: true,
+    manualFiltering: true,
+    get rowCount() { return result?.total; },
+    initialState: { columnVisibility: { q: false, category: false } },
+    ...urlTable.handlers,
+    get state() { return urlTable.state; },
   });
 
   $effect(() => {
@@ -102,42 +131,54 @@
         if (!active) return;
         result = next;
         // 범위를 벗어난 페이지 번호는 첫 페이지로 되돌립니다.
-        if (next.total > 0 && next.events.length === 0 && page > 1) setParams({ page: 1 }, { page: 1 });
+        if (next.total > 0 && next.events.length === 0 && untrack(() => page) > 1) table.setPageIndex(0);
       })
       .catch((cause) => { if (active) error = t().loadFailed(errorMessage(cause)); });
     return () => { active = false; };
   });
 
-  const setPage = (next: number): void => setParams({ page: next }, { page: 1 });
   const failed = (name: string) => name.endsWith('_failed');
-
-  function clearFilters(): void {
-    q = '';
-    setParams({ q: '', category: '', page: 1 }, { page: 1 });
-  }
+  const clearFilters = (): void => { table.setColumnFilters([]); };
 </script>
+
+{#snippet timeCell(event: AuditEvent)}
+  <div class="grid gap-0.5 tabular-nums"><span>{formatClock(event.created_at)}</span><span class="text-muted-foreground">{formatDay(event.created_at)}</span></div>
+{/snippet}
+
+{#snippet actorCell(event: AuditEvent)}
+  <TruncateText text={event.actor_email ?? '—'} />
+{/snippet}
+
+{#snippet actionCell(event: AuditEvent)}
+  <Tooltip.Root>
+    <Tooltip.Trigger class="inline-flex outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+      <Badge variant={failed(event.action) ? 'destructive' : 'secondary'} class="cursor-default select-none">{t().actions[event.action] ?? event.action}</Badge>
+    </Tooltip.Trigger>
+    <Tooltip.Content class="max-w-sm font-mono">{event.action}{event.detail && Object.keys(event.detail).length ? ` ${JSON.stringify(event.detail)}` : ''}</Tooltip.Content>
+  </Tooltip.Root>
+{/snippet}
+
+{#snippet targetCell(event: AuditEvent)}
+  <TruncateText text={event.resource_id} class="font-mono" />
+{/snippet}
+
+{#snippet sourceCell(event: AuditEvent)}
+  {#if event.source === 'local'}
+    <Badge variant="outline" class="cursor-default select-none">{t().local}</Badge>
+  {:else}
+    <div class="grid gap-0.5"><span class="font-mono">{event.ip ?? '—'}</span>{#if event.user_agent}<TruncateText text={event.user_agent} class="text-muted-foreground" />{/if}</div>
+  {/if}
+{/snippet}
 
 <div class="grid min-w-0 gap-4">
   <div class="flex flex-wrap items-center gap-2" role="search" aria-label={t().search}>
-    <InputGroup.Root class="min-w-48 grow sm:max-w-sm sm:grow-0">
-      <InputGroup.Addon><Search aria-hidden="true" /></InputGroup.Addon>
-      <InputGroup.Input type="search" bind:value={q} placeholder={t().search} aria-label={t().search} autocomplete="off" />
-    </InputGroup.Root>
-    <NativeSelect.Root class="w-full sm:w-44" aria-label={t().category} bind:value={() => action, (next) => { setParams({ category: next, page: 1 }, { page: 1 }); }}>
+    <DataTableSearch {table} column="q" label={t().search} />
+    <NativeSelect.Root class="w-full sm:w-44" aria-label={t().category} bind:value={() => action, (next) => { table.getColumn('category')?.setFilterValue(next || undefined); }}>
       {#each categories as category (category)}
         <NativeSelect.Option value={category}>{t().categories[category]}</NativeSelect.Option>
       {/each}
     </NativeSelect.Root>
-    {#if q || action}
-      <Tooltip.Root>
-        <Tooltip.Trigger>
-          {#snippet child({ props })}
-            <Button {...props} variant="outline" size="icon" aria-label={t().reset} onclick={clearFilters}><ArrowReset20 class="size-5" aria-hidden="true" /></Button>
-          {/snippet}
-        </Tooltip.Trigger>
-        <Tooltip.Content>{t().reset}</Tooltip.Content>
-      </Tooltip.Root>
-    {/if}
+    {#if filtered}<IconButton variant="outline" size="icon" label={t().reset} icon={ArrowReset20} onclick={clearFilters} />{/if}
   </div>
 
   {#if error}
@@ -145,54 +186,16 @@
   {:else if !result}
     <Skeleton class="h-96 w-full" />
   {:else if result.events.length}
-    <PaginationBar total={result.total} {perPage} bind:page={() => page, setPage} placement="top" />
-    <div class="overflow-hidden border bg-card">
-      <Table.Root>
-        <Table.Header class="bg-muted">
-          <Table.Row class="hover:bg-transparent">
-            <Table.Head class="pl-4">{t().colTime}</Table.Head>
-            <Table.Head>{t().colActor}</Table.Head>
-            <Table.Head>{t().colAction}</Table.Head>
-            <Table.Head>{t().colTarget}</Table.Head>
-            <Table.Head class="pr-4">{t().colSource}</Table.Head>
-          </Table.Row>
-        </Table.Header>
-        <Table.Body>
-          {#each result.events as event (event.id)}
-            <Table.Row>
-              <Table.Cell class="pl-4">
-                <div class="grid gap-0.5 tabular-nums"><span>{formatClock(event.created_at)}</span><span class="text-muted-foreground">{formatDay(event.created_at)}</span></div>
-              </Table.Cell>
-              <Table.Cell class="max-w-48"><TruncateText text={event.actor_email ?? '—'} /></Table.Cell>
-              <Table.Cell>
-                <Tooltip.Root>
-                  <Tooltip.Trigger class="inline-flex outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
-                    <Badge variant={failed(event.action) ? 'destructive' : 'secondary'} class="cursor-default select-none">{t().actions[event.action] ?? event.action}</Badge>
-                  </Tooltip.Trigger>
-                  <Tooltip.Content class="max-w-sm font-mono">{event.action}{event.detail && Object.keys(event.detail).length ? ` ${JSON.stringify(event.detail)}` : ''}</Tooltip.Content>
-                </Tooltip.Root>
-              </Table.Cell>
-              <Table.Cell class="max-w-56 font-mono"><TruncateText text={event.resource_id} /></Table.Cell>
-              <Table.Cell class="max-w-44 pr-4">
-                {#if event.source === 'local'}
-                  <Badge variant="outline" class="cursor-default select-none">{t().local}</Badge>
-                {:else}
-                  <div class="grid gap-0.5"><span class="font-mono">{event.ip ?? '—'}</span>{#if event.user_agent}<TruncateText text={event.user_agent} class="text-muted-foreground" />{/if}</div>
-                {/if}
-              </Table.Cell>
-            </Table.Row>
-          {/each}
-        </Table.Body>
-      </Table.Root>
-    </div>
-    <PaginationBar total={result.total} {perPage} bind:page={() => page, setPage} />
+    <DataTablePagination {table} placement="top" />
+    <DataTable {table} ariaLabel={t().title} />
+    <DataTablePagination {table} />
   {:else}
     <Empty.Root class="border border-dashed bg-card">
       <Empty.Header>
         <Empty.Media variant="icon"><History20 class="size-5" aria-hidden="true" /></Empty.Media>
         <Empty.Title>{t().empty}</Empty.Title>
       </Empty.Header>
-      {#if q || action}<Empty.Content><Button variant="outline" onclick={clearFilters}><ArrowReset20 class="size-5" aria-hidden="true" />{t().reset}</Button></Empty.Content>{/if}
+      {#if filtered}<Empty.Content><Button variant="outline" onclick={clearFilters}>{t().reset}</Button></Empty.Content>{/if}
     </Empty.Root>
   {/if}
 </div>

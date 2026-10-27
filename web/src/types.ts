@@ -376,6 +376,7 @@ export interface LogView<Entry> {
   available: boolean; // 기록 파일을 열었는지. false이면 켤 수 없습니다(409 log_unavailable)
   size_bytes: number;
   dropped: number; // Outlet 시작 이후 대기열이 넘쳐 기록하지 못한 수
+  suppressed: number; // Outlet 시작 이후 클라이언트별 분당 한도(60건)를 넘어 기록하지 않고 세기만 한 반복 요청 수
   total: number; // 필터에 맞는 전체 수
   entries: Entry[]; // 최신순
 }
@@ -383,6 +384,9 @@ export interface LogView<Entry> {
 // 거부·로그인 요구는 모두, 통과는 로그인한 사용자나 토큰으로 들어온 것만 남깁니다.
 export type AccessDecision = keyof AccessCounts;
 export const accessDecisions = ['passed', 'challenged', 'denied'] as const satisfies readonly AccessDecision[];
+// who 필터: 사용자·토큰을 밝힌 요청(named, 눈여겨볼 기록)과 익명 요청(anonymous, 반복 기록).
+export const accessRequesters = ['named', 'anonymous'] as const;
+export type AccessRequester = (typeof accessRequesters)[number];
 export interface AccessLogEntry {
   id: number;
   at: string; // RFC 3339
@@ -395,11 +399,17 @@ export interface AccessLogEntry {
   reason: string; // bypass·session(통과), no_session(로그인 요구), blocked·not_allowed·token_*·unavailable(거부)
   email: string;
   token: string; // 토큰 ID
+  routine: boolean; // 이메일도 토큰도 없는 익명 요청. 누구나 마음대로 만들 수 있어 한도와 삭제 순서에서 뒤로 밀립니다
 }
 
 // 공개 주소로 온 요청 중 실패했거나 앱에 닿기 전에 Outlet이 거절한 것.
-export const failureCauses = ['app_error', 'unreachable', 'timeout', 'no_service', 'rate_limited', 'blocked', 'too_long', 'too_large', 'busy'] as const;
+// 서비스 쪽 문제(눈여겨볼 기록)와 Outlet이 규칙에 따라 거부한 요청(누구나 만들 수 있는 반복 기록)으로 나뉩니다.
+export const serviceCauses = ['app_error', 'unreachable', 'timeout', 'no_service'] as const;
+export const refusedCauses = ['rate_limited', 'blocked', 'too_long', 'too_large', 'busy'] as const;
+export const failureCauses = [...serviceCauses, ...refusedCauses] as const;
 export type FailureCause = (typeof failureCauses)[number];
+// cause 필터는 원인 하나 외에 묶음 service(서비스 오류 전체), refused(Outlet 거부 전체)도 받습니다.
+export const failureCauseGroups = ['service', 'refused'] as const;
 export interface FailureLogEntry {
   id: number;
   at: string;
@@ -411,6 +421,7 @@ export interface FailureLogEntry {
   status: number; // 클라이언트가 받은 상태 코드
   service: string; // 서비스 이름, 없으면 ''
   duration_ms: number;
+  routine: boolean; // Outlet이 거부한 원인(rate_limited·blocked·too_long·too_large·busy)이면 true
 }
 
 export interface AccessTokensView {

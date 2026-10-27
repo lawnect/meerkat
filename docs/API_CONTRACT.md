@@ -372,9 +372,9 @@ POST   https://<보호 주소>/.meerkat/access/logout
 
 ~~~
 GET    /api/v1/observe/access-metrics?unit=hour|day|month|year&from=<RFC3339>&to=<RFC3339>&tz=<IANA>
-GET    /api/v1/observe/access-log?page=&per_page=&decision=&policy=
+GET    /api/v1/observe/access-log?page=&per_page=&decision=&policy=&who=&q=
 PUT    /api/v1/observe/access-log
-GET    /api/v1/observe/failure-log?page=&per_page=&cause=&host=
+GET    /api/v1/observe/failure-log?page=&per_page=&cause=&host=&q=
 PUT    /api/v1/observe/failure-log
 ~~~
 
@@ -385,18 +385,22 @@ PUT    /api/v1/observe/failure-log
 
 **기록 공통**
 - 접근 기록(`access`)과 실패 요청(`failures`)은 데이터 디렉터리의 별도 SQLite 파일(`access-log.db`, `failure-log.db`)에 두어 제어 DB와 연결도 용량도 나누지 않는다.
-- 기록마다 설정 `{"enabled", "max_mib", "retention_days"}`가 있다. 처음에는 꺼져 있고(256MiB, 30일), `max_mib`는 16~4096, `retention_days`는 1~365이다. SQLite가 파일 크기를 `max_mib`로(`max_page_count`), WAL을 16MiB로 막고, 가득 차면 가장 오래된 10분의 1을 지우고 다시 쓴다. 보관 기간이 지난 기록은 한 시간마다, 상한을 낮추면 바로 지우고 파일을 줄인다.
+- 기록마다 설정 `{"enabled", "max_mib", "retention_days"}`가 있다. 처음에는 꺼져 있고(256MiB, 30일), `max_mib`는 16~4096, `retention_days`는 1~365이다. SQLite가 파일 크기를 `max_mib`로(`max_page_count`), WAL을 16MiB로 막고, 가득 차면 가장 오래된 10분의 1을 지우고(일상 항목부터, 아래) 다시 쓴다. 보관 기간이 지난 기록은 한 시간마다, 상한을 낮추면 바로 지우고 파일을 줄인다.
 - 요청은 기록을 기다리지 않는다. 기록이 꺼져 있으면 아무것도 하지 않고, 켜져 있으면 8192건짜리 대기열에 넣기만 하며 차 있으면 버린다. 백그라운드가 1초마다(또는 500건마다) 묶어 쓰고, 쓰기에 실패하면 2만 건까지 메모리에 두었다가 최대 30초 간격으로 다시 쓰며, 넘는 것은 버린다. 디스크에 따로 쌓지 않는다.
-- `GET`은 `{"settings", "available", "size_bytes", "dropped", "total", "entries": [...]}`를 최신순으로 반환한다. `available`은 파일을 열었는지, `size_bytes`는 파일 크기, `dropped`는 Outlet 시작 이후 버린 수, `total`은 조건에 맞는 수다. `page`(1부터)와 `per_page`(1~200, 기본 50)로 나누어 받는다. 읽기 전에 대기 중인 기록을 쓴다. 맞지 않는 값은 `400 invalid_log_filter`이다.
+- 항목은 **일상**(`routine: true`)이거나 **주목할 만한** 항목이다. 일상 항목은 누구나 자격 없이, 서비스가 멀쩡해도 마음대로 만들 수 있는 것(Outlet이 막은 요청, 익명의 로그인 요구)이고, 사람이나 토큰이 드러나거나 서비스에 문제가 있는 항목은 주목할 만하다. 요청을 쏟아부어 실제 실패를 밀어내거나 묻지 못하도록 일상 항목에만 두 가지를 둔다.
+  - 클라이언트마다 기록별로 1분에 60건까지만 남긴다. 클라이언트는 연결 제한과 같은 키(IPv4 주소, IPv6 /56)다. 넘는 항목은 대기열에 넣기 전에 버리고 `suppressed`로 센다. 예산은 분과 건수를 담은 `atomic.Uint64` 1024칸에 두고, 칸은 프로세스마다 무작위 시드를 쓰는 해시로 고른다. 클라이언트가 얼마나 많아도 메모리가 일정하고 잠금이 없으며, 칸을 같이 쓰는 클라이언트는 예산도 같이 쓴다(더 엄격해질 뿐이다). 주목할 만한 항목에는 예산이 없다. 접근 지표는 모든 판정을 그대로 센다.
+  - 파일이 가득 차거나 상한을 넘으면 가장 오래된 일상 항목부터 지우고, 일상 항목이 남지 않았을 때만 주목할 만한 항목 중 가장 오래된 것을 지운다. 보관 기간은 모든 항목에 적용한다.
+- `GET`은 `{"settings", "available", "size_bytes", "dropped", "suppressed", "total", "entries": [...]}`를 최신순으로 반환한다. `available`은 파일을 열었는지, `size_bytes`는 파일 크기, `dropped`는 Outlet 시작 이후 대기열이 차서 버린 수, `suppressed`는 같은 기간에 예산을 넘어 남기지 않은 일상 항목 수, `total`은 조건에 맞는 수다. `page`(1부터)와 `per_page`(1~200, 기본 50)로 나누어 받는다. `q`는 128바이트까지의 텍스트 검색으로, 아래 열에서 부분 문자열을 ASCII 대소문자 구분 없이 찾고 `%`와 `_`는 문자 그대로 본다. 읽기 전에 대기 중인 기록을 쓴다. 맞지 않는 값(128바이트를 넘는 `q` 포함)은 `400 invalid_log_filter`이다.
 - `PUT`은 설정을 받아 저장하고 바로 적용하며 `GET`의 첫 쪽으로 답한다. 맞지 않는 값은 `400 invalid_log_settings`, 파일을 열 수 없는데 켜려면 `409 log_unavailable`이다. `observe.log_settings`에 `{"log", "enabled", "max_mib", "retention_days"}`를 남긴다.
 
 **접근 기록**
 - 정책이 거부하거나 로그인을 요구한 요청은 모두, 통과한 요청은 로그인한 사용자나 토큰으로 들어온 것만 기록한다(익명 우회는 지표로만 센다).
-- 항목은 `{"id", "at", "host", "method", "path", "client", "policy", "decision", "reason", "email", "token"}`이다. `path`는 쿼리 없이 512바이트까지, `client`는 클라이언트 IP, `policy`는 정책 ID, `token`은 토큰 ID다. `reason`은 `bypass`·`session`(통과), `no_session`(로그인 요구), `blocked`·`not_allowed`·`token_invalid`·`token_expired`·`token_out_of_scope`·`token_not_allowed`·`unavailable`(거부)이다. `decision`과 `policy`로 거른다.
+- 항목은 `{"id", "at", "host", "method", "path", "client", "policy", "decision", "reason", "email", "token", "routine"}`이다. `path`는 쿼리 없이 512바이트까지, `client`는 클라이언트 IP, `policy`는 정책 ID, `token`은 토큰 ID다. `reason`은 `bypass`·`session`(통과), `no_session`(로그인 요구), `blocked`·`not_allowed`·`token_invalid`·`token_expired`·`token_out_of_scope`·`token_not_allowed`·`unavailable`(거부)이다. `decision`과 `policy`로 거르고, `q`는 `host`, `path`, `client`, `email`, `token`에서 찾는다.
+- `email`도 `token`도 없는 항목은 일상(`routine: true`)이다. `who=named`는 `email`이나 `token`이 있는 항목(주목할 만한 항목)만, `who=anonymous`는 일상 항목만 거른다. 그 밖의 값은 `400 invalid_log_filter`이다.
 
 **실패 요청**
 - 경로가 있는 공개 주소로 온 요청 중 실패했거나 Outlet이 앱에 보내기 전에 막은 요청을 기록한다. 경로가 없는 주소와 접근 보호가 막은 요청(접근 기록)은 남기지 않는다. 다른 서비스로 다시 보낸 요청은 마지막 결과로 한 번만 남긴다.
-- 항목은 `{"id", "at", "host", "method", "path", "client", "cause", "status", "service", "duration_ms"}`이며 `cause`와 `host`로 거른다. `cause`는 `app_error`(앱이 5xx로 응답), `unreachable`(서비스에 닿지 못함, `502`), `timeout`(연결이나 응답 헤더 시간 초과, `504`), `no_service`(살아 있는 서비스 없음, `404`), `rate_limited`(요청 제한, `429`), `blocked`(차단 규칙, `403`), `too_long`(경로 길이, `414`), `too_large`(업로드 크기, `413`), `busy`(연결 제한, 클라이언트별 `429`·전체 `503`)이고, `status`는 클라이언트가 받은 상태 코드, `duration_ms`는 요청을 받은 때부터 실패까지(앱의 5xx는 응답 헤더까지)다. 클라이언트 쪽 오류(`400`, `408`, `499`)는 남기지 않는다. 요청 제한과 클라이언트별 연결 제한은 주소를 보기 전에 거부하므로, 경로가 있는 주소로 온 요청일 때만 남긴다.
+- 항목은 `{"id", "at", "host", "method", "path", "client", "cause", "status", "service", "duration_ms", "routine"}`이며 `cause`와 `host`로 거르고, `q`는 `host`, `path`, `client`, `service`에서 찾는다. `cause`는 `app_error`(앱이 5xx로 응답), `unreachable`(서비스에 닿지 못함, `502`), `timeout`(연결이나 응답 헤더 시간 초과, `504`), `no_service`(살아 있는 서비스 없음, `404`), `rate_limited`(요청 제한, `429`), `blocked`(차단 규칙, `403`), `too_long`(경로 길이, `414`), `too_large`(업로드 크기, `413`), `busy`(연결 제한, 클라이언트별 `429`·전체 `503`)이고, `status`는 클라이언트가 받은 상태 코드, `duration_ms`는 요청을 받은 때부터 실패까지(앱의 5xx는 응답 헤더까지)다. `rate_limited`·`blocked`·`too_long`·`too_large`·`busy`(Outlet이 막은 요청)는 일상(`routine: true`), 나머지(서비스에 문제가 있는 요청)는 주목할 만한 항목이다. `cause`는 두 묶음도 받는다. `refused`는 일상 항목 다섯 가지 전체이고 `service`는 `app_error`·`unreachable`·`timeout`·`no_service` 전체다. 클라이언트 쪽 오류(`400`, `408`, `499`)는 남기지 않는다. 요청 제한과 클라이언트별 연결 제한은 주소를 보기 전에 거부하므로, 경로가 있는 주소로 온 요청일 때만 남긴다.
 
 ### Outlet 사용량
 

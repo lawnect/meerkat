@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -12,18 +14,21 @@ import (
 )
 
 type testEntry struct {
-	ID    int64
-	At    time.Time
-	Path  string
-	State string
+	ID      int64
+	At      time.Time
+	Path    string
+	State   string
+	Routine bool
 }
 
 var testKind = Kind[testEntry]{
 	Table:   "events",
 	Columns: []string{"path TEXT", "state TEXT"},
 	Filters: []string{"state"},
+	Search:  []string{"path", "state"},
 	Fields:  func(e *testEntry) []any { return []any{&e.Path, &e.State} },
 	Stamp:   func(e *testEntry) (*int64, *time.Time) { return &e.ID, &e.At },
+	Routine: func(e *testEntry) *bool { return &e.Routine },
 }
 
 func openTest(t *testing.T, limits Limits) (*Log[testEntry], string) {
@@ -109,6 +114,196 @@ func TestLogSizeCap(t *testing.T) {
 	}
 	if _, total, _ := log.Query(ctx, Query{}); total == 0 {
 		t.Fatal("lowering the cap emptied the log")
+	}
+}
+
+// kept names which of the entries appended as pattern are still in the log,
+// oldest first: its letter if so, a dot if not.
+func kept(t *testing.T, log *Log[testEntry], pattern string) string {
+	t.Helper()
+	entries, _, err := log.Query(context.Background(), Query{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := []byte(strings.Repeat(".", len(pattern)))
+	for _, e := range entries {
+		i, _ := strconv.Atoi(strings.TrimPrefix(e.Path, "/"))
+		out[i] = pattern[i]
+	}
+	return string(out)
+}
+
+// appendPattern appends one entry per letter of pattern, oldest first, with
+// the index as its path: "r" is a routine entry and "n" a notable one.
+func appendPattern(t *testing.T, log *Log[testEntry], pattern string) {
+	t.Helper()
+	batch := make([]testEntry, len(pattern))
+	for i, c := range pattern {
+		batch[i] = testEntry{At: time.Now(), Path: "/" + strconv.Itoa(i), State: "denied", Routine: c == 'r'}
+	}
+	if err := log.Append(context.Background(), batch); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Shedding forgets the oldest tenth, the routine entries first: a flood of
+// them can't push out the notable ones. Notable entries go only for what the
+// routine ones can't make up.
+func TestLogShedsRoutineFirst(t *testing.T) {
+	for _, c := range []struct {
+		name, entries, want string
+	}{
+		{"the oldest routine ones, past notable ones", "nnrrrrnrrrrnrrrrnrrr", "nn..rrnrrrrnrrrrnrrr"},
+		{"every routine one when they are fewer than a tenth", "nnnnnnnnnnrrnnnnnnnn", "nnnnnnnnnn..nnnnnnnn"},
+		{"the oldest notable one for what is missing", "nnnnnnnnnnrnnnnnnnnn", ".nnnnnnnnn.nnnnnnnnn"},
+		{"the oldest notable ones when no routine one is left", "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnn", "...nnnnnnnnnnnnnnnnnnnnnnnnnnn"},
+		{"at least one, from a short log", "nrnrr", "n.nrr"},
+		{"nothing from an empty log", "", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			log, _ := openTest(t, Limits{MaxBytes: 64 << 20, Retention: time.Hour})
+			if c.entries != "" {
+				appendPattern(t, log, c.entries)
+			}
+			if err := log.Shed(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if got := kept(t, log, c.entries); got != c.want {
+				t.Fatalf("after shedding %s:\n%s\nwant:\n%s", c.entries, got, c.want)
+			}
+		})
+	}
+}
+
+// A file over its cap is pruned by forgetting routine entries, however old
+// the notable ones are; a flood fills the file with routine entries and the
+// notable ones stay, until none of the routine ones is left to give.
+func TestLogPruneKeepsNotableEntries(t *testing.T) {
+	ctx := context.Background()
+	const limit = 256 << 10
+	log, _ := openTest(t, Limits{MaxBytes: limit, Retention: time.Hour})
+	// One entry in ten is notable, the first among them.
+	batch := make([]testEntry, 50)
+	for i := range batch {
+		batch[i] = testEntry{At: time.Now(), Path: strings.Repeat("p", 400), State: "denied", Routine: i%10 != 0}
+	}
+	var err error
+	for range 400 {
+		if err = log.Append(ctx, batch); err != nil {
+			break
+		}
+	}
+	if !errors.Is(err, ErrFull) {
+		t.Fatalf("writes past the cap: %v", err)
+	}
+	count := func(routine bool) int {
+		t.Helper()
+		_, total, err := log.Query(ctx, Query{Routine: &routine})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return total
+	}
+	notable, routine := count(false), count(true)
+	if notable == 0 || routine < 5*notable {
+		t.Fatalf("filled with %d notable and %d routine entries", notable, routine)
+	}
+	// Making room for writes forgets routine entries only.
+	if err := log.Shed(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if count(false) != notable || count(true) >= routine {
+		t.Fatalf("after shedding: %d notable, %d routine, from %d and %d", count(false), count(true), notable, routine)
+	}
+	// So does a lowered cap, which the notable entries fit.
+	log.SetLimits(Limits{MaxBytes: limit / 4, Retention: time.Hour})
+	if err := log.Prune(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if size, err := log.Size(ctx); err != nil || size > limit/4 {
+		t.Fatalf("after lowering the cap: %d %v", size, err)
+	}
+	if count(false) != notable || count(true) == 0 {
+		t.Fatalf("after pruning: %d notable, %d routine, from %d notable", count(false), count(true), notable)
+	}
+	// A cap they don't fit forgets the oldest of them as well, once the routine ones are gone.
+	log.SetLimits(Limits{MaxBytes: limit / 8, Retention: time.Hour})
+	if err := log.Prune(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if size, err := log.Size(ctx); err != nil || size > limit/8 {
+		t.Fatalf("after lowering the cap again: %d %v", size, err)
+	}
+	if count(true) != 0 || count(false) == 0 || count(false) >= notable {
+		t.Fatalf("after pruning again: %d notable, %d routine, from %d notable", count(false), count(true), notable)
+	}
+}
+
+// Text finds a substring of any search column, whatever its case, and a
+// %, _ or \ in it means itself rather than a pattern; it combines with the
+// other filters and the routine flag.
+func TestLogQueryTextAndRoutine(t *testing.T) {
+	ctx := context.Background()
+	log, _ := openTest(t, Limits{MaxBytes: 64 << 20, Retention: time.Hour})
+	now := time.Now()
+	if err := log.Append(ctx, []testEntry{
+		{At: now, Path: "/a%b", State: "denied", Routine: true},
+		{At: now, Path: "/axb", State: "denied", Routine: true},
+		{At: now, Path: "/a_b", State: "passed"},
+		{At: now, Path: `/a\b`, State: "passed"},
+		{At: now, Path: "/A.B", State: "denied"},
+		{At: now, Path: "/ab", State: "passed", Routine: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name  string
+		query Query
+		want  []string // newest first
+	}{
+		{"no text", Query{}, []string{"/ab", "/A.B", `/a\b`, "/a_b", "/axb", "/a%b"}},
+		{"a percent is a percent", Query{Text: "a%b"}, []string{"/a%b"}},
+		{"only a percent", Query{Text: "%"}, []string{"/a%b"}},
+		{"an underscore is an underscore", Query{Text: "a_b"}, []string{"/a_b"}},
+		{"only an underscore", Query{Text: "_"}, []string{"/a_b"}},
+		{"a backslash is a backslash", Query{Text: `a\b`}, []string{`/a\b`}},
+		{"only a backslash", Query{Text: `\`}, []string{`/a\b`}},
+		{"a backslash before a percent", Query{Text: `\%`}, nil},
+		{"a dot is a dot, and case does not matter", Query{Text: "a.b"}, []string{"/A.B"}},
+		{"any search column", Query{Text: "PASSED"}, []string{"/ab", `/a\b`, "/a_b"}},
+		{"a column that is not searched", Query{Text: "routine"}, nil},
+		{"no match", Query{Text: "zzz"}, nil},
+		{"with a filter", Query{Text: "a", Where: map[string]string{"state": "denied"}}, []string{"/A.B", "/axb", "/a%b"}},
+		{"routine only", Query{Routine: new(true)}, []string{"/ab", "/axb", "/a%b"}},
+		{"notable only", Query{Routine: new(false)}, []string{"/A.B", `/a\b`, "/a_b"}},
+		{"text among routine ones", Query{Text: "a_b", Routine: new(true)}, nil},
+		{"text among notable ones", Query{Text: "a", Routine: new(false)}, []string{"/A.B", `/a\b`, "/a_b"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, total, err := log.Query(ctx, c.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var paths []string
+			for _, e := range got {
+				paths = append(paths, e.Path)
+				if e.Routine != (e.Path == "/a%b" || e.Path == "/axb" || e.Path == "/ab") {
+					t.Fatalf("%s came back as routine=%v", e.Path, e.Routine)
+				}
+			}
+			if !slices.Equal(paths, c.want) || total != len(c.want) {
+				t.Fatalf("%q (%d), want %q", paths, total, c.want)
+			}
+		})
+	}
+}
+
+// A log can't tell routine entries from the rest without the flag.
+func TestLogNeedsTheRoutineFlag(t *testing.T) {
+	kind := testKind
+	kind.Routine = nil
+	if _, err := Open(context.Background(), filepath.Join(t.TempDir(), "events.db"), kind, Limits{MaxBytes: 1 << 20, Retention: time.Hour}); err == nil {
+		t.Fatal("opened a log without the flag")
 	}
 }
 
