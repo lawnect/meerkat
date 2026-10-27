@@ -16,7 +16,7 @@
   import { toast } from 'svelte-sonner';
   import { api, errorMessage } from '../api';
   import { intlLocale, translations } from '../i18n.svelte';
-  import { Alert12, Alert20, ArrowUndo, Clock12, Delete, Key, NumberSymbol, Save, Send, Shield12, Warning } from '../icons';
+  import { Alert12, Alert20, ArrowUndo, Clock12, Delete, Key, LockClosed12, NumberSymbol, Save, Send, Shield12, Warning } from '../icons';
   import type { AlertRules, AlertSettings } from '../types';
   import AccessPolicySettings from '../components/AccessPolicySettings.svelte';
   import AccessProviderSettings from '../components/AccessProviderSettings.svelte';
@@ -36,6 +36,7 @@
     tabsAria: 'Settings sections',
     tabAlerts: 'Alerts',
     tabSecurity: 'Security',
+    tabAccess: 'Access protection',
     tabAudit: 'Audit log',
     loadFailed: (code: string) => `Couldn't load settings: ${code}`,
     telegram: 'Telegram',
@@ -109,6 +110,7 @@
     tabsAria: '설정 항목',
     tabAlerts: '알림',
     tabSecurity: '보안',
+    tabAccess: '접근 보호',
     tabAudit: '감사 로그',
     loadFailed: (code: string) => `설정을 불러오는 중 오류가 발생했습니다: ${code}`,
     telegram: 'Telegram',
@@ -181,7 +183,7 @@
 
   type RuleKey = keyof AlertRules;
   // 탭은 주소(?tab=security)가 단일 출처입니다. 감사 로그의 검색·분류·페이지는 AuditLog가 같은 방식으로 씁니다.
-  const tabs = ['alerts', 'security', 'audit'] as const;
+  const tabs = ['alerts', 'security', 'access', 'audit'] as const;
   const tab = $derived(oneOf('tab', tabs, 'alerts'));
 
   const ruleKeys: RuleKey[] = ['tunnel_down', 'route_error', 'dns_failure', 'error_spike', 'rate_limit', 'login'];
@@ -306,6 +308,7 @@
     <Tabs.List aria-label={t().tabsAria}>
       <Tabs.Trigger value="alerts"><Alert12 class="size-3" aria-hidden="true" />{t().tabAlerts}</Tabs.Trigger>
       <Tabs.Trigger value="security"><Shield12 class="size-3" aria-hidden="true" />{t().tabSecurity}</Tabs.Trigger>
+      <Tabs.Trigger value="access"><LockClosed12 class="size-3" aria-hidden="true" />{t().tabAccess}</Tabs.Trigger>
       <Tabs.Trigger value="audit"><Clock12 class="size-3" aria-hidden="true" />{t().tabAudit}</Tabs.Trigger>
     </Tabs.List>
     <Tabs.Content value="alerts" class="grid min-w-0 gap-4">
@@ -495,11 +498,14 @@
         </Card.Root>
 
       <SsoSettings />
-      <AccessProviderSettings bind:enabled={accessEnabled} />
       <RateLimitSettings />
       <ConnectionLimitSettings />
       <BlockRuleSettings />
+    </Tabs.Content>
+    <!-- 접근 보호: 자주 고치는 정책을 위에, 한 번 설정하는 SSO 공급자를 아래에 둡니다. -->
+    <Tabs.Content value="access" class="grid min-w-0 gap-4">
       <AccessPolicySettings providerEnabled={accessEnabled} />
+      <AccessProviderSettings bind:enabled={accessEnabled} />
     </Tabs.Content>
     <Tabs.Content value="audit" class="grid min-w-0 gap-4">
       <AuditLog />
