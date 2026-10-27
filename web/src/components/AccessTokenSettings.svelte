@@ -346,12 +346,12 @@
   </Field.Set>
   <Field.Set>
     <Field.Legend variant="label">{t().allowedIps}</Field.Legend>
-    <RadioGroup.Root value={form.scope} onValueChange={(value) => { form.scope = value === 'selected' ? 'selected' : 'any'; rangeMissing = false; }}>
-      <Field.Field orientation="horizontal">
+    <RadioGroup.Root value={form.scope} onValueChange={(value) => { form.scope = value === 'selected' ? 'selected' : 'any'; rangeMissing = false; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
+      <Field.Field orientation="horizontal" class="w-auto">
         <RadioGroup.Item value="any" id={`${prefix}-ip-any`} />
         <Field.Label for={`${prefix}-ip-any`} class="font-normal">{t().anyIp}</Field.Label>
       </Field.Field>
-      <Field.Field orientation="horizontal">
+      <Field.Field orientation="horizontal" class="w-auto">
         <RadioGroup.Item value="selected" id={`${prefix}-ip-selected`} />
         <Field.Label for={`${prefix}-ip-selected`} class="font-normal">{t().selectedIps}</Field.Label>
       </Field.Field>

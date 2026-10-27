@@ -331,12 +331,12 @@
         </Field.Field>
         <Field.Set>
           <Field.Legend variant="label">{t().appliesTo}</Field.Legend>
-          <RadioGroup.Root value={form.scope} onValueChange={chooseScope}>
-            <Field.Field orientation="horizontal">
+          <RadioGroup.Root value={form.scope} onValueChange={chooseScope} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
+            <Field.Field orientation="horizontal" class="w-auto">
               <RadioGroup.Item value="all" id="block-rule-scope-all" />
               <Field.Label for="block-rule-scope-all" class="font-normal">{t().allAddresses}</Field.Label>
             </Field.Field>
-            <Field.Field orientation="horizontal">
+            <Field.Field orientation="horizontal" class="w-auto">
               <RadioGroup.Item value="selected" id="block-rule-scope-selected" />
               <Field.Label for="block-rule-scope-selected" class="font-normal">{t().selectedAddresses}</Field.Label>
             </Field.Field>

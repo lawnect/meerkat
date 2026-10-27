@@ -75,10 +75,10 @@
     methods: 'Methods',
     allMethods: 'All methods',
     selectedMethods: 'Selected methods',
-    methodsHint: 'GET includes HEAD',
+    methodsHint: 'Applies only to requests with the selected methods; others go to the policies below. GET includes HEAD.',
     needsMethod: 'Choose at least one method.',
     token: 'Access token',
-    tokenHint: 'Sent in the X-Meerkat-Access-Token header, valid for the address and client',
+    tokenHint: 'Applies only to requests whose X-Meerkat-Access-Token header carries a token valid for the address and client; others go to the policies below.',
     noToken: 'Not required',
     anyToken: 'Any token',
     selectedTokens: 'Selected tokens',
@@ -152,10 +152,10 @@
     methods: '메서드',
     allMethods: '모든 메서드',
     selectedMethods: '선택한 메서드',
-    methodsHint: 'GET 선택 시 HEAD 포함',
+    methodsHint: '선택한 메서드의 요청에만 적용되며, 다른 요청은 아래 정책이 판단합니다. GET을 선택하면 HEAD도 포함됩니다.',
     needsMethod: '메서드를 하나 이상 선택하십시오.',
     token: '접근 토큰',
-    tokenHint: 'X-Meerkat-Access-Token 헤더의 토큰이 주소와 클라이언트에 유효할 때 적용',
+    tokenHint: 'X-Meerkat-Access-Token 헤더의 토큰이 주소와 클라이언트에 유효한 요청에만 적용되며, 다른 요청은 아래 정책이 판단합니다.',
     noToken: '조건 없음',
     anyToken: '모든 토큰',
     selectedTokens: '선택한 토큰',
@@ -637,15 +637,22 @@
         </Field.Field>
         <Field.Set>
           <Field.Legend variant="label">{t().action}</Field.Legend>
-          <RadioGroup.Root value={form.action} onValueChange={(value) => { if (actions.includes(value as AccessAction)) form.action = value as AccessAction; }}>
+          <!-- 선택지는 한 줄로 두고, 각 동작의 뜻은 마우스를 올리면 툴팁으로, 화면 낭독기에는 설명으로 알립니다. -->
+          <RadioGroup.Root value={form.action} onValueChange={(value) => { if (actions.includes(value as AccessAction)) form.action = value as AccessAction; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
             {#each actions as action (action)}
-              <Field.Field orientation="horizontal">
-                <RadioGroup.Item value={action} id={`access-policy-action-${action}`} />
-                <Field.Content>
-                  <Field.Label for={`access-policy-action-${action}`} class="font-normal">{t().actions[action]}</Field.Label>
-                  <Field.Description>{form.token === 'none' ? t().actionHints[action] : t().tokenActionHints[action]}</Field.Description>
-                </Field.Content>
-              </Field.Field>
+              {@const hint = form.token === 'none' ? t().actionHints[action] : t().tokenActionHints[action]}
+              <Tooltip.Root>
+                <Tooltip.Trigger>
+                  {#snippet child({ props })}
+                    <Field.Field orientation="horizontal" class="w-auto" {...props} tabindex={-1}>
+                      <RadioGroup.Item value={action} id={`access-policy-action-${action}`} aria-describedby={`access-policy-action-${action}-hint`} />
+                      <Field.Label for={`access-policy-action-${action}`} class="font-normal">{t().actions[action]}</Field.Label>
+                      <span id={`access-policy-action-${action}-hint`} class="sr-only">{hint}</span>
+                    </Field.Field>
+                  {/snippet}
+                </Tooltip.Trigger>
+                <Tooltip.Content>{hint}</Tooltip.Content>
+              </Tooltip.Root>
             {/each}
           </RadioGroup.Root>
         </Field.Set>
@@ -681,12 +688,12 @@
         </Field.Set>
         <Field.Set>
           <Field.Legend variant="label" class="flex items-center gap-1">{t().paths}<InfoTooltip id="access-policy-paths-tip" label={t().paths} description={t().pathsTip} /></Field.Legend>
-          <RadioGroup.Root value={form.paths} onValueChange={(value) => { form.paths = value === 'selected' ? 'selected' : 'all'; }}>
-            <Field.Field orientation="horizontal">
+          <RadioGroup.Root value={form.paths} onValueChange={(value) => { form.paths = value === 'selected' ? 'selected' : 'all'; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
+            <Field.Field orientation="horizontal" class="w-auto">
               <RadioGroup.Item value="all" id="access-policy-paths-all" />
               <Field.Label for="access-policy-paths-all" class="font-normal">{t().allPaths}</Field.Label>
             </Field.Field>
-            <Field.Field orientation="horizontal">
+            <Field.Field orientation="horizontal" class="w-auto">
               <RadioGroup.Item value="selected" id="access-policy-paths-selected" />
               <Field.Label for="access-policy-paths-selected" class="font-normal">{t().selectedPaths}</Field.Label>
             </Field.Field>
@@ -724,13 +731,13 @@
           {/if}
         </Field.Set>
         <Field.Set>
-          <Field.Legend variant="label">{t().methods}</Field.Legend>
-          <RadioGroup.Root value={form.methods} onValueChange={(value) => { form.methods = value === 'selected' ? 'selected' : 'all'; }}>
-            <Field.Field orientation="horizontal">
+          <Field.Legend variant="label" class="flex items-center gap-1">{t().methods}<InfoTooltip id="access-policy-methods-tip" label={t().methods} description={t().methodsHint} /></Field.Legend>
+          <RadioGroup.Root value={form.methods} onValueChange={(value) => { form.methods = value === 'selected' ? 'selected' : 'all'; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
+            <Field.Field orientation="horizontal" class="w-auto">
               <RadioGroup.Item value="all" id="access-policy-methods-all" />
               <Field.Label for="access-policy-methods-all" class="font-normal">{t().allMethods}</Field.Label>
             </Field.Field>
-            <Field.Field orientation="horizontal">
+            <Field.Field orientation="horizontal" class="w-auto">
               <RadioGroup.Item value="selected" id="access-policy-methods-selected" />
               <Field.Label for="access-policy-methods-selected" class="font-normal">{t().selectedMethods}</Field.Label>
             </Field.Field>
@@ -748,15 +755,13 @@
                 </Field.Field>
               {/each}
             </div>
-            <Field.Description>{t().methodsHint}</Field.Description>
           {/if}
         </Field.Set>
         <Field.Set>
-          <Field.Legend variant="label">{t().token}</Field.Legend>
-          <Field.Description>{t().tokenHint}</Field.Description>
-          <RadioGroup.Root value={form.token} onValueChange={(value) => { form.token = value === 'any' || value === 'selected' ? value : 'none'; }}>
+          <Field.Legend variant="label" class="flex items-center gap-1">{t().token}<InfoTooltip id="access-policy-token-tip" label={t().token} description={t().tokenHint} /></Field.Legend>
+          <RadioGroup.Root value={form.token} onValueChange={(value) => { form.token = value === 'any' || value === 'selected' ? value : 'none'; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
             {#each [['none', t().noToken], ['any', t().anyToken], ['selected', t().selectedTokens]] as [value, label] (value)}
-              <Field.Field orientation="horizontal">
+              <Field.Field orientation="horizontal" class="w-auto">
                 <RadioGroup.Item value={value} id={`access-policy-token-${value}`} />
                 <Field.Label for={`access-policy-token-${value}`} class="font-normal">{label}</Field.Label>
               </Field.Field>
@@ -764,9 +769,9 @@
           </RadioGroup.Root>
           {#if form.token === 'selected'}
             {#if tokens?.length}
-              <Field.Group class="gap-2">
+              <div class="flex flex-wrap gap-x-6 gap-y-2">
                 {#each tokens as token (token.id)}
-                  <Field.Field orientation="horizontal">
+                  <Field.Field orientation="horizontal" class="w-auto">
                     <Checkbox
                       id={`access-policy-token-id-${token.id}`}
                       checked={form.tokens.includes(token.id)}
@@ -778,7 +783,7 @@
                     </Field.Label>
                   </Field.Field>
                 {/each}
-              </Field.Group>
+              </div>
             {:else if tokens}
               <Field.Description>{t().noTokens}</Field.Description>
             {/if}
