@@ -517,6 +517,7 @@ func (s *Store) heartbeat(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 409, "out_of_order_heartbeat")
 		return
 	}
+	s.recordTunnelEvents(id, managed, record, hb.ProcessRestarts)
 	record.LastHeartbeat, record.LastSeen, record.ServiceStatuses = &hb, s.now().UTC(), statuses
 	record.TunnelStatus = "connected"
 	if len(statuses) != 0 {
