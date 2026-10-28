@@ -215,15 +215,35 @@ func TestLatencyAlertsOncePerHourPerKind(t *testing.T) {
 		t.Fatalf("events = %+v", events)
 	}
 
-	// At 15:00 the slow hour is the previous one, still looked at but not
+	// At 15:31 the slow hour is the previous one, still looked at but not
 	// repeated; the new hour is slow too, and alerts once more for each.
-	a.clock.advance(30 * time.Minute)
+	a.clock.advance(time.Hour)
 	for _, kind := range []string{control.LatencyOutlet, control.LatencyUpstream} {
 		a.addLatencies(t, kind, hour.Add(time.Hour), slowedCount, 250_000)
 	}
 	a.evaluate()
 	a.evaluate()
 	if texts := a.texts(); len(texts) != 4 || len(a.events(t, "latency")) != 4 {
+		t.Fatalf("messages = %q", texts)
+	}
+}
+
+// The hour under way is judged from its half on: its first minutes alone,
+// a job at the top of the hour say, aren't the hour.
+func TestLatencyAlertWaitsForHalfTheHour(t *testing.T) {
+	a, hour := latencyFixture(t)
+	a.addLatencies(t, control.LatencyOutlet, hour.Add(-24*time.Hour), usualCount, usualUS)
+	a.addLatencies(t, control.LatencyOutlet, hour.Add(time.Hour), slowedCount, slowedUS)
+	a.clock.advance(31 * time.Minute) // 15:01
+	a.evaluate()
+	a.clock.advance(28 * time.Minute) // 15:29
+	a.evaluate()
+	if len(a.telegram.messages()) != 0 {
+		t.Fatalf("judged the hour in its first half: %q", a.texts())
+	}
+	a.clock.advance(time.Minute) // 15:30
+	a.evaluate()
+	if texts := a.texts(); len(texts) != 1 || !strings.Contains(texts[0], "Hour: 2026-10-26 15:00 UTC") {
 		t.Fatalf("messages = %q", texts)
 	}
 }

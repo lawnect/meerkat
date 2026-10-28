@@ -24,6 +24,10 @@ const (
 	spikeCooldown = 2 * time.Hour
 	// An alert that could not be delivered is retried for this long.
 	retryWindow = time.Hour
+	// The hour under way is judged by the hourly rules once this much of it
+	// has passed: its first minutes alone, a job at the top of the hour say,
+	// aren't the hour.
+	hourJudged = 30 * time.Minute
 )
 
 // alertState belongs to the evaluator goroutine alone.
@@ -369,6 +373,9 @@ func (s *Store) spikeAlerts(ctx context.Context, env alertEnv, now time.Time) er
 		start, err := time.Parse(time.RFC3339, bucket.Start)
 		if err != nil {
 			return err
+		}
+		if start.Equal(hour) && now.Sub(hour) < hourJudged {
+			continue
 		}
 		n := errorSpikeNotice(start, bucket.ErrorResponses, bucket.Requests)
 		e, opened, err := s.control.RecordAlert(ctx, control.AlertEvent{Key: "error_spike:" + bucket.Start, Kind: "error_spike", Subject: bucket.Start, Message: n.summary, Ref: n.ref}, spikeCooldown, now)

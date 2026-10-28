@@ -46,8 +46,12 @@ func (s *Store) latencyAlerts(ctx context.Context, env alertEnv, now time.Time) 
 		return nil
 	}
 	current := now.UTC().Truncate(time.Hour)
+	hours := []time.Time{current.Add(-time.Hour)}
+	if now.Sub(current) >= hourJudged {
+		hours = append(hours, current)
+	}
 	for _, watched := range latencyKinds {
-		for _, hour := range []time.Time{current.Add(-time.Hour), current} {
+		for _, hour := range hours {
 			if err := s.latencyHourAlert(ctx, env, watched.kind, watched.where, watched.floorMS, hour, now); err != nil {
 				return err
 			}

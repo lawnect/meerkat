@@ -558,6 +558,23 @@ func (a alertFixture) setUsage(t *testing.T, hour time.Time, requests, failed in
 	}
 }
 
+func TestErrorSpikeWaitsForHalfTheHour(t *testing.T) {
+	a := newAlertFixture(t)
+	a.configureTelegram(t, false)
+	a.setUsage(t, time.Date(2026, 10, 26, 14, 0, 0, 0, time.UTC), 200, 100)
+	a.evaluate()
+	a.clock.advance(29 * time.Minute)
+	a.evaluate()
+	if len(a.telegram.messages()) != 0 {
+		t.Fatalf("judged the hour in its first half: %q", a.texts())
+	}
+	a.clock.advance(time.Minute)
+	a.evaluate()
+	if len(a.telegram.messages()) != 1 {
+		t.Fatalf("messages = %q", a.texts())
+	}
+}
+
 func TestErrorSpikeAlertsOncePerHour(t *testing.T) {
 	a := newAlertFixture(t)
 	a.configureTelegram(t, false)
