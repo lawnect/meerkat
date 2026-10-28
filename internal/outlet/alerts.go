@@ -98,8 +98,11 @@ func (s *Store) evaluateAlerts(ctx context.Context) {
 		return
 	}
 	if !ok {
-		// Nothing is timed while alerts are off.
+		// Nothing is timed or counted while alerts are off.
 		s.alerts.downSince, s.alerts.serviceDownSince = nil, nil
+		s.mu.Lock()
+		s.tunnelEvents.byConnector = nil
+		s.mu.Unlock()
 		return
 	}
 	now := s.now()

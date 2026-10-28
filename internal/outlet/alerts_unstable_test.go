@@ -197,10 +197,12 @@ func TestUnstableAlert(t *testing.T) {
 		t.Fatalf("alerted below the threshold: %q", unstableTexts(a))
 	}
 
-	// A tunnel process restart is the third event.
+	// A tunnel process restart is the third event, once the reconnects are
+	// past the time the others would have needed to come back too.
 	edge.restarts = 1
 	a.clock.advance(5 * time.Second)
 	edge.beat(t)
+	a.clock.advance(sharedWindow)
 	a.evaluate()
 	want := "🟠 <b>Tunnel unstable</b>\nTunnel: <code>edge-a</code>\nLast hour: 2 reconnects, 1 tunnel process restart\n<a href=\"https://" + a.host + "/connectors/" + edge.connector.ID + "\">Open in Meerkat</a>"
 	if texts := unstableTexts(a); len(texts) != 1 || texts[0] != want {
@@ -263,6 +265,7 @@ func TestUnstableEventsOlderThanAnHourDropOut(t *testing.T) {
 
 	// Two more make three within the hour.
 	u.flap(t, 2)
+	a.clock.advance(sharedWindow)
 	a.evaluate()
 	if texts := unstableTexts(a); len(texts) != 1 || !strings.Contains(texts[0], "\nLast hour: 3 reconnects\n") {
 		t.Fatalf("messages = %q", texts)
@@ -286,6 +289,17 @@ func TestUnstableReconnectsFollowTheHeartbeatInterval(t *testing.T) {
 	a.clock.advance(25 * time.Second)
 	u.beat(t)
 	u.want(t, 1, 0)
+
+	// One early heartbeat doesn't make it look like a 7 s Connector.
+	v := newUnstableTunnelNamed(t, a, "edge-b")
+	v.beat(t)
+	for _, gap := range []time.Duration{10, 10, 7, 10, 10} {
+		a.clock.advance(gap * time.Second)
+		v.beat(t)
+	}
+	a.clock.advance(20 * time.Second)
+	v.beat(t)
+	v.want(t, 0, 0)
 }
 
 // Most tunnels going quiet together is the Outlet's side, Caddy restarting
@@ -329,6 +343,115 @@ func TestUnstableLeavesOutReconnectsMostTunnelsShare(t *testing.T) {
 	}
 }
 
+// steadyTunnels report every 5 s for d, beside a.clock.
+func steadyTunnels(t *testing.T, a alertFixture, d time.Duration, tunnels ...*unstableTunnel) {
+	t.Helper()
+	for range int(d / (5 * time.Second)) {
+		a.clock.advance(5 * time.Second)
+		for _, u := range tunnels {
+			u.beat(t)
+		}
+	}
+}
+
+// Two of four tunnels flapping on their own, close together, aren't the
+// Outlet's: that takes a majority.
+func TestUnstableSharedReconnectsTakeAMajority(t *testing.T) {
+	a := newAlertFixture(t)
+	a.configureTelegram(t, false)
+	var tunnels []*unstableTunnel
+	for _, name := range []string{"edge-a", "edge-b", "edge-c", "edge-d"} {
+		tunnels = append(tunnels, newUnstableTunnelNamed(t, a, name))
+	}
+	for _, u := range tunnels {
+		u.beat(t)
+	}
+	steadyTunnels(t, a, time.Minute, tunnels...)
+	for range 3 {
+		steadyTunnels(t, a, 20*time.Second, tunnels[2:]...)
+		tunnels[0].beat(t)
+		steadyTunnels(t, a, 25*time.Second, tunnels[2:]...)
+		tunnels[1].beat(t)
+		steadyTunnels(t, a, time.Minute, tunnels...)
+	}
+	a.evaluate()
+	if texts := unstableTexts(a); len(texts) != 2 {
+		t.Fatalf("messages = %q", texts)
+	}
+}
+
+// Enrolled tunnels that have been offline all hour can't share a reconnect,
+// so they don't raise the majority the live ones need.
+func TestUnstableOfflineTunnelsDontCountTowardTheMajority(t *testing.T) {
+	a := newAlertFixture(t)
+	a.configureTelegram(t, false)
+	for _, name := range []string{"off-a", "off-b", "off-c", "off-d"} {
+		a.connector(t, name, a.clock.now().Add(-2*time.Hour))
+	}
+	tunnels := []*unstableTunnel{newUnstableTunnelNamed(t, a, "edge-a"), newUnstableTunnelNamed(t, a, "edge-b"), newUnstableTunnelNamed(t, a, "edge-c")}
+	for _, u := range tunnels {
+		u.beat(t)
+	}
+	for range 3 {
+		a.clock.advance(unstableGap)
+		for _, u := range tunnels {
+			u.beat(t)
+		}
+		steadyTunnels(t, a, time.Minute, tunnels...)
+	}
+	a.evaluate()
+	if texts := unstableTexts(a); len(texts) != 0 {
+		t.Fatalf("shared reconnects alerted: %q", texts)
+	}
+}
+
+// A reconnect is judged only once the other tunnels have had time to come
+// back from the same outage.
+func TestUnstableWaitsForTheOthersToComeBack(t *testing.T) {
+	a := newAlertFixture(t)
+	a.configureTelegram(t, false)
+	tunnels := []*unstableTunnel{newUnstableTunnelNamed(t, a, "edge-a"), newUnstableTunnelNamed(t, a, "edge-b"), newUnstableTunnelNamed(t, a, "edge-c")}
+	for _, u := range tunnels {
+		u.beat(t)
+	}
+	steadyTunnels(t, a, time.Minute, tunnels...)
+	// edge-a drops twice on its own.
+	for range 2 {
+		steadyTunnels(t, a, 20*time.Second, tunnels[1:]...)
+		tunnels[0].beat(t)
+		steadyTunnels(t, a, time.Minute, tunnels...)
+	}
+	// Then all three go quiet; edge-a is back first and a round runs.
+	a.clock.advance(unstableGap)
+	tunnels[0].beat(t)
+	a.evaluate()
+	a.clock.advance(3 * time.Second)
+	for _, u := range tunnels[1:] {
+		u.beat(t)
+	}
+	steadyTunnels(t, a, time.Minute, tunnels...)
+	a.evaluate()
+	if texts := unstableTexts(a); len(texts) != 0 {
+		t.Fatalf("a shared reconnect counted for one tunnel: %q", texts)
+	}
+}
+
+// Nothing is counted while alerts are off: Telegram turned on later doesn't
+// page for what happened before.
+func TestUnstableCountsNothingWhileAlertsAreOff(t *testing.T) {
+	a := newAlertFixture(t)
+	u := newUnstableTunnel(t, a)
+	u.beat(t)
+	u.flap(t, 3)
+	a.clock.advance(sharedWindow)
+	a.evaluate()
+	a.configureTelegram(t, false)
+	a.evaluate()
+	if texts := unstableTexts(a); len(texts) != 0 {
+		t.Fatalf("paged for reconnects from before alerts were on: %q", texts)
+	}
+}
+
 func TestUnstableRuleSettings(t *testing.T) {
 	a := newAlertFixture(t)
 	a.configureTelegram(t, false)
@@ -354,6 +477,7 @@ func TestUnstableRuleSettings(t *testing.T) {
 		t.Fatalf("alerted below MinReconnects: %q", unstableTexts(a))
 	}
 	u.flap(t, 1)
+	a.clock.advance(sharedWindow)
 	a.evaluate()
 	if texts := unstableTexts(a); len(texts) != 1 || !strings.Contains(texts[0], "\nLast hour: 4 reconnects\n") {
 		t.Fatalf("messages = %q", texts)
