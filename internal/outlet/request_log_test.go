@@ -361,6 +361,9 @@ func TestLogExports(t *testing.T) {
 	f.requestLogging(t, true)
 	f.failureLogging(t, true)
 	at := time.Date(2026, 10, 27, 11, 30, 0, 0, time.UTC)
+	// The tally's default period is the last 24 hours, so the clock stays
+	// beside the entries.
+	f.store.now = func() time.Time { return at.Add(time.Hour) }
 	var entries []requestEntry
 	const n = 2*1000 + 3
 	for i := range n {
