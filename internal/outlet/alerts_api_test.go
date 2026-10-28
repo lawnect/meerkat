@@ -389,6 +389,18 @@ func TestAlertRulesAPI(t *testing.T) {
 		t.Fatalf("rules without service_down = %+v", got)
 	}
 	want.TunnelDown.AfterMinutes = 7
+	// A rule that is there is taken whole, as before: a missing field is no
+	// longer the stored value but zero, and out of range.
+	partial := rules()
+	partial["latency"] = map[string]any{"enabled": true}
+	if w := request(h, "PUT", "/api/v1/alerts/rules", admin, partial); w.Code != 400 || errorCode(t, w) != "invalid_alert_rules" {
+		t.Errorf("partial latency rule: %d %s", w.Code, w.Body.String())
+	}
+	partial = rules()
+	partial["tunnel_down"] = map[string]any{"enabled": true}
+	if w := request(h, "PUT", "/api/v1/alerts/rules", admin, partial); w.Code != 400 || errorCode(t, w) != "invalid_alert_rules" {
+		t.Errorf("partial tunnel rule: %d %s", w.Code, w.Body.String())
+	}
 	for _, key := range []string{"tunnel_down", "login", "rate_limit"} {
 		incomplete := rules()
 		delete(incomplete, key)

@@ -154,20 +154,47 @@ func (s *Store) deleteTelegram(w http.ResponseWriter, r *http.Request) {
 	s.replyAlerts(w, r, 200)
 }
 
+// alertRulesRequest is a rules body. The first six rules must all be in it,
+// as they always were; a rule added later may be left out, so a console or
+// script from before it keeps it as stored. A rule that is there is taken
+// whole: a field missing from it is zero, not the stored value.
+type alertRulesRequest struct {
+	control.AlertRules
+	ServiceDown    *control.ServiceDownRule    `json:"service_down"`
+	Latency        *control.LatencyRule        `json:"latency"`
+	OutletRestart  *control.ToggleRule         `json:"outlet_restart"`
+	DiskLow        *control.FreeSpaceRule      `json:"disk_low"`
+	MemoryLow      *control.FreeSpaceRule      `json:"memory_low"`
+	TunnelUnstable *control.TunnelUnstableRule `json:"tunnel_unstable"`
+}
+
+func orStored[T any](given *T, stored T) T {
+	if given != nil {
+		return *given
+	}
+	return stored
+}
+
 func (s *Store) putAlertRules(w http.ResponseWriter, r *http.Request) {
 	if !s.alertsAdmin(w, r) {
 		return
 	}
-	// Rules added after the first six may be left out: a console or script
-	// from before them keeps them as stored.
-	rules, err := s.control.AlertRules(r.Context())
+	var req alertRulesRequest
+	if !decode(w, r, &req, "tunnel_down", "route_error", "dns_failure", "error_spike", "login", "rate_limit") {
+		return
+	}
+	stored, err := s.control.AlertRules(r.Context())
 	if err != nil {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	if !decode(w, r, &rules, "tunnel_down", "route_error", "dns_failure", "error_spike", "login", "rate_limit") {
-		return
-	}
+	rules := req.AlertRules
+	rules.ServiceDown = orStored(req.ServiceDown, stored.ServiceDown)
+	rules.Latency = orStored(req.Latency, stored.Latency)
+	rules.OutletRestart = orStored(req.OutletRestart, stored.OutletRestart)
+	rules.DiskLow = orStored(req.DiskLow, stored.DiskLow)
+	rules.MemoryLow = orStored(req.MemoryLow, stored.MemoryLow)
+	rules.TunnelUnstable = orStored(req.TunnelUnstable, stored.TunnelUnstable)
 	switch err := s.control.SetAlertRules(r.Context(), rules, s.now()); {
 	case errors.Is(err, control.ErrInvalidAlertRules):
 		fail(w, r, 400, "invalid_alert_rules")
