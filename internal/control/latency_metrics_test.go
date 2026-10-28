@@ -90,6 +90,40 @@ func TestLatencySeries(t *testing.T) {
 	}
 }
 
+// A sum covers the hours from its start up to, not including, its end, of
+// the kind asked for alone.
+func TestLatencySum(t *testing.T) {
+	ctx := context.Background()
+	db := openRouting(t)
+	start := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
+	histogram := func(us ...int64) LatencyHistogram {
+		var h LatencyHistogram
+		for _, v := range us {
+			h.Add(v)
+		}
+		return h
+	}
+	if err := db.RecordLatencies(ctx, map[LatencyKey]LatencyHistogram{
+		{LatencyOutlet, start.Add(-time.Hour)}:    histogram(1_000),
+		{LatencyOutlet, start}:                    histogram(200, 3_000),
+		{LatencyOutlet, start.Add(time.Hour)}:     histogram(200),
+		{LatencyOutlet, start.Add(2 * time.Hour)}: histogram(9_000),
+		{LatencyUpstream, start}:                  histogram(80_000),
+	}, start.Add(3*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.LatencySum(ctx, LatencyOutlet, start, start.Add(2*time.Hour))
+	if err != nil || got != histogram(200, 3_000, 200) {
+		t.Fatalf("outlet: %+v %v", got, err)
+	}
+	if got, err := db.LatencySum(ctx, LatencyUpstream, start, start.Add(2*time.Hour)); err != nil || got != histogram(80_000) {
+		t.Fatalf("upstream: %+v %v", got, err)
+	}
+	if got, err := db.LatencySum(ctx, LatencyUpstream, start.Add(time.Hour), start.Add(2*time.Hour)); err != nil || got != (LatencyHistogram{}) {
+		t.Fatalf("no hours: %+v %v", got, err)
+	}
+}
+
 // Percentiles rank among the buckets: a count that ran ahead of them, a
 // request flushed between its count and its bucket, doesn't push p99 past
 // the last bucket.

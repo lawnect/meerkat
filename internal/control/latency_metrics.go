@@ -137,6 +137,15 @@ var latencyColumns = func() string {
 	return strings.Join(columns, ", ")
 }()
 
+// latencySums adds up every column of a histogram over the hours in a range.
+var latencySums = func() string {
+	columns := make([]string, LatencyBuckets)
+	for i := range columns {
+		columns[i] = fmt.Sprintf("COALESCE(SUM(b%d), 0)", i)
+	}
+	return "COALESCE(SUM(count), 0), COALESCE(SUM(sum_us), 0), " + strings.Join(columns, ", ")
+}()
+
 // RecordLatencies adds histograms to the hours they were counted in and
 // forgets hours older than latencyRetention.
 func (d *Database) RecordLatencies(ctx context.Context, histograms map[LatencyKey]LatencyHistogram, now time.Time) error {
@@ -224,4 +233,17 @@ func (d *Database) LatencySeries(ctx context.Context, unit string, from, to time
 	}
 	result.Outlet, result.Upstream = total.outlet.Stats(), total.upstream.Stats()
 	return result, nil
+}
+
+// LatencySum adds up the hours of one kind of latency in [from, to); it is
+// empty when nothing was counted.
+func (d *Database) LatencySum(ctx context.Context, kind string, from, to time.Time) (LatencyHistogram, error) {
+	var h LatencyHistogram
+	into := []any{&h.Count, &h.SumUS}
+	for i := range h.Buckets {
+		into = append(into, &h.Buckets[i])
+	}
+	err := d.db.QueryRowContext(ctx, `SELECT `+latencySums+` FROM latency_hourly WHERE kind = ? AND hour >= ? AND hour < ?`,
+		kind, from.UTC().Format(time.RFC3339), to.UTC().Format(time.RFC3339)).Scan(into...)
+	return h, err
 }
