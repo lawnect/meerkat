@@ -45,7 +45,12 @@ func decodeOutlet(t *testing.T, body []byte) outletResponse {
 // enrolledConnector creates a Connector with one service and enrolls it.
 func enrolledConnector(t *testing.T, h http.Handler, admin string) (control.Connector, contract.EnrollmentResponse) {
 	t.Helper()
-	w := request(h, "POST", "/api/v1/connectors", admin, map[string]any{"name": "edge-a"})
+	return enrolledConnectorNamed(t, h, admin, "edge-a")
+}
+
+func enrolledConnectorNamed(t *testing.T, h http.Handler, admin, name string) (control.Connector, contract.EnrollmentResponse) {
+	t.Helper()
+	w := request(h, "POST", "/api/v1/connectors", admin, map[string]any{"name": name})
 	var connector control.Connector
 	if err := json.Unmarshal(w.Body.Bytes(), &connector); err != nil || w.Code != 201 {
 		t.Fatalf("connector: %d %s", w.Code, w.Body.String())
@@ -60,7 +65,7 @@ func enrolledConnector(t *testing.T, h http.Handler, admin string) (control.Conn
 	if err := json.Unmarshal(w.Body.Bytes(), &token); err != nil || w.Code != 201 {
 		t.Fatalf("token: %d %s", w.Code, w.Body.String())
 	}
-	w = request(h, "POST", "/connector/v1/enrollment", token.Token, enrollment("edge-a"))
+	w = request(h, "POST", "/connector/v1/enrollment", token.Token, enrollment(name))
 	var enrolled contract.EnrollmentResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &enrolled); err != nil || w.Code != 201 {
 		t.Fatalf("enroll: %d %s", w.Code, w.Body.String())

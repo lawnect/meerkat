@@ -14,8 +14,13 @@ const (
 	// unstableWindow is how far back the rule counts events.
 	unstableWindow = time.Hour
 	// reconnectGap is the silence after which a Connector was stale, as
-	// managedConnectorStatus sees it, and so reconnected when it spoke again.
+	// managedConnectorStatus sees it, and so reconnected when it spoke again;
+	// for a Connector that reports less often, missedBeats of its heartbeats.
 	reconnectGap = 15 * time.Second
+	missedBeats  = 2.5
+	// Reconnects of most tunnels this close together are the Outlet's side
+	// going away (Caddy restarting, the host's network), not the tunnels'.
+	sharedWindow = 30 * time.Second
 	// maxTunnelEvents bounds what is kept per Connector and kind. An hour holds
 	// at most 240 reconnects, one for each reconnectGap, so only restarts a
 	// Connector reports in a burst are ever cut.
@@ -26,6 +31,10 @@ const (
 // arrive. It is guarded by Store.mu, which the heartbeat handler holds.
 type tunnelEvents struct {
 	byConnector map[string]tunnelHistory
+	// interval is the shortest gap between each Connector's heartbeats, of
+	// a second or more (the least it can be set to): its heartbeat interval.
+	// It is kept while the rule is off too.
+	interval map[string]time.Duration
 }
 
 // tunnelHistory is when one Connector reconnected and when its tunnel process
@@ -56,19 +65,19 @@ func (e *tunnelEvents) add(id string, now time.Time, reconnects, restarts int) {
 	e.byConnector[id] = history
 }
 
-// count reports the events of the last hour, forgetting the older ones.
-func (e *tunnelEvents) count(id string, now time.Time) (reconnects, restarts int) {
+// recent reports the events of the last hour, forgetting the older ones.
+func (e *tunnelEvents) recent(id string, now time.Time) tunnelHistory {
 	history, ok := e.byConnector[id]
 	if !ok {
-		return 0, 0
+		return tunnelHistory{}
 	}
 	history.reconnects, history.restarts = recentEvents(history.reconnects, now, 0), recentEvents(history.restarts, now, 0)
 	if len(history.reconnects)+len(history.restarts) == 0 {
 		delete(e.byConnector, id)
-		return 0, 0
+		return tunnelHistory{}
 	}
 	e.byConnector[id] = history
-	return len(history.reconnects), len(history.restarts)
+	return tunnelHistory{slices.Clone(history.reconnects), slices.Clone(history.restarts)}
 }
 
 // recordTunnelEvents notes what an accepted heartbeat says about the
@@ -83,8 +92,15 @@ func (s *Store) recordTunnelEvents(id string, managed bool, previous Record, res
 	}
 	now := s.now()
 	var reconnects, restarted int
-	if now.Sub(previous.LastSeen) >= reconnectGap {
+	gap := now.Sub(previous.LastSeen)
+	if s.tunnelEvents.interval == nil {
+		s.tunnelEvents.interval = map[string]time.Duration{}
+	}
+	interval := s.tunnelEvents.interval[id]
+	if gap >= max(reconnectGap, time.Duration(missedBeats*float64(interval))) {
 		reconnects = 1
+	} else if gap >= time.Second && (interval == 0 || gap < interval) {
+		s.tunnelEvents.interval[id] = gap
 	}
 	// A lower count is the Connector starting over, an upgrade or a restart by
 	// hand; a reconnect shows it when it was away long enough to be noticed.
@@ -102,6 +118,10 @@ func (s *Store) recordTunnelEvents(id string, managed bool, previous Record, res
 func (s *Store) unstableAlerts(ctx context.Context, env alertEnv, now time.Time) error {
 	rule := env.rules.TunnelUnstable
 	if !rule.Enabled {
+		// What happened while the rule was off isn't counted once it is on.
+		s.mu.Lock()
+		s.tunnelEvents.byConnector = nil
+		s.mu.Unlock()
 		return nil
 	}
 	connectors, err := s.control.ListConnectors(ctx)
@@ -112,7 +132,11 @@ func (s *Store) unstableAlerts(ctx context.Context, env alertEnv, now time.Time)
 		connector            control.Connector
 		reconnects, restarts int
 	}
-	var found []unstable
+	type tracked struct {
+		connector control.Connector
+		history   tunnelHistory
+	}
+	var tunnels []tracked
 	s.mu.Lock()
 	for id := range s.tunnelEvents.byConnector {
 		// A deleted tunnel's events would otherwise stay for good.
@@ -121,14 +145,31 @@ func (s *Store) unstableAlerts(ctx context.Context, env alertEnv, now time.Time)
 		}
 	}
 	for _, c := range connectors {
-		if record, ok := s.managed[c.ID]; !ok || !record.Enrolled {
-			continue
-		}
-		if reconnects, restarts := s.tunnelEvents.count(c.ID, now); reconnects+restarts >= rule.MinReconnects {
-			found = append(found, unstable{c, reconnects, restarts})
+		if record, ok := s.managed[c.ID]; ok && record.Enrolled {
+			tunnels = append(tunnels, tracked{c, s.tunnelEvents.recent(c.ID, now)})
 		}
 	}
 	s.mu.Unlock()
+	// A reconnect shared by most tunnels is the Outlet's, not this tunnel's.
+	quorum := max(2, (len(tunnels)+1)/2)
+	var found []unstable
+	for i, t := range tunnels {
+		reconnects := 0
+		for _, at := range t.history.reconnects {
+			together := 1
+			for j, other := range tunnels {
+				if j != i && slices.ContainsFunc(other.history.reconnects, func(o time.Time) bool { return o.Sub(at).Abs() <= sharedWindow }) {
+					together++
+				}
+			}
+			if together < quorum {
+				reconnects++
+			}
+		}
+		if restarts := len(t.history.restarts); reconnects+restarts >= rule.MinReconnects {
+			found = append(found, unstable{t.connector, reconnects, restarts})
+		}
+	}
 	for _, u := range found {
 		name := connectorName(u.connector)
 		n := tunnelUnstableNotice(name, u.connector.ID, u.reconnects, u.restarts)

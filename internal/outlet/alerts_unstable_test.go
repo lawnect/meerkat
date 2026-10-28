@@ -24,7 +24,12 @@ const unstableGap = 20 * time.Second
 
 func newUnstableTunnel(t *testing.T, a alertFixture) *unstableTunnel {
 	t.Helper()
-	connector, enrolled := enrolledConnector(t, a.store.Handler(), a.admin)
+	return newUnstableTunnelNamed(t, a, "edge-a")
+}
+
+func newUnstableTunnelNamed(t *testing.T, a alertFixture, name string) *unstableTunnel {
+	t.Helper()
+	connector, enrolled := enrolledConnectorNamed(t, a.store.Handler(), a.admin, name)
 	// The credential would run out within the hour the tests span.
 	a.store.mu.Lock()
 	record := a.store.managed[connector.ID]
@@ -59,7 +64,8 @@ func (u *unstableTunnel) flap(t *testing.T, n int) {
 func (u *unstableTunnel) counts() (reconnects, restarts int) {
 	u.a.store.mu.Lock()
 	defer u.a.store.mu.Unlock()
-	return u.a.store.tunnelEvents.count(u.connector.ID, u.a.clock.now())
+	history := u.a.store.tunnelEvents.recent(u.connector.ID, u.a.clock.now())
+	return len(history.reconnects), len(history.restarts)
 }
 
 func (u *unstableTunnel) want(t *testing.T, reconnects, restarts int) {
@@ -266,6 +272,63 @@ func TestUnstableEventsOlderThanAnHourDropOut(t *testing.T) {
 	u.want(t, 0, 0)
 }
 
+// A Connector that reports every 10 s isn't reconnecting when one heartbeat
+// goes missing.
+func TestUnstableReconnectsFollowTheHeartbeatInterval(t *testing.T) {
+	a := newAlertFixture(t)
+	u := newUnstableTunnel(t, a)
+	u.beat(t)
+	a.clock.advance(10 * time.Second)
+	u.beat(t)
+	a.clock.advance(20 * time.Second)
+	u.beat(t)
+	u.want(t, 0, 0)
+	a.clock.advance(25 * time.Second)
+	u.beat(t)
+	u.want(t, 1, 0)
+}
+
+// Most tunnels going quiet together is the Outlet's side, Caddy restarting
+// say, not each tunnel being unstable; a tunnel flapping alone still is.
+func TestUnstableLeavesOutReconnectsMostTunnelsShare(t *testing.T) {
+	a := newAlertFixture(t)
+	a.configureTelegram(t, false)
+	tunnels := []*unstableTunnel{newUnstableTunnelNamed(t, a, "edge-a"), newUnstableTunnelNamed(t, a, "edge-b"), newUnstableTunnelNamed(t, a, "edge-c")}
+	for _, u := range tunnels {
+		u.beat(t)
+	}
+	for range 3 {
+		a.clock.advance(unstableGap)
+		for _, u := range tunnels {
+			u.beat(t)
+		}
+	}
+	a.evaluate()
+	if texts := unstableTexts(a); len(texts) != 0 {
+		t.Fatalf("shared reconnects alerted: %q", texts)
+	}
+	// The others report every 5 s from here on while the first drops out
+	// for 20 s, three times.
+	steady := func(steps int, from int) {
+		for range steps {
+			a.clock.advance(5 * time.Second)
+			for _, u := range tunnels[from:] {
+				u.beat(t)
+			}
+		}
+	}
+	steady(12, 0)
+	for range 3 {
+		steady(4, 1)
+		tunnels[0].beat(t)
+		steady(12, 0)
+	}
+	a.evaluate()
+	if texts := unstableTexts(a); len(texts) != 1 || !strings.Contains(texts[0], "\nLast hour: 3 reconnects\n") {
+		t.Fatalf("messages = %q", texts)
+	}
+}
+
 func TestUnstableRuleSettings(t *testing.T) {
 	a := newAlertFixture(t)
 	a.configureTelegram(t, false)
@@ -279,10 +342,13 @@ func TestUnstableRuleSettings(t *testing.T) {
 		t.Fatalf("alerted with the rule off: %q", unstableTexts(a))
 	}
 
-	// The same events are not enough for a higher threshold.
+	// What happened before the rule was switched back on isn't counted,
+	// and a higher threshold takes more.
 	a.setRules(t, func(r *control.AlertRules) {
 		r.TunnelUnstable = control.TunnelUnstableRule{Enabled: true, MinReconnects: 4}
 	})
+	a.evaluate()
+	u.flap(t, 3)
 	a.evaluate()
 	if len(unstableTexts(a)) != 0 {
 		t.Fatalf("alerted below MinReconnects: %q", unstableTexts(a))
