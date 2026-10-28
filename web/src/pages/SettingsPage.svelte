@@ -67,14 +67,28 @@
     serviceDownHint: 'After this long not serving, and again on recovery.',
     afterMinutes: (rule: string) => `${rule} wait`,
     minutes: 'min',
+    tunnelUnstable: 'Unstable tunnel',
+    tunnelUnstableHint: 'Reconnects and tunnel process restarts within an hour at or above the threshold.',
+    timesUnit: 'times',
     routeError: 'Public address error',
+    routeErrorHint: 'Checked over TLS every 5 minutes, including certificate expiry.',
     dnsFailure: 'DNS failure',
     dnsFailureHint: 'Checked every 15 minutes.',
     errorSpike: '5xx spike',
     errorSpikeHint: 'Hourly 5xx share over the threshold, with at least the minimum requests.',
-    threshold: 'Threshold',
+    thresholdOf: (rule: string) => `${rule} threshold`,
     minRequests: 'Minimum requests',
+    minRequestsOf: (rule: string) => `${rule} minimum requests`,
     requestsUnit: 'req',
+    latency: 'Latency increase',
+    latencyHint: 'Hourly p95 above the past 7 days by the threshold, with at least the minimum requests.',
+    diskLow: 'Low disk space',
+    diskLowHint: 'Free space on the Outlet data disk below the threshold.',
+    memoryLow: 'Low memory',
+    memoryLowHint: 'Free memory below the threshold, against the container limit if set.',
+    minFreeOf: (rule: string) => `${rule} minimum free`,
+    outletRestart: 'Unexpected Outlet restart',
+    outletRestartHint: 'On start after a crash or forced stop.',
     login: 'Admin login',
     rateLimit: 'Requests blocked',
     rateLimitHint: 'More requests than this blocked within 10 minutes.',
@@ -142,14 +156,28 @@
     serviceDownHint: '설정 시간 이상 서비스 비정상 및 복구 시 알림',
     afterMinutes: (rule: string) => `${rule} 대기 시간`,
     minutes: '분',
+    tunnelUnstable: '터널 불안정',
+    tunnelUnstableHint: '1시간 내 재연결·프로세스 재시작 횟수가 임계값 이상인 경우 알림',
+    timesUnit: '회',
     routeError: '공개 주소 오류',
+    routeErrorHint: '5분 간격으로 TLS 연결 및 인증서 만료 점검',
     dnsFailure: 'DNS 조회 오류',
     dnsFailureHint: '15분 간격으로 점검',
     errorSpike: '5xx 급증',
     errorSpikeHint: '1시간 기준 5xx 응답 비율이 임계값을 초과하고 요청 수가 최소 요청 수 이상인 경우 알림',
-    threshold: '임계값',
+    thresholdOf: (rule: string) => `${rule} 임계값`,
     minRequests: '최소 요청 수',
+    minRequestsOf: (rule: string) => `${rule} 최소 요청 수`,
     requestsUnit: '건',
+    latency: '지연 증가',
+    latencyHint: '1시간 기준 p95 지연이 직전 7일 대비 임계값 이상 증가하고 요청 수가 최소 요청 수 이상인 경우 알림',
+    diskLow: '디스크 여유 공간 부족',
+    diskLowHint: 'Outlet 데이터 디스크 여유 공간이 임계값 미달 시 알림',
+    memoryLow: '메모리 여유 부족',
+    memoryLowHint: '여유 메모리가 임계값 미달 시 알림(컨테이너 제한 기준)',
+    minFreeOf: (rule: string) => `${rule} 최소 여유 비율`,
+    outletRestart: 'Outlet 비정상 재시작',
+    outletRestartHint: '비정상 종료 후 재시작 시 알림',
     login: '관리자 로그인',
     rateLimit: '요청 차단',
     rateLimitHint: '10분간 차단 요청 수가 설정값을 초과한 경우 알림',
@@ -187,7 +215,9 @@
   const tabs = ['alerts', 'security'] as const;
   const tab = $derived(oneOf('tab', tabs, 'alerts'));
 
-  const ruleKeys: RuleKey[] = ['tunnel_down', 'service_down', 'route_error', 'dns_failure', 'error_spike', 'rate_limit', 'login'];
+  const ruleKeys: RuleKey[] = ['tunnel_down', 'service_down', 'tunnel_unstable', 'route_error', 'dns_failure', 'error_spike', 'latency', 'rate_limit', 'disk_low', 'memory_low', 'outlet_restart', 'login'];
+  // 한 번 알리고 끝나는 규칙은 복구 알림이 없어 기록에 열림·해결됨 표시를 달지 않습니다.
+  const oneShotKinds = ['login', 'error_spike', 'rate_limit', 'latency', 'outlet_restart', 'tunnel_unstable'];
 
   let settings = $state<AlertSettings | null>(null);
   let loadError = $state('');
@@ -273,11 +303,16 @@
   const ruleText: Record<RuleKey, () => { title: string; hint: string }> = {
     tunnel_down: () => ({ title: t().tunnelDown, hint: t().tunnelDownHint }),
     service_down: () => ({ title: t().serviceDown, hint: t().serviceDownHint }),
-    route_error: () => ({ title: t().routeError, hint: '' }),
+    tunnel_unstable: () => ({ title: t().tunnelUnstable, hint: t().tunnelUnstableHint }),
+    route_error: () => ({ title: t().routeError, hint: t().routeErrorHint }),
     dns_failure: () => ({ title: t().dnsFailure, hint: t().dnsFailureHint }),
     error_spike: () => ({ title: t().errorSpike, hint: t().errorSpikeHint }),
-    login: () => ({ title: t().login, hint: '' }),
+    latency: () => ({ title: t().latency, hint: t().latencyHint }),
     rate_limit: () => ({ title: t().rateLimit, hint: t().rateLimitHint }),
+    disk_low: () => ({ title: t().diskLow, hint: t().diskLowHint }),
+    memory_low: () => ({ title: t().memoryLow, hint: t().memoryLowHint }),
+    outlet_restart: () => ({ title: t().outletRestart, hint: t().outletRestartHint }),
+    login: () => ({ title: t().login, hint: '' }),
   };
   const kindLabel = (kind: string) => (ruleKeys.includes(kind as RuleKey) ? ruleText[kind as RuleKey]().title : kind);
   const timeLabel = (value: string) => new Date(value).toLocaleString(intlLocale(), { dateStyle: 'medium', timeStyle: 'short' });
@@ -388,22 +423,48 @@
                       <InputGroup.Input type="number" min="1" max="1440" aria-label={t().afterMinutes(text.title)} bind:value={rules[key].after_minutes} disabled={!rules[key].enabled} class="tabular-nums" />
                       <InputGroup.Addon align="inline-end"><InputGroup.Text>{t().minutes}</InputGroup.Text></InputGroup.Addon>
                     </InputGroup.Root>
+                  {:else if key === 'tunnel_unstable'}
+                    <InputGroup.Root class="w-28">
+                      <InputGroup.Input type="number" min="2" max="100" aria-label={t().thresholdOf(text.title)} bind:value={rules.tunnel_unstable.min_reconnects} disabled={!rules.tunnel_unstable.enabled} class="tabular-nums" />
+                      <InputGroup.Addon align="inline-end"><InputGroup.Text>{t().timesUnit}</InputGroup.Text></InputGroup.Addon>
+                    </InputGroup.Root>
                   {:else if key === 'error_spike'}
                     <InputGroup.Root class="w-24">
-                      <InputGroup.Input type="number" min="0.1" max="100" step="0.1" aria-label={t().threshold} bind:value={rules.error_spike.threshold_percent} disabled={!rules.error_spike.enabled} class="tabular-nums" />
+                      <InputGroup.Input type="number" min="0.1" max="100" step="0.1" aria-label={t().thresholdOf(text.title)} bind:value={rules.error_spike.threshold_percent} disabled={!rules.error_spike.enabled} class="tabular-nums" />
                       <InputGroup.Addon align="inline-end"><InputGroup.Text>%</InputGroup.Text></InputGroup.Addon>
                     </InputGroup.Root>
                     <Tooltip.Root>
                       <Tooltip.Trigger>
                         {#snippet child({ props })}
                           <InputGroup.Root {...props} class="w-28">
-                            <InputGroup.Input type="number" min="1" max="1000000" aria-label={t().minRequests} bind:value={rules!.error_spike.min_requests} disabled={!rules!.error_spike.enabled} class="tabular-nums" />
+                            <InputGroup.Input type="number" min="1" max="1000000" aria-label={t().minRequestsOf(text.title)} bind:value={rules!.error_spike.min_requests} disabled={!rules!.error_spike.enabled} class="tabular-nums" />
                             <InputGroup.Addon align="inline-end"><InputGroup.Text>{t().requestsUnit}</InputGroup.Text></InputGroup.Addon>
                           </InputGroup.Root>
                         {/snippet}
                       </Tooltip.Trigger>
                       <Tooltip.Content>{t().minRequests}</Tooltip.Content>
                     </Tooltip.Root>
+                  {:else if key === 'latency'}
+                    <InputGroup.Root class="w-24">
+                      <InputGroup.Input type="number" min="10" max="1000" aria-label={t().thresholdOf(text.title)} bind:value={rules.latency.increase_percent} disabled={!rules.latency.enabled} class="tabular-nums" />
+                      <InputGroup.Addon align="inline-end"><InputGroup.Text>%</InputGroup.Text></InputGroup.Addon>
+                    </InputGroup.Root>
+                    <Tooltip.Root>
+                      <Tooltip.Trigger>
+                        {#snippet child({ props })}
+                          <InputGroup.Root {...props} class="w-28">
+                            <InputGroup.Input type="number" min="1" max="1000000" aria-label={t().minRequestsOf(text.title)} bind:value={rules!.latency.min_requests} disabled={!rules!.latency.enabled} class="tabular-nums" />
+                            <InputGroup.Addon align="inline-end"><InputGroup.Text>{t().requestsUnit}</InputGroup.Text></InputGroup.Addon>
+                          </InputGroup.Root>
+                        {/snippet}
+                      </Tooltip.Trigger>
+                      <Tooltip.Content>{t().minRequests}</Tooltip.Content>
+                    </Tooltip.Root>
+                  {:else if key === 'disk_low' || key === 'memory_low'}
+                    <InputGroup.Root class="w-24">
+                      <InputGroup.Input type="number" min="1" max="50" aria-label={t().minFreeOf(text.title)} bind:value={rules[key].min_free_percent} disabled={!rules[key].enabled} class="tabular-nums" />
+                      <InputGroup.Addon align="inline-end"><InputGroup.Text>%</InputGroup.Text></InputGroup.Addon>
+                    </InputGroup.Root>
                   {:else if key === 'rate_limit'}
                     <Tooltip.Root>
                       <Tooltip.Trigger>
@@ -447,7 +508,7 @@
                         <Table.Cell class="pl-4 text-muted-foreground tabular-nums">{timeLabel(event.opened_at)}</Table.Cell>
                         <Table.Cell>
                           <span class="flex items-center gap-2">{kindLabel(event.kind)}
-                            {#if event.kind !== 'login'}<Status label={event.resolved_at ? t().resolved : t().open} value={event.resolved_at ? 'connected' : 'error'} />{/if}
+                            {#if !oneShotKinds.includes(event.kind)}<Status label={event.resolved_at ? t().resolved : t().open} value={event.resolved_at ? 'connected' : 'error'} />{/if}
                           </span>
                         </Table.Cell>
                         <Table.Cell class="max-w-96"><TruncateText text={event.message} /></Table.Cell>

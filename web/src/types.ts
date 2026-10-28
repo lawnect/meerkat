@@ -182,6 +182,12 @@ export interface AlertRules {
   error_spike: { enabled: boolean; threshold_percent: number; min_requests: number };
   login: { enabled: boolean };
   rate_limit: { enabled: boolean; min_blocked: number };
+  // 지연 증가(increase_percent 10–1000, min_requests 1–1,000,000), 디스크·메모리 여유(min_free_percent 1–50), 터널 불안정(min_reconnects 2–100).
+  latency: { enabled: boolean; increase_percent: number; min_requests: number };
+  outlet_restart: { enabled: boolean };
+  disk_low: { enabled: boolean; min_free_percent: number };
+  memory_low: { enabled: boolean; min_free_percent: number };
+  tunnel_unstable: { enabled: boolean; min_reconnects: number };
 }
 
 export interface AlertEvent {

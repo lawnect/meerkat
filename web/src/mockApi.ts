@@ -142,6 +142,8 @@ function routeView(route: Route): Route {
 
 // 알림·2단계 인증 데모 상태. 2단계 인증을 켜면 로그인 코드는 항상 123456입니다.
 const hoursAgo = (hours: number): string => new Date(Date.now() - hours * 3600000).toISOString();
+const hourOf = (hours: number): string => `${hoursAgo(hours).slice(0, 13).replace('T', ' ')}:00 UTC`;
+const daysAhead = (days: number): string => new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
 const alerts: AlertSettings = {
   telegram: { configured: true, enabled: true, chat_id: '-1001234567890', token_hint: 'x9Qa', verified_at: hoursAgo(50), source: 'database', environment: false },
   rules: {
@@ -152,15 +154,26 @@ const alerts: AlertSettings = {
     error_spike: { enabled: true, threshold_percent: 5, min_requests: 50 },
     login: { enabled: true },
     rate_limit: { enabled: true, min_blocked: 500 },
+    latency: { enabled: true, increase_percent: 50, min_requests: 100 },
+    outlet_restart: { enabled: true },
+    disk_low: { enabled: true, min_free_percent: 10 },
+    memory_low: { enabled: true, min_free_percent: 10 },
+    tunnel_unstable: { enabled: true, min_reconnects: 3 },
   },
   events: [
-    { id: 8, kind: 'service_down', subject: 'home-server / app', message: "Service app on home-server down (5 min): The Connector can't reach the app", opened_at: hoursAgo(0.5), resolved_at: null, sent: true },
-    { id: 7, kind: 'login', subject: 'dev@example.test', message: 'Admin login: dev@example.test from 203.0.113.7 (Chrome on macOS)', opened_at: hoursAgo(1), resolved_at: hoursAgo(1), sent: true },
-    { id: 6, kind: 'tunnel_down', subject: 'office-printer', message: 'Tunnel office-printer disconnected (5 min)', opened_at: hoursAgo(26), resolved_at: null, sent: true },
-    { id: 5, kind: 'tunnel_down', subject: 'legacy-erp', message: 'Tunnel legacy-erp disconnected (5 min)', opened_at: hoursAgo(30), resolved_at: null, sent: true },
-    { id: 4, kind: 'error_spike', subject: 'example.test', message: '5xx rate 7.4% (41 of 552 requests) this hour', opened_at: hoursAgo(5), resolved_at: hoursAgo(4), sent: true },
-    { id: 3, kind: 'dns_failure', subject: 'dev.demo.test', message: 'dev.demo.test does not resolve', opened_at: hoursAgo(20), resolved_at: hoursAgo(19), sent: true },
-    { id: 2, kind: 'route_error', subject: 'erp.example.com', message: 'Certificate for erp.example.com could not be issued', opened_at: hoursAgo(40), resolved_at: null, sent: false, error: 'telegram_unreachable' },
+    { id: 13, kind: 'service_down', subject: 'home-server / app', message: "Service app on home-server down (5 min): The Connector can't reach the app", opened_at: hoursAgo(0.5), resolved_at: null, sent: true },
+    { id: 12, kind: 'login', subject: 'dev@example.test', message: 'Admin login: dev@example.test from 203.0.113.7 (Chrome on macOS)', opened_at: hoursAgo(1), resolved_at: hoursAgo(1), sent: true },
+    { id: 11, kind: 'memory_low', subject: 'memory', message: 'Memory low: 7% free', opened_at: hoursAgo(1.5), resolved_at: null, sent: true },
+    { id: 10, kind: 'tunnel_unstable', subject: 'ci-runner', message: 'Tunnel ci-runner unstable: 4 reconnects in the last hour', opened_at: hoursAgo(2), resolved_at: hoursAgo(2), sent: true },
+    { id: 9, kind: 'latency', subject: 'services', message: `Services p95 420 ms (usual 180 ms) in the hour of ${hourOf(3)}`, opened_at: hoursAgo(3), resolved_at: hoursAgo(3), sent: true },
+    { id: 8, kind: 'error_spike', subject: 'example.test', message: '5xx rate 7.4% (41 of 552 requests) this hour', opened_at: hoursAgo(5), resolved_at: hoursAgo(4), sent: true },
+    { id: 7, kind: 'outlet_restart', subject: 'outlet', message: 'Outlet restarted unexpectedly', opened_at: hoursAgo(8), resolved_at: hoursAgo(8), sent: true },
+    { id: 6, kind: 'route_error', subject: 'app.example.test', message: `Public address app.example.test failing: certificate expires ${daysAhead(7)}`, opened_at: hoursAgo(12), resolved_at: null, sent: true },
+    { id: 5, kind: 'disk_low', subject: 'disk', message: 'Disk space low: 6% free', opened_at: hoursAgo(14), resolved_at: hoursAgo(12), sent: true },
+    { id: 4, kind: 'dns_failure', subject: 'dev.demo.test', message: 'dev.demo.test does not resolve', opened_at: hoursAgo(20), resolved_at: hoursAgo(19), sent: true },
+    { id: 3, kind: 'tunnel_down', subject: 'office-printer', message: 'Tunnel office-printer disconnected (5 min)', opened_at: hoursAgo(26), resolved_at: null, sent: true },
+    { id: 2, kind: 'tunnel_down', subject: 'legacy-erp', message: 'Tunnel legacy-erp disconnected (5 min)', opened_at: hoursAgo(30), resolved_at: null, sent: true },
+    { id: 1, kind: 'route_error', subject: 'erp.example.com', message: 'Certificate for erp.example.com could not be issued', opened_at: hoursAgo(40), resolved_at: null, sent: false, error: 'telegram_unreachable' },
   ],
   login_second_factor: false,
 };
@@ -1266,13 +1279,23 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     return alertsResponse();
   }
   if (path === '/api/v1/alerts/rules' && method === 'PUT') {
-    // Like the Outlet, a body without service_down keeps the stored rule.
-    const rules = { ...alerts.rules, ...(input as unknown as Partial<AlertRules>) };
-    const minutes = rules.tunnel_down?.after_minutes;
-    const serviceMinutes = rules.service_down?.after_minutes;
-    const percent = rules.error_spike?.threshold_percent;
-    const minimum = rules.error_spike?.min_requests;
-    if (!(rules.rate_limit?.min_blocked >= 1) || !(minutes >= 1 && minutes <= 1440) || !(serviceMinutes >= 1 && serviceMinutes <= 1440) || !(percent >= 0.1 && percent <= 100) || !(minimum >= 1 && minimum <= 1000000)) fail('invalid_alert_rules');
+    // Like the Outlet, the original six rules are required; service_down and the later rules keep their stored values when omitted.
+    const body = input as unknown as Partial<AlertRules>;
+    const required: Array<keyof AlertRules> = ['tunnel_down', 'route_error', 'dns_failure', 'error_spike', 'login', 'rate_limit'];
+    if (required.some((key) => !body[key])) fail('invalid_alert_rules');
+    const rules = { ...alerts.rules, ...body };
+    const within = (value: unknown, low: number, high: number, whole = true): boolean => typeof value === 'number' && value >= low && value <= high && (!whole || Number.isInteger(value));
+    const valid = within(rules.tunnel_down.after_minutes, 1, 1440)
+      && within(rules.service_down.after_minutes, 1, 1440)
+      && within(rules.error_spike.threshold_percent, 0.1, 100, false)
+      && within(rules.error_spike.min_requests, 1, 1000000)
+      && within(rules.rate_limit.min_blocked, 1, 1000000)
+      && within(rules.latency.increase_percent, 10, 1000)
+      && within(rules.latency.min_requests, 1, 1000000)
+      && within(rules.disk_low.min_free_percent, 1, 50)
+      && within(rules.memory_low.min_free_percent, 1, 50)
+      && within(rules.tunnel_unstable.min_reconnects, 2, 100);
+    if (!valid) fail('invalid_alert_rules');
     alerts.rules = structuredClone(rules);
     return alertsResponse();
   }
