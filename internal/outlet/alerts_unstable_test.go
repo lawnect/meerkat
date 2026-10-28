@@ -528,6 +528,111 @@ func TestUnstableStartsAfreshWhenAlertsComeOn(t *testing.T) {
 	}
 }
 
+// A Connector set to report less often is learned anew: its longer gaps
+// aren't missed heartbeats for good.
+func TestUnstableIntervalFollowsALongerSetting(t *testing.T) {
+	a := newAlertFixture(t)
+	u := newUnstableTunnel(t, a)
+	u.beat(t)
+	steadyTunnels(t, a, time.Minute, u)
+	for range 10 {
+		a.clock.advance(10 * time.Second)
+		u.beat(t)
+	}
+	a.store.mu.Lock()
+	interval := a.store.tunnelEvents.interval(u.connector.ID)
+	a.store.mu.Unlock()
+	if interval != 10*time.Second {
+		t.Fatalf("interval = %v, want 10s", interval)
+	}
+	// One missed heartbeat at 10 s isn't a reconnect.
+	a.clock.advance(20 * time.Second)
+	u.beat(t)
+	u.want(t, 0, 0)
+}
+
+// A tunnel back first is judged only once peers reporting every 10 s have
+// had time to show they were cut off too.
+func TestUnstableWaitsForSlowerPeers(t *testing.T) {
+	a := newAlertFixture(t)
+	a.configureTelegram(t, false)
+	fast := newUnstableTunnelNamed(t, a, "edge-a")
+	slow := []*unstableTunnel{newUnstableTunnelNamed(t, a, "edge-b"), newUnstableTunnelNamed(t, a, "edge-c")}
+	for _, u := range append([]*unstableTunnel{fast}, slow...) {
+		u.beat(t)
+	}
+	beatSlow := func(d time.Duration) {
+		for range int(d / (10 * time.Second)) {
+			for range 2 {
+				a.clock.advance(5 * time.Second)
+				fast.beat(t)
+			}
+			for _, u := range slow {
+				u.beat(t)
+			}
+		}
+	}
+	beatSlow(2 * time.Minute)
+	// edge-a drops twice on its own.
+	for range 2 {
+		for range 2 {
+			a.clock.advance(10 * time.Second)
+			for _, u := range slow {
+				u.beat(t)
+			}
+		}
+		fast.beat(t)
+		beatSlow(time.Minute)
+	}
+	// Then an outage cuts off all three, just after the slow ones reported:
+	// edge-a is back first, while theirs is only a 15 s silence so far.
+	a.clock.advance(time.Second)
+	for _, u := range slow {
+		u.beat(t)
+	}
+	a.clock.advance(14 * time.Second)
+	fast.beat(t)
+	a.clock.advance(time.Second)
+	a.evaluate()
+	a.clock.advance(5 * time.Second)
+	for _, u := range slow {
+		u.beat(t)
+	}
+	beatSlow(time.Minute)
+	a.evaluate()
+	if texts := unstableTexts(a); len(texts) != 0 {
+		t.Fatalf("a shared reconnect counted for one tunnel: %q", texts)
+	}
+}
+
+// A tunnel first heard from after an outage began couldn't have told
+// either way: it doesn't count against the tunnels that went quiet.
+func TestUnstableLateTunnelsDontCount(t *testing.T) {
+	a := newAlertFixture(t)
+	a.configureTelegram(t, false)
+	early := []*unstableTunnel{newUnstableTunnelNamed(t, a, "edge-a"), newUnstableTunnelNamed(t, a, "edge-b")}
+	late := []*unstableTunnel{newUnstableTunnelNamed(t, a, "edge-c"), newUnstableTunnelNamed(t, a, "edge-d")}
+	for _, u := range early {
+		u.beat(t)
+	}
+	steadyTunnels(t, a, time.Minute, early...)
+	for range 3 {
+		a.clock.advance(unstableGap)
+		for _, u := range early {
+			u.beat(t)
+		}
+		steadyTunnels(t, a, time.Minute, early...)
+	}
+	for _, u := range late {
+		u.beat(t)
+	}
+	steadyTunnels(t, a, time.Minute, append(early, late...)...)
+	a.evaluate()
+	if texts := unstableTexts(a); len(texts) != 0 {
+		t.Fatalf("shared reconnects alerted: %q", texts)
+	}
+}
+
 func TestUnstableRuleSettings(t *testing.T) {
 	a := newAlertFixture(t)
 	a.configureTelegram(t, false)
