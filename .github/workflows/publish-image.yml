@@ -104,8 +104,12 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ needs.release.outputs.version }}
-          cache-from: type=gha,scope=${{ needs.release.outputs.name }}-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ needs.release.outputs.name }}-${{ matrix.arch }}
+          # The cache lives next to the image in GHCR: the Actions cache is capped
+          # at 10 GB per repository and evicted the rathole build, which then
+          # took a minute and a half on every release. A failed cache push
+          # warns instead of failing a release whose image is already pushed.
+          cache-from: type=registry,ref=${{ needs.release.outputs.image }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ needs.release.outputs.image }}:buildcache-${{ matrix.arch }},mode=max,ignore-error=true
 
   publish:
     name: Publish manifest

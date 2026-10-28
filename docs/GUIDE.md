@@ -56,6 +56,8 @@ Images are built from release tags, one image per tag, for `linux/amd64` and `li
 git tag meerkat-v1.0.0 && git push origin meerkat-v1.0.0
 ```
 
+Each architecture builds on its own native runner. The build cache is kept in the same GHCR package under `buildcache-amd64` and `buildcache-arm64`; those tags aren't images to run.
+
 rathole is built from the v0.5.0 source rather than taken from its release, because that release pins crates with known advisories, snow 0.9.3 among them (RUSTSEC-2024-0011). The build uses [deploy/rathole/Cargo.lock](../deploy/rathole/Cargo.lock), the v0.5.0 lockfile after `cargo update`, and only the server, client, Noise and hot-reload features, so no TLS code or OpenSSL. It speaks the same protocol as the official v0.5.0 binary in either direction.
 
 A release without a pre-release suffix also moves `latest`; `meerkat-v1.1.0-rc.1` doesn't. Pushing to `main` builds nothing. To rebuild a release, run the workflow by hand from its tag. Remote Outlet and Connector VMs don't build the source code; they pull the GHCR image and run it with Compose.

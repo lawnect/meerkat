@@ -15,14 +15,13 @@ COPY go.mod go.sum ./
 COPY cmd ./cmd
 COPY internal ./internal
 COPY --from=ui-build /src/web/dist ./internal/dashboard/assets/site
-RUN LDFLAGS="-X github.com/lawnect/meerkat/internal/contract.Version=${VERSION}" && \
-    CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o /out/connector ./cmd/connector && \
-    CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o /out/outlet ./cmd/outlet && \
-    CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o /out/outlet-init ./cmd/outlet-init && \
-    CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o /out/demo-service ./cmd/demo-service && \
-    CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o /out/poc-probe ./cmd/poc-probe
+# One go build for every binary, so their packages compile and link in parallel.
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/lawnect/meerkat/internal/contract.Version=${VERSION}" -o /out/ \
+    ./cmd/connector ./cmd/outlet ./cmd/outlet-init ./cmd/demo-service ./cmd/poc-probe
 
-FROM rust:1.98-bookworm AS rathole-build
+# The digest pins the toolchain so a Docker Hub rebuild of the tag doesn't
+# throw away the cached rathole build. Bump it together with the tag.
+FROM rust:1.98-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS rathole-build
 # rathole v0.5.0 is the latest release, and its lockfile pins crates with
 # known advisories, snow 0.9.3 among them (RUSTSEC-2024-0011: a forged packet
 # can make the tunnel drop). The image builds the v0.5.0 source against
