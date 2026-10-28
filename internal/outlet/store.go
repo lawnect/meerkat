@@ -162,6 +162,9 @@ type Store struct {
 	stopWorkers                context.CancelFunc
 	workers                    sync.WaitGroup
 	closeOnce                  sync.Once
+	// runMarkerPath is the file that marks this run as under way (see markRun);
+	// empty when it couldn't be written.
+	runMarkerPath string
 }
 
 func Hash(s string) string { b := sha256.Sum256([]byte(s)); return hex.EncodeToString(b[:]) }
@@ -348,6 +351,9 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 		}
 	}
 	s.workers.Go(func() { s.persistLoop(workers) })
+	if controlDB != nil {
+		s.markRun(dir)
+	}
 	return s, nil
 }
 
@@ -488,6 +494,7 @@ func (s *Store) Close() {
 		s.logs.access.close()
 		s.logs.failures.close()
 		s.logs.requests.close()
+		s.unmarkRun()
 	})
 }
 
