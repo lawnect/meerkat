@@ -189,7 +189,7 @@ GET    /api/v1/audit/export
 - Outlet이 재시작하면 장애가 시작된 시각을 잊으므로 `tunnel_down`과 `service_down`은 대기 시간을 다시 잰다. 그동안에도 장애가 이어지면 열려 있던 이벤트는 닫지 않고 다시 보내지도 않는다.
 - `service_down`: 연결된 터널의 켜진 서비스가 `after_minutes` 이상 `connected`가 아니면(`error`: Connector가 앱에 닿지 못함, `connecting`: Outlet이 터널 너머로 보낸 확인 요청이 응답을 받지 못하거나 5xx를 받음, `unknown`: 아직 확인 전) 알린다. 메시지의 `Problem` 줄이 어느 쪽인지 밝힌다. 터널이 `connected`가 아닌 동안에는 `tunnel_down`의 몫이므로 그 서비스의 이벤트를 열지도 닫지도 않고, 터널이 돌아오면 `after_minutes`를 처음부터 다시 잰다. 서비스를 삭제하거나 규칙을 끄면 복구 메시지 없이 닫는다.
 - `tunnel_unstable`: 터널이 15초 이상 끊긴(stale) 뒤 다시 연결되었거나 터널 프로세스가 재시작한 횟수가 한 시간 안에 `min_reconnects` 이상이면 알린다. 터널마다 한 시간에 한 번만 보내는 한 번짜리 이벤트다.
-- `route_error`: 5분마다 공개 주소와 관리 주소를 Caddy를 거쳐 TLS 핸드셰이크로 점검한다. 핸드셰이크나 인증서 검증이 실패하거나 인증서 만료가 14일 이내이면 실패로 치고, 연속 2회 실패하면 알리며 점검을 통과하면 복구 메시지를 보낸다. 공개 주소에 `last_error`가 생겨도 알린다.
+- `route_error`: 5분마다 공개 주소와 관리 주소를 Caddy를 거쳐 TLS 핸드셰이크로 점검한다. 핸드셰이크나 인증서 검증이 실패하거나 인증서 만료가 14일 이내이면 실패로 치고, 연속 2회 실패하면 알리며 점검을 통과하면 복구 메시지를 보낸다. Caddy는 인증서를 요청 시점에 발급(on-demand)하므로, 인증서를 내주지 못해 알린 주소는 실패한 ACME 검증이 쌓이지 않도록(Let's Encrypt는 이름당 시간당 5회 제한) 30분마다만 다시 점검한다. Caddy에 연결하지 못하면 모든 주소가 같은 이유로 실패하므로 주소별 이벤트 대신 `route_error:caddy` 하나로 알린다. 공개 주소에 `last_error`가 생겨도 알린다.
 - `dns_failure`: 15분마다 도메인별 필수 이름(DNS 연결 확인과 같은 목록)을 조회해 실패하면 알린다.
 - `error_spike`: 현재와 직전 UTC 시간대의 5xx 비율이 `threshold_percent` 이상이고 요청이 `min_requests` 이상이면 시간대마다 한 번 알린다.
 - `latency`: Outlet 처리 시간과 서비스 응답 시간을 종류마다 따로, 현재와 직전 UTC 시간대에 대해 점검한다. 그 시간대의 p95가 직전 7일의 p95보다 `increase_percent` 이상 늘었고, 시간대의 요청이 `min_requests` 이상, 직전 7일의 요청이 그 10배 이상이며, 늘어난 시간이 절대값으로 Outlet 처리 20 ms, 서비스 응답 100 ms 이상이면 종류마다 시간대에 한 번 알린다. 한 번짜리 이벤트다.
@@ -197,7 +197,7 @@ GET    /api/v1/audit/export
 - `rate_limit`: 최근 10분 동안 거부한 요청이 `min_blocked` 이상이면 작동한 제한 종류와 상위 IP·서브넷·엔드포인트를 알린다. 계속되는 동안 30분에 한 번만 보낸다.
 - `disk_low`: Outlet 데이터 디스크의 여유 공간이 `min_free_percent` 미만이면 알리고, `min_free_percent` + 2 이상으로 돌아오면 복구 메시지를 보낸다.
 - `memory_low`: 여유 메모리가 `min_free_percent` 미만인 상태가 3분 연속 이어지면 알린다. 컨테이너에 메모리 제한이 있으면 그 제한을, 없으면 호스트의 메모리를 기준으로 하며, `min_free_percent` + 2 이상으로 돌아오면 복구 메시지를 보낸다.
-- `outlet_restart`: 직전 실행이 정상적으로 끝나지 않은 채(충돌, OOM 종료, 정전 등) Outlet이 시작되면 첫 알림 점검에서 한 번 알린다. 한 번짜리 이벤트다.
+- `outlet_restart`: 직전 실행이 정상적으로 끝나지 않은 채(충돌, OOM 종료, 정전 등) Outlet이 시작되면 첫 알림 점검에서 한 번 알린다. 데이터 디렉터리의 `running.json`으로 판단하며 정상 종료(SIGTERM 등) 때 지운다. Telegram이 아직 설정되지 않았으면 시작 후 1시간까지 기다렸다 보내고 그 뒤에는 버린다. 재시작이 반복되어도 1시간에 한 번만 보내는 한 번짜리 이벤트다.
 
 Telegram 메시지는 HTML(`parse_mode`)이며 이모지와 굵은 제목 한 줄, `이름: 값` 줄 두세 개, 마지막 줄의 관리 화면 링크(`https://관리주소/connectors/ID`, `/domains/도메인`, `/`)로 통일한다. 모든 동적 값은 이스케이프하고 식별자는 `<code>`로 감싼다.
 
