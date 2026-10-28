@@ -195,9 +195,13 @@ func recoveryNotice(e control.AlertEvent, now time.Time) (notice, bool) {
 	case "memory_low":
 		n.title, label = "Memory recovered", "Memory"
 	case "route_error":
-		n.title, label = "Public address recovered", "Address"
-		if e.Key == "route_error:caddy" {
+		switch {
+		case e.Key == "route_error:caddy":
 			n.title, label = "Caddy answering again", "Caddy"
+		case strings.HasPrefix(e.Key, "route_error:tls:"):
+			n.title, label = "Public address recovered", "Address"
+		default:
+			n.title, label = "Route error cleared", "Route"
 		}
 	case "dns_failure":
 		n.title, label = "DNS lookup recovered", "Domain"

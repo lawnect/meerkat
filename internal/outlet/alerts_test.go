@@ -542,7 +542,7 @@ func TestRouteErrorAlert(t *testing.T) {
 	}
 	a.clock.advance(time.Minute)
 	a.evaluate()
-	if texts := a.texts(); len(texts) != 2 || !strings.HasPrefix(texts[1], "🟢 <b>Public address recovered</b>\nAddress: <code>app.example.com</code>") {
+	if texts := a.texts(); len(texts) != 2 || !strings.HasPrefix(texts[1], "🟢 <b>Route error cleared</b>\nRoute: <code>app.example.com</code>") {
 		t.Fatalf("recovery = %q", texts)
 	}
 	if events := a.events(t, "route_error"); events[0].ResolvedAt == nil {

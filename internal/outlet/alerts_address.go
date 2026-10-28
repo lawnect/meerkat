@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"slices"
 	"strings"
@@ -58,6 +59,11 @@ type addressAlertState struct {
 	lastCheck time.Time
 	// checks holds the latest result of each address served.
 	checks map[string]addressCheck
+	// silentPasses counts the passes in a row in which Caddy answered no
+	// address it was asked about; answered is whether it answered one in the
+	// last pass that asked any.
+	silentPasses int
+	answered     bool
 }
 
 type addressCheck struct {
@@ -65,8 +71,9 @@ type addressCheck struct {
 	problem string
 	// failed counts the consecutive checks that did not.
 	failed int
-	// caddyFault is that Caddy didn't answer: no connection, or no reply to
-	// the handshake. at is when the check ran.
+	// caddyFault is that Caddy didn't answer (no connection, or no reply to
+	// the handshake) in a pass where it answered no address at all: Caddy's
+	// trouble, not this address's. at is when the check ran.
 	caddyFault bool
 	at         time.Time
 }
@@ -120,21 +127,14 @@ func (s *Store) addressConditions(ctx context.Context, now time.Time, healthy, h
 	// Caddy itself out of reach fails every address the same way: one alert
 	// says so, and the addresses' own stay as they are.
 	caddyKey := "route_error:caddy"
-	switch answered, down := caddyAnswer(state.checks, hostnames, state.lastCheck); {
-	case down:
+	switch {
+	case state.silentPasses >= addressFailures:
 		for _, hostname := range hostnames {
 			held["route_error:tls:"+hostname] = true
 		}
-		var problem string
-		for _, hostname := range hostnames {
-			if check := state.checks[hostname]; check.at.Equal(state.lastCheck) {
-				problem = check.problem
-				break
-			}
-		}
 		caddy := caddyHTTPSAddress(s.config.CaddyMetrics)
-		return []condition{{caddyKey, caddy, caddyDownNotice(caddy, problem)}}, nil
-	case answered:
+		return []condition{{caddyKey, caddy, caddyDownNotice(caddy, state.caddyProblem(hostnames))}}, nil
+	case state.answered:
 		healthy[caddyKey] = true
 	case len(hostnames) != 0:
 		held[caddyKey] = true
@@ -144,7 +144,7 @@ func (s *Store) addressConditions(ctx context.Context, now time.Time, healthy, h
 		key := "route_error:tls:" + hostname
 		check, checked := state.checks[hostname]
 		switch {
-		case !checked || check.problem != "" && check.failed < addressFailures:
+		case !checked || check.caddyFault || check.problem != "" && check.failed < addressFailures:
 			held[key] = true
 		case check.problem == "":
 			healthy[key] = true
@@ -159,20 +159,16 @@ func (s *Store) addressConditions(ctx context.Context, now time.Time, healthy, h
 	return active, nil
 }
 
-// caddyAnswer tells, from the addresses checked in the last pass, whether
-// Caddy answered any, and whether it is down: it answered none, and one of
-// them has gone unanswered on consecutive checks (an address added since is
-// on its first). An address the pass skipped tells nothing about Caddy now.
-func caddyAnswer(checks map[string]addressCheck, hostnames []string, pass time.Time) (answered, down bool) {
+// caddyProblem is what the latest address Caddy didn't answer ran into.
+func (state *addressAlertState) caddyProblem(hostnames []string) string {
+	var problem string
+	var at time.Time
 	for _, hostname := range hostnames {
-		check, checked := checks[hostname]
-		if !checked || !check.at.Equal(pass) {
-			continue
+		if check := state.checks[hostname]; check.caddyFault && check.at.After(at) {
+			problem, at = check.problem, check.at
 		}
-		answered = answered || !check.caddyFault
-		down = down || check.caddyFault && check.failed >= addressFailures
 	}
-	return answered, down && !answered
+	return problem
 }
 
 // checkAddresses handshakes the hostnames that are due and records the
@@ -181,7 +177,7 @@ func (s *Store) checkAddresses(ctx context.Context, hostnames []string, now time
 	state := &s.alerts.address
 	previous := state.checks
 	if now.Sub(state.lastCheck) > addressStale {
-		previous = nil
+		previous, state.silentPasses, state.answered = nil, 0, false
 	}
 	state.lastCheck = now
 	var due []string
@@ -197,6 +193,21 @@ func (s *Store) checkAddresses(ctx context.Context, hostnames []string, now time
 	call, cancel := context.WithTimeout(ctx, addressBudget)
 	defer cancel()
 	results := s.probeAddresses(call, due, now)
+	// A pass in which Caddy answered some addresses shows it is up: one it
+	// didn't answer is that address's trouble, its certificate being issued
+	// say, and is rechecked like any other failing address.
+	if len(results) != 0 {
+		state.answered = slices.ContainsFunc(slices.Collect(maps.Values(results)), func(r addressResult) bool { return !r.caddyFault })
+		if state.answered {
+			for hostname, result := range results {
+				result.caddyFault = false
+				results[hostname] = result
+			}
+			state.silentPasses = 0
+		} else {
+			state.silentPasses++
+		}
+	}
 	next := make(map[string]addressCheck, len(hostnames))
 	for _, hostname := range hostnames {
 		check, known := previous[hostname]

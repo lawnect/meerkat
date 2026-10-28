@@ -14,6 +14,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -83,6 +84,9 @@ type fakeCaddy struct {
 	dialed     []string
 	// anyName serves a long-lived certificate for names without one.
 	anyName bool
+	// stalled names get no answer to their handshake, as while Caddy issues
+	// their certificate.
+	stalled map[string]bool
 }
 
 func startFakeCaddy() *fakeCaddy {
@@ -109,6 +113,12 @@ func startFakeCaddy() *fakeCaddy {
 
 func (c *fakeCaddy) certificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	c.mu.Lock()
+	if c.stalled[hello.ServerName] {
+		c.handshakes[hello.ServerName]++
+		c.mu.Unlock()
+		<-hello.Context().Done()
+		return nil, hello.Context().Err()
+	}
 	defer c.mu.Unlock()
 	c.handshakes[hello.ServerName]++
 	cert, ok := c.certs[hello.ServerName]
@@ -457,6 +467,56 @@ func TestAddressPassesRotateThroughTheBudget(t *testing.T) {
 	}
 }
 
+// An address whose handshake gets no answer while Caddy answers the others
+// is that address's trouble, its certificate being issued say: it alerts
+// under its own name and is rechecked every half hour.
+func TestStalledAddressIsItsOwnAlert(t *testing.T) {
+	f := newAddressFixture(t)
+	addressTimeout = 50 * time.Millisecond
+	f.caddy.mu.Lock()
+	f.caddy.stalled = map[string]bool{addressApp: true}
+	f.caddy.mu.Unlock()
+	f.evaluate()
+	f.next()
+	if texts := f.texts(); len(texts) != 1 || !strings.Contains(texts[0], "Address: <code>app.example.com</code>\nProblem: TLS handshake failed: timed out") {
+		t.Fatalf("messages = %q", texts)
+	}
+	handshakes := f.caddy.seen(addressApp)
+	for range 12 {
+		f.next()
+	}
+	if got := f.caddy.seen(addressApp) - handshakes; got != 2 {
+		t.Fatalf("handshakes in the hour after the alert = %d, want 2", got)
+	}
+	if len(f.events(t, "route_error")) != 1 {
+		t.Fatalf("events = %+v", f.events(t, "route_error"))
+	}
+}
+
+// Caddy missing one pass, restarting say, is no Caddy alert: it takes two
+// passes in a row in which it answered nothing.
+func TestOneSilentPassIsNoCaddyAlert(t *testing.T) {
+	f := newAddressFixture(t)
+	f.caddy.remove(addressApp)
+	f.evaluate()
+	f.next()
+	if len(f.telegram.messages()) != 1 {
+		t.Fatalf("messages = %q", f.texts())
+	}
+	reach := addressDial
+	addressDial = func(ctx context.Context, _ string) (net.Conn, error) { return nil, syscall.ECONNREFUSED }
+	f.next()
+	addressDial = reach
+	for range 7 {
+		f.next()
+	}
+	for _, e := range f.events(t, "route_error") {
+		if e.Key == "route_error:caddy" {
+			t.Fatalf("one silent pass raised the Caddy alert: %q", f.texts())
+		}
+	}
+}
+
 func TestAddressFailuresMustBeConsecutive(t *testing.T) {
 	f := newAddressFixture(t)
 	f.caddy.remove(addressApp)
@@ -675,7 +735,7 @@ func TestRouteLastErrorStillAlertsBesideTheAddressCheck(t *testing.T) {
 	f.clock.advance(time.Minute)
 	f.evaluate()
 	texts := f.texts()
-	if len(texts) != 3 || !strings.HasPrefix(texts[2], "🟢 <b>Public address recovered</b>\nAddress: <code>app.example.com</code>") {
+	if len(texts) != 3 || !strings.HasPrefix(texts[2], "🟢 <b>Route error cleared</b>\nRoute: <code>app.example.com</code>") {
 		t.Fatalf("recovery = %q", texts)
 	}
 	open := 0
