@@ -158,8 +158,8 @@ func (s *Store) putAlertRules(w http.ResponseWriter, r *http.Request) {
 	if !s.alertsAdmin(w, r) {
 		return
 	}
-	// service_down came later: a console or script from before it leaves the
-	// stored rule as it is.
+	// Rules added after the first six may be left out: a console or script
+	// from before them keeps them as stored.
 	rules, err := s.control.AlertRules(r.Context())
 	if err != nil {
 		fail(w, r, 503, "persistence_failed")
@@ -174,7 +174,8 @@ func (s *Store) putAlertRules(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		fail(w, r, 503, "persistence_failed")
 	default:
-		detail := map[string]any{"tunnel_down": rules.TunnelDown, "service_down": rules.ServiceDown, "route_error": rules.RouteError, "dns_failure": rules.DNSFailure, "error_spike": rules.ErrorSpike, "login": rules.Login, "rate_limit": rules.RateLimit}
+		detail := map[string]any{"tunnel_down": rules.TunnelDown, "service_down": rules.ServiceDown, "route_error": rules.RouteError, "dns_failure": rules.DNSFailure, "error_spike": rules.ErrorSpike, "login": rules.Login, "rate_limit": rules.RateLimit,
+			"latency": rules.Latency, "outlet_restart": rules.OutletRestart, "disk_low": rules.DiskLow, "memory_low": rules.MemoryLow, "tunnel_unstable": rules.TunnelUnstable}
 		s.audited(r, "alert_rules.update", "alert_rules", "rules", detail)
 		s.replyAlerts(w, r, 200)
 	}

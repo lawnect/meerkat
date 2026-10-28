@@ -32,6 +32,10 @@ type alertState struct {
 	// serviceDownSince is when each service was first seen not serving.
 	serviceDownSince map[string]time.Time
 	lastDNS          time.Time
+	// Each of these belongs to the rule in its own file.
+	latency latencyAlertState
+	address addressAlertState
+	host    hostAlertState
 }
 
 // alertEnv is what one evaluation round reads up front.
@@ -99,7 +103,7 @@ func (s *Store) evaluateAlerts(ctx context.Context) {
 		return
 	}
 	now := s.now()
-	rounds := []alertRound{{"tunnel_down", s.tunnelAlerts}, {"service_down", s.serviceAlerts}, {"route_error", s.routeAlerts}, {"error_spike", s.spikeAlerts}, {"rate_limit", s.rateLimitAlerts}}
+	rounds := []alertRound{{"tunnel_down", s.tunnelAlerts}, {"service_down", s.serviceAlerts}, {"tunnel_unstable", s.unstableAlerts}, {"route_error", s.routeAlerts}, {"error_spike", s.spikeAlerts}, {"rate_limit", s.rateLimitAlerts}, {"latency", s.latencyAlerts}, {"outlet_restart", s.restartAlerts}, {"disk_low", s.diskAlerts}, {"memory_low", s.memoryAlerts}}
 	if now.Sub(s.alerts.lastDNS) >= dnsInterval {
 		rounds = append(rounds, alertRound{"dns_failure", s.dnsAlerts})
 		s.alerts.lastDNS = now
@@ -288,27 +292,6 @@ func (s *Store) serviceAlerts(ctx context.Context, env alertEnv, now time.Time) 
 	s.mu.Unlock()
 	s.alerts.serviceDownSince = down
 	return s.syncAlerts(ctx, env, "service_down", active, healthy, held, now)
-}
-
-func (s *Store) routeAlerts(ctx context.Context, env alertEnv, now time.Time) error {
-	if !env.rules.RouteError.Enabled {
-		return s.syncAlerts(ctx, env, "route_error", nil, nil, nil, now)
-	}
-	plans, err := s.control.HTTPRoutePlans(ctx)
-	if err != nil {
-		return err
-	}
-	var active []condition
-	healthy := map[string]bool{}
-	for _, plan := range plans {
-		key := "route_error:" + plan.ID
-		if plan.LastError == "" {
-			healthy[key] = true
-			continue
-		}
-		active = append(active, condition{key, plan.Hostname, routeErrorNotice(plan.Hostname, plan.ConnectorID, plan.LastError)})
-	}
-	return s.syncAlerts(ctx, env, "route_error", active, healthy, nil, now)
 }
 
 func (s *Store) dnsAlerts(ctx context.Context, env alertEnv, now time.Time) error {

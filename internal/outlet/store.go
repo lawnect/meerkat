@@ -114,6 +114,8 @@ type Store struct {
 	challenges   challenges
 	loginLimit   attemptLimiter
 	alerts       alertState
+	// tunnelEvents feeds the tunnel_unstable rule; guarded by mu.
+	tunnelEvents tunnelEvents
 	limiter      *rateLimiter
 	connections  *connectionLimiter
 	// guard admits connections to the public tunnel port.

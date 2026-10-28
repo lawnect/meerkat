@@ -190,6 +190,10 @@ func recoveryNotice(e control.AlertEvent, now time.Time) (notice, bool) {
 		n.title, label = "Tunnel reconnected", "Tunnel"
 	case "service_down":
 		n.title, label = "Service recovered", "Service"
+	case "disk_low":
+		n.title, label = "Disk space recovered", "Disk"
+	case "memory_low":
+		n.title, label = "Memory recovered", "Memory"
 	case "route_error":
 		n.title, label = "Route error cleared", "Route"
 	case "dns_failure":

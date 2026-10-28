@@ -304,13 +304,18 @@ func TestAlertRulesAPI(t *testing.T) {
 	h, admin := a.store.Handler(), a.admin
 	rules := func() map[string]any {
 		return map[string]any{
-			"tunnel_down":  map[string]any{"enabled": true, "after_minutes": 10},
-			"service_down": map[string]any{"enabled": true, "after_minutes": 3},
-			"route_error":  map[string]any{"enabled": false},
-			"dns_failure":  map[string]any{"enabled": true},
-			"error_spike":  map[string]any{"enabled": true, "threshold_percent": 2.5, "min_requests": 100},
-			"login":        map[string]any{"enabled": false},
-			"rate_limit":   map[string]any{"enabled": true, "min_blocked": 250},
+			"tunnel_down":     map[string]any{"enabled": true, "after_minutes": 10},
+			"service_down":    map[string]any{"enabled": true, "after_minutes": 3},
+			"route_error":     map[string]any{"enabled": false},
+			"dns_failure":     map[string]any{"enabled": true},
+			"error_spike":     map[string]any{"enabled": true, "threshold_percent": 2.5, "min_requests": 100},
+			"login":           map[string]any{"enabled": false},
+			"rate_limit":      map[string]any{"enabled": true, "min_blocked": 250},
+			"latency":         map[string]any{"enabled": true, "increase_percent": 80, "min_requests": 200},
+			"outlet_restart":  map[string]any{"enabled": false},
+			"disk_low":        map[string]any{"enabled": true, "min_free_percent": 15},
+			"memory_low":      map[string]any{"enabled": false, "min_free_percent": 5},
+			"tunnel_unstable": map[string]any{"enabled": true, "min_reconnects": 4},
 		}
 	}
 	w := request(h, "PUT", "/api/v1/alerts/rules", admin, rules())
@@ -319,6 +324,9 @@ func TestAlertRulesAPI(t *testing.T) {
 		TunnelDown: control.TunnelDownRule{Enabled: true, AfterMinutes: 10}, ServiceDown: control.ServiceDownRule{Enabled: true, AfterMinutes: 3}, RouteError: control.ToggleRule{}, DNSFailure: control.ToggleRule{Enabled: true},
 		ErrorSpike: control.ErrorSpikeRule{Enabled: true, ThresholdPercent: 2.5, MinRequests: 100}, Login: control.ToggleRule{},
 		RateLimit: control.RateLimitAlertRule{Enabled: true, MinBlocked: 250},
+		Latency:   control.LatencyRule{Enabled: true, IncreasePercent: 80, MinRequests: 200}, OutletRestart: control.ToggleRule{},
+		DiskLow: control.FreeSpaceRule{Enabled: true, MinFreePercent: 15}, MemoryLow: control.FreeSpaceRule{MinFreePercent: 5},
+		TunnelUnstable: control.TunnelUnstableRule{Enabled: true, MinReconnects: 4},
 	}
 	if view.Rules != want {
 		t.Fatalf("rules = %+v", view.Rules)
@@ -349,6 +357,21 @@ func TestAlertRulesAPI(t *testing.T) {
 		},
 		"blocked zero":     func(r map[string]any) { r["rate_limit"] = map[string]any{"enabled": true, "min_blocked": 0} },
 		"blocked too many": func(r map[string]any) { r["rate_limit"] = map[string]any{"enabled": true, "min_blocked": 1000001} },
+		"increase too small": func(r map[string]any) {
+			r["latency"] = map[string]any{"enabled": true, "increase_percent": 5, "min_requests": 100}
+		},
+		"increase too big": func(r map[string]any) {
+			r["latency"] = map[string]any{"enabled": true, "increase_percent": 1001, "min_requests": 100}
+		},
+		"latency requests zero": func(r map[string]any) {
+			r["latency"] = map[string]any{"enabled": true, "increase_percent": 50, "min_requests": 0}
+		},
+		"disk free zero":      func(r map[string]any) { r["disk_low"] = map[string]any{"enabled": true, "min_free_percent": 0} },
+		"disk free too big":   func(r map[string]any) { r["disk_low"] = map[string]any{"enabled": true, "min_free_percent": 51} },
+		"memory free zero":    func(r map[string]any) { r["memory_low"] = map[string]any{"enabled": true, "min_free_percent": 0} },
+		"memory free too big": func(r map[string]any) { r["memory_low"] = map[string]any{"enabled": true, "min_free_percent": 51} },
+		"reconnects one":      func(r map[string]any) { r["tunnel_unstable"] = map[string]any{"enabled": true, "min_reconnects": 1} },
+		"reconnects too many": func(r map[string]any) { r["tunnel_unstable"] = map[string]any{"enabled": true, "min_reconnects": 101} },
 	} {
 		bad := rules()
 		mutate(bad)
@@ -356,11 +379,13 @@ func TestAlertRulesAPI(t *testing.T) {
 			t.Errorf("%s: %d %s", name, w.Code, w.Body.String())
 		}
 	}
-	// A console or script from before the service rule leaves it as stored.
+	// A console or script from before the later rules leaves them as stored.
 	older := rules()
-	delete(older, "service_down")
+	for _, key := range []string{"service_down", "latency", "outlet_restart", "disk_low", "memory_low", "tunnel_unstable"} {
+		delete(older, key)
+	}
 	older["tunnel_down"] = map[string]any{"enabled": true, "after_minutes": 7}
-	if got := decodeAlerts(t, request(h, "PUT", "/api/v1/alerts/rules", admin, older)).Rules; got.TunnelDown.AfterMinutes != 7 || got.ServiceDown != want.ServiceDown {
+	if got := decodeAlerts(t, request(h, "PUT", "/api/v1/alerts/rules", admin, older)).Rules; got.TunnelDown.AfterMinutes != 7 || got.ServiceDown != want.ServiceDown || got.Latency != want.Latency || got.DiskLow != want.DiskLow || got.TunnelUnstable != want.TunnelUnstable {
 		t.Fatalf("rules without service_down = %+v", got)
 	}
 	want.TunnelDown.AfterMinutes = 7

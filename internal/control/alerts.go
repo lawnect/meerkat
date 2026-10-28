@@ -294,6 +294,28 @@ type RateLimitAlertRule struct {
 	MinBlocked int  `json:"min_blocked"`
 }
 
+// LatencyRule fires when an hour's p95, of the Outlet's own time or of the
+// services', is IncreasePercent above the 7 days before it, over at least
+// MinRequests requests.
+type LatencyRule struct {
+	Enabled         bool    `json:"enabled"`
+	IncreasePercent float64 `json:"increase_percent"`
+	MinRequests     int     `json:"min_requests"`
+}
+
+// FreeSpaceRule fires when less than MinFreePercent is left.
+type FreeSpaceRule struct {
+	Enabled        bool `json:"enabled"`
+	MinFreePercent int  `json:"min_free_percent"`
+}
+
+// TunnelUnstableRule fires when a tunnel reconnects, or its tunnel process
+// restarts, MinReconnects times within an hour.
+type TunnelUnstableRule struct {
+	Enabled       bool `json:"enabled"`
+	MinReconnects int  `json:"min_reconnects"`
+}
+
 type AlertRules struct {
 	TunnelDown  TunnelDownRule  `json:"tunnel_down"`
 	ServiceDown ServiceDownRule `json:"service_down"`
@@ -303,17 +325,29 @@ type AlertRules struct {
 	Login       ToggleRule      `json:"login"`
 	// RateLimit fires when this many requests were rejected within 10 minutes.
 	RateLimit RateLimitAlertRule `json:"rate_limit"`
+	// The rules below came after the first six; a body that leaves one out
+	// keeps it as stored.
+	Latency        LatencyRule        `json:"latency"`
+	OutletRestart  ToggleRule         `json:"outlet_restart"`
+	DiskLow        FreeSpaceRule      `json:"disk_low"`
+	MemoryLow      FreeSpaceRule      `json:"memory_low"`
+	TunnelUnstable TunnelUnstableRule `json:"tunnel_unstable"`
 }
 
 func DefaultAlertRules() AlertRules {
 	return AlertRules{
-		TunnelDown:  TunnelDownRule{Enabled: true, AfterMinutes: 5},
-		ServiceDown: ServiceDownRule{Enabled: true, AfterMinutes: 5},
-		RouteError:  ToggleRule{Enabled: true},
-		DNSFailure:  ToggleRule{Enabled: true},
-		ErrorSpike:  ErrorSpikeRule{Enabled: true, ThresholdPercent: 5, MinRequests: 50},
-		Login:       ToggleRule{Enabled: true},
-		RateLimit:   RateLimitAlertRule{Enabled: true, MinBlocked: 500},
+		TunnelDown:     TunnelDownRule{Enabled: true, AfterMinutes: 5},
+		ServiceDown:    ServiceDownRule{Enabled: true, AfterMinutes: 5},
+		RouteError:     ToggleRule{Enabled: true},
+		DNSFailure:     ToggleRule{Enabled: true},
+		ErrorSpike:     ErrorSpikeRule{Enabled: true, ThresholdPercent: 5, MinRequests: 50},
+		Login:          ToggleRule{Enabled: true},
+		RateLimit:      RateLimitAlertRule{Enabled: true, MinBlocked: 500},
+		Latency:        LatencyRule{Enabled: true, IncreasePercent: 50, MinRequests: 100},
+		OutletRestart:  ToggleRule{Enabled: true},
+		DiskLow:        FreeSpaceRule{Enabled: true, MinFreePercent: 10},
+		MemoryLow:      FreeSpaceRule{Enabled: true, MinFreePercent: 10},
+		TunnelUnstable: TunnelUnstableRule{Enabled: true, MinReconnects: 3},
 	}
 }
 
@@ -322,7 +356,12 @@ func (r AlertRules) Valid() bool {
 		r.ServiceDown.AfterMinutes >= 1 && r.ServiceDown.AfterMinutes <= 1440 &&
 		r.ErrorSpike.ThresholdPercent >= 0.1 && r.ErrorSpike.ThresholdPercent <= 100 &&
 		r.ErrorSpike.MinRequests >= 1 && r.ErrorSpike.MinRequests <= 1_000_000 &&
-		r.RateLimit.MinBlocked >= 1 && r.RateLimit.MinBlocked <= 1_000_000
+		r.RateLimit.MinBlocked >= 1 && r.RateLimit.MinBlocked <= 1_000_000 &&
+		r.Latency.IncreasePercent >= 10 && r.Latency.IncreasePercent <= 1000 &&
+		r.Latency.MinRequests >= 1 && r.Latency.MinRequests <= 1_000_000 &&
+		r.DiskLow.MinFreePercent >= 1 && r.DiskLow.MinFreePercent <= 50 &&
+		r.MemoryLow.MinFreePercent >= 1 && r.MemoryLow.MinFreePercent <= 50 &&
+		r.TunnelUnstable.MinReconnects >= 2 && r.TunnelUnstable.MinReconnects <= 100
 }
 
 // AlertRules returns the stored rules over the defaults, so a rule added in
