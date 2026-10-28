@@ -36,6 +36,7 @@ const statusLabels = translations({
   disconnected: 'Disconnected',
   unknown: 'Pending check',
   error: 'Error',
+  disabled: 'Disabled',
 } as Record<string, string>, {
   draft: '등록 대기',
   connected: '연결됨',
@@ -44,6 +45,7 @@ const statusLabels = translations({
   disconnected: '연결 끊김',
   unknown: '확인 대기',
   error: '오류',
+  disabled: '사용 안 함',
 });
 
 export function statusLabel(value: string | undefined): string {

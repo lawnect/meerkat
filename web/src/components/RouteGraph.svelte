@@ -66,6 +66,10 @@
     return 'live';
   }
 
+  function serviceState(record: ServiceRecord): string {
+    return record.service.enabled ? record.service.observed_status : 'disabled';
+  }
+
   function routeLabel(kind: RouteKind): string {
     return kind === 'live' ? t().routeLive : kind === 'waiting' ? t().routeWaiting : kind === 'error' ? t().routeError : t().routeOff;
   }
@@ -135,7 +139,10 @@
           <Item.Media variant="icon"><Cube class="text-muted-foreground" aria-hidden="true" /></Item.Media>
           <Item.Content class="min-w-0">
             <Item.Title class="max-w-full min-w-0 text-sm"><TruncateText text={record.service.name} /></Item.Title>
-            <Item.Description><TruncateText text={`${record.service.target.host}:${record.service.target.port}`} class="font-mono" /></Item.Description>
+            <Item.Description class="flex min-w-0 items-center gap-1.5">
+              <Status label={statusLabel(serviceState(record))} value={serviceState(record)} />
+              <TruncateText text={`${record.service.target.host}:${record.service.target.port}`} class="font-mono" />
+            </Item.Description>
           </Item.Content>
         </Item.Root>
       </div>
