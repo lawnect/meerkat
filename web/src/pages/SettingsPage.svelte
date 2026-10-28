@@ -63,6 +63,8 @@
     rulesNeedTelegram: 'Connect Telegram to receive these alerts.',
     tunnelDown: 'Tunnel disconnected',
     tunnelDownHint: 'After this long disconnected, and again on reconnect.',
+    serviceDown: 'Service down',
+    serviceDownHint: 'After this long in error or not responding, and again on recovery.',
     afterMinutes: 'Wait',
     minutes: 'min',
     routeError: 'Public address error',
@@ -136,6 +138,8 @@
     rulesNeedTelegram: 'Telegram 연결 후 알림을 수신할 수 있습니다.',
     tunnelDown: '터널 연결 끊김',
     tunnelDownHint: '설정 시간 이상 연결 끊김 및 복구 시 알림',
+    serviceDown: '서비스 장애',
+    serviceDownHint: '설정 시간 이상 서비스 오류·응답 없음 및 복구 시 알림',
     afterMinutes: '대기 시간',
     minutes: '분',
     routeError: '공개 주소 오류',
@@ -183,7 +187,7 @@
   const tabs = ['alerts', 'security'] as const;
   const tab = $derived(oneOf('tab', tabs, 'alerts'));
 
-  const ruleKeys: RuleKey[] = ['tunnel_down', 'route_error', 'dns_failure', 'error_spike', 'rate_limit', 'login'];
+  const ruleKeys: RuleKey[] = ['tunnel_down', 'service_down', 'route_error', 'dns_failure', 'error_spike', 'rate_limit', 'login'];
 
   let settings = $state<AlertSettings | null>(null);
   let loadError = $state('');
@@ -268,6 +272,7 @@
 
   const ruleText: Record<RuleKey, () => { title: string; hint: string }> = {
     tunnel_down: () => ({ title: t().tunnelDown, hint: t().tunnelDownHint }),
+    service_down: () => ({ title: t().serviceDown, hint: t().serviceDownHint }),
     route_error: () => ({ title: t().routeError, hint: '' }),
     dns_failure: () => ({ title: t().dnsFailure, hint: t().dnsFailureHint }),
     error_spike: () => ({ title: t().errorSpike, hint: t().errorSpikeHint }),
@@ -378,9 +383,9 @@
                     <Field.Label for={`rule-${key}`}>{text.title}</Field.Label>
                     {#if text.hint}<Field.Description>{text.hint}</Field.Description>{/if}
                   </Field.Content>
-                  {#if key === 'tunnel_down'}
+                  {#if key === 'tunnel_down' || key === 'service_down'}
                     <InputGroup.Root class="w-28">
-                      <InputGroup.Input type="number" min="1" max="1440" aria-label={t().afterMinutes} bind:value={rules.tunnel_down.after_minutes} disabled={!rules.tunnel_down.enabled} class="tabular-nums" />
+                      <InputGroup.Input type="number" min="1" max="1440" aria-label={t().afterMinutes} bind:value={rules[key].after_minutes} disabled={!rules[key].enabled} class="tabular-nums" />
                       <InputGroup.Addon align="inline-end"><InputGroup.Text>{t().minutes}</InputGroup.Text></InputGroup.Addon>
                     </InputGroup.Root>
                   {:else if key === 'error_spike'}

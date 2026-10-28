@@ -93,7 +93,7 @@ func TestAuditRecordsEveryAdminAction(t *testing.T) {
 	a.telegram.fail(nil)
 	call("POST", "/api/v1/alerts/telegram/test", nil, 200)
 	call("PUT", "/api/v1/alerts/rules", map[string]any{
-		"tunnel_down": map[string]any{"enabled": true, "after_minutes": 10}, "route_error": map[string]any{"enabled": true}, "dns_failure": map[string]any{"enabled": false},
+		"tunnel_down": map[string]any{"enabled": true, "after_minutes": 10}, "service_down": map[string]any{"enabled": true, "after_minutes": 5}, "route_error": map[string]any{"enabled": true}, "dns_failure": map[string]any{"enabled": false},
 		"error_spike": map[string]any{"enabled": true, "threshold_percent": 5, "min_requests": 50}, "login": map[string]any{"enabled": true},
 		"rate_limit": map[string]any{"enabled": true, "min_blocked": 500},
 	}, 200)

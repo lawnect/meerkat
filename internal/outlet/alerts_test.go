@@ -121,6 +121,161 @@ func TestTunnelDownAlertLifecycle(t *testing.T) {
 	}
 }
 
+// serviceState reports one service of an enrolled Connector heard from at
+// lastSeen: health is the Connector's check of the app, probe the Outlet's
+// request through the tunnel.
+func (a alertFixture) serviceState(c control.Connector, service control.Service, health, probe string, lastSeen time.Time) {
+	a.store.mu.Lock()
+	a.store.managed[c.ID] = Record{
+		Seed:            Seed{Name: c.Name, Configuration: contract.Configuration{ConnectorID: c.ID, Services: []contract.ServiceConfiguration{{ServiceID: service.ID, Target: service.Target}}}},
+		ProbeAddresses:  map[string]string{service.ID: "127.0.0.1:20001"},
+		ServiceStatuses: map[string]string{service.ID: probe},
+		Enrolled:        true,
+		LastSeen:        lastSeen,
+		LastHeartbeat:   &contract.Heartbeat{ServiceHealths: map[string]string{service.ID: health}, ObservedAt: lastSeen},
+	}
+	a.store.mu.Unlock()
+}
+
+func (a alertFixture) service(t *testing.T, c control.Connector, name string) control.Service {
+	t.Helper()
+	service, err := a.db.CreateService(context.Background(), c.ID, name, "http", contract.Target{Host: name, Port: 8080})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
+}
+
+func TestServiceDownAlertLifecycle(t *testing.T) {
+	a := newAlertFixture(t)
+	a.configureTelegram(t, false)
+	a.setRules(t, func(r *control.AlertRules) { r.ServiceDown.AfterMinutes = 2 })
+	edge, err := a.db.CreateConnector(context.Background(), "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := a.service(t, edge, "app")
+	// The Connector is heard from every minute but can't reach the app.
+	unreachable := func() { a.serviceState(edge, app, "unhealthy", "disconnected", a.clock.now()) }
+
+	unreachable()
+	a.evaluate()
+	a.clock.advance(time.Minute)
+	unreachable()
+	a.evaluate()
+	if len(a.telegram.messages()) != 0 {
+		t.Fatalf("alerted before 2 minutes: %q", a.texts())
+	}
+
+	a.clock.advance(time.Minute)
+	unreachable()
+	a.evaluate()
+	want := "🔴 <b>Service down</b>\nService: <code>app</code>\nTunnel: <code>edge-a</code>\nProblem: The Connector can&#39;t reach the app\nDown for: 2 min\n<a href=\"https://" + a.host + "/connectors/" + edge.ID + "\">Open in Meerkat</a>"
+	if texts := a.texts(); len(texts) != 1 || texts[0] != want {
+		t.Fatalf("messages = %q", texts)
+	}
+	events := a.events(t, "service_down")
+	if len(events) != 1 || events[0].Subject != "edge-a / app" || events[0].ResolvedAt != nil || !events[0].Sent || events[0].Message != "Service app on edge-a down (2 min): The Connector can't reach the app" {
+		t.Fatalf("events = %+v", events)
+	}
+
+	// While the tunnel is down that is the tunnel's alert: the service's
+	// stays open and sends nothing.
+	a.clock.advance(2 * time.Minute)
+	a.evaluate()
+	if events := a.events(t, "service_down"); len(a.telegram.messages()) != 1 || len(events) != 1 || events[0].ResolvedAt != nil {
+		t.Fatalf("a down tunnel changed the service alert: %q %+v", a.texts(), events)
+	}
+
+	a.serviceState(edge, app, "healthy", "connected", a.clock.now())
+	a.evaluate()
+	texts := a.texts()
+	if len(texts) != 2 || !strings.HasPrefix(texts[1], "🟢 <b>Service recovered</b>\nService: <code>edge-a / app</code>\nAlerted: 2026-10-26 14:02 UTC\nOpen for: 2 min") {
+		t.Fatalf("recovery = %q", texts)
+	}
+	if events := a.events(t, "service_down"); events[0].ResolvedAt == nil {
+		t.Fatalf("event still open: %+v", events)
+	}
+}
+
+func TestServiceDownAlertNamesTheFailingSide(t *testing.T) {
+	a := newAlertFixture(t)
+	a.configureTelegram(t, false)
+	a.setRules(t, func(r *control.AlertRules) { r.ServiceDown.AfterMinutes = 1 })
+	edge, err := a.db.CreateConnector(context.Background(), "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := a.service(t, edge, "app")
+	// The Connector reaches the app, but nothing answers through the tunnel.
+	a.serviceState(edge, app, "healthy", "disconnected", a.clock.now())
+	a.evaluate()
+	a.clock.advance(time.Minute)
+	a.serviceState(edge, app, "healthy", "disconnected", a.clock.now())
+	a.evaluate()
+	if texts := a.texts(); len(texts) != 1 || !strings.Contains(texts[0], "\nProblem: No answer through the tunnel\n") {
+		t.Fatalf("messages = %q", texts)
+	}
+}
+
+func TestServiceDownAlertLeavesDownTunnelsToTheTunnelAlert(t *testing.T) {
+	a := newAlertFixture(t)
+	a.configureTelegram(t, false)
+	a.setRules(t, func(r *control.AlertRules) { r.ServiceDown.AfterMinutes = 1 })
+	edge, err := a.db.CreateConnector(context.Background(), "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := a.service(t, edge, "app")
+	a.serviceState(edge, app, "unhealthy", "disconnected", a.clock.now().Add(-time.Hour))
+	for range 10 {
+		a.evaluate()
+		a.clock.advance(time.Minute)
+	}
+	if events := a.events(t, "service_down"); len(events) != 0 {
+		t.Fatalf("a service of a down tunnel alerted: %+v", events)
+	}
+	if events := a.events(t, "tunnel_down"); len(events) != 1 {
+		t.Fatalf("tunnel events = %+v", events)
+	}
+}
+
+func TestServiceDownAlertClosesQuietly(t *testing.T) {
+	a := newAlertFixture(t)
+	a.configureTelegram(t, false)
+	a.setRules(t, func(r *control.AlertRules) { r.ServiceDown.AfterMinutes = 1 })
+	edge, err := a.db.CreateConnector(context.Background(), "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := a.service(t, edge, "app")
+	open := func() {
+		a.serviceState(edge, app, "unhealthy", "disconnected", a.clock.now())
+		a.evaluate()
+		a.clock.advance(time.Minute)
+		a.serviceState(edge, app, "unhealthy", "disconnected", a.clock.now())
+		a.evaluate()
+	}
+	open()
+	a.setRules(t, func(r *control.AlertRules) { r.ServiceDown.Enabled = false })
+	a.evaluate()
+	if events := a.events(t, "service_down"); len(a.telegram.messages()) != 1 || len(events) != 1 || events[0].ResolvedAt == nil {
+		t.Fatalf("switching the rule off: %q %+v", a.texts(), events)
+	}
+
+	// A deleted service closes its alert without a recovery message.
+	a.clock.advance(2 * time.Hour)
+	a.setRules(t, func(r *control.AlertRules) { r.ServiceDown.AfterMinutes = 1 })
+	open()
+	if err := a.db.DeleteService(context.Background(), edge.ID, app.ID); err != nil {
+		t.Fatal(err)
+	}
+	a.evaluate()
+	if events := a.events(t, "service_down"); len(a.telegram.messages()) != 2 || len(events) != 2 || events[0].ResolvedAt == nil {
+		t.Fatalf("deleting the service: %q %+v", a.texts(), events)
+	}
+}
+
 func TestTunnelDownWaitsForConfiguredMinutes(t *testing.T) {
 	a := newAlertFixture(t)
 	a.configureTelegram(t, false)

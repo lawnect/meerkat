@@ -100,6 +100,22 @@ func tunnelDownNotice(name, connectorID string, down time.Duration, lastSeen tim
 	return n
 }
 
+// serviceDownNotice says which side fails, as the console's service status
+// does: the Connector can't reach the app, or the Outlet gets no answer from
+// it through the tunnel.
+func serviceDownNotice(tunnel, service, connectorID, status string, down time.Duration) notice {
+	problem := "Not checked yet"
+	switch status {
+	case "error":
+		problem = "The Connector can't reach the app"
+	case "connecting":
+		problem = "No answer through the tunnel"
+	}
+	n := notice{icon: "🔴", title: "Service down", ref: connectorRef(connectorID),
+		summary: "Service " + service + " on " + tunnel + " down (" + humanDuration(down) + "): " + problem}
+	return n.line("Service", code(service)).line("Tunnel", code(tunnel)).line("Problem", esc(problem)).line("Down for", esc(humanDuration(down)))
+}
+
 func routeErrorNotice(hostname, connectorID, failure string) notice {
 	failure = strings.Join(strings.Fields(failure), " ")
 	if runes := []rune(failure); len(runes) > 160 {
@@ -172,6 +188,8 @@ func recoveryNotice(e control.AlertEvent, now time.Time) (notice, bool) {
 	switch e.Kind {
 	case "tunnel_down":
 		n.title, label = "Tunnel reconnected", "Tunnel"
+	case "service_down":
+		n.title, label = "Service recovered", "Service"
 	case "route_error":
 		n.title, label = "Route error cleared", "Route"
 	case "dns_failure":

@@ -304,18 +304,19 @@ func TestAlertRulesAPI(t *testing.T) {
 	h, admin := a.store.Handler(), a.admin
 	rules := func() map[string]any {
 		return map[string]any{
-			"tunnel_down": map[string]any{"enabled": true, "after_minutes": 10},
-			"route_error": map[string]any{"enabled": false},
-			"dns_failure": map[string]any{"enabled": true},
-			"error_spike": map[string]any{"enabled": true, "threshold_percent": 2.5, "min_requests": 100},
-			"login":       map[string]any{"enabled": false},
-			"rate_limit":  map[string]any{"enabled": true, "min_blocked": 250},
+			"tunnel_down":  map[string]any{"enabled": true, "after_minutes": 10},
+			"service_down": map[string]any{"enabled": true, "after_minutes": 3},
+			"route_error":  map[string]any{"enabled": false},
+			"dns_failure":  map[string]any{"enabled": true},
+			"error_spike":  map[string]any{"enabled": true, "threshold_percent": 2.5, "min_requests": 100},
+			"login":        map[string]any{"enabled": false},
+			"rate_limit":   map[string]any{"enabled": true, "min_blocked": 250},
 		}
 	}
 	w := request(h, "PUT", "/api/v1/alerts/rules", admin, rules())
 	view := decodeAlerts(t, w)
 	want := control.AlertRules{
-		TunnelDown: control.TunnelDownRule{Enabled: true, AfterMinutes: 10}, RouteError: control.ToggleRule{}, DNSFailure: control.ToggleRule{Enabled: true},
+		TunnelDown: control.TunnelDownRule{Enabled: true, AfterMinutes: 10}, ServiceDown: control.ServiceDownRule{Enabled: true, AfterMinutes: 3}, RouteError: control.ToggleRule{}, DNSFailure: control.ToggleRule{Enabled: true},
 		ErrorSpike: control.ErrorSpikeRule{Enabled: true, ThresholdPercent: 2.5, MinRequests: 100}, Login: control.ToggleRule{},
 		RateLimit: control.RateLimitAlertRule{Enabled: true, MinBlocked: 250},
 	}
@@ -328,6 +329,12 @@ func TestAlertRulesAPI(t *testing.T) {
 	for name, mutate := range map[string]func(map[string]any){
 		"minutes zero":     func(r map[string]any) { r["tunnel_down"] = map[string]any{"enabled": true, "after_minutes": 0} },
 		"minutes too many": func(r map[string]any) { r["tunnel_down"] = map[string]any{"enabled": true, "after_minutes": 1441} },
+		"service minutes zero": func(r map[string]any) {
+			r["service_down"] = map[string]any{"enabled": true, "after_minutes": 0}
+		},
+		"service minutes too many": func(r map[string]any) {
+			r["service_down"] = map[string]any{"enabled": true, "after_minutes": 1441}
+		},
 		"percent too small": func(r map[string]any) {
 			r["error_spike"] = map[string]any{"enabled": true, "threshold_percent": 0.01, "min_requests": 50}
 		},
@@ -349,7 +356,7 @@ func TestAlertRulesAPI(t *testing.T) {
 			t.Errorf("%s: %d %s", name, w.Code, w.Body.String())
 		}
 	}
-	for _, key := range []string{"login", "rate_limit"} {
+	for _, key := range []string{"service_down", "login", "rate_limit"} {
 		incomplete := rules()
 		delete(incomplete, key)
 		if w := request(h, "PUT", "/api/v1/alerts/rules", admin, incomplete); w.Code != 400 || errorCode(t, w) != "invalid_request" {

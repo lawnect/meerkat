@@ -2,6 +2,7 @@ package outlet
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"strings"
@@ -28,7 +29,9 @@ const (
 // alertState belongs to the evaluator goroutine alone.
 type alertState struct {
 	downSince map[string]time.Time
-	lastDNS   time.Time
+	// serviceDownSince is when each service was first seen not serving.
+	serviceDownSince map[string]time.Time
+	lastDNS          time.Time
 }
 
 // alertEnv is what one evaluation round reads up front.
@@ -94,7 +97,7 @@ func (s *Store) evaluateAlerts(ctx context.Context) {
 		return
 	}
 	now := s.now()
-	rounds := []alertRound{{"tunnel_down", s.tunnelAlerts}, {"route_error", s.routeAlerts}, {"error_spike", s.spikeAlerts}, {"rate_limit", s.rateLimitAlerts}}
+	rounds := []alertRound{{"tunnel_down", s.tunnelAlerts}, {"service_down", s.serviceAlerts}, {"route_error", s.routeAlerts}, {"error_spike", s.spikeAlerts}, {"rate_limit", s.rateLimitAlerts}}
 	if now.Sub(s.alerts.lastDNS) >= dnsInterval {
 		rounds = append(rounds, alertRound{"dns_failure", s.dnsAlerts})
 		s.alerts.lastDNS = now
@@ -122,8 +125,8 @@ func (s *Store) deliver(ctx context.Context, env alertEnv, id int64, n notice) {
 // syncAlerts brings the open events of one kind in line with the conditions
 // that hold now. Events whose key is in healthy get a recovery message when
 // they clear; others (the subject was deleted, the rule was switched off)
-// close quietly.
-func (s *Store) syncAlerts(ctx context.Context, env alertEnv, kind string, active []condition, healthy map[string]bool, now time.Time) error {
+// close quietly. Events whose key is in held stay open as they are.
+func (s *Store) syncAlerts(ctx context.Context, env alertEnv, kind string, active []condition, healthy, held map[string]bool, now time.Time) error {
 	open, err := s.control.OpenAlerts(ctx, kind)
 	if err != nil {
 		return err
@@ -149,6 +152,9 @@ func (s *Store) syncAlerts(ctx context.Context, env alertEnv, kind string, activ
 		}
 	}
 	for _, e := range pending {
+		if held[e.Key] {
+			continue
+		}
 		if err := s.control.ResolveAlert(ctx, e.ID, now); err != nil {
 			return err
 		}
@@ -164,7 +170,7 @@ func (s *Store) syncAlerts(ctx context.Context, env alertEnv, kind string, activ
 func (s *Store) tunnelAlerts(ctx context.Context, env alertEnv, now time.Time) error {
 	rule := env.rules.TunnelDown
 	if !rule.Enabled {
-		return s.syncAlerts(ctx, env, "tunnel_down", nil, nil, now)
+		return s.syncAlerts(ctx, env, "tunnel_down", nil, nil, nil, now)
 	}
 	connectors, err := s.control.ListConnectors(ctx)
 	if err != nil {
@@ -194,21 +200,90 @@ func (s *Store) tunnelAlerts(ctx context.Context, env alertEnv, now time.Time) e
 		}
 		down[c.ID] = since
 		if elapsed := now.Sub(since); elapsed >= time.Duration(rule.AfterMinutes)*time.Minute {
-			name := c.Name
-			if c.DisplayName != "" {
-				name = c.DisplayName
-			}
+			name := connectorName(c)
 			active = append(active, condition{key, name, tunnelDownNotice(name, c.ID, elapsed, record.LastSeen)})
 		}
 	}
 	s.mu.Unlock()
 	s.alerts.downSince = down
-	return s.syncAlerts(ctx, env, "tunnel_down", active, healthy, now)
+	return s.syncAlerts(ctx, env, "tunnel_down", active, healthy, nil, now)
+}
+
+// connectorName is the tunnel name the console shows.
+func connectorName(c control.Connector) string {
+	if c.DisplayName != "" {
+		return c.DisplayName
+	}
+	return c.Name
+}
+
+// serviceAlerts reports the services a connected tunnel isn't serving: the
+// Connector can't reach the app, or the Outlet gets no answer from it through
+// the tunnel. While a tunnel is down, that is the tunnel's alert: the alerts
+// of its services are held as they are, neither opened nor cleared.
+func (s *Store) serviceAlerts(ctx context.Context, env alertEnv, now time.Time) error {
+	rule := env.rules.ServiceDown
+	if !rule.Enabled {
+		s.alerts.serviceDownSince = nil
+		return s.syncAlerts(ctx, env, "service_down", nil, nil, nil, now)
+	}
+	connectors, err := s.control.ListConnectors(ctx)
+	if err != nil {
+		return err
+	}
+	services := make([][]control.Service, len(connectors))
+	for i, c := range connectors {
+		// A tunnel deleted meanwhile has no services left to report.
+		if services[i], err = s.control.ListServices(ctx, c.ID); err != nil && !errors.Is(err, control.ErrConnectorNotFound) {
+			return err
+		}
+	}
+	var active []condition
+	healthy, held := map[string]bool{}, map[string]bool{}
+	down := map[string]time.Time{}
+	s.mu.Lock()
+	for i, c := range connectors {
+		record, ok := s.managed[c.ID]
+		if !ok || !record.Enrolled {
+			continue
+		}
+		connected := managedConnectorStatus(record, now) == "connected"
+		for _, service := range services[i] {
+			if !service.Enabled {
+				continue
+			}
+			key := "service_down:" + service.ID
+			since, seen := s.alerts.serviceDownSince[service.ID]
+			if !connected {
+				held[key] = true
+				if seen {
+					down[service.ID] = since
+				}
+				continue
+			}
+			status := managedServiceStatus(record, service.ID, now)
+			if status == "connected" {
+				healthy[key] = true
+				continue
+			}
+			if !seen {
+				since = now
+			}
+			down[service.ID] = since
+			if elapsed := now.Sub(since); elapsed >= time.Duration(rule.AfterMinutes)*time.Minute {
+				tunnel := connectorName(c)
+				active = append(active, condition{key, tunnel + " / " + service.Name, serviceDownNotice(tunnel, service.Name, c.ID, status, elapsed)})
+			}
+		}
+	}
+	s.mu.Unlock()
+	s.alerts.serviceDownSince = down
+	return s.syncAlerts(ctx, env, "service_down", active, healthy, held, now)
 }
 
 func (s *Store) routeAlerts(ctx context.Context, env alertEnv, now time.Time) error {
 	if !env.rules.RouteError.Enabled {
-		return s.syncAlerts(ctx, env, "route_error", nil, nil, now)
+		return s.syncAlerts(ctx, env, "route_error", nil, nil, nil, now)
 	}
 	plans, err := s.control.HTTPRoutePlans(ctx)
 	if err != nil {
@@ -224,12 +299,12 @@ func (s *Store) routeAlerts(ctx context.Context, env alertEnv, now time.Time) er
 		}
 		active = append(active, condition{key, plan.Hostname, routeErrorNotice(plan.Hostname, plan.ConnectorID, plan.LastError)})
 	}
-	return s.syncAlerts(ctx, env, "route_error", active, healthy, now)
+	return s.syncAlerts(ctx, env, "route_error", active, healthy, nil, now)
 }
 
 func (s *Store) dnsAlerts(ctx context.Context, env alertEnv, now time.Time) error {
 	if !env.rules.DNSFailure.Enabled {
-		return s.syncAlerts(ctx, env, "dns_failure", nil, nil, now)
+		return s.syncAlerts(ctx, env, "dns_failure", nil, nil, nil, now)
 	}
 	var active []condition
 	healthy := map[string]bool{}
@@ -252,7 +327,7 @@ func (s *Store) dnsAlerts(ctx context.Context, env alertEnv, now time.Time) erro
 		}
 		active = append(active, condition{key, domain, dnsFailureNotice(domain, failing)})
 	}
-	return s.syncAlerts(ctx, env, "dns_failure", active, healthy, now)
+	return s.syncAlerts(ctx, env, "dns_failure", active, healthy, nil, now)
 }
 
 // unresolved returns the hostnames that do not resolve, in order.

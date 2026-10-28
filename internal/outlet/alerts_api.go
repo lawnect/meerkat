@@ -159,7 +159,7 @@ func (s *Store) putAlertRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var rules control.AlertRules
-	if !decode(w, r, &rules, "tunnel_down", "route_error", "dns_failure", "error_spike", "login", "rate_limit") {
+	if !decode(w, r, &rules, "tunnel_down", "service_down", "route_error", "dns_failure", "error_spike", "login", "rate_limit") {
 		return
 	}
 	switch err := s.control.SetAlertRules(r.Context(), rules, s.now()); {
@@ -168,7 +168,7 @@ func (s *Store) putAlertRules(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		fail(w, r, 503, "persistence_failed")
 	default:
-		detail := map[string]any{"tunnel_down": rules.TunnelDown, "route_error": rules.RouteError, "dns_failure": rules.DNSFailure, "error_spike": rules.ErrorSpike, "login": rules.Login, "rate_limit": rules.RateLimit}
+		detail := map[string]any{"tunnel_down": rules.TunnelDown, "service_down": rules.ServiceDown, "route_error": rules.RouteError, "dns_failure": rules.DNSFailure, "error_spike": rules.ErrorSpike, "login": rules.Login, "rate_limit": rules.RateLimit}
 		s.audited(r, "alert_rules.update", "alert_rules", "rules", detail)
 		s.replyAlerts(w, r, 200)
 	}

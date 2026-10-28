@@ -276,6 +276,13 @@ type TunnelDownRule struct {
 	AfterMinutes int  `json:"after_minutes"`
 }
 
+// ServiceDownRule fires when a service of a connected tunnel isn't serving
+// for this long.
+type ServiceDownRule struct {
+	Enabled      bool `json:"enabled"`
+	AfterMinutes int  `json:"after_minutes"`
+}
+
 type ErrorSpikeRule struct {
 	Enabled          bool    `json:"enabled"`
 	ThresholdPercent float64 `json:"threshold_percent"`
@@ -288,28 +295,31 @@ type RateLimitAlertRule struct {
 }
 
 type AlertRules struct {
-	TunnelDown TunnelDownRule `json:"tunnel_down"`
-	RouteError ToggleRule     `json:"route_error"`
-	DNSFailure ToggleRule     `json:"dns_failure"`
-	ErrorSpike ErrorSpikeRule `json:"error_spike"`
-	Login      ToggleRule     `json:"login"`
+	TunnelDown  TunnelDownRule  `json:"tunnel_down"`
+	ServiceDown ServiceDownRule `json:"service_down"`
+	RouteError  ToggleRule      `json:"route_error"`
+	DNSFailure  ToggleRule      `json:"dns_failure"`
+	ErrorSpike  ErrorSpikeRule  `json:"error_spike"`
+	Login       ToggleRule      `json:"login"`
 	// RateLimit fires when this many requests were rejected within 10 minutes.
 	RateLimit RateLimitAlertRule `json:"rate_limit"`
 }
 
 func DefaultAlertRules() AlertRules {
 	return AlertRules{
-		TunnelDown: TunnelDownRule{Enabled: true, AfterMinutes: 5},
-		RouteError: ToggleRule{Enabled: true},
-		DNSFailure: ToggleRule{Enabled: true},
-		ErrorSpike: ErrorSpikeRule{Enabled: true, ThresholdPercent: 5, MinRequests: 50},
-		Login:      ToggleRule{Enabled: true},
-		RateLimit:  RateLimitAlertRule{Enabled: true, MinBlocked: 500},
+		TunnelDown:  TunnelDownRule{Enabled: true, AfterMinutes: 5},
+		ServiceDown: ServiceDownRule{Enabled: true, AfterMinutes: 5},
+		RouteError:  ToggleRule{Enabled: true},
+		DNSFailure:  ToggleRule{Enabled: true},
+		ErrorSpike:  ErrorSpikeRule{Enabled: true, ThresholdPercent: 5, MinRequests: 50},
+		Login:       ToggleRule{Enabled: true},
+		RateLimit:   RateLimitAlertRule{Enabled: true, MinBlocked: 500},
 	}
 }
 
 func (r AlertRules) Valid() bool {
 	return r.TunnelDown.AfterMinutes >= 1 && r.TunnelDown.AfterMinutes <= 1440 &&
+		r.ServiceDown.AfterMinutes >= 1 && r.ServiceDown.AfterMinutes <= 1440 &&
 		r.ErrorSpike.ThresholdPercent >= 0.1 && r.ErrorSpike.ThresholdPercent <= 100 &&
 		r.ErrorSpike.MinRequests >= 1 && r.ErrorSpike.MinRequests <= 1_000_000 &&
 		r.RateLimit.MinBlocked >= 1 && r.RateLimit.MinBlocked <= 1_000_000

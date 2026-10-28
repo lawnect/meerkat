@@ -176,6 +176,7 @@ export interface UsageSeries {
 // 텔레그램 알림과 로그인 2단계 인증 설정(GET /api/v1/alerts).
 export interface AlertRules {
   tunnel_down: { enabled: boolean; after_minutes: number };
+  service_down: { enabled: boolean; after_minutes: number };
   route_error: { enabled: boolean };
   dns_failure: { enabled: boolean };
   error_spike: { enabled: boolean; threshold_percent: number; min_requests: number };

@@ -159,6 +159,7 @@ GET    /api/v1/audit/export
   "telegram": {"configured": true, "enabled": true, "chat_id": "-1001234567890", "token_hint": "b-cd", "verified_at": "2026-10-26T14:00:00Z"},
   "rules": {
     "tunnel_down": {"enabled": true, "after_minutes": 5},
+    "service_down": {"enabled": true, "after_minutes": 5},
     "route_error": {"enabled": true},
     "dns_failure": {"enabled": true},
     "error_spike": {"enabled": true, "threshold_percent": 5, "min_requests": 50},
@@ -174,12 +175,13 @@ GET    /api/v1/audit/export
 - `PUT /api/v1/alerts/telegram` 본문은 `{"bot_token"?: string, "chat_id": string, "enabled": bool}`이다. `bot_token`을 생략하거나 비우면 저장된 토큰을 유지한다. 토큰 형식(`123456789:AA…`)이 틀리거나 저장된 토큰도 없으면 `400 invalid_telegram_token`, 채팅 ID가 숫자(`-100…` 포함)나 `@채널이름`이 아니면 `400 invalid_telegram_chat`이다. 토큰이나 채팅 ID를 바꾸면 `verified_at`이 지워지고, 확인된 봇을 전제로 하는 로그인 보안 코드도 함께 꺼진다. 응답은 `GET`과 같다.
 - `POST /api/v1/alerts/telegram/test`는 저장된 설정으로 테스트 메시지를 보낸다. 성공하면 `verified_at`을 기록하고 `GET` 형태를 반환한다. 설정이 없으면 `409 telegram_not_configured`, Telegram이 거부하거나 닿지 않으면 `502`와 `telegram_unauthorized`(토큰이 틀림), `telegram_chat_not_found`(채팅 ID가 틀렸거나 봇이 시작·초대되지 않음), `telegram_unreachable`(네트워크·시간 초과), `telegram_failed` 중 하나를 반환한다. 메시지를 보내는 동안 다른 요청이 토큰이나 채팅을 바꾸었으면 테스트한 설정이 저장된 설정이 아니므로 `409 telegram_changed`를 반환하고 확인으로 치지 않는다.
 - `DELETE /api/v1/alerts/telegram`은 토큰과 채팅 ID를 지우고 알림과 로그인 보안 코드를 끄며 열려 있던 알림 이벤트를 조용히 닫는다. 응답은 `GET`과 같다.
-- `PUT /api/v1/alerts/rules`는 규칙 여섯 개를 모두 담은 객체로 설정을 통째로 바꾼다. 범위는 `after_minutes` 1–1440, `threshold_percent` 0.1–100, `min_requests` 1–1,000,000, `min_blocked` 1–1,000,000이며 벗어나면 `400 invalid_alert_rules`다. 키가 빠지면 `400 invalid_request`다. 응답은 `GET`과 같다.
+- `PUT /api/v1/alerts/rules`는 규칙 일곱 개를 모두 담은 객체로 설정을 통째로 바꾼다. 범위는 `after_minutes`(두 규칙 모두) 1–1440, `threshold_percent` 0.1–100, `min_requests` 1–1,000,000, `min_blocked` 1–1,000,000이며 벗어나면 `400 invalid_alert_rules`다. 키가 빠지면 `400 invalid_request`다. 응답은 `GET`과 같다.
 - `PUT /api/v1/security/second-factor`는 `{"enabled": bool}`을 받아 `{"login_second_factor": bool}`을 반환한다. 켜려면 Telegram이 설정되고 테스트 메시지로 확인되어 있어야 하며 아니면 `409 telegram_not_verified`다.
 
-**알림 규칙과 이벤트.** 알림은 Telegram이 설정되고 `enabled`일 때만 평가한다. 이벤트의 `kind`는 `tunnel_down`, `route_error`, `dns_failure`, `error_spike`, `login`, `rate_limit`이다. 같은 대상의 알림은 열려 있는 동안 다시 보내지 않고, 풀리면 복구 메시지(`tunnel_down`, `route_error`, `dns_failure`)를 한 번 보내며 `resolved_at`을 채운다. 같은 대상은 1시간 안에 다시 열지 않는다. `error_spike`, `login`, `rate_limit`은 즉시 닫히는 한 번짜리 이벤트(`resolved_at`이 `opened_at`과 같음)이다. `subject`는 터널 이름, 공개 주소, 도메인, 시간 구간(RFC 3339), 관리자 이메일 등 대상을 나타내는 짧은 문자열이다. 전송에 실패하면 `sent`가 `false`, `error`에 위 오류 코드가 남는다. 열려 있는 이벤트(`tunnel_down`, `route_error`, `dns_failure`)는 한 시간 동안 1분마다 다시 시도하고, 한 번도 알리지 못한 이벤트는 복구 메시지도 보내지 않는다. 최근 50개만 `events`에 담기며 오래된 닫힌 이벤트는 200개를 넘으면 삭제한다.
+**알림 규칙과 이벤트.** 알림은 Telegram이 설정되고 `enabled`일 때만 평가한다. 이벤트의 `kind`는 `tunnel_down`, `service_down`, `route_error`, `dns_failure`, `error_spike`, `login`, `rate_limit`이다. 같은 대상의 알림은 열려 있는 동안 다시 보내지 않고, 풀리면 복구 메시지(`tunnel_down`, `service_down`, `route_error`, `dns_failure`)를 한 번 보내며 `resolved_at`을 채운다. 같은 대상은 1시간 안에 다시 열지 않는다. `error_spike`, `login`, `rate_limit`은 즉시 닫히는 한 번짜리 이벤트(`resolved_at`이 `opened_at`과 같음)이다. `subject`는 터널 이름, `터널 / 서비스` 이름, 공개 주소, 도메인, 시간 구간(RFC 3339), 관리자 이메일 등 대상을 나타내는 짧은 문자열이다. 전송에 실패하면 `sent`가 `false`, `error`에 위 오류 코드가 남는다. 열려 있는 이벤트(`tunnel_down`, `service_down`, `route_error`, `dns_failure`)는 한 시간 동안 1분마다 다시 시도하고, 한 번도 알리지 못한 이벤트는 복구 메시지도 보내지 않는다. 최근 50개만 `events`에 담기며 오래된 닫힌 이벤트는 200개를 넘으면 삭제한다.
 
 - `tunnel_down`: 등록 완료된 터널이 `after_minutes` 이상 `connected`가 아니면 알린다.
+- `service_down`: 연결된 터널의 켜진 서비스가 `after_minutes` 이상 `connected`가 아니면(`error`: Connector가 앱에 닿지 못함, `connecting`: 터널 너머로 응답 없음, `unknown`: 아직 확인 전) 알린다. 메시지의 `Problem` 줄이 어느 쪽인지 밝힌다. 터널이 `connected`가 아닌 동안에는 `tunnel_down`의 몫이므로 그 서비스의 이벤트를 열지도 닫지도 않는다. 서비스를 삭제하거나 규칙을 끄면 복구 메시지 없이 닫는다.
 - `route_error`: 공개 주소에 `last_error`가 생기면 알린다.
 - `dns_failure`: 15분마다 도메인별 필수 이름(DNS 연결 확인과 같은 목록)을 조회해 실패하면 알린다.
 - `error_spike`: 현재와 직전 UTC 시간대의 5xx 비율이 `threshold_percent` 이상이고 요청이 `min_requests` 이상이면 시간대마다 한 번 알린다.

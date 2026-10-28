@@ -146,6 +146,7 @@ const alerts: AlertSettings = {
   telegram: { configured: true, enabled: true, chat_id: '-1001234567890', token_hint: 'x9Qa', verified_at: hoursAgo(50), source: 'database', environment: false },
   rules: {
     tunnel_down: { enabled: true, after_minutes: 5 },
+    service_down: { enabled: true, after_minutes: 5 },
     route_error: { enabled: true },
     dns_failure: { enabled: true },
     error_spike: { enabled: true, threshold_percent: 5, min_requests: 50 },
@@ -153,6 +154,7 @@ const alerts: AlertSettings = {
     rate_limit: { enabled: true, min_blocked: 500 },
   },
   events: [
+    { id: 8, kind: 'service_down', subject: 'home-server / app', message: "Service app on home-server down (5 min): The Connector can't reach the app", opened_at: hoursAgo(0.5), resolved_at: null, sent: true },
     { id: 7, kind: 'login', subject: 'dev@example.test', message: 'Admin login: dev@example.test from 203.0.113.7 (Chrome on macOS)', opened_at: hoursAgo(1), resolved_at: hoursAgo(1), sent: true },
     { id: 6, kind: 'tunnel_down', subject: 'office-printer', message: 'Tunnel office-printer disconnected (5 min)', opened_at: hoursAgo(26), resolved_at: null, sent: true },
     { id: 5, kind: 'tunnel_down', subject: 'legacy-erp', message: 'Tunnel legacy-erp disconnected (5 min)', opened_at: hoursAgo(30), resolved_at: null, sent: true },
@@ -1266,9 +1268,10 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
   if (path === '/api/v1/alerts/rules' && method === 'PUT') {
     const rules = input as unknown as AlertRules;
     const minutes = rules.tunnel_down?.after_minutes;
+    const serviceMinutes = rules.service_down?.after_minutes;
     const percent = rules.error_spike?.threshold_percent;
     const minimum = rules.error_spike?.min_requests;
-    if (!(rules.rate_limit?.min_blocked >= 1) || !(minutes >= 1 && minutes <= 1440) || !(percent >= 0.1 && percent <= 100) || !(minimum >= 1 && minimum <= 1000000)) fail('invalid_alert_rules');
+    if (!(rules.rate_limit?.min_blocked >= 1) || !(minutes >= 1 && minutes <= 1440) || !(serviceMinutes >= 1 && serviceMinutes <= 1440) || !(percent >= 0.1 && percent <= 100) || !(minimum >= 1 && minimum <= 1000000)) fail('invalid_alert_rules');
     alerts.rules = structuredClone(rules);
     return alertsResponse();
   }
