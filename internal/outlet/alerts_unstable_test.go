@@ -187,8 +187,6 @@ func TestUnstableAlert(t *testing.T) {
 	a := newAlertFixture(t)
 	a.configureTelegram(t, false)
 	edge := newUnstableTunnel(t, a)
-	// A quiet tunnel beside it.
-	a.connector(t, "edge-b", a.clock.now())
 	edge.beat(t)
 
 	edge.flap(t, 2)
@@ -405,8 +403,8 @@ func TestUnstableOfflineTunnelsDontCountTowardTheMajority(t *testing.T) {
 	}
 }
 
-// A reconnect is judged only once the other tunnels have had time to come
-// back from the same outage.
+// A tunnel back first from an outage the others are still cut off by is
+// judged with them: their silence under way counts.
 func TestUnstableWaitsForTheOthersToComeBack(t *testing.T) {
 	a := newAlertFixture(t)
 	a.configureTelegram(t, false)
@@ -445,6 +443,84 @@ func TestUnstableCountsNothingWhileAlertsAreOff(t *testing.T) {
 	u.flap(t, 3)
 	a.clock.advance(sharedWindow)
 	a.evaluate()
+	a.configureTelegram(t, false)
+	a.evaluate()
+	if texts := unstableTexts(a); len(texts) != 0 {
+		t.Fatalf("paged for reconnects from before alerts were on: %q", texts)
+	}
+}
+
+// Caddy restarting while half the tunnels are offline: the ones online all
+// went quiet together, and the offline ones, cut off already, don't count
+// against that.
+func TestUnstableOfflineTunnelsDontHideASharedOutage(t *testing.T) {
+	a := newAlertFixture(t)
+	a.configureTelegram(t, false)
+	var tunnels []*unstableTunnel
+	for _, name := range []string{"edge-a", "edge-b", "edge-c", "edge-d"} {
+		tunnels = append(tunnels, newUnstableTunnelNamed(t, a, name))
+	}
+	for _, u := range tunnels {
+		u.beat(t)
+	}
+	steadyTunnels(t, a, time.Minute, tunnels...)
+	// edge-c and edge-d go offline; a while later Caddy restarts three times.
+	steadyTunnels(t, a, time.Minute, tunnels[:2]...)
+	for range 3 {
+		a.clock.advance(unstableGap)
+		for _, u := range tunnels[:2] {
+			u.beat(t)
+		}
+		steadyTunnels(t, a, time.Minute, tunnels[:2]...)
+	}
+	a.evaluate()
+	if texts := unstableTexts(a); len(texts) != 0 {
+		t.Fatalf("a shared outage alerted: %q", texts)
+	}
+}
+
+// An Outlet that stalls for 8 s leaves some tunnels silent long enough to
+// reconnect and others only missing a heartbeat: all of them were cut off.
+func TestUnstableNearMissesCountAsCutOff(t *testing.T) {
+	a := newAlertFixture(t)
+	a.configureTelegram(t, false)
+	var tunnels []*unstableTunnel
+	for _, name := range []string{"edge-a", "edge-b", "edge-c", "edge-d"} {
+		tunnels = append(tunnels, newUnstableTunnelNamed(t, a, name))
+	}
+	for _, u := range tunnels {
+		u.beat(t)
+	}
+	steadyTunnels(t, a, time.Minute, tunnels...)
+	for range 3 {
+		a.clock.advance(10 * time.Second)
+		for _, u := range tunnels[2:] {
+			u.beat(t)
+		}
+		a.clock.advance(5 * time.Second)
+		for _, u := range tunnels[:2] {
+			u.beat(t)
+		}
+		steadyTunnels(t, a, time.Minute, tunnels...)
+	}
+	for _, u := range tunnels[:2] {
+		u.want(t, 3, 0)
+	}
+	a.evaluate()
+	if texts := unstableTexts(a); len(texts) != 0 {
+		t.Fatalf("a shared outage alerted: %q", texts)
+	}
+}
+
+// What happens between the last round with alerts off and the first one
+// with them on isn't counted either.
+func TestUnstableStartsAfreshWhenAlertsComeOn(t *testing.T) {
+	a := newAlertFixture(t)
+	u := newUnstableTunnel(t, a)
+	u.beat(t)
+	a.evaluate()
+	u.flap(t, 3)
+	a.clock.advance(sharedWindow)
 	a.configureTelegram(t, false)
 	a.evaluate()
 	if texts := unstableTexts(a); len(texts) != 0 {

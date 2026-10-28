@@ -447,7 +447,8 @@ func TestAddressAddedWhileCaddyIsDownWaitsWithIt(t *testing.T) {
 // ago next time, so none is left unchecked for good.
 func TestAddressPassesRotateThroughTheBudget(t *testing.T) {
 	f := newAddressFixture(t)
-	addressTimeout, addressBudget = 30*time.Millisecond, 50*time.Millisecond
+	// The first sixteen time out well inside the budget, the rest past it.
+	addressTimeout, addressBudget = 100*time.Millisecond, 150*time.Millisecond
 	addressDial = func(ctx context.Context, _, _ string) (net.Conn, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -472,7 +473,8 @@ func TestAddressPassesRotateThroughTheBudget(t *testing.T) {
 // under its own name and is rechecked every half hour.
 func TestStalledAddressIsItsOwnAlert(t *testing.T) {
 	f := newAddressFixture(t)
-	addressTimeout = 50 * time.Millisecond
+	// Long enough that the answered address never times out on a busy run.
+	addressTimeout = 250 * time.Millisecond
 	f.caddy.mu.Lock()
 	f.caddy.stalled = map[string]bool{addressApp: true}
 	f.caddy.mu.Unlock()

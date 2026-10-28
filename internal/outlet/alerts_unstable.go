@@ -2,7 +2,6 @@ package outlet
 
 import (
 	"context"
-	"iter"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,9 +18,16 @@ const (
 	// for a Connector that reports less often, missedBeats of its heartbeats.
 	reconnectGap = 15 * time.Second
 	missedBeats  = 2.5
-	// Reconnects of most tunnels this close together are the Outlet's side
-	// going away (Caddy restarting, the host's network), not the tunnels'.
+	// A shorter silence of quietBeats heartbeats or more, a missed one, shows
+	// a tunnel was touched by an outage too.
+	quietBeats = 1.6
+	// Tunnels that went quiet this close together were cut off by one
+	// outage: when that is most of them, the Outlet's side (Caddy
+	// restarting, the host's network), not each tunnel.
 	sharedWindow = 30 * time.Second
+	// judgeLimit bounds the comparisons of one round: beyond it, so many
+	// tunnels reconnect so often that it is the Outlet's side by any measure.
+	judgeLimit = 4_000_000
 	// maxTunnelEvents bounds what is kept per Connector and kind. An hour holds
 	// at most 240 reconnects, one for each reconnectGap, so only restarts a
 	// Connector reports in a burst are ever cut.
@@ -58,14 +64,20 @@ func (e *tunnelEvents) noteGap(id string, gap time.Duration) {
 	e.gaps[id] = gaps[max(0, len(gaps)-intervalSamples):]
 }
 
-// tunnelHistory is when one Connector reconnected and when its tunnel process
-// restarted, oldest first, each list holding the last hour at most.
+// silence is a stretch without heartbeats, from the last one before it to
+// the one that ended it, or to now while it lasts.
+type silence struct{ from, to time.Time }
+
+// tunnelHistory is one Connector's last hour, oldest first: the silences
+// long enough to be reconnects, the shorter quiet ones, and when its tunnel
+// process restarted.
 type tunnelHistory struct {
-	reconnects, restarts []time.Time
+	reconnects, quiet []silence
+	restarts          []time.Time
 }
 
-// recentEvents drops the events older than the window, then adds n at now, keeping
-// the newest maxTunnelEvents.
+// recentEvents drops the events older than the window, then adds n at now,
+// keeping the newest maxTunnelEvents.
 func recentEvents(events []time.Time, now time.Time, n int) []time.Time {
 	events = slices.DeleteFunc(events, func(at time.Time) bool { return now.Sub(at) >= unstableWindow })
 	for range min(n, maxTunnelEvents) {
@@ -77,28 +89,36 @@ func recentEvents(events []time.Time, now time.Time, n int) []time.Time {
 	return events
 }
 
-func (e *tunnelEvents) add(id string, now time.Time, reconnects, restarts int) {
+// recentSilences drops the silences that ended before the window, then adds
+// the ones given, keeping the newest maxTunnelEvents.
+func recentSilences(silences []silence, now time.Time, add ...silence) []silence {
+	silences = append(slices.DeleteFunc(silences, func(q silence) bool { return now.Sub(q.to) >= unstableWindow }), add...)
+	return silences[max(0, len(silences)-maxTunnelEvents):]
+}
+
+func (e *tunnelEvents) add(id string, now time.Time, reconnect, quiet []silence, restarts int) {
 	if e.byConnector == nil {
 		e.byConnector = map[string]tunnelHistory{}
 	}
 	history := e.byConnector[id]
-	history.reconnects, history.restarts = recentEvents(history.reconnects, now, reconnects), recentEvents(history.restarts, now, restarts)
+	history.reconnects = recentSilences(history.reconnects, now, reconnect...)
+	history.quiet = recentSilences(history.quiet, now, quiet...)
+	history.restarts = recentEvents(history.restarts, now, restarts)
 	e.byConnector[id] = history
 }
 
 // recent reports the events of the last hour, forgetting the older ones.
 func (e *tunnelEvents) recent(id string, now time.Time) tunnelHistory {
-	history, ok := e.byConnector[id]
-	if !ok {
+	if _, ok := e.byConnector[id]; !ok {
 		return tunnelHistory{}
 	}
-	history.reconnects, history.restarts = recentEvents(history.reconnects, now, 0), recentEvents(history.restarts, now, 0)
-	if len(history.reconnects)+len(history.restarts) == 0 {
+	e.add(id, now, nil, nil, 0)
+	history := e.byConnector[id]
+	if len(history.reconnects)+len(history.quiet)+len(history.restarts) == 0 {
 		delete(e.byConnector, id)
 		return tunnelHistory{}
 	}
-	e.byConnector[id] = history
-	return tunnelHistory{slices.Clone(history.reconnects), slices.Clone(history.restarts)}
+	return tunnelHistory{slices.Clone(history.reconnects), slices.Clone(history.quiet), slices.Clone(history.restarts)}
 }
 
 // recordTunnelEvents notes what an accepted heartbeat says about the
@@ -112,11 +132,15 @@ func (s *Store) recordTunnelEvents(id string, managed bool, previous Record, res
 		return
 	}
 	now := s.now()
-	var reconnects, restarted int
-	gap := now.Sub(previous.LastSeen)
-	if gap >= max(reconnectGap, time.Duration(missedBeats*float64(s.tunnelEvents.interval(id)))) {
-		reconnects = 1
-	} else if gap >= time.Second {
+	var reconnect, quiet []silence
+	var restarted int
+	gap, interval := now.Sub(previous.LastSeen), s.tunnelEvents.interval(id)
+	switch {
+	case gap >= max(reconnectGap, time.Duration(missedBeats*float64(interval))):
+		reconnect = []silence{{previous.LastSeen, now}}
+	case gap >= quietGap(interval):
+		quiet = []silence{{previous.LastSeen, now}}
+	case gap >= time.Second:
 		s.tunnelEvents.noteGap(id, gap)
 	}
 	// A lower count is the Connector starting over, an upgrade or a restart by
@@ -124,9 +148,19 @@ func (s *Store) recordTunnelEvents(id string, managed bool, previous Record, res
 	if previous.LastHeartbeat != nil && restarts > previous.LastHeartbeat.ProcessRestarts {
 		restarted = restarts - previous.LastHeartbeat.ProcessRestarts
 	}
-	if reconnects+restarted != 0 {
-		s.tunnelEvents.add(id, now, reconnects, restarted)
+	if len(reconnect)+len(quiet)+restarted != 0 {
+		s.tunnelEvents.add(id, now, reconnect, quiet, restarted)
 	}
+}
+
+// quietGap is the silence of a missed heartbeat at interval. While the
+// interval isn't known yet nothing short of a reconnect is told apart: the
+// gaps it is learned from would otherwise be taken for missed heartbeats.
+func quietGap(interval time.Duration) time.Duration {
+	if interval == 0 {
+		return reconnectGap
+	}
+	return time.Duration(quietBeats * float64(interval))
 }
 
 // unstableAlerts reports a tunnel that reconnected, or whose tunnel process
@@ -135,10 +169,7 @@ func (s *Store) recordTunnelEvents(id string, managed bool, previous Record, res
 func (s *Store) unstableAlerts(ctx context.Context, env alertEnv, now time.Time) error {
 	rule := env.rules.TunnelUnstable
 	if !rule.Enabled {
-		// What happened while the rule was off isn't counted once it is on.
-		s.mu.Lock()
-		s.tunnelEvents.byConnector = nil
-		s.mu.Unlock()
+		s.alerts.unstableOff = true
 		return nil
 	}
 	connectors, err := s.control.ListConnectors(ctx)
@@ -149,13 +180,12 @@ func (s *Store) unstableAlerts(ctx context.Context, env alertEnv, now time.Time)
 		connector            control.Connector
 		reconnects, restarts int
 	}
-	type tracked struct {
-		connector control.Connector
-		history   tunnelHistory
-	}
-	var tunnels []tracked
-	live := 0
+	var tunnels []trackedTunnel
 	s.mu.Lock()
+	// What happened while the rule or alerts were off isn't counted.
+	if s.alerts.unstableOff {
+		s.tunnelEvents.byConnector = nil
+	}
 	for id := range s.tunnelEvents.byConnector {
 		// A deleted tunnel's events would otherwise stay for good.
 		if _, ok := s.managed[id]; !ok {
@@ -172,28 +202,28 @@ func (s *Store) unstableAlerts(ctx context.Context, env alertEnv, now time.Time)
 		if !ok || !record.Enrolled {
 			continue
 		}
-		// Tunnels long offline can't share a reconnect, so they don't count
-		// toward the majority that makes one the Outlet's.
-		if !record.LastSeen.IsZero() && now.Sub(record.LastSeen) < unstableWindow {
-			live++
+		history := s.tunnelEvents.recent(c.ID, now)
+		silences := append(slices.Clone(history.reconnects), history.quiet...)
+		// A silence under way counts too: a tunnel still cut off by the
+		// outage another came back from.
+		if !record.LastSeen.IsZero() && now.Sub(record.LastSeen) >= quietGap(s.tunnelEvents.interval(c.ID)) {
+			silences = append(silences, silence{record.LastSeen, now})
 		}
-		tunnels = append(tunnels, tracked{c, s.tunnelEvents.recent(c.ID, now)})
+		slices.SortFunc(silences, func(a, b silence) int { return a.from.Compare(b.from) })
+		seen := !record.LastSeen.IsZero() && now.Sub(record.LastSeen) < unstableWindow
+		tunnels = append(tunnels, trackedTunnel{c, history, silences, seen})
 	}
 	s.mu.Unlock()
-	shared := sharedReconnects(func(yield func(int, []time.Time) bool) {
-		for i, t := range tunnels {
-			if !yield(i, t.history.reconnects) {
-				return
-			}
-		}
-	}, max(2, live/2+1))
+	s.alerts.unstableOff = false
+	judged := 0
+	for _, t := range tunnels {
+		judged += len(t.history.reconnects) * len(tunnels)
+	}
 	var found []unstable
 	for i, t := range tunnels {
 		reconnects := 0
-		for _, at := range t.history.reconnects {
-			// A reconnect is judged once the others have had time to come
-			// back too.
-			if now.Sub(at) >= sharedWindow && !shared[i][at] {
+		for _, r := range t.history.reconnects {
+			if judged <= judgeLimit && !sharedOutage(tunnels, i, r) {
 				reconnects++
 			}
 		}
@@ -215,49 +245,36 @@ func (s *Store) unstableAlerts(ctx context.Context, env alertEnv, now time.Time)
 	return nil
 }
 
-// sharedReconnects finds, for each tunnel, its reconnects that at least
-// quorum tunnels (it among them) had within sharedWindow of each other: the
-// Outlet's side going away, not the tunnel's. One sorted sweep keeps this
-// cheap with many tunnels flapping together.
-func sharedReconnects(tunnels iter.Seq2[int, []time.Time], quorum int) map[int]map[time.Time]bool {
-	type stamp struct {
-		at     time.Time
-		tunnel int
-	}
-	var all []stamp
-	count := 0
-	for i, reconnects := range tunnels {
-		count = max(count, i+1)
-		for _, at := range reconnects {
-			all = append(all, stamp{at, i})
+// trackedTunnel is what a round knows of one tunnel: its last hour, its
+// silences (reconnects, quiet ones and the one under way) by start, and
+// whether it was heard from at all in the hour.
+type trackedTunnel struct {
+	connector control.Connector
+	history   tunnelHistory
+	silences  []silence
+	seen      bool
+}
+
+// sharedOutage tells whether reconnect r of tunnel i was the Outlet's side
+// going away: most of the tunnels that could have noticed (heard from in
+// the hour, and not cut off already) went quiet within sharedWindow of it.
+func sharedOutage(tunnels []trackedTunnel, i int, r silence) bool {
+	together, steady := 1, 0
+	for j, t := range tunnels {
+		if j == i || !t.seen {
+			continue
+		}
+		k, _ := slices.BinarySearchFunc(t.silences, r.from.Add(-sharedWindow), func(q silence, at time.Time) int { return q.from.Compare(at) })
+		switch {
+		case k < len(t.silences) && !t.silences[k].from.After(r.from.Add(sharedWindow)):
+			together++
+		case k > 0 && t.silences[k-1].to.After(r.from):
+			// Already cut off before it: it couldn't tell either way.
+		default:
+			steady++
 		}
 	}
-	slices.SortFunc(all, func(a, b stamp) int { return a.at.Compare(b.at) })
-	shared := map[int]map[time.Time]bool{}
-	mark := make([]int, count)
-	lo, hi := 0, 0
-	for k, e := range all {
-		for all[lo].at.Before(e.at.Add(-sharedWindow)) {
-			lo++
-		}
-		for hi < len(all) && !all[hi].at.After(e.at.Add(sharedWindow)) {
-			hi++
-		}
-		together := 0
-		for _, o := range all[lo:hi] {
-			if mark[o.tunnel] != k+1 {
-				mark[o.tunnel] = k + 1
-				together++
-			}
-		}
-		if together >= quorum {
-			if shared[e.tunnel] == nil {
-				shared[e.tunnel] = map[time.Time]bool{}
-			}
-			shared[e.tunnel][e.at] = true
-		}
-	}
-	return shared
+	return together >= 2 && 2*together > together+steady
 }
 
 // tunnelUnstableNotice counts what happened in the last hour, leaving out

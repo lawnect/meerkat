@@ -32,6 +32,9 @@ type alertState struct {
 	// serviceDownSince is when each service was first seen not serving.
 	serviceDownSince map[string]time.Time
 	lastDNS          time.Time
+	// unstableOff is that the unstable tunnel rule, or alerts, were off last
+	// round, so it starts afresh when they are switched on.
+	unstableOff bool
 	// Each of these belongs to the rule in its own file.
 	latency latencyAlertState
 	address addressAlertState
@@ -99,10 +102,7 @@ func (s *Store) evaluateAlerts(ctx context.Context) {
 	}
 	if !ok {
 		// Nothing is timed or counted while alerts are off.
-		s.alerts.downSince, s.alerts.serviceDownSince = nil, nil
-		s.mu.Lock()
-		s.tunnelEvents.byConnector = nil
-		s.mu.Unlock()
+		s.alerts.downSince, s.alerts.serviceDownSince, s.alerts.unstableOff = nil, nil, true
 		return
 	}
 	now := s.now()
