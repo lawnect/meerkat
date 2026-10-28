@@ -19,21 +19,19 @@ const (
 	// use the last result.
 	addressInterval = 5 * time.Minute
 	addressWorkers  = 16
-	// addressBudget bounds one pass, so a Caddy that hangs can't use up the
-	// round the other rules share.
-	addressBudget = 20 * time.Second
 	// A new address gets its first certificate on the first handshake, which
 	// can outlast the check, so one failure proves nothing.
 	addressFailures = 2
 	// Caddy renews with a third of the lifetime left (30 days of 90), so a
-	// certificate this close to its end means renewal isn't happening.
+	// certificate this close to its end means renewal isn't happening. A
+	// shorter-lived certificate is warned about at a sixth of its lifetime.
 	addressExpiryWindow = 14 * 24 * time.Hour
 	// Checks further apart than this aren't consecutive: alerts were off.
 	addressStale = 3 * addressInterval
-	// An address already alerted because Caddy had no certificate to show is
-	// checked this often instead. Caddy gets certificates on demand, so each
-	// of those checks can be one more failed ACME validation, and Let's
-	// Encrypt allows five an hour per name.
+	// An address already alerted while Caddy answered is checked this often
+	// instead. Caddy gets and renews certificates on demand, in the
+	// handshake, so each of those checks can be one more failed ACME
+	// validation, and Let's Encrypt allows five an hour per name.
 	addressRetryInterval = 30 * time.Minute
 )
 
@@ -49,7 +47,10 @@ var (
 		return (&net.Dialer{}).DialContext(ctx, "tcp", address)
 	}
 	addressTimeout = 10 * time.Second
-	addressRoots   *x509.CertPool
+	// addressBudget bounds one pass, so a Caddy that hangs can't use up the
+	// round the other rules share.
+	addressBudget = 20 * time.Second
+	addressRoots  *x509.CertPool
 )
 
 // addressAlertState is the address check's, kept between rounds.
@@ -64,10 +65,10 @@ type addressCheck struct {
 	problem string
 	// failed counts the consecutive checks that did not.
 	failed int
-	// reached is whether Caddy answered, certless whether it then showed no
-	// certificate (it may be trying to get one), at when the check ran.
-	reached, certless bool
-	at                time.Time
+	// caddyFault is that Caddy didn't answer: no connection, or no reply to
+	// the handshake. at is when the check ran.
+	caddyFault bool
+	at         time.Time
 }
 
 func (s *Store) routeAlerts(ctx context.Context, env alertEnv, now time.Time) error {
@@ -119,16 +120,23 @@ func (s *Store) addressConditions(ctx context.Context, now time.Time, healthy, h
 	// Caddy itself out of reach fails every address the same way: one alert
 	// says so, and the addresses' own stay as they are.
 	caddyKey := "route_error:caddy"
-	switch reached, down := caddyReach(state.checks, hostnames); {
+	switch answered, down := caddyAnswer(state.checks, hostnames, state.lastCheck); {
 	case down:
 		for _, hostname := range hostnames {
 			held["route_error:tls:"+hostname] = true
 		}
-		problem := state.checks[hostnames[0]].problem
-		return []condition{{caddyKey, "Caddy", caddyDownNotice(caddyHTTPSAddress(s.config.CaddyMetrics), problem)}}, nil
-	case reached:
+		var problem string
+		for _, hostname := range hostnames {
+			if check := state.checks[hostname]; check.at.Equal(state.lastCheck) {
+				problem = check.problem
+				break
+			}
+		}
+		caddy := caddyHTTPSAddress(s.config.CaddyMetrics)
+		return []condition{{caddyKey, caddy, caddyDownNotice(caddy, problem)}}, nil
+	case answered:
 		healthy[caddyKey] = true
-	default:
+	case len(hostnames) != 0:
 		held[caddyKey] = true
 	}
 	var active []condition
@@ -151,16 +159,20 @@ func (s *Store) addressConditions(ctx context.Context, now time.Time, healthy, h
 	return active, nil
 }
 
-// caddyReach tells whether Caddy answered any address at the last checks,
-// and whether every address has failed for want of reaching it.
-func caddyReach(checks map[string]addressCheck, hostnames []string) (reached, down bool) {
-	down = len(hostnames) != 0
+// caddyAnswer tells, from the addresses checked in the last pass, whether
+// Caddy answered any, and whether it is down: it answered none, and one of
+// them has gone unanswered on consecutive checks (an address added since is
+// on its first). An address the pass skipped tells nothing about Caddy now.
+func caddyAnswer(checks map[string]addressCheck, hostnames []string, pass time.Time) (answered, down bool) {
 	for _, hostname := range hostnames {
 		check, checked := checks[hostname]
-		reached = reached || checked && check.reached
-		down = down && checked && !check.reached && check.failed >= addressFailures
+		if !checked || !check.at.Equal(pass) {
+			continue
+		}
+		answered = answered || !check.caddyFault
+		down = down || check.caddyFault && check.failed >= addressFailures
 	}
-	return reached, down
+	return answered, down && !answered
 }
 
 // checkAddresses handshakes the hostnames that are due and records the
@@ -174,11 +186,14 @@ func (s *Store) checkAddresses(ctx context.Context, hostnames []string, now time
 	state.lastCheck = now
 	var due []string
 	for _, hostname := range hostnames {
-		if check, ok := previous[hostname]; ok && check.certless && check.failed >= addressFailures && now.Sub(check.at) < addressRetryInterval {
+		if check, ok := previous[hostname]; ok && !check.caddyFault && check.failed >= addressFailures && now.Sub(check.at) < addressRetryInterval {
 			continue
 		}
 		due = append(due, hostname)
 	}
+	// The longest unchecked go first, so a pass the budget cuts short still
+	// gets to every address in turn.
+	slices.SortStableFunc(due, func(a, b string) int { return previous[a].at.Compare(previous[b].at) })
 	call, cancel := context.WithTimeout(ctx, addressBudget)
 	defer cancel()
 	results := s.probeAddresses(call, due, now)
@@ -190,7 +205,7 @@ func (s *Store) checkAddresses(ctx context.Context, hostnames []string, now time
 			if result.problem != "" {
 				failed = check.failed + 1
 			}
-			check, known = addressCheck{result.problem, failed, result.reached, result.certless, now}, true
+			check, known = addressCheck{result.problem, failed, result.caddyFault, now}, true
 		}
 		if known {
 			next[hostname] = check
@@ -200,8 +215,8 @@ func (s *Store) checkAddresses(ctx context.Context, hostnames []string, now time
 }
 
 type addressResult struct {
-	problem           string
-	reached, certless bool
+	problem    string
+	caddyFault bool
 }
 
 // probeAddresses runs the handshakes a few at a time. The ones that ctx cut
@@ -247,20 +262,21 @@ func probeAddress(ctx context.Context, address, hostname string, now time.Time) 
 	defer cancel()
 	conn, err := addressDial(call, address)
 	if err != nil {
-		return addressResult{problem: "Can't connect to Caddy: " + failureReason(err)}
+		return addressResult{problem: "Can't connect to Caddy: " + failureReason(err), caddyFault: true}
 	}
 	defer conn.Close()
 	client := tls.Client(conn, &tls.Config{ServerName: hostname, RootCAs: addressRoots, MinVersion: tls.VersionTLS12, Time: func() time.Time { return now }})
 	if err := client.HandshakeContext(call); err != nil {
-		// A certificate that fails verification was shown; anything else
-		// ended the handshake before one was.
-		var verification *tls.CertificateVerificationError
-		return addressResult{problem: addressProblem(err), reached: true, certless: !errors.As(err, &verification)}
+		// No reply at all is Caddy's fault, not this address's.
+		var timeout net.Error
+		silent := errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout()
+		return addressResult{problem: addressProblem(err), caddyFault: silent}
 	}
-	if end := client.ConnectionState().PeerCertificates[0].NotAfter; end.Sub(now) < addressExpiryWindow {
-		return addressResult{problem: "Certificate expires " + end.UTC().Format("2006-01-02") + " (in " + daysLeft(end.Sub(now)) + ")", reached: true}
+	cert := client.ConnectionState().PeerCertificates[0]
+	if left := cert.NotAfter.Sub(now); left < min(addressExpiryWindow, cert.NotAfter.Sub(cert.NotBefore)/6) {
+		return addressResult{problem: "Certificate expires " + cert.NotAfter.UTC().Format("2006-01-02") + " (in " + daysLeft(left) + ")"}
 	}
-	return addressResult{reached: true}
+	return addressResult{}
 }
 
 func daysLeft(d time.Duration) string {

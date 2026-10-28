@@ -76,8 +76,8 @@ Tunnel: <code>home-server</code>
 Alerted: 2026-10-26 14:07 UTC
 Open for: 12 min
 <a href="https://k7m2x9qa.example.com/connectors/m_abc">Open in Meerkat</a>`},
-		{"route_error", `🟢 <b>Route error cleared</b>
-Route: <code>home-server</code>
+		{"route_error", `🟢 <b>Public address recovered</b>
+Address: <code>home-server</code>
 Alerted: 2026-10-26 14:07 UTC
 Open for: 12 min
 <a href="https://k7m2x9qa.example.com/connectors/m_abc">Open in Meerkat</a>`},

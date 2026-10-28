@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"strings"
@@ -131,11 +132,12 @@ func (c *fakeCaddy) dial(ctx context.Context, address string) (net.Conn, error) 
 // serve gives name a certificate for itself that ends at notAfter.
 func (c *fakeCaddy) serve(name string, notAfter time.Time) { c.serveAs(name, name, notAfter) }
 
-// serveAs gives the ClientHello name a certificate issued for another name.
+// serveAs gives the ClientHello name a 90-day certificate issued for
+// another name.
 func (c *fakeCaddy) serveAs(name, issuedFor string, notAfter time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.certs[name] = c.ca.issue(issuedFor, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), notAfter)
+	c.certs[name] = c.ca.issue(issuedFor, notAfter.Add(-90*24*time.Hour), notAfter)
 }
 
 func (c *fakeCaddy) remove(name string) {
@@ -159,9 +161,9 @@ func (c *fakeCaddy) dials() []string {
 // useAddressCaddy points the address check at c for one test.
 func useAddressCaddy(t *testing.T, c *fakeCaddy) {
 	t.Helper()
-	dial, roots, timeout := addressDial, addressRoots, addressTimeout
+	dial, roots, timeout, budget := addressDial, addressRoots, addressTimeout, addressBudget
 	addressDial, addressRoots = c.dial, c.ca.pool
-	t.Cleanup(func() { addressDial, addressRoots, addressTimeout = dial, roots, timeout })
+	t.Cleanup(func() { addressDial, addressRoots, addressTimeout, addressBudget = dial, roots, timeout, budget })
 }
 
 // Tests that don't care about the public addresses meet a Caddy that serves
@@ -284,7 +286,7 @@ func TestFailingAddressAlertsOnTheSecondCheck(t *testing.T) {
 	}
 	f.next()
 	texts := f.texts()
-	if len(texts) != 2 || !strings.HasPrefix(texts[1], "🟢 <b>Route error cleared</b>\nRoute: <code>app.example.com</code>\nAlerted: 2026-10-26 14:05 UTC\nOpen for: 31 min") {
+	if len(texts) != 2 || !strings.HasPrefix(texts[1], "🟢 <b>Public address recovered</b>\nAddress: <code>app.example.com</code>\nAlerted: 2026-10-26 14:05 UTC\nOpen for: 31 min") {
 		t.Fatalf("recovery = %q", texts)
 	}
 	if events := f.events(t, "route_error"); events[0].ResolvedAt == nil {
@@ -334,7 +336,7 @@ func TestUnreachableCaddyAlertsOnce(t *testing.T) {
 	if texts := f.texts(); len(texts) != 1 || texts[0] != want {
 		t.Fatalf("messages = %q", texts)
 	}
-	if events := f.events(t, "route_error"); len(events) != 1 || events[0].Key != "route_error:caddy" || events[0].Subject != "Caddy" {
+	if events := f.events(t, "route_error"); len(events) != 1 || events[0].Key != "route_error:caddy" || events[0].Subject != "caddy:443" {
 		t.Fatalf("events = %+v", events)
 	}
 	// Still unreachable, it is checked every 5 minutes, without more alerts.
@@ -347,11 +349,111 @@ func TestUnreachableCaddyAlertsOnce(t *testing.T) {
 	addressDial = reach
 	f.next()
 	texts := f.texts()
-	if len(texts) != 2 || !strings.HasPrefix(texts[1], "🟢 <b>Route error cleared</b>\nRoute: <code>Caddy</code>") {
+	if len(texts) != 2 || !strings.HasPrefix(texts[1], "🟢 <b>Caddy answering again</b>\nCaddy: <code>caddy:443</code>") {
 		t.Fatalf("recovery = %q", texts)
 	}
 	if events := f.events(t, "route_error"); len(events) != 1 || events[0].ResolvedAt == nil {
 		t.Fatalf("events = %+v", events)
+	}
+}
+
+// An address skipped for its half-hourly recheck says nothing about Caddy
+// now: when Caddy then stops answering, that is still one alert.
+func TestCaddyAlertJudgesOnlyTheAddressesJustChecked(t *testing.T) {
+	f := newAddressFixture(t)
+	f.caddy.remove(addressApp)
+	f.evaluate()
+	f.next()
+	if len(f.telegram.messages()) != 1 {
+		t.Fatalf("messages = %q", f.texts())
+	}
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed.Close()
+	addressDial = func(ctx context.Context, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", closed.Addr().String())
+	}
+	f.next()
+	f.next()
+	texts := f.texts()
+	if len(texts) != 2 || !strings.HasPrefix(texts[1], "🔴 <b>Public addresses failing</b>\nCaddy: <code>caddy:443</code>") {
+		t.Fatalf("messages = %q", texts)
+	}
+	if events := f.events(t, "route_error"); len(events) != 2 || events[0].Key != "route_error:caddy" || events[1].Key != "route_error:tls:"+addressApp || events[1].ResolvedAt != nil {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+// A Caddy that takes connections but never answers the handshake is as down
+// as one that refuses them, and is checked every 5 minutes.
+func TestHungCaddyAlertsOnce(t *testing.T) {
+	f := newAddressFixture(t)
+	addressTimeout = 50 * time.Millisecond
+	reach := addressDial
+	addressDial = func(context.Context, string) (net.Conn, error) {
+		client, server := net.Pipe()
+		t.Cleanup(func() { server.Close() })
+		return client, nil
+	}
+	f.evaluate()
+	f.next()
+	if texts := f.texts(); len(texts) != 1 || !strings.Contains(texts[0], "Problem: TLS handshake failed: timed out") || len(f.events(t, "route_error")) != 1 {
+		t.Fatalf("messages = %q", texts)
+	}
+	addressDial = reach
+	f.next()
+	if texts := f.texts(); len(texts) != 2 || !strings.HasPrefix(texts[1], "🟢 <b>Caddy answering again</b>\nCaddy: <code>caddy:443</code>") {
+		t.Fatalf("recovery = %q", texts)
+	}
+}
+
+// An address added while Caddy is down is on its first failed check: it
+// doesn't undo the one Caddy alert into one per address.
+func TestAddressAddedWhileCaddyIsDownWaitsWithIt(t *testing.T) {
+	f := newAddressFixture(t)
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed.Close()
+	addressDial = func(ctx context.Context, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", closed.Addr().String())
+	}
+	f.evaluate()
+	f.next()
+	if _, err := f.db.CreateHTTPRoute(context.Background(), f.service.ID, "new.example.com", false); err != nil {
+		t.Fatal(err)
+	}
+	f.next()
+	f.next()
+	if events := f.events(t, "route_error"); len(f.telegram.messages()) != 1 || len(events) != 1 || events[0].Key != "route_error:caddy" {
+		t.Fatalf("messages = %q, events = %+v", f.texts(), events)
+	}
+}
+
+// A pass the budget cuts short starts from the addresses checked longest
+// ago next time, so none is left unchecked for good.
+func TestAddressPassesRotateThroughTheBudget(t *testing.T) {
+	f := newAddressFixture(t)
+	addressTimeout, addressBudget = 30*time.Millisecond, 50*time.Millisecond
+	addressDial = func(ctx context.Context, _ string) (net.Conn, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	var hostnames []string
+	for i := range addressWorkers + 4 {
+		hostnames = append(hostnames, fmt.Sprintf("h%02d.example.com", i))
+	}
+	f.store.checkAddresses(context.Background(), hostnames, f.clock.now())
+	if checked := len(f.store.alerts.address.checks); checked == len(hostnames) {
+		t.Fatalf("the first pass wasn't cut short: %d checked", checked)
+	}
+	f.clock.advance(addressInterval)
+	f.store.checkAddresses(context.Background(), hostnames, f.clock.now())
+	if checked := len(f.store.alerts.address.checks); checked != len(hostnames) {
+		t.Fatalf("after two passes %d of %d addresses were checked", checked, len(hostnames))
 	}
 }
 
@@ -397,9 +499,17 @@ func TestExpiringCertificateAlerts(t *testing.T) {
 	if texts := f.texts(); len(texts) != 1 || texts[0] != want {
 		t.Fatalf("messages = %q", texts)
 	}
+	// A handshake inside the renewal window renews on demand, so the alerted
+	// address is checked every half hour too.
 	f.caddy.serve(addressApp, f.in(60*24*time.Hour))
+	for range 5 {
+		f.next()
+	}
+	if len(f.telegram.messages()) != 1 {
+		t.Fatalf("rechecked before half an hour: %q", f.texts())
+	}
 	f.next()
-	if texts := f.texts(); len(texts) != 2 || !strings.HasPrefix(texts[1], "🟢 <b>Route error cleared</b>") {
+	if texts := f.texts(); len(texts) != 2 || !strings.HasPrefix(texts[1], "🟢 <b>Public address recovered</b>") {
 		t.Fatalf("recovery = %q", texts)
 	}
 }
@@ -534,7 +644,7 @@ func TestOpenAlertSurvivesTheFirstCheckAfterARestart(t *testing.T) {
 	f.store.alerts.address = addressAlertState{}
 	f.caddy.serve(addressApp, f.in(60*24*time.Hour))
 	f.next()
-	if texts := f.texts(); len(texts) != 2 || !strings.HasPrefix(texts[1], "🟢 <b>Route error cleared</b>") {
+	if texts := f.texts(); len(texts) != 2 || !strings.HasPrefix(texts[1], "🟢 <b>Public address recovered</b>") {
 		t.Fatalf("recovery = %q", texts)
 	}
 }
@@ -565,7 +675,7 @@ func TestRouteLastErrorStillAlertsBesideTheAddressCheck(t *testing.T) {
 	f.clock.advance(time.Minute)
 	f.evaluate()
 	texts := f.texts()
-	if len(texts) != 3 || !strings.HasPrefix(texts[2], "🟢 <b>Route error cleared</b>\nRoute: <code>app.example.com</code>") {
+	if len(texts) != 3 || !strings.HasPrefix(texts[2], "🟢 <b>Public address recovered</b>\nAddress: <code>app.example.com</code>") {
 		t.Fatalf("recovery = %q", texts)
 	}
 	open := 0
@@ -594,6 +704,9 @@ func TestProbeAddressProblems(t *testing.T) {
 	f.caddy.serveAs("wrong.example.com", "other.example.com", now.Add(60*day))
 	f.caddy.mu.Lock()
 	f.caddy.certs["strange.example.com"] = other.issue("strange.example.com", now.Add(-day), now.Add(60*day))
+	// 45-day certificates are warned about at a sixth of that, 7.5 days.
+	f.caddy.certs["short.example.com"] = f.caddy.ca.issue("short.example.com", now.Add(-35*day), now.Add(10*day))
+	f.caddy.certs["shorter.example.com"] = f.caddy.ca.issue("shorter.example.com", now.Add(-38*day), now.Add(7*day))
 	f.caddy.mu.Unlock()
 
 	for hostname, want := range map[string]string{
@@ -604,9 +717,11 @@ func TestProbeAddressProblems(t *testing.T) {
 		"wrong.example.com":   "Certificate isn't valid for this address",
 		"strange.example.com": "Certificate isn't trusted",
 		"none.example.com":    "TLS handshake failed: tls: internal error",
+		"short.example.com":   "",
+		"shorter.example.com": "Certificate expires 2026-11-02 (in 7 days)",
 	} {
-		// Only an address with no certificate to show leaves certless set.
-		if got := probeAddress(context.Background(), "caddy:443", hostname, now); got.problem != want || !got.reached || got.certless != (hostname == "none.example.com") {
+		// Caddy answered every one of them.
+		if got := probeAddress(context.Background(), "caddy:443", hostname, now); got != (addressResult{problem: want}) {
 			t.Errorf("%s: %+v, want problem %q", hostname, got, want)
 		}
 	}
@@ -624,7 +739,7 @@ func TestProbeAddressUnreachableAndSlow(t *testing.T) {
 	addressDial = func(ctx context.Context, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", closed.Addr().String())
 	}
-	if got := probeAddress(context.Background(), "caddy:443", addressApp, now); got != (addressResult{problem: "Can't connect to Caddy: connection refused"}) {
+	if got := probeAddress(context.Background(), "caddy:443", addressApp, now); got != (addressResult{problem: "Can't connect to Caddy: connection refused", caddyFault: true}) {
 		t.Errorf("refused: %+v", got)
 	}
 
@@ -633,7 +748,7 @@ func TestProbeAddressUnreachableAndSlow(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
-	if got := probeAddress(context.Background(), "caddy:443", addressApp, now); got != (addressResult{problem: "Can't connect to Caddy: timed out"}) {
+	if got := probeAddress(context.Background(), "caddy:443", addressApp, now); got != (addressResult{problem: "Can't connect to Caddy: timed out", caddyFault: true}) {
 		t.Errorf("no connection: %+v", got)
 	}
 	// Connected, but Caddy never answers the ClientHello.
@@ -642,7 +757,7 @@ func TestProbeAddressUnreachableAndSlow(t *testing.T) {
 		t.Cleanup(func() { server.Close() })
 		return client, nil
 	}
-	if got := probeAddress(context.Background(), "caddy:443", addressApp, now); got != (addressResult{problem: "TLS handshake failed: timed out", reached: true, certless: true}) {
+	if got := probeAddress(context.Background(), "caddy:443", addressApp, now); got != (addressResult{problem: "TLS handshake failed: timed out", caddyFault: true}) {
 		t.Errorf("no answer: %+v", got)
 	}
 }
