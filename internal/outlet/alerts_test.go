@@ -558,30 +558,38 @@ func (a alertFixture) setUsage(t *testing.T, hour time.Time, requests, failed in
 	}
 }
 
-func TestErrorSpikeWaitsForHalfTheHour(t *testing.T) {
+// The hour under way is judged as it would end if no more requests failed:
+// a job failing the first requests of the hour doesn't page, failures that
+// already sink the whole hour do, before it ends.
+func TestErrorSpikeJudgesTheHourUnderWayAsItWouldEnd(t *testing.T) {
 	a := newAlertFixture(t)
 	a.configureTelegram(t, false)
-	a.setUsage(t, time.Date(2026, 10, 26, 14, 0, 0, 0, time.UTC), 200, 100)
+	hour := time.Date(2026, 10, 26, 14, 0, 0, 0, time.UTC)
+	a.setUsage(t, hour, 200, 100)
 	a.evaluate()
-	a.clock.advance(29 * time.Minute)
-	a.evaluate()
-	if len(a.telegram.messages()) != 0 {
-		t.Fatalf("judged the hour in its first half: %q", a.texts())
-	}
 	a.clock.advance(time.Minute)
 	a.evaluate()
-	if len(a.telegram.messages()) != 1 {
-		t.Fatalf("messages = %q", a.texts())
+	a.clock.advance(29 * time.Minute) // 14:30
+	a.setUsage(t, hour, 6200, 100)
+	a.evaluate()
+	if len(a.telegram.messages()) != 0 {
+		t.Fatalf("a failing start paged: %q", a.texts())
+	}
+	// 700 of the 12400 the hour should bring is over 5%.
+	a.setUsage(t, hour, 6200, 700)
+	a.evaluate()
+	if texts := a.texts(); len(texts) != 1 || !strings.Contains(texts[0], "Error rate: 11.3% (700 of 6200 requests)") {
+		t.Fatalf("messages = %q", texts)
 	}
 }
 
 func TestErrorSpikeAlertsOncePerHour(t *testing.T) {
 	a := newAlertFixture(t)
 	a.configureTelegram(t, false)
-	a.clock.advance(30 * time.Minute) // 14:30
+	a.clock.advance(time.Hour) // 15:00: the hour of 14:00 has ended
 	thisHour := time.Date(2026, 10, 26, 14, 0, 0, 0, time.UTC)
-	a.setUsage(t, thisHour, 200, 9)                 // 4.5%: below the threshold
-	a.setUsage(t, thisHour.Add(-time.Hour), 49, 49) // too few requests
+	a.setUsage(t, thisHour, 200, 9)                // 4.5%: below the threshold
+	a.setUsage(t, thisHour.Add(time.Hour), 49, 49) // too few requests
 	a.evaluate()
 	if len(a.telegram.messages()) != 0 {
 		t.Fatalf("alerted without a spike: %q", a.texts())
@@ -599,7 +607,7 @@ func TestErrorSpikeAlertsOncePerHour(t *testing.T) {
 		t.Fatalf("events = %+v", events)
 	}
 
-	// The next hour still looks back at the spiked one, without repeating it.
+	// The next hour, once ended, alerts on its own; the first isn't repeated.
 	a.clock.advance(time.Hour)
 	a.setUsage(t, thisHour.Add(time.Hour), 100, 50)
 	a.evaluate()
@@ -612,7 +620,8 @@ func TestErrorSpikeAlertsOncePerHour(t *testing.T) {
 func TestErrorSpikeRespectsItsRule(t *testing.T) {
 	a := newAlertFixture(t)
 	a.configureTelegram(t, false)
-	a.setUsage(t, a.clock.now().Truncate(time.Hour), 1000, 900)
+	a.clock.advance(time.Hour)
+	a.setUsage(t, a.clock.now().Truncate(time.Hour).Add(-time.Hour), 1000, 900)
 	a.setRules(t, func(r *control.AlertRules) { r.ErrorSpike.Enabled = false })
 	a.evaluate()
 	a.setRules(t, func(r *control.AlertRules) {

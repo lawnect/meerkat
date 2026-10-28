@@ -24,10 +24,6 @@ const (
 	spikeCooldown = 2 * time.Hour
 	// An alert that could not be delivered is retried for this long.
 	retryWindow = time.Hour
-	// The hour under way is judged by the hourly rules once this much of it
-	// has passed: its first minutes alone, a job at the top of the hour say,
-	// aren't the hour.
-	hourJudged = 30 * time.Minute
 )
 
 // alertState belongs to the evaluator goroutine alone.
@@ -367,14 +363,18 @@ func (s *Store) spikeAlerts(ctx context.Context, env alertEnv, now time.Time) er
 		return err
 	}
 	for _, bucket := range series.Buckets {
-		if bucket.Requests < int64(rule.MinRequests) || float64(bucket.ErrorResponses)*100 < rule.ThresholdPercent*float64(bucket.Requests) {
-			continue
-		}
 		start, err := time.Parse(time.RFC3339, bucket.Start)
 		if err != nil {
 			return err
 		}
-		if start.Equal(hour) && now.Sub(hour) < hourJudged {
+		// The hour under way is judged as it would end if no more requests
+		// failed, so a minute of failures at its top, a job say, doesn't page
+		// unless it already sinks the whole hour.
+		requests := float64(bucket.Requests)
+		if elapsed := now.Sub(start); start.Equal(hour) && elapsed < time.Hour {
+			requests *= float64(time.Hour) / float64(max(elapsed, time.Minute))
+		}
+		if bucket.Requests < int64(rule.MinRequests) || float64(bucket.ErrorResponses)*100 < rule.ThresholdPercent*requests {
 			continue
 		}
 		n := errorSpikeNotice(start, bucket.ErrorResponses, bucket.Requests)

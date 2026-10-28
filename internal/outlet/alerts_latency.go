@@ -46,12 +46,8 @@ func (s *Store) latencyAlerts(ctx context.Context, env alertEnv, now time.Time) 
 		return nil
 	}
 	current := now.UTC().Truncate(time.Hour)
-	hours := []time.Time{current.Add(-time.Hour)}
-	if now.Sub(current) >= hourJudged {
-		hours = append(hours, current)
-	}
 	for _, watched := range latencyKinds {
-		for _, hour := range hours {
+		for _, hour := range []time.Time{current.Add(-time.Hour), current} {
 			if err := s.latencyHourAlert(ctx, env, watched.kind, watched.where, watched.floorMS, hour, now); err != nil {
 				return err
 			}
@@ -71,7 +67,14 @@ func (s *Store) latencyHourAlert(ctx context.Context, env alertEnv, kind, where 
 		return err
 	}
 	p95, usualP95 := hourly.Stats().P95MS, usual.Stats().P95MS
-	if p95 < usualP95*(1+rule.IncreasePercent/100) || p95-usualP95 < floorMS {
+	// The hour under way is judged as it would end if the rest of it went as
+	// usual, so a slow minute at its top, a job say, doesn't page unless it
+	// already slows the whole hour.
+	judged := p95
+	if elapsed := now.Sub(hour); elapsed < time.Hour {
+		judged = projectHour(hourly, usual, max(elapsed, time.Minute)).Stats().P95MS
+	}
+	if judged < usualP95*(1+rule.IncreasePercent/100) || judged-usualP95 < floorMS {
 		return nil
 	}
 	n := slowResponsesNotice(where, hour, p95, usualP95, hourly.Count)
@@ -83,6 +86,23 @@ func (s *Store) latencyHourAlert(ctx context.Context, env alertEnv, kind, where 
 		s.deliver(ctx, env, e.ID, n)
 	}
 	return nil
+}
+
+// projectHour is an hour elapsed into its course as it would end if the
+// rest went as usual: its latencies so far, and the usual ones scaled to the
+// requests the rest of the hour would bring at its pace so far.
+func projectHour(sofar, usual control.LatencyHistogram, elapsed time.Duration) control.LatencyHistogram {
+	if usual.Count == 0 {
+		return sofar
+	}
+	scale := float64(sofar.Count) * float64(time.Hour-elapsed) / float64(elapsed) / float64(usual.Count)
+	projected := sofar
+	projected.Count += int64(math.Round(float64(usual.Count) * scale))
+	projected.SumUS += int64(math.Round(float64(usual.SumUS) * scale))
+	for i, n := range usual.Buckets {
+		projected.Buckets[i] += int64(math.Round(float64(n) * scale))
+	}
+	return projected
 }
 
 // latencyText reads a latency in milliseconds: "0.4 ms", "420 ms", "12.5 s".

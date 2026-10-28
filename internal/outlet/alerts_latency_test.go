@@ -22,13 +22,14 @@ func (a alertFixture) addLatencies(t *testing.T, kind string, hour time.Time, n 
 	}
 }
 
-// latencyFixture is at 14:30 with Telegram on, and returns the current hour.
+// latencyFixture is at 15:01 with Telegram on, and returns the hour just
+// ended, 14:00, which is judged as it was measured.
 func latencyFixture(t *testing.T) (alertFixture, time.Time) {
 	t.Helper()
 	a := newAlertFixture(t)
 	a.configureTelegram(t, false)
-	a.clock.advance(30 * time.Minute)
-	return a, a.clock.now().Truncate(time.Hour)
+	a.clock.advance(61 * time.Minute)
+	return a, a.clock.now().Truncate(time.Hour).Add(-time.Hour)
 }
 
 // Where the requests of these times fall in the buckets, a p95 is spread
@@ -215,8 +216,8 @@ func TestLatencyAlertsOncePerHourPerKind(t *testing.T) {
 		t.Fatalf("events = %+v", events)
 	}
 
-	// At 15:31 the slow hour is the previous one, still looked at but not
-	// repeated; the new hour is slow too, and alerts once more for each.
+	// An hour on, the next hour was slow too, and alerts once more for each;
+	// the first isn't repeated.
 	a.clock.advance(time.Hour)
 	for _, kind := range []string{control.LatencyOutlet, control.LatencyUpstream} {
 		a.addLatencies(t, kind, hour.Add(time.Hour), slowedCount, 250_000)
@@ -228,20 +229,25 @@ func TestLatencyAlertsOncePerHourPerKind(t *testing.T) {
 	}
 }
 
-// The hour under way is judged from its half on: its first minutes alone,
-// a job at the top of the hour say, aren't the hour.
-func TestLatencyAlertWaitsForHalfTheHour(t *testing.T) {
+// The hour under way is judged as it would end if the rest went as usual: a
+// job slowing the first requests of the hour doesn't page, a slowdown that
+// already slows the whole hour does, before it ends.
+func TestLatencyAlertJudgesTheHourUnderWayAsItWouldEnd(t *testing.T) {
 	a, hour := latencyFixture(t)
-	a.addLatencies(t, control.LatencyOutlet, hour.Add(-24*time.Hour), usualCount, usualUS)
-	a.addLatencies(t, control.LatencyOutlet, hour.Add(time.Hour), slowedCount, slowedUS)
-	a.clock.advance(31 * time.Minute) // 15:01
+	current := hour.Add(time.Hour)
+	a.addLatencies(t, control.LatencyOutlet, hour.Add(-24*time.Hour), 10*usualCount, usualUS)
+	a.addLatencies(t, control.LatencyOutlet, current, slowedCount, slowedUS)
 	a.evaluate()
-	a.clock.advance(28 * time.Minute) // 15:29
+	// 15:31: 3000 more requests came in as usual.
+	a.clock.advance(30 * time.Minute)
+	a.addLatencies(t, control.LatencyOutlet, current, 3000, usualUS)
 	a.evaluate()
 	if len(a.telegram.messages()) != 0 {
-		t.Fatalf("judged the hour in its first half: %q", a.texts())
+		t.Fatalf("a slow start paged: %q", a.texts())
 	}
-	a.clock.advance(time.Minute) // 15:30
+	// 600 slow ones since: even if the rest of the hour goes as usual, more
+	// than one request in twenty of it is slow.
+	a.addLatencies(t, control.LatencyOutlet, current, 600, slowedUS)
 	a.evaluate()
 	if texts := a.texts(); len(texts) != 1 || !strings.Contains(texts[0], "Hour: 2026-10-26 15:00 UTC") {
 		t.Fatalf("messages = %q", texts)
@@ -254,7 +260,7 @@ func TestLatencyAlertLooksAtThePreviousHour(t *testing.T) {
 	a, hour := latencyFixture(t)
 	a.addLatencies(t, control.LatencyOutlet, hour.Add(-24*time.Hour), usualCount, usualUS)
 	a.addLatencies(t, control.LatencyOutlet, hour, slowedCount, slowedUS)
-	// 15:10: the slow hour has just ended, and the new one has no requests.
+	// 15:41: the slow hour has ended, and the new one has no requests.
 	a.clock.advance(40 * time.Minute)
 	a.evaluate()
 	if texts := a.texts(); len(texts) != 1 {
@@ -267,7 +273,7 @@ func TestLatencyAlertLooksAtThePreviousHour(t *testing.T) {
 	b, hour := latencyFixture(t)
 	b.addLatencies(t, control.LatencyOutlet, hour.Add(-24*time.Hour), usualCount, usualUS)
 	b.addLatencies(t, control.LatencyOutlet, hour, slowedCount, slowedUS)
-	// 16:10: two hours ago is past looking at.
+	// 16:41: two hours ago is past looking at.
 	b.clock.advance(100 * time.Minute)
 	b.evaluate()
 	if len(b.telegram.messages()) != 0 || len(b.events(t, "latency")) != 0 {
