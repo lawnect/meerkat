@@ -274,14 +274,84 @@ func TestFailingAddressAlertsOnTheSecondCheck(t *testing.T) {
 		t.Fatalf("an open alert was repeated: %q", f.texts())
 	}
 
+	// An alerted address is checked again every half hour.
 	f.caddy.serve(addressApp, f.in(60*24*time.Hour))
+	for range 4 {
+		f.next()
+	}
+	if len(f.telegram.messages()) != 1 {
+		t.Fatalf("rechecked before half an hour: %q", f.texts())
+	}
 	f.next()
 	texts := f.texts()
-	if len(texts) != 2 || !strings.HasPrefix(texts[1], "🟢 <b>Route error cleared</b>\nRoute: <code>app.example.com</code>\nAlerted: 2026-10-26 14:05 UTC\nOpen for: 11 min") {
+	if len(texts) != 2 || !strings.HasPrefix(texts[1], "🟢 <b>Route error cleared</b>\nRoute: <code>app.example.com</code>\nAlerted: 2026-10-26 14:05 UTC\nOpen for: 31 min") {
 		t.Fatalf("recovery = %q", texts)
 	}
 	if events := f.events(t, "route_error"); events[0].ResolvedAt == nil {
 		t.Fatal("event still open")
+	}
+}
+
+// Caddy gets certificates on demand: every handshake of an address it can't
+// get one for may be a failed ACME validation, which Let's Encrypt limits to
+// five an hour per name.
+func TestAlertedAddressIsCheckedTwiceAnHour(t *testing.T) {
+	f := newAddressFixture(t)
+	f.caddy.remove(addressApp)
+	f.evaluate()
+	f.next()
+	if len(f.telegram.messages()) != 1 {
+		t.Fatalf("messages = %q", f.texts())
+	}
+	handshakes := f.caddy.seen(addressApp)
+	for range 12 {
+		f.next()
+	}
+	if got := f.caddy.seen(addressApp) - handshakes; got != 2 {
+		t.Fatalf("handshakes in the hour after the alert = %d, want 2", got)
+	}
+	if f.caddy.seen(f.host) != 14 {
+		t.Fatalf("a healthy address was checked %d times, want every 5 minutes", f.caddy.seen(f.host))
+	}
+}
+
+// A Caddy that can't be reached fails every address for one reason, and
+// says so once.
+func TestUnreachableCaddyAlertsOnce(t *testing.T) {
+	f := newAddressFixture(t)
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed.Close()
+	reach := addressDial
+	addressDial = func(ctx context.Context, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", closed.Addr().String())
+	}
+	f.evaluate()
+	f.next()
+	want := "🔴 <b>Public addresses failing</b>\nCaddy: <code>caddy:443</code>\nProblem: Can&#39;t connect to Caddy: connection refused\n<a href=\"https://" + f.host + "/\">Open in Meerkat</a>"
+	if texts := f.texts(); len(texts) != 1 || texts[0] != want {
+		t.Fatalf("messages = %q", texts)
+	}
+	if events := f.events(t, "route_error"); len(events) != 1 || events[0].Key != "route_error:caddy" || events[0].Subject != "Caddy" {
+		t.Fatalf("events = %+v", events)
+	}
+	// Still unreachable, it is checked every 5 minutes, without more alerts.
+	f.next()
+	f.next()
+	if len(f.telegram.messages()) != 1 {
+		t.Fatalf("messages = %q", f.texts())
+	}
+
+	addressDial = reach
+	f.next()
+	texts := f.texts()
+	if len(texts) != 2 || !strings.HasPrefix(texts[1], "🟢 <b>Route error cleared</b>\nRoute: <code>Caddy</code>") {
+		t.Fatalf("recovery = %q", texts)
+	}
+	if events := f.events(t, "route_error"); len(events) != 1 || events[0].ResolvedAt == nil {
+		t.Fatalf("events = %+v", events)
 	}
 }
 
@@ -535,7 +605,7 @@ func TestProbeAddressProblems(t *testing.T) {
 		"strange.example.com": "Certificate isn't trusted",
 		"none.example.com":    "TLS handshake failed: tls: internal error",
 	} {
-		if got := probeAddress(context.Background(), "caddy:443", hostname, now); got != want {
+		if got, reached := probeAddress(context.Background(), "caddy:443", hostname, now); got != want || !reached {
 			t.Errorf("%s: problem = %q, want %q", hostname, got, want)
 		}
 	}
@@ -553,8 +623,8 @@ func TestProbeAddressUnreachableAndSlow(t *testing.T) {
 	addressDial = func(ctx context.Context, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", closed.Addr().String())
 	}
-	if got, want := probeAddress(context.Background(), "caddy:443", addressApp, now), "TLS handshake failed: connection refused"; got != want {
-		t.Errorf("refused: problem = %q, want %q", got, want)
+	if got, reached := probeAddress(context.Background(), "caddy:443", addressApp, now); got != "Can't connect to Caddy: connection refused" || reached {
+		t.Errorf("refused: problem = %q, reached %v", got, reached)
 	}
 
 	addressTimeout = 50 * time.Millisecond
@@ -562,8 +632,8 @@ func TestProbeAddressUnreachableAndSlow(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
-	if got, want := probeAddress(context.Background(), "caddy:443", addressApp, now), "TLS handshake failed: timed out"; got != want {
-		t.Errorf("no connection: problem = %q, want %q", got, want)
+	if got, reached := probeAddress(context.Background(), "caddy:443", addressApp, now); got != "Can't connect to Caddy: timed out" || reached {
+		t.Errorf("no connection: problem = %q, reached %v", got, reached)
 	}
 	// Connected, but Caddy never answers the ClientHello.
 	addressDial = func(context.Context, string) (net.Conn, error) {
@@ -571,8 +641,8 @@ func TestProbeAddressUnreachableAndSlow(t *testing.T) {
 		t.Cleanup(func() { server.Close() })
 		return client, nil
 	}
-	if got, want := probeAddress(context.Background(), "caddy:443", addressApp, now), "TLS handshake failed: timed out"; got != want {
-		t.Errorf("no answer: problem = %q, want %q", got, want)
+	if got, reached := probeAddress(context.Background(), "caddy:443", addressApp, now); got != "TLS handshake failed: timed out" || !reached {
+		t.Errorf("no answer: problem = %q, reached %v", got, reached)
 	}
 }
 

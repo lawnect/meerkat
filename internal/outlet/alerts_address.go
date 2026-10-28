@@ -30,6 +30,11 @@ const (
 	addressExpiryWindow = 14 * 24 * time.Hour
 	// Checks further apart than this aren't consecutive: alerts were off.
 	addressStale = 3 * addressInterval
+	// An address already alerted for a handshake Caddy answered is checked
+	// this often instead. Caddy gets certificates on demand, so each of those
+	// checks can be one more failed ACME validation, and Let's Encrypt allows
+	// five an hour per name.
+	addressRetryInterval = 30 * time.Minute
 )
 
 // Seams for tests: the connection to Caddy, the time one check may take, and
@@ -59,6 +64,9 @@ type addressCheck struct {
 	problem string
 	// failed counts the consecutive checks that did not.
 	failed int
+	// reached is whether Caddy answered, at is when the address was checked.
+	reached bool
+	at      time.Time
 }
 
 func (s *Store) routeAlerts(ctx context.Context, env alertEnv, now time.Time) error {
@@ -107,6 +115,21 @@ func (s *Store) addressConditions(ctx context.Context, now time.Time, healthy, h
 	if now.Sub(state.lastCheck) >= addressInterval {
 		s.checkAddresses(ctx, hostnames, now)
 	}
+	// Caddy itself out of reach fails every address the same way: one alert
+	// says so, and the addresses' own stay as they are.
+	caddyKey := "route_error:caddy"
+	switch reached, down := caddyReach(state.checks, hostnames); {
+	case down:
+		for _, hostname := range hostnames {
+			held["route_error:tls:"+hostname] = true
+		}
+		problem := state.checks[hostnames[0]].problem
+		return []condition{{caddyKey, "Caddy", caddyDownNotice(caddyHTTPSAddress(s.config.CaddyMetrics), problem)}}, nil
+	case reached:
+		healthy[caddyKey] = true
+	default:
+		held[caddyKey] = true
+	}
 	var active []condition
 	for _, hostname := range hostnames {
 		key := "route_error:tls:" + hostname
@@ -127,8 +150,20 @@ func (s *Store) addressConditions(ctx context.Context, now time.Time, healthy, h
 	return active, nil
 }
 
-// checkAddresses handshakes every hostname and records the results. An
-// address the pass didn't get to keeps its earlier result.
+// caddyReach tells whether Caddy answered any address at the last checks,
+// and whether every address has failed for want of reaching it.
+func caddyReach(checks map[string]addressCheck, hostnames []string) (reached, down bool) {
+	down = len(hostnames) != 0
+	for _, hostname := range hostnames {
+		check, checked := checks[hostname]
+		reached = reached || checked && check.reached
+		down = down && checked && !check.reached && check.failed >= addressFailures
+	}
+	return reached, down
+}
+
+// checkAddresses handshakes the hostnames that are due and records the
+// results. An address the pass didn't get to keeps its earlier result.
 func (s *Store) checkAddresses(ctx context.Context, hostnames []string, now time.Time) {
 	state := &s.alerts.address
 	previous := state.checks
@@ -136,18 +171,25 @@ func (s *Store) checkAddresses(ctx context.Context, hostnames []string, now time
 		previous = nil
 	}
 	state.lastCheck = now
+	var due []string
+	for _, hostname := range hostnames {
+		if check, ok := previous[hostname]; ok && check.reached && check.failed >= addressFailures && now.Sub(check.at) < addressRetryInterval {
+			continue
+		}
+		due = append(due, hostname)
+	}
 	call, cancel := context.WithTimeout(ctx, addressBudget)
 	defer cancel()
-	problems, done := s.probeAddresses(call, hostnames, now)
+	results := s.probeAddresses(call, due, now)
 	next := make(map[string]addressCheck, len(hostnames))
-	for i, hostname := range hostnames {
+	for _, hostname := range hostnames {
 		check, known := previous[hostname]
-		switch {
-		case !done[i]:
-		case problems[i] == "":
-			check, known = addressCheck{}, true
-		default:
-			check, known = addressCheck{problems[i], check.failed + 1}, true
+		if result, probed := results[hostname]; probed {
+			failed := 0
+			if result.problem != "" {
+				failed = check.failed + 1
+			}
+			check, known = addressCheck{result.problem, failed, result.reached, now}, true
 		}
 		if known {
 			next[hostname] = check
@@ -156,23 +198,34 @@ func (s *Store) checkAddresses(ctx context.Context, hostnames []string, now time
 	state.checks = next
 }
 
-// probeAddresses runs the handshakes a few at a time. done is false for the
-// ones that ctx cut short, whose problem says nothing about the address.
-func (s *Store) probeAddresses(ctx context.Context, hostnames []string, now time.Time) (problems []string, done []bool) {
+type addressResult struct {
+	problem string
+	reached bool
+}
+
+// probeAddresses runs the handshakes a few at a time. The ones that ctx cut
+// short are left out: what went wrong says nothing about the address.
+func (s *Store) probeAddresses(ctx context.Context, hostnames []string, now time.Time) map[string]addressResult {
 	address := caddyHTTPSAddress(s.config.CaddyMetrics)
-	problems, done = make([]string, len(hostnames)), make([]bool, len(hostnames))
+	results, done := make([]addressResult, len(hostnames)), make([]bool, len(hostnames))
 	var wg sync.WaitGroup
 	slots := make(chan struct{}, addressWorkers)
 	for i, hostname := range hostnames {
 		slots <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-slots }()
-			problems[i] = probeAddress(ctx, address, hostname, now)
+			results[i].problem, results[i].reached = probeAddress(ctx, address, hostname, now)
 			done[i] = ctx.Err() == nil
 		})
 	}
 	wg.Wait()
-	return problems, done
+	probed := make(map[string]addressResult, len(hostnames))
+	for i, hostname := range hostnames {
+		if done[i] {
+			probed[hostname] = results[i]
+		}
+	}
+	return probed
 }
 
 // caddyHTTPSAddress is where the Outlet reaches Caddy's TLS listener. The
@@ -187,23 +240,24 @@ func caddyHTTPSAddress(metrics string) string {
 }
 
 // probeAddress is the handshake a browser would make for hostname, verifying
-// the chain and the name. It returns what is wrong, or "".
-func probeAddress(ctx context.Context, address, hostname string, now time.Time) string {
+// the chain and the name. It returns what is wrong, or "", and whether Caddy
+// answered at all.
+func probeAddress(ctx context.Context, address, hostname string, now time.Time) (string, bool) {
 	call, cancel := context.WithTimeout(ctx, addressTimeout)
 	defer cancel()
 	conn, err := addressDial(call, address)
 	if err != nil {
-		return addressProblem(err)
+		return "Can't connect to Caddy: " + failureReason(err), false
 	}
 	defer conn.Close()
 	client := tls.Client(conn, &tls.Config{ServerName: hostname, RootCAs: addressRoots, MinVersion: tls.VersionTLS12, Time: func() time.Time { return now }})
 	if err := client.HandshakeContext(call); err != nil {
-		return addressProblem(err)
+		return addressProblem(err), true
 	}
 	if end := client.ConnectionState().PeerCertificates[0].NotAfter; end.Sub(now) < addressExpiryWindow {
-		return "Certificate expires " + end.UTC().Format("2006-01-02") + " (in " + daysLeft(end.Sub(now)) + ")"
+		return "Certificate expires " + end.UTC().Format("2006-01-02") + " (in " + daysLeft(end.Sub(now)) + ")", true
 	}
-	return ""
+	return "", true
 }
 
 func daysLeft(d time.Duration) string {
@@ -223,10 +277,6 @@ func addressProblem(err error) string {
 	var wrongName x509.HostnameError
 	var invalid x509.CertificateInvalidError
 	var unknown x509.UnknownAuthorityError
-	var timeout net.Error
-	var errno syscall.Errno
-	var lookup *net.DNSError
-	var reason string
 	switch {
 	case errors.As(err, &wrongName):
 		return "Certificate isn't valid for this address"
@@ -236,6 +286,17 @@ func addressProblem(err error) string {
 		return "Certificate isn't valid"
 	case errors.As(err, &unknown):
 		return "Certificate isn't trusted"
+	}
+	return "TLS handshake failed: " + failureReason(err)
+}
+
+// failureReason is a network error in a few words.
+func failureReason(err error) string {
+	var timeout net.Error
+	var errno syscall.Errno
+	var lookup *net.DNSError
+	var reason string
+	switch {
 	case errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout():
 		reason = "timed out"
 	case errors.As(err, &errno):
@@ -249,7 +310,13 @@ func addressProblem(err error) string {
 	if runes := []rune(reason); len(runes) > 80 {
 		reason = string(runes[:80]) + "…"
 	}
-	return "TLS handshake failed: " + reason
+	return reason
+}
+
+func caddyDownNotice(address, problem string) notice {
+	return notice{icon: "🔴", title: "Public addresses failing", ref: "/",
+		summary: "Public addresses failing: " + problem}.
+		line("Caddy", code(address)).line("Problem", esc(problem))
 }
 
 func addressNotice(hostname, ref, problem string) notice {
