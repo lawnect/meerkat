@@ -44,7 +44,8 @@ const (
 // the admin port's private CA, which no public address uses, so there is no
 // private-CA setup to exempt.
 var (
-	addressDial = func(ctx context.Context, address string) (net.Conn, error) {
+	// addressDial connects to Caddy at address to check hostname.
+	addressDial = func(ctx context.Context, address, hostname string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", address)
 	}
 	addressTimeout = 10 * time.Second
@@ -193,15 +194,18 @@ func (s *Store) checkAddresses(ctx context.Context, hostnames []string, now time
 	call, cancel := context.WithTimeout(ctx, addressBudget)
 	defer cancel()
 	results := s.probeAddresses(call, due, now)
-	// A pass in which Caddy answered some addresses shows it is up: one it
-	// didn't answer is that address's trouble, its certificate being issued
-	// say, and is rechecked like any other failing address.
+	// A pass in which Caddy answered some addresses shows it is up: a
+	// handshake it left unanswered is that address's trouble, its
+	// certificate being issued say, and is rechecked like any other failing
+	// address. A refused connection is Caddy's whatever the address.
 	if len(results) != 0 {
 		state.answered = slices.ContainsFunc(slices.Collect(maps.Values(results)), func(r addressResult) bool { return !r.caddyFault })
 		if state.answered {
 			for hostname, result := range results {
-				result.caddyFault = false
-				results[hostname] = result
+				if result.stalled {
+					result.caddyFault = false
+					results[hostname] = result
+				}
 			}
 			state.silentPasses = 0
 		} else {
@@ -212,9 +216,14 @@ func (s *Store) checkAddresses(ctx context.Context, hostnames []string, now time
 	for _, hostname := range hostnames {
 		check, known := previous[hostname]
 		if result, probed := results[hostname]; probed {
-			failed := 0
-			if result.problem != "" {
-				failed = check.failed + 1
+			// Caddy's silence isn't the address failing: its own count goes
+			// on from where it was.
+			failed := check.failed
+			switch {
+			case result.problem == "":
+				failed = 0
+			case !result.caddyFault:
+				failed++
 			}
 			check, known = addressCheck{result.problem, failed, result.caddyFault, now}, true
 		}
@@ -226,8 +235,10 @@ func (s *Store) checkAddresses(ctx context.Context, hostnames []string, now time
 }
 
 type addressResult struct {
-	problem    string
-	caddyFault bool
+	problem string
+	// caddyFault is no answer from Caddy, stalled that it was the handshake
+	// that went unanswered, not the connection.
+	caddyFault, stalled bool
 }
 
 // probeAddresses runs the handshakes a few at a time. The ones that ctx cut
@@ -271,7 +282,7 @@ func caddyHTTPSAddress(metrics string) string {
 func probeAddress(ctx context.Context, address, hostname string, now time.Time) addressResult {
 	call, cancel := context.WithTimeout(ctx, addressTimeout)
 	defer cancel()
-	conn, err := addressDial(call, address)
+	conn, err := addressDial(call, address, hostname)
 	if err != nil {
 		return addressResult{problem: "Can't connect to Caddy: " + failureReason(err), caddyFault: true}
 	}
@@ -281,7 +292,7 @@ func probeAddress(ctx context.Context, address, hostname string, now time.Time) 
 		// No reply at all is Caddy's fault, not this address's.
 		var timeout net.Error
 		silent := errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout()
-		return addressResult{problem: addressProblem(err), caddyFault: silent}
+		return addressResult{problem: addressProblem(err), caddyFault: silent, stalled: silent}
 	}
 	cert := client.ConnectionState().PeerCertificates[0]
 	if left := cert.NotAfter.Sub(now); left < min(addressExpiryWindow, cert.NotAfter.Sub(cert.NotBefore)/6) {

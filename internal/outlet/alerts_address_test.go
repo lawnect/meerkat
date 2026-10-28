@@ -132,7 +132,7 @@ func (c *fakeCaddy) certificate(hello *tls.ClientHelloInfo) (*tls.Certificate, e
 	return &cert, nil
 }
 
-func (c *fakeCaddy) dial(ctx context.Context, address string) (net.Conn, error) {
+func (c *fakeCaddy) dial(ctx context.Context, address, _ string) (net.Conn, error) {
 	c.mu.Lock()
 	c.dialed = append(c.dialed, address)
 	c.mu.Unlock()
@@ -337,7 +337,7 @@ func TestUnreachableCaddyAlertsOnce(t *testing.T) {
 	}
 	closed.Close()
 	reach := addressDial
-	addressDial = func(ctx context.Context, _ string) (net.Conn, error) {
+	addressDial = func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", closed.Addr().String())
 	}
 	f.evaluate()
@@ -382,7 +382,7 @@ func TestCaddyAlertJudgesOnlyTheAddressesJustChecked(t *testing.T) {
 		t.Fatal(err)
 	}
 	closed.Close()
-	addressDial = func(ctx context.Context, _ string) (net.Conn, error) {
+	addressDial = func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", closed.Addr().String())
 	}
 	f.next()
@@ -402,7 +402,7 @@ func TestHungCaddyAlertsOnce(t *testing.T) {
 	f := newAddressFixture(t)
 	addressTimeout = 50 * time.Millisecond
 	reach := addressDial
-	addressDial = func(context.Context, string) (net.Conn, error) {
+	addressDial = func(context.Context, string, string) (net.Conn, error) {
 		client, server := net.Pipe()
 		t.Cleanup(func() { server.Close() })
 		return client, nil
@@ -428,7 +428,7 @@ func TestAddressAddedWhileCaddyIsDownWaitsWithIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	closed.Close()
-	addressDial = func(ctx context.Context, _ string) (net.Conn, error) {
+	addressDial = func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", closed.Addr().String())
 	}
 	f.evaluate()
@@ -448,7 +448,7 @@ func TestAddressAddedWhileCaddyIsDownWaitsWithIt(t *testing.T) {
 func TestAddressPassesRotateThroughTheBudget(t *testing.T) {
 	f := newAddressFixture(t)
 	addressTimeout, addressBudget = 30*time.Millisecond, 50*time.Millisecond
-	addressDial = func(ctx context.Context, _ string) (net.Conn, error) {
+	addressDial = func(ctx context.Context, _, _ string) (net.Conn, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
@@ -504,7 +504,7 @@ func TestOneSilentPassIsNoCaddyAlert(t *testing.T) {
 		t.Fatalf("messages = %q", f.texts())
 	}
 	reach := addressDial
-	addressDial = func(ctx context.Context, _ string) (net.Conn, error) { return nil, syscall.ECONNREFUSED }
+	addressDial = func(ctx context.Context, _, _ string) (net.Conn, error) { return nil, syscall.ECONNREFUSED }
 	f.next()
 	addressDial = reach
 	for range 7 {
@@ -514,6 +514,45 @@ func TestOneSilentPassIsNoCaddyAlert(t *testing.T) {
 		if e.Key == "route_error:caddy" {
 			t.Fatalf("one silent pass raised the Caddy alert: %q", f.texts())
 		}
+	}
+}
+
+// A pass in which Caddy answered nothing isn't the address failing: once
+// Caddy is back, the address's own first failure is still its first.
+func TestCaddySilenceDoesntCountAsTheAddressFailing(t *testing.T) {
+	f := newAddressFixture(t)
+	reach := addressDial
+	addressDial = func(ctx context.Context, _, _ string) (net.Conn, error) { return nil, syscall.ECONNREFUSED }
+	f.evaluate()
+	addressDial = reach
+	f.caddy.remove(addressApp)
+	f.next()
+	if len(f.telegram.messages()) != 0 {
+		t.Fatalf("a silent pass counted toward the address's failures: %q", f.texts())
+	}
+	f.next()
+	if texts := f.texts(); len(texts) != 1 || !strings.Contains(texts[0], "Address: <code>app.example.com</code>") {
+		t.Fatalf("messages = %q", texts)
+	}
+}
+
+// A refused connection is Caddy's even in a pass where Caddy answered other
+// addresses: no address alerts for it.
+func TestRefusedConnectionIsNeverTheAddresss(t *testing.T) {
+	f := newAddressFixture(t)
+	reach := addressDial
+	addressDial = func(ctx context.Context, address, hostname string) (net.Conn, error) {
+		if hostname == addressApp {
+			return nil, syscall.ECONNREFUSED
+		}
+		return reach(ctx, address, hostname)
+	}
+	f.evaluate()
+	for range 3 {
+		f.next()
+	}
+	if texts := f.texts(); len(texts) != 0 {
+		t.Fatalf("messages = %q", texts)
 	}
 }
 
@@ -796,7 +835,7 @@ func TestProbeAddressUnreachableAndSlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	closed.Close()
-	addressDial = func(ctx context.Context, _ string) (net.Conn, error) {
+	addressDial = func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", closed.Addr().String())
 	}
 	if got := probeAddress(context.Background(), "caddy:443", addressApp, now); got != (addressResult{problem: "Can't connect to Caddy: connection refused", caddyFault: true}) {
@@ -804,7 +843,7 @@ func TestProbeAddressUnreachableAndSlow(t *testing.T) {
 	}
 
 	addressTimeout = 50 * time.Millisecond
-	addressDial = func(ctx context.Context, _ string) (net.Conn, error) {
+	addressDial = func(ctx context.Context, _, _ string) (net.Conn, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
@@ -812,12 +851,12 @@ func TestProbeAddressUnreachableAndSlow(t *testing.T) {
 		t.Errorf("no connection: %+v", got)
 	}
 	// Connected, but Caddy never answers the ClientHello.
-	addressDial = func(context.Context, string) (net.Conn, error) {
+	addressDial = func(context.Context, string, string) (net.Conn, error) {
 		client, server := net.Pipe()
 		t.Cleanup(func() { server.Close() })
 		return client, nil
 	}
-	if got := probeAddress(context.Background(), "caddy:443", addressApp, now); got != (addressResult{problem: "TLS handshake failed: timed out", caddyFault: true}) {
+	if got := probeAddress(context.Background(), "caddy:443", addressApp, now); got != (addressResult{problem: "TLS handshake failed: timed out", caddyFault: true, stalled: true}) {
 		t.Errorf("no answer: %+v", got)
 	}
 }
@@ -826,7 +865,7 @@ func TestAddressPassCutShortCountsNothing(t *testing.T) {
 	f := newAddressFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	addressDial = func(call context.Context, _ string) (net.Conn, error) {
+	addressDial = func(call context.Context, _, _ string) (net.Conn, error) {
 		cancel()
 		return nil, call.Err()
 	}
