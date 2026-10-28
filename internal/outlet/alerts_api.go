@@ -158,8 +158,14 @@ func (s *Store) putAlertRules(w http.ResponseWriter, r *http.Request) {
 	if !s.alertsAdmin(w, r) {
 		return
 	}
-	var rules control.AlertRules
-	if !decode(w, r, &rules, "tunnel_down", "service_down", "route_error", "dns_failure", "error_spike", "login", "rate_limit") {
+	// service_down came later: a console or script from before it leaves the
+	// stored rule as it is.
+	rules, err := s.control.AlertRules(r.Context())
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	if !decode(w, r, &rules, "tunnel_down", "route_error", "dns_failure", "error_spike", "login", "rate_limit") {
 		return
 	}
 	switch err := s.control.SetAlertRules(r.Context(), rules, s.now()); {

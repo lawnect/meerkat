@@ -94,6 +94,8 @@ func (s *Store) evaluateAlerts(ctx context.Context) {
 		return
 	}
 	if !ok {
+		// Nothing is timed while alerts are off.
+		s.alerts.downSince, s.alerts.serviceDownSince = nil, nil
 		return
 	}
 	now := s.now()
@@ -177,7 +179,7 @@ func (s *Store) tunnelAlerts(ctx context.Context, env alertEnv, now time.Time) e
 		return err
 	}
 	var active []condition
-	healthy := map[string]bool{}
+	healthy, held := map[string]bool{}, map[string]bool{}
 	down := map[string]time.Time{}
 	s.mu.Lock()
 	for _, c := range connectors {
@@ -202,11 +204,15 @@ func (s *Store) tunnelAlerts(ctx context.Context, env alertEnv, now time.Time) e
 		if elapsed := now.Sub(since); elapsed >= time.Duration(rule.AfterMinutes)*time.Minute {
 			name := connectorName(c)
 			active = append(active, condition{key, name, tunnelDownNotice(name, c.ID, elapsed, record.LastSeen)})
+		} else {
+			// Still down, timed afresh after an Outlet restart: an alert
+			// already open stays open.
+			held[key] = true
 		}
 	}
 	s.mu.Unlock()
 	s.alerts.downSince = down
-	return s.syncAlerts(ctx, env, "tunnel_down", active, healthy, nil, now)
+	return s.syncAlerts(ctx, env, "tunnel_down", active, healthy, held, now)
 }
 
 // connectorName is the tunnel name the console shows.
@@ -253,12 +259,10 @@ func (s *Store) serviceAlerts(ctx context.Context, env alertEnv, now time.Time) 
 				continue
 			}
 			key := "service_down:" + service.ID
-			since, seen := s.alerts.serviceDownSince[service.ID]
+			// Time with the tunnel down isn't the service's: its wait starts
+			// again once the tunnel is back.
 			if !connected {
 				held[key] = true
-				if seen {
-					down[service.ID] = since
-				}
 				continue
 			}
 			status := managedServiceStatus(record, service.ID, now)
@@ -266,6 +270,7 @@ func (s *Store) serviceAlerts(ctx context.Context, env alertEnv, now time.Time) 
 				healthy[key] = true
 				continue
 			}
+			since, seen := s.alerts.serviceDownSince[service.ID]
 			if !seen {
 				since = now
 			}
@@ -273,6 +278,10 @@ func (s *Store) serviceAlerts(ctx context.Context, env alertEnv, now time.Time) 
 			if elapsed := now.Sub(since); elapsed >= time.Duration(rule.AfterMinutes)*time.Minute {
 				tunnel := connectorName(c)
 				active = append(active, condition{key, tunnel + " / " + service.Name, serviceDownNotice(tunnel, service.Name, c.ID, status, elapsed)})
+			} else {
+				// Timed afresh, after a restart or the tunnel's return: an
+				// alert already open stays open.
+				held[key] = true
 			}
 		}
 	}

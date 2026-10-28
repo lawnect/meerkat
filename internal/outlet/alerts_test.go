@@ -198,6 +198,111 @@ func TestServiceDownAlertLifecycle(t *testing.T) {
 	}
 }
 
+// An Outlet restart forgets when each outage began. An alert that is still
+// open must stay open while the outage is timed again, not close quietly and
+// page a second time once the wait passes.
+func TestOpenAlertsSurviveAnOutletRestart(t *testing.T) {
+	a := newAlertFixture(t)
+	a.configureTelegram(t, false)
+	a.setRules(t, func(r *control.AlertRules) { r.ServiceDown.AfterMinutes = 2 })
+	ctx := context.Background()
+	edge, err := a.db.CreateConnector(ctx, "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := a.service(t, edge, "app")
+	other := a.connector(t, "edge-b", a.clock.now().Add(-time.Hour))
+	unreachable := func() { a.serviceState(edge, app, "unhealthy", "disconnected", a.clock.now()) }
+	for range 3 {
+		unreachable()
+		a.evaluate()
+		a.clock.advance(time.Minute)
+	}
+	if len(a.events(t, "service_down")) != 1 || len(a.events(t, "tunnel_down")) != 1 || len(a.telegram.messages()) != 2 {
+		t.Fatalf("before the restart: %q", a.texts())
+	}
+
+	// The restart: liveness and outage clocks are gone, the outages aren't.
+	a.clock.advance(2 * time.Hour)
+	a.store.alerts = alertState{}
+	a.setLastSeen(other.ID, "edge-b", time.Time{})
+	for range 10 {
+		unreachable()
+		a.evaluate()
+		a.clock.advance(time.Minute)
+	}
+	for _, kind := range []string{"service_down", "tunnel_down"} {
+		if events := a.events(t, kind); len(events) != 1 || events[0].ResolvedAt != nil {
+			t.Fatalf("%s after the restart: %+v", kind, events)
+		}
+	}
+	if len(a.telegram.messages()) != 2 {
+		t.Fatalf("the restart paged again: %q", a.texts())
+	}
+}
+
+// Time with the tunnel down is the tunnel's outage: once it is back, the
+// service gets its full wait before it pages.
+func TestServiceDownAlertWaitsAgainAfterTheTunnelReturns(t *testing.T) {
+	a := newAlertFixture(t)
+	a.configureTelegram(t, false)
+	a.setRules(t, func(r *control.AlertRules) { r.ServiceDown.AfterMinutes = 2 })
+	edge, err := a.db.CreateConnector(context.Background(), "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := a.service(t, edge, "app")
+	a.serviceState(edge, app, "unhealthy", "disconnected", a.clock.now())
+	a.evaluate()
+	a.clock.advance(time.Minute)
+	a.serviceState(edge, app, "unhealthy", "disconnected", a.clock.now())
+	a.evaluate()
+	// The tunnel drops for half an hour.
+	for range 3 {
+		a.clock.advance(10 * time.Minute)
+		a.evaluate()
+	}
+	a.serviceState(edge, app, "unhealthy", "disconnected", a.clock.now())
+	a.evaluate()
+	if events := a.events(t, "service_down"); len(events) != 0 {
+		t.Fatalf("paged as the tunnel returned: %q", a.texts())
+	}
+	for range 2 {
+		a.clock.advance(time.Minute)
+		a.serviceState(edge, app, "unhealthy", "disconnected", a.clock.now())
+		a.evaluate()
+	}
+	if events := a.events(t, "service_down"); len(events) != 1 || !strings.Contains(events[0].Message, "(2 min)") {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+// Nothing is timed while Telegram is off, so an outage seen before is not
+// taken to have lasted all that while once it is back on.
+func TestServiceDownAlertWaitsAgainAfterTelegramReturns(t *testing.T) {
+	a := newAlertFixture(t)
+	a.configureTelegram(t, false)
+	a.setRules(t, func(r *control.AlertRules) { r.ServiceDown.AfterMinutes = 2 })
+	edge, err := a.db.CreateConnector(context.Background(), "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := a.service(t, edge, "app")
+	a.serviceState(edge, app, "unhealthy", "disconnected", a.clock.now())
+	a.evaluate()
+	if err := a.db.SetTelegram(context.Background(), "", "123456", false, a.clock.now()); err != nil {
+		t.Fatal(err)
+	}
+	a.clock.advance(time.Hour)
+	a.evaluate()
+	a.configureTelegram(t, false)
+	a.serviceState(edge, app, "unhealthy", "disconnected", a.clock.now())
+	a.evaluate()
+	if len(a.telegram.messages()) != 0 {
+		t.Fatalf("paged at once: %q", a.texts())
+	}
+}
+
 func TestServiceDownAlertNamesTheFailingSide(t *testing.T) {
 	a := newAlertFixture(t)
 	a.configureTelegram(t, false)
@@ -213,7 +318,7 @@ func TestServiceDownAlertNamesTheFailingSide(t *testing.T) {
 	a.clock.advance(time.Minute)
 	a.serviceState(edge, app, "healthy", "disconnected", a.clock.now())
 	a.evaluate()
-	if texts := a.texts(); len(texts) != 1 || !strings.Contains(texts[0], "\nProblem: No answer through the tunnel\n") {
+	if texts := a.texts(); len(texts) != 1 || !strings.Contains(texts[0], "\nProblem: The check through the tunnel fails\n") {
 		t.Fatalf("messages = %q", texts)
 	}
 }

@@ -1266,7 +1266,8 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     return alertsResponse();
   }
   if (path === '/api/v1/alerts/rules' && method === 'PUT') {
-    const rules = input as unknown as AlertRules;
+    // Like the Outlet, a body without service_down keeps the stored rule.
+    const rules = { ...alerts.rules, ...(input as unknown as Partial<AlertRules>) };
     const minutes = rules.tunnel_down?.after_minutes;
     const serviceMinutes = rules.service_down?.after_minutes;
     const percent = rules.error_spike?.threshold_percent;

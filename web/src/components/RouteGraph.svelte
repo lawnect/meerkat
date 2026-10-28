@@ -66,10 +66,6 @@
     return 'live';
   }
 
-  function serviceState(record: ServiceRecord): string {
-    return record.service.enabled ? record.service.observed_status : 'disabled';
-  }
-
   function routeLabel(kind: RouteKind): string {
     return kind === 'live' ? t().routeLive : kind === 'waiting' ? t().routeWaiting : kind === 'error' ? t().routeError : t().routeOff;
   }
@@ -134,13 +130,19 @@
     </div>
 
     {#each records as record, index (record.service.id)}
+      <!-- 터널이 연결되지 않았으면 서비스도 터널 상태로 보여줍니다(도메인 그래프와 같음). -->
+      {@const state = record.connector.status === 'connected' ? record.service.observed_status : record.connector.status}
       <div class={['absolute left-[3%] z-1 h-15 w-[24%] -translate-y-1/2', !record.service.enabled && 'opacity-55']} style:top={`${nodeY(index, records.length)}px`}>
         <Item.Root variant="outline" size="xs" class="h-full flex-nowrap bg-card">
           <Item.Media variant="icon"><Cube class="text-muted-foreground" aria-hidden="true" /></Item.Media>
           <Item.Content class="min-w-0">
             <Item.Title class="max-w-full min-w-0 text-sm"><TruncateText text={record.service.name} /></Item.Title>
             <Item.Description class="flex min-w-0 items-center gap-1.5">
-              <Status label={statusLabel(serviceState(record))} value={serviceState(record)} />
+              {#if record.service.enabled}
+                <Status label={statusLabel(state)} value={state} />
+              {:else}
+                <Badge variant="outline" class="text-muted-foreground select-none">{t().routeOff}</Badge>
+              {/if}
               <TruncateText text={`${record.service.target.host}:${record.service.target.port}`} class="font-mono" />
             </Item.Description>
           </Item.Content>

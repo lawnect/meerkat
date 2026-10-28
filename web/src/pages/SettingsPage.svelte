@@ -64,8 +64,8 @@
     tunnelDown: 'Tunnel disconnected',
     tunnelDownHint: 'After this long disconnected, and again on reconnect.',
     serviceDown: 'Service down',
-    serviceDownHint: 'After this long in error or not responding, and again on recovery.',
-    afterMinutes: 'Wait',
+    serviceDownHint: 'After this long not serving, and again on recovery.',
+    afterMinutes: (rule: string) => `${rule} wait`,
     minutes: 'min',
     routeError: 'Public address error',
     dnsFailure: 'DNS failure',
@@ -139,8 +139,8 @@
     tunnelDown: '터널 연결 끊김',
     tunnelDownHint: '설정 시간 이상 연결 끊김 및 복구 시 알림',
     serviceDown: '서비스 장애',
-    serviceDownHint: '설정 시간 이상 서비스 오류·응답 없음 및 복구 시 알림',
-    afterMinutes: '대기 시간',
+    serviceDownHint: '설정 시간 이상 서비스 비정상 및 복구 시 알림',
+    afterMinutes: (rule: string) => `${rule} 대기 시간`,
     minutes: '분',
     routeError: '공개 주소 오류',
     dnsFailure: 'DNS 조회 오류',
@@ -385,7 +385,7 @@
                   </Field.Content>
                   {#if key === 'tunnel_down' || key === 'service_down'}
                     <InputGroup.Root class="w-28">
-                      <InputGroup.Input type="number" min="1" max="1440" aria-label={t().afterMinutes} bind:value={rules[key].after_minutes} disabled={!rules[key].enabled} class="tabular-nums" />
+                      <InputGroup.Input type="number" min="1" max="1440" aria-label={t().afterMinutes(text.title)} bind:value={rules[key].after_minutes} disabled={!rules[key].enabled} class="tabular-nums" />
                       <InputGroup.Addon align="inline-end"><InputGroup.Text>{t().minutes}</InputGroup.Text></InputGroup.Addon>
                     </InputGroup.Root>
                   {:else if key === 'error_spike'}

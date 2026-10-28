@@ -101,15 +101,15 @@ func tunnelDownNotice(name, connectorID string, down time.Duration, lastSeen tim
 }
 
 // serviceDownNotice says which side fails, as the console's service status
-// does: the Connector can't reach the app, or the Outlet gets no answer from
-// it through the tunnel.
+// does: the Connector can't reach the app, or the Outlet's request through
+// the tunnel gets no answer or a 5xx.
 func serviceDownNotice(tunnel, service, connectorID, status string, down time.Duration) notice {
 	problem := "Not checked yet"
 	switch status {
 	case "error":
 		problem = "The Connector can't reach the app"
 	case "connecting":
-		problem = "No answer through the tunnel"
+		problem = "The check through the tunnel fails"
 	}
 	n := notice{icon: "🔴", title: "Service down", ref: connectorRef(connectorID),
 		summary: "Service " + service + " on " + tunnel + " down (" + humanDuration(down) + "): " + problem}

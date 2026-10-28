@@ -356,7 +356,15 @@ func TestAlertRulesAPI(t *testing.T) {
 			t.Errorf("%s: %d %s", name, w.Code, w.Body.String())
 		}
 	}
-	for _, key := range []string{"service_down", "login", "rate_limit"} {
+	// A console or script from before the service rule leaves it as stored.
+	older := rules()
+	delete(older, "service_down")
+	older["tunnel_down"] = map[string]any{"enabled": true, "after_minutes": 7}
+	if got := decodeAlerts(t, request(h, "PUT", "/api/v1/alerts/rules", admin, older)).Rules; got.TunnelDown.AfterMinutes != 7 || got.ServiceDown != want.ServiceDown {
+		t.Fatalf("rules without service_down = %+v", got)
+	}
+	want.TunnelDown.AfterMinutes = 7
+	for _, key := range []string{"tunnel_down", "login", "rate_limit"} {
 		incomplete := rules()
 		delete(incomplete, key)
 		if w := request(h, "PUT", "/api/v1/alerts/rules", admin, incomplete); w.Code != 400 || errorCode(t, w) != "invalid_request" {
