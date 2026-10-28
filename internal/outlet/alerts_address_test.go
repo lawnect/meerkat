@@ -605,8 +605,9 @@ func TestProbeAddressProblems(t *testing.T) {
 		"strange.example.com": "Certificate isn't trusted",
 		"none.example.com":    "TLS handshake failed: tls: internal error",
 	} {
-		if got, reached := probeAddress(context.Background(), "caddy:443", hostname, now); got != want || !reached {
-			t.Errorf("%s: problem = %q, want %q", hostname, got, want)
+		// Only an address with no certificate to show leaves certless set.
+		if got := probeAddress(context.Background(), "caddy:443", hostname, now); got.problem != want || !got.reached || got.certless != (hostname == "none.example.com") {
+			t.Errorf("%s: %+v, want problem %q", hostname, got, want)
 		}
 	}
 }
@@ -623,8 +624,8 @@ func TestProbeAddressUnreachableAndSlow(t *testing.T) {
 	addressDial = func(ctx context.Context, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", closed.Addr().String())
 	}
-	if got, reached := probeAddress(context.Background(), "caddy:443", addressApp, now); got != "Can't connect to Caddy: connection refused" || reached {
-		t.Errorf("refused: problem = %q, reached %v", got, reached)
+	if got := probeAddress(context.Background(), "caddy:443", addressApp, now); got != (addressResult{problem: "Can't connect to Caddy: connection refused"}) {
+		t.Errorf("refused: %+v", got)
 	}
 
 	addressTimeout = 50 * time.Millisecond
@@ -632,8 +633,8 @@ func TestProbeAddressUnreachableAndSlow(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
-	if got, reached := probeAddress(context.Background(), "caddy:443", addressApp, now); got != "Can't connect to Caddy: timed out" || reached {
-		t.Errorf("no connection: problem = %q, reached %v", got, reached)
+	if got := probeAddress(context.Background(), "caddy:443", addressApp, now); got != (addressResult{problem: "Can't connect to Caddy: timed out"}) {
+		t.Errorf("no connection: %+v", got)
 	}
 	// Connected, but Caddy never answers the ClientHello.
 	addressDial = func(context.Context, string) (net.Conn, error) {
@@ -641,8 +642,8 @@ func TestProbeAddressUnreachableAndSlow(t *testing.T) {
 		t.Cleanup(func() { server.Close() })
 		return client, nil
 	}
-	if got, reached := probeAddress(context.Background(), "caddy:443", addressApp, now); got != "TLS handshake failed: timed out" || !reached {
-		t.Errorf("no answer: problem = %q, reached %v", got, reached)
+	if got := probeAddress(context.Background(), "caddy:443", addressApp, now); got != (addressResult{problem: "TLS handshake failed: timed out", reached: true, certless: true}) {
+		t.Errorf("no answer: %+v", got)
 	}
 }
 

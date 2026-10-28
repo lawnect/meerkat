@@ -30,10 +30,10 @@ const (
 	addressExpiryWindow = 14 * 24 * time.Hour
 	// Checks further apart than this aren't consecutive: alerts were off.
 	addressStale = 3 * addressInterval
-	// An address already alerted for a handshake Caddy answered is checked
-	// this often instead. Caddy gets certificates on demand, so each of those
-	// checks can be one more failed ACME validation, and Let's Encrypt allows
-	// five an hour per name.
+	// An address already alerted because Caddy had no certificate to show is
+	// checked this often instead. Caddy gets certificates on demand, so each
+	// of those checks can be one more failed ACME validation, and Let's
+	// Encrypt allows five an hour per name.
 	addressRetryInterval = 30 * time.Minute
 )
 
@@ -64,9 +64,10 @@ type addressCheck struct {
 	problem string
 	// failed counts the consecutive checks that did not.
 	failed int
-	// reached is whether Caddy answered, at is when the address was checked.
-	reached bool
-	at      time.Time
+	// reached is whether Caddy answered, certless whether it then showed no
+	// certificate (it may be trying to get one), at when the check ran.
+	reached, certless bool
+	at                time.Time
 }
 
 func (s *Store) routeAlerts(ctx context.Context, env alertEnv, now time.Time) error {
@@ -173,7 +174,7 @@ func (s *Store) checkAddresses(ctx context.Context, hostnames []string, now time
 	state.lastCheck = now
 	var due []string
 	for _, hostname := range hostnames {
-		if check, ok := previous[hostname]; ok && check.reached && check.failed >= addressFailures && now.Sub(check.at) < addressRetryInterval {
+		if check, ok := previous[hostname]; ok && check.certless && check.failed >= addressFailures && now.Sub(check.at) < addressRetryInterval {
 			continue
 		}
 		due = append(due, hostname)
@@ -189,7 +190,7 @@ func (s *Store) checkAddresses(ctx context.Context, hostnames []string, now time
 			if result.problem != "" {
 				failed = check.failed + 1
 			}
-			check, known = addressCheck{result.problem, failed, result.reached, now}, true
+			check, known = addressCheck{result.problem, failed, result.reached, result.certless, now}, true
 		}
 		if known {
 			next[hostname] = check
@@ -199,8 +200,8 @@ func (s *Store) checkAddresses(ctx context.Context, hostnames []string, now time
 }
 
 type addressResult struct {
-	problem string
-	reached bool
+	problem           string
+	reached, certless bool
 }
 
 // probeAddresses runs the handshakes a few at a time. The ones that ctx cut
@@ -214,7 +215,7 @@ func (s *Store) probeAddresses(ctx context.Context, hostnames []string, now time
 		slots <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-slots }()
-			results[i].problem, results[i].reached = probeAddress(ctx, address, hostname, now)
+			results[i] = probeAddress(ctx, address, hostname, now)
 			done[i] = ctx.Err() == nil
 		})
 	}
@@ -240,24 +241,26 @@ func caddyHTTPSAddress(metrics string) string {
 }
 
 // probeAddress is the handshake a browser would make for hostname, verifying
-// the chain and the name. It returns what is wrong, or "", and whether Caddy
-// answered at all.
-func probeAddress(ctx context.Context, address, hostname string, now time.Time) (string, bool) {
+// the chain and the name. The problem is "" when the address passed.
+func probeAddress(ctx context.Context, address, hostname string, now time.Time) addressResult {
 	call, cancel := context.WithTimeout(ctx, addressTimeout)
 	defer cancel()
 	conn, err := addressDial(call, address)
 	if err != nil {
-		return "Can't connect to Caddy: " + failureReason(err), false
+		return addressResult{problem: "Can't connect to Caddy: " + failureReason(err)}
 	}
 	defer conn.Close()
 	client := tls.Client(conn, &tls.Config{ServerName: hostname, RootCAs: addressRoots, MinVersion: tls.VersionTLS12, Time: func() time.Time { return now }})
 	if err := client.HandshakeContext(call); err != nil {
-		return addressProblem(err), true
+		// A certificate that fails verification was shown; anything else
+		// ended the handshake before one was.
+		var verification *tls.CertificateVerificationError
+		return addressResult{problem: addressProblem(err), reached: true, certless: !errors.As(err, &verification)}
 	}
 	if end := client.ConnectionState().PeerCertificates[0].NotAfter; end.Sub(now) < addressExpiryWindow {
-		return "Certificate expires " + end.UTC().Format("2006-01-02") + " (in " + daysLeft(end.Sub(now)) + ")", true
+		return addressResult{problem: "Certificate expires " + end.UTC().Format("2006-01-02") + " (in " + daysLeft(end.Sub(now)) + ")", reached: true}
 	}
-	return "", true
+	return addressResult{reached: true}
 }
 
 func daysLeft(d time.Duration) string {
