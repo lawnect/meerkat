@@ -13,11 +13,30 @@ x-runtime: &runtime
   init: true
   restart: "no"
 
+# Each Connector waits for its run token: the E2E test creates the tunnel
+# through the admin API and writes the token to <name>-token/.
+x-connector: &connector
+  <<: *runtime
+  entrypoint: [/bin/sh, -c]
+  command:
+    - |
+      until test -s /config/token/enrollment.token; do
+        sleep 1
+      done
+      exec /usr/local/bin/connector -config /config/connector.json
+  environment:
+    MEERKAT_ENROLLMENT_TOKEN_FILE: /config/token/enrollment.token
+
 services:
   outlet:
     <<: *runtime
     entrypoint: [/usr/local/bin/outlet]
     command: [-config, /config/outlet.json, -data-dir, /state]
+    environment:
+      # The management host makes poc.test the domain, under which the E2E
+      # test adds public addresses. No DNS resolves these names; requests
+      # give them in the Host header.
+      MEERKAT_ADMIN_HOSTNAME: console.poc.test
     volumes:
       - "${MEERKAT_POC_DIR:?set MEERKAT_POC_DIR}/configs/outlet.json:/config/outlet.json:ro"
       - "${MEERKAT_POC_DIR}/configs/api-cert.pem:/config/api-cert.pem:ro"
@@ -25,17 +44,26 @@ services:
       - "${MEERKAT_POC_DIR}/outlet-data:/state"
     ports:
       - "127.0.0.1:18443:8443"
+      # The public listener, where Caddy would send requests.
+      - "127.0.0.1:18080:8080"
       - "127.0.0.1:2333:2333"
     networks: [control]
 
   rathole:
     <<: *runtime
-    entrypoint: [/usr/local/bin/rathole]
-    command: [--server, /config/server.toml]
+    entrypoint: [/bin/sh, -c]
+    # The Outlet writes rathole's configuration, with every service, when it
+    # starts and whenever a service changes.
+    command:
+      - |
+        until test -f /state/rathole/server.toml; do
+          sleep 1
+        done
+        exec /usr/local/bin/rathole --server /state/rathole/server.toml
     environment:
       RUST_LOG: "off"
     volumes:
-      - "${MEERKAT_POC_DIR}/configs/server.toml:/config/server.toml:ro"
+      - "${MEERKAT_POC_DIR}/outlet-data:/state:ro"
     network_mode: service:outlet
     depends_on: [outlet]
 
@@ -52,26 +80,20 @@ services:
     networks: [service-b]
 
   connector-a:
-    <<: *runtime
-    command: [-config, /config/connector.json]
-    environment:
-      MEERKAT_ENROLLMENT_TOKEN_FILE: /config/enrollment.token
+    <<: *connector
     volumes:
       - "${MEERKAT_POC_DIR}/configs/connector-a.json:/config/connector.json:ro"
-      - "${MEERKAT_POC_DIR}/configs/connector-a.token:/config/enrollment.token:ro"
+      - "${MEERKAT_POC_DIR}/connector-a-token:/config/token:ro"
       - "${MEERKAT_POC_DIR}/configs/root-ca.pem:/config/root-ca.pem:ro"
       - "${MEERKAT_POC_DIR}/connector-a-data:/state"
     networks: [control, service-a]
     depends_on: [outlet, rathole, app-a]
 
   connector-b:
-    <<: *runtime
-    command: [-config, /config/connector.json]
-    environment:
-      MEERKAT_ENROLLMENT_TOKEN_FILE: /config/enrollment.token
+    <<: *connector
     volumes:
       - "${MEERKAT_POC_DIR}/configs/connector-b.json:/config/connector.json:ro"
-      - "${MEERKAT_POC_DIR}/configs/connector-b.token:/config/enrollment.token:ro"
+      - "${MEERKAT_POC_DIR}/connector-b-token:/config/token:ro"
       - "${MEERKAT_POC_DIR}/configs/root-ca.pem:/config/root-ca.pem:ro"
       - "${MEERKAT_POC_DIR}/connector-b-data:/state"
     networks: [control, service-b]

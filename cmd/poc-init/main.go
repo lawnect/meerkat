@@ -18,13 +18,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/lawnect/meerkat/internal/connector"
 	"github.com/lawnect/meerkat/internal/contract"
 	"github.com/lawnect/meerkat/internal/outlet"
-	"github.com/lawnect/meerkat/internal/rathole"
 	"github.com/lawnect/meerkat/internal/securefs"
 )
 
@@ -52,14 +50,12 @@ func certificate(dir string) error {
 	return securefs.Write(filepath.Join(dir, "api-key.pem"), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key}))
 }
 
+// The Outlet starts with no tunnels, as a production one does. The E2E test
+// creates them through the admin API and leaves each run token in
+// <name>-token/, where its Connector waits for it.
 func run() error {
 	dirFlag := flag.String("dir", ".local/poc", "new local fixture directory")
-	enrollmentTTL := flag.Duration("enrollment-ttl", time.Hour, "initial one-time token lifetime")
-	credentialTTL := flag.Duration("credential-ttl", 30*24*time.Hour, "connector API credential lifetime")
 	flag.Parse()
-	if *enrollmentTTL < time.Minute || *credentialTTL < time.Minute {
-		return errors.New("credential lifetimes must be at least one minute")
-	}
 	dir, err := filepath.Abs(*dirFlag)
 	if err != nil {
 		return err
@@ -87,35 +83,21 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	public := base64.StdEncoding.EncodeToString(noise.PublicKey().Bytes())
 	admin := outlet.Token()
-	cfg := outlet.Config{ListenAddress: "0.0.0.0:8443", TLSCertificate: "/config/api-cert.pem", TLSKey: "/config/api-key.pem", AdminTokenHash: outlet.Hash(admin), EnrollmentTTLSeconds: int(enrollmentTTL.Seconds()), CredentialTTLSeconds: int(credentialTTL.Seconds()), TunnelListenAddress: "0.0.0.0:2333"}
-	services := []rathole.ServerService{}
-	for i, letter := range []string{"a", "b"} {
-		name, service, id := "connector-"+letter, "service_"+letter, "connector_"+letter
-		token, serviceToken := outlet.Token(), outlet.Token()
-		remote := contract.Configuration{ConnectorID: id, Revision: 1, ServiceID: service, Target: contract.Target{Host: "app-" + letter, Port: 3000}, Tunnel: contract.Tunnel{RemoteAddress: "outlet:2333", ServerPublicKey: public, ServiceName: service, ServiceToken: serviceToken}}
-		probe := "127.0.0.1:" + strconv.Itoa(31001+i)
-		cfg.Connectors = append(cfg.Connectors, outlet.Seed{Name: name, Configuration: remote, ProbeAddress: probe, EnrollmentHash: outlet.Hash(token), EnrollmentExpiresAt: time.Now().UTC().Add(*enrollmentTTL)})
-		services = append(services, rathole.ServerService{Name: service, Token: serviceToken, BindAddress: probe})
-		local := connector.Config{OutletURL: "https://outlet:8443", Name: name, DataDir: "/state", Target: remote.Target, RatholeBinary: "/usr/local/bin/rathole", RootCA: "/config/root-ca.pem", HeartbeatInterval: "5s"}
+	cfg := outlet.Config{ListenAddress: "0.0.0.0:8443", TLSCertificate: "/config/api-cert.pem", TLSKey: "/config/api-key.pem", AdminTokenHash: outlet.Hash(admin), EnrollmentTTLSeconds: 60 * 60, CredentialTTLSeconds: 30 * 24 * 60 * 60, TunnelListenAddress: "0.0.0.0:2333", TunnelRemoteAddress: "outlet:2333", TunnelServerPublicKey: base64.StdEncoding.EncodeToString(noise.PublicKey().Bytes()), TunnelServerPrivateKey: base64.StdEncoding.EncodeToString(noise.Bytes()), Connectors: []outlet.Seed{}}
+	for _, letter := range []string{"a", "b"} {
+		name := "connector-" + letter
+		// The target is the Connector's local allowlist: it refuses a service
+		// the Outlet points anywhere else.
+		local := connector.Config{OutletURL: "https://outlet:8443", Name: name, DataDir: "/state", Target: contract.Target{Host: "app-" + letter, Port: 3000}, RatholeBinary: "/usr/local/bin/rathole", RootCA: "/config/root-ca.pem", HeartbeatInterval: "5s"}
 		if err := securefs.WriteJSON(filepath.Join(configDir, name+".json"), local); err != nil {
 			return err
 		}
-		if err := securefs.Write(filepath.Join(configDir, name+".token"), []byte(token+"\n")); err != nil {
-			return err
+		for _, sub := range []string{"-data", "-token"} {
+			if err := securefs.Directory(filepath.Join(dir, name+sub)); err != nil {
+				return err
+			}
 		}
-		if err := securefs.Directory(filepath.Join(dir, name+"-data")); err != nil {
-			return err
-		}
-	}
-	// The Outlet's guard listens on 2333 and proxies to rathole's loopback address.
-	server, err := rathole.Server(outlet.DefaultTunnelInternalAddress, base64.StdEncoding.EncodeToString(noise.Bytes()), services)
-	if err != nil {
-		return err
-	}
-	if err := securefs.Write(filepath.Join(configDir, "server.toml"), server); err != nil {
-		return err
 	}
 	if err := securefs.WriteJSON(filepath.Join(configDir, "outlet.json"), cfg); err != nil {
 		return err
@@ -131,7 +113,6 @@ func run() error {
 		return err
 	}
 	fmt.Println("Local fixture created:", dir)
-	fmt.Println("Enrollment tokens expire at:", cfg.Connectors[0].EnrollmentExpiresAt.Format(time.RFC3339))
 	fmt.Println("Tokens and private keys are in permission-restricted files; none are printed.")
 	return nil
 }

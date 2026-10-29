@@ -17,7 +17,7 @@ COPY internal ./internal
 COPY --from=ui-build /src/web/dist ./internal/dashboard/assets/site
 # One go build for every binary, so their packages compile and link in parallel.
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/lawnect/meerkat/internal/contract.Version=${VERSION}" -o /out/ \
-    ./cmd/connector ./cmd/outlet ./cmd/outlet-init ./cmd/demo-service ./cmd/poc-probe
+    ./cmd/connector ./cmd/outlet ./cmd/outlet-init ./cmd/demo-service
 
 # The digest pins the toolchain so a Docker Hub rebuild of the tag doesn't
 # throw away the cached rathole build. Bump it together with the tag.

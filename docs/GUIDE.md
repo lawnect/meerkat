@@ -33,15 +33,15 @@ Vite writes the assets to `web/dist/`. The Docker build embeds them in the Go bi
 
 Go 1.26+, Docker Engine, and Docker Compose are required. Run the commands from the repository root.
 
-The configuration verified for the current work is preserved in `.local/poc-verified/`. To rerun it, use that path instead of `.local/poc/` in the examples below and skip `poc-init`. For E2E tests, also set `MEERKAT_POC_DIR` to its absolute path.
-
-First, build the image and generate a new test configuration. Registration tokens expire one hour after they're generated, so generate the configuration after the build. `poc-init` doesn't overwrite an existing directory.
+Build the image, generate a new test configuration, and start it. `poc-init` doesn't overwrite an existing directory.
 
 ```sh
 docker build -t meerkat-poc:local -f deploy/Dockerfile .
 go run ./cmd/poc-init -dir .local/poc
 docker compose --env-file .local/poc/compose.env -f deploy/compose.poc.yaml up -d --no-build
 ```
+
+Like a production Outlet, this one starts with no tunnels, and the two Connectors wait for their run tokens. The E2E test (see **Verification**) creates both tunnels through the admin API, each with a service and a public address, and gives each Connector its token. After its first run, the tunnels stay in the fixture.
 
 ## Deploy with GitHub Actions and GHCR
 
@@ -198,15 +198,17 @@ docker run --rm --user "$(id -u):$(id -g)" \
 
 ### Verify the local PoC
 
-The running containers are the Outlet API, the rathole server, 2 Connectors, and 2 HTTP test services. The API uses a local test HTTPS certificate, and the data tunnel uses Noise. No host-published ports are created for the apps or the rathole service ports. The rathole service ports are reachable only from the Outlet container network. The two apps are on different Compose networks.
+The running containers are the Outlet, the rathole server, 2 Connectors, and 2 HTTP test services. The admin API uses a local test HTTPS certificate, and the data tunnel uses Noise. No host-published ports are created for the apps or the rathole service ports. The rathole service ports are reachable only from the Outlet container network. The two apps are on different Compose networks.
+
+Once the E2E test has set up the tunnels, the public addresses `app-a.poc.test` and `app-b.poc.test` answer on the Outlet's public listener, where Caddy sends requests in production. No DNS record exists for these names, so pass them in the Host header.
 
 ```sh
 curl --cacert .local/poc/configs/root-ca.pem https://localhost:18443/healthz
-docker compose --env-file .local/poc/compose.env -f deploy/compose.poc.yaml exec -T outlet /usr/local/bin/poc-probe
-docker compose --env-file .local/poc/compose.env -f deploy/compose.poc.yaml exec -T outlet /usr/local/bin/poc-probe -url http://127.0.0.1:31002/ -expect meerkat:app-b
+curl -H 'Host: app-a.poc.test' http://127.0.0.1:18080/
+curl -H 'Host: app-b.poc.test' http://127.0.0.1:18080/
 ```
 
-The tunnel responses are `meerkat:app-a` and `meerkat:app-b`, respectively. localhost:18443 is the admin HTTPS API, and localhost:2333 is the tunnel port, where the Outlet admits connections and passes them to rathole on 127.0.0.1:2334 inside its container. `poc-probe` sends real requests to the loopback service ports inside the Outlet container.
+The responses are `meerkat:app-a` and `meerkat:app-b`, respectively. localhost:18443 is the admin HTTPS API, localhost:18080 is the public listener, and localhost:2333 is the tunnel port, where the Outlet admits connections and passes them to rathole on 127.0.0.1:2334 inside its container.
 
 To check the admin API status, you can pass the curl configuration on standard input instead of putting the token in a command-line argument. Don't print the token value to the terminal.
 
@@ -217,7 +219,7 @@ printf 'header = "Authorization: Bearer %s"\n' "$meerkat_admin_token" |
 unset meerkat_admin_token
 ```
 
-`status` is the admin API heartbeat state, and `tunnel_status` is the result of the Outlet's HTTP probe. `heartbeat.process_state` and `heartbeat.service_health` are the state of the child process and the target service, respectively. With no heartbeat for 15 seconds the status is `stale`, and after 60 seconds it's `disconnected`. When the Outlet restarts, it resets the previous connection states and waits for new heartbeats.
+A tunnel's `status` is `connected` while its Connector sends heartbeats. With no heartbeat for 15 seconds it's `stale`, and after 60 seconds it's `disconnected`. Each service's status is `observed_status` at `/api/v1/connectors/{id}/services`. When the Outlet restarts, it resets the previous connection states and waits for new heartbeats.
 
 ## Verification
 
@@ -228,9 +230,11 @@ npx --yes @redocly/cli@2 lint api/openapi.json --extends=spec
 MEERKAT_E2E=1 go test -v ./test/e2e -count=1
 ```
 
-The E2E tests target only the running `meerkat-poc` project. They check two HTTP tunnels, invalid and reused registration tokens, service authorization, restart after a rathole crash, isolation of service failures, Connector restart, and recovery of stored state after an Outlet restart. These tests stop and restart that PoC's apps and Connectors, so don't run them in a real production environment.
+The E2E test targets only the running `meerkat-poc` project. It creates the two tunnels through the admin API as the console does, then checks requests through both public addresses, unknown and reset run tokens, service authorization, restart after a rathole crash, isolation of a service failure, Connector restart, and that tunnels and reset tokens survive an Outlet restart. It stops and restarts that PoC's apps, Connectors, and Outlet, so don't run it in a real production environment.
 
-Verified on 2026-10-09: on macOS/ARM64 Docker, the 6 E2E items, `go test -race ./...`, `go vet ./...`, and the OpenAPI syntax check passed. Linux ARM64 and AMD64 image builds and rathole execution on both platforms were also confirmed. Connections between real servers and the full E2E run on AMD64 haven't been done yet.
+The E2E test signs in with `admin.token`, which the admin API no longer accepts once the console's first administrator is set up. Don't complete the console setup on the PoC.
+
+Verified on 2026-10-29: on macOS/ARM64 Docker, the 6 E2E items passed on a new fixture and again on the same fixture. The full E2E run on AMD64 hasn't been done yet.
 
 If you used a different configuration directory, change the Compose `--env-file` path and pass its absolute path to the E2E tests.
 
@@ -238,7 +242,7 @@ If you used a different configuration directory, change the Compose `--env-file`
 MEERKAT_E2E=1 MEERKAT_POC_DIR=/absolute/path/to/fixture go test -v ./test/e2e -count=1
 ```
 
-Stopping and cleaning up preserves files and credentials. When you start it again, the Connector uses its stored identity.
+Stopping and cleaning up preserves the fixture: the tunnels, their run tokens, and the Connectors' identities. When you start it again, the Connectors reconnect, and the E2E test reuses the tunnels.
 
 ```sh
 docker compose --env-file .local/poc/compose.env -f deploy/compose.poc.yaml down

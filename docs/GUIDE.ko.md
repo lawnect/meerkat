@@ -33,15 +33,15 @@ Vite가 `web/dist/`에 자산을 생성합니다. Docker 빌드는 이를 Go 바
 
 Go 1.26+, Docker Engine, Docker Compose가 필요합니다. 명령은 저장소 루트에서 실행합니다.
 
-현재 작업에서 검증한 설정은 `.local/poc-verified/`에 보존되어 있습니다. 재실행하려면 아래 예시의 `.local/poc/` 대신 그 경로를 사용하고 `poc-init`은 생략합니다. E2E에도 `MEERKAT_POC_DIR`로 그 절대 경로를 지정합니다.
-
-먼저 이미지를 빌드하고 새 테스트 설정을 생성합니다. 등록 토큰은 생성 후 1시간에 만료되므로 빌드 후 생성합니다. `poc-init`은 기존 디렉터리를 덮어쓰지 않습니다.
+이미지를 빌드하고 새 테스트 설정을 생성한 뒤 실행합니다. `poc-init`은 기존 디렉터리를 덮어쓰지 않습니다.
 
 ```sh
 docker build -t meerkat-poc:local -f deploy/Dockerfile .
 go run ./cmd/poc-init -dir .local/poc
 docker compose --env-file .local/poc/compose.env -f deploy/compose.poc.yaml up -d --no-build
 ```
+
+Outlet은 운영 환경과 마찬가지로 터널이 없는 상태로 시작하며, Connector 2개는 실행 토큰이 생길 때까지 대기합니다. E2E(**검증** 참고)가 관리 API로 두 터널과 각 터널의 서비스·공개 주소를 만들고, 각 Connector에 실행 토큰을 전달합니다. 처음 실행한 뒤에는 터널이 테스트 설정에 남습니다.
 
 ## GitHub Actions와 GHCR 배포
 
@@ -197,15 +197,17 @@ docker run --rm --user "$(id -u):$(id -g)" \
 
 ### 로컬 PoC 확인
 
-실행되는 컨테이너는 Outlet API, rathole server, Connector 2개, HTTP 테스트 서비스 2개입니다. API에는 로컬 테스트용 HTTPS 인증서를 사용하고, 데이터 터널에는 Noise를 사용합니다. 앱과 rathole service 포트에는 호스트 공개 포트를 만들지 않습니다. rathole service 포트는 Outlet 컨테이너 네트워크에서만 접근할 수 있습니다. 두 앱은 서로 다른 Compose 네트워크에 있습니다.
+실행되는 컨테이너는 Outlet, rathole server, Connector 2개, HTTP 테스트 서비스 2개입니다. 관리 API에는 로컬 테스트용 HTTPS 인증서를 사용하고, 데이터 터널에는 Noise를 사용합니다. 앱과 rathole service 포트에는 호스트 공개 포트를 만들지 않습니다. rathole service 포트는 Outlet 컨테이너 네트워크에서만 접근할 수 있습니다. 두 앱은 서로 다른 Compose 네트워크에 있습니다.
+
+E2E가 터널을 설정한 뒤에는 공개 주소 `app-a.poc.test`, `app-b.poc.test`가 Outlet의 공개 리스너에서 응답합니다. 운영 환경에서 Caddy가 요청을 전달하는 곳입니다. 두 이름에는 DNS 레코드가 없으므로 Host 헤더로 지정합니다.
 
 ```sh
 curl --cacert .local/poc/configs/root-ca.pem https://localhost:18443/healthz
-docker compose --env-file .local/poc/compose.env -f deploy/compose.poc.yaml exec -T outlet /usr/local/bin/poc-probe
-docker compose --env-file .local/poc/compose.env -f deploy/compose.poc.yaml exec -T outlet /usr/local/bin/poc-probe -url http://127.0.0.1:31002/ -expect meerkat:app-b
+curl -H 'Host: app-a.poc.test' http://127.0.0.1:18080/
+curl -H 'Host: app-b.poc.test' http://127.0.0.1:18080/
 ```
 
-터널 응답은 각각 `meerkat:app-a`, `meerkat:app-b`입니다. localhost:18443은 관리 HTTPS API, localhost:2333은 터널 포트이며, Outlet이 연결을 받을지 정한 뒤 컨테이너 안의 127.0.0.1:2334에서 수신하는 rathole로 전달합니다. `poc-probe`는 Outlet 컨테이너 안의 loopback service port로 실제 요청을 보냅니다.
+응답은 각각 `meerkat:app-a`, `meerkat:app-b`입니다. localhost:18443은 관리 HTTPS API, localhost:18080은 공개 리스너, localhost:2333은 터널 포트입니다. 터널 포트에서는 Outlet이 연결을 받을지 정한 뒤 컨테이너 안의 127.0.0.1:2334에서 수신하는 rathole로 전달합니다.
 
 관리 API의 상태를 확인할 때는 토큰을 명령행 인자에 넣지 않고 curl 설정을 표준 입력으로 전달할 수 있습니다. 토큰 값을 터미널에 출력하지 않습니다.
 
@@ -216,7 +218,7 @@ printf 'header = "Authorization: Bearer %s"\n' "$meerkat_admin_token" |
 unset meerkat_admin_token
 ```
 
-`status`는 관리 API heartbeat 상태이며, `tunnel_status`는 Outlet의 HTTP probe 결과입니다. `heartbeat.process_state`와 `heartbeat.service_health`는 각각 자식 프로세스와 대상 서비스 상태입니다. heartbeat가 15초 없으면 `stale`, 60초 없으면 `disconnected`입니다. Outlet 재시작 시 이전 연결 상태는 초기화하고 새 heartbeat를 기다립니다.
+터널의 `status`는 Connector가 heartbeat를 보내는 동안 `connected`입니다. heartbeat가 15초 없으면 `stale`, 60초 없으면 `disconnected`입니다. 서비스 상태는 `/api/v1/connectors/{id}/services`의 `observed_status`로 확인합니다. Outlet 재시작 시 이전 연결 상태는 초기화하고 새 heartbeat를 기다립니다.
 
 ## 검증
 
@@ -227,9 +229,11 @@ npx --yes @redocly/cli@2 lint api/openapi.json --extends=spec
 MEERKAT_E2E=1 go test -v ./test/e2e -count=1
 ```
 
-E2E는 실행 중인 `meerkat-poc` 프로젝트만 대상으로 합니다. 두 HTTP 터널, 잘못된/재사용 등록 토큰, 서비스 권한, rathole crash 후 재시작, 서비스 장애 격리, Connector 재시작, Outlet 재시작 후 저장 상태 복구를 확인합니다. 이 테스트는 해당 PoC의 앱과 Connector를 중지·재시작하므로 실제 운영 환경에서는 실행하지 않습니다.
+E2E는 실행 중인 `meerkat-poc` 프로젝트만 대상으로 합니다. 관리 화면과 같은 방식으로 관리 API에서 두 터널을 만든 뒤, 두 공개 주소를 통한 요청, 잘못된 실행 토큰과 초기화된 실행 토큰, 서비스 권한, rathole crash 후 재시작, 서비스 장애 격리, Connector 재시작, Outlet 재시작 후 터널과 초기화된 토큰의 유지를 확인합니다. 이 테스트는 해당 PoC의 앱, Connector, Outlet을 중지·재시작하므로 실제 운영 환경에서는 실행하지 않습니다.
 
-2026-10-09 검증: macOS/ARM64 Docker 환경에서 E2E 6개 항목, `go test -race ./...`, `go vet ./...`, OpenAPI 문법 검사 통과. Linux ARM64와 AMD64 이미지 빌드 및 두 플랫폼의 rathole 실행도 확인했습니다. 실제 서버 간 연결과 AMD64의 전체 E2E는 아직 수행하지 않았습니다.
+E2E는 `admin.token`으로 인증합니다. 관리 화면에서 첫 관리자를 설정하면 관리 API가 이 토큰을 더 이상 받지 않으므로, PoC에서는 초기 설정을 완료하지 않습니다.
+
+2026-10-29 검증: macOS/ARM64 Docker 환경에서 새 테스트 설정과 같은 설정의 재실행 모두 E2E 6개 항목 통과. AMD64의 전체 E2E는 아직 수행하지 않았습니다.
 
 다른 설정 디렉터리를 사용했다면 Compose의 `--env-file` 경로를 바꾸고 E2E에 그 절대 경로를 전달합니다.
 
@@ -237,7 +241,7 @@ E2E는 실행 중인 `meerkat-poc` 프로젝트만 대상으로 합니다. 두 H
 MEERKAT_E2E=1 MEERKAT_POC_DIR=/absolute/path/to/fixture go test -v ./test/e2e -count=1
 ```
 
-중지·정리할 때 파일과 자격 증명은 보존됩니다. 다시 실행하면 Connector가 저장된 identity를 사용합니다.
+중지·정리할 때 테스트 설정의 터널, 실행 토큰, Connector identity는 보존됩니다. 다시 실행하면 Connector가 다시 연결되고, E2E는 기존 터널을 그대로 사용합니다.
 
 ```sh
 docker compose --env-file .local/poc/compose.env -f deploy/compose.poc.yaml down
