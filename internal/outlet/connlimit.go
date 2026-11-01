@@ -1,6 +1,7 @@
 package outlet
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -39,7 +40,9 @@ type connLimits struct {
 	maxUpload int64            // bytes; 0 is no limit
 	uploads   map[string]int64 // per host, overriding maxUpload
 	idle      time.Duration
-	minRate   float64 // upload bytes per second
+	minRate   float64                  // upload bytes per second
+	respond   time.Duration            // 0 is no limit
+	responds  map[string]time.Duration // per host, overriding respond
 }
 
 func compileConnectionLimits(c control.ConnectionLimits) *connLimits {
@@ -49,11 +52,28 @@ func compileConnectionLimits(c control.ConnectionLimits) *connLimits {
 		uploads:          make(map[string]int64, len(c.Hosts)),
 		idle:             time.Duration(c.IdleTimeoutSeconds) * time.Second,
 		minRate:          float64(c.MinUploadKBPerSecond) * 1024,
+		respond:          time.Duration(c.ResponseTimeoutSeconds) * responseTimeoutUnit,
+		responds:         make(map[string]time.Duration, len(c.ResponseTimeouts)),
 	}
 	for _, h := range c.Hosts {
 		l.uploads[h.Host] = int64(h.MaxUploadMB) << 20
 	}
+	for _, h := range c.ResponseTimeouts {
+		l.responds[h.Host] = time.Duration(h.Seconds) * responseTimeoutUnit
+	}
 	return l
+}
+
+// responseTimeoutUnit is a second of the response timeouts. Tests shorten it.
+var responseTimeoutUnit = time.Second
+
+// responseTimeout is how long the services of host get to send their
+// response headers; 0 is no limit.
+func (l *connLimits) responseTimeout(host string) time.Duration {
+	if d, ok := l.responds[host]; ok {
+		return d
+	}
+	return l.respond
 }
 
 func (l *connLimits) uploadLimit(host string) int64 {
@@ -128,14 +148,15 @@ func (s *Store) reloadConnectionLimits(ctx context.Context) error {
 }
 
 // connectionLimits never returns nil, so callers need no checks; without
-// stored settings nothing is limited.
+// stored settings nothing is limited, but services still get the default
+// time to answer.
 func (s *Store) connectionLimits() *connLimits {
 	if s.connections != nil {
 		if limits := s.connections.config.Load(); limits != nil {
 			return limits
 		}
 	}
-	return &connLimits{}
+	return &connLimits{respond: control.DefaultResponseTimeoutSeconds * responseTimeoutUnit}
 }
 
 // refuse answers a request turned away before any work, like limitRequest.
@@ -341,6 +362,48 @@ func finishTransfer(w http.ResponseWriter, body *clientBody) {
 	}
 }
 
+// connectionLimitsRequest is the body of PUT connection-limits. Its per-host
+// entries need every key: a missing or null value would read as zero, which
+// lifts the limit. The request's strict decoding doesn't reach into a
+// custom UnmarshalJSON, so the entries decode strictly themselves; stored
+// limits read them leniently, as control.ConnectionLimits.
+type connectionLimitsRequest struct {
+	control.ConnectionLimits
+	Hosts            []uploadEntry  `json:"hosts"`
+	ResponseTimeouts []timeoutEntry `json:"response_timeouts"`
+}
+
+type uploadEntry control.HostUpload
+
+func (e *uploadEntry) UnmarshalJSON(data []byte) error {
+	type plain control.HostUpload
+	return decodeEntry(data, (*plain)(e), "host", "max_upload_mb")
+}
+
+type timeoutEntry control.HostResponseTimeout
+
+func (e *timeoutEntry) UnmarshalJSON(data []byte) error {
+	type plain control.HostResponseTimeout
+	return decodeEntry(data, (*plain)(e), "host", "response_timeout_seconds")
+}
+
+var errIncompleteEntry = errors.New("entry is missing a key")
+
+func decodeEntry(data []byte, v any, keys ...string) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if value, ok := fields[key]; !ok || bytes.Equal(value, []byte("null")) {
+			return errIncompleteEntry
+		}
+	}
+	strict := json.NewDecoder(bytes.NewReader(data))
+	strict.DisallowUnknownFields()
+	return strict.Decode(v)
+}
+
 func (s *Store) getConnectionLimits(w http.ResponseWriter, r *http.Request) {
 	if !s.alertsAdmin(w, r) {
 		return
@@ -357,9 +420,20 @@ func (s *Store) putConnectionLimits(w http.ResponseWriter, r *http.Request) {
 	if !s.alertsAdmin(w, r) {
 		return
 	}
-	var req control.ConnectionLimits
-	if !decode(w, r, &req, "max_upload_mb", "per_ip_concurrent", "total_concurrent", "idle_timeout_seconds", "min_upload_kb_per_second", "hosts") {
+	var body connectionLimitsRequest
+	// Two lists of up to 50 hostnames of up to 253 characters.
+	if !decodeLimited(w, r, &body, 64<<10, "max_upload_mb", "per_ip_concurrent", "total_concurrent", "idle_timeout_seconds", "min_upload_kb_per_second", "hosts",
+		"response_timeout_seconds", "response_timeouts") {
 		return
+	}
+	req := body.ConnectionLimits
+	req.Hosts = make([]control.HostUpload, len(body.Hosts))
+	for i, h := range body.Hosts {
+		req.Hosts[i] = control.HostUpload(h)
+	}
+	req.ResponseTimeouts = make([]control.HostResponseTimeout, len(body.ResponseTimeouts))
+	for i, h := range body.ResponseTimeouts {
+		req.ResponseTimeouts[i] = control.HostResponseTimeout(h)
 	}
 	s.saving.Lock()
 	saved, err := s.control.SetConnectionLimits(r.Context(), req, s.now())

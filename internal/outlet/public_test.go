@@ -436,9 +436,7 @@ func TestProxyKeepsConnectionsForTheWholeBurst(t *testing.T) {
 }
 
 func TestUpstreamFailuresAnswerQuickly(t *testing.T) {
-	previous := upstreamHeaderTimeout
-	upstreamHeaderTimeout = 200 * time.Millisecond
-	defer func() { upstreamHeaderTimeout = previous }()
+	shortenResponseTimeouts(t, 200*time.Millisecond)
 	hang := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
 	reset := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		conn, _, err := w.(http.Hijacker).Hijack()
@@ -579,4 +577,12 @@ func TestProxySetsTheRealClientAddress(t *testing.T) {
 		t.Fatalf("upgrade: %v %v", res, err)
 	}
 	check("websocket", <-seen, "198.51.100.4")
+}
+
+// shortenResponseTimeouts makes the default response timeout d, and the
+// others in proportion, for handlers built during the test.
+func shortenResponseTimeouts(t *testing.T, d time.Duration) {
+	previous := responseTimeoutUnit
+	responseTimeoutUnit = d / control.DefaultResponseTimeoutSeconds
+	t.Cleanup(func() { responseTimeoutUnit = previous })
 }

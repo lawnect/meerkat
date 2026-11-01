@@ -213,6 +213,8 @@ let connectionLimits: ConnectionLimits = {
   idle_timeout_seconds: 30,
   min_upload_kb_per_second: 1,
   hosts: [{ host: 'photos.example.test', max_upload_mb: 2048 }],
+  response_timeout_seconds: 60,
+  response_timeouts: [{ host: 'paper.example.test', response_timeout_seconds: 600 }],
 };
 let hsts: HstsSettings = { enabled: true };
 // 데모는 공개 주소에서 203.0.113.24로 접속한 것으로 둡니다.
@@ -1497,9 +1499,14 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     const hostnameOk = (host: string) => host.length <= 253 && host.split('.').every((label) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
     const hosts = Array.isArray(next.hosts) ? next.hosts.map((entry) => ({ host: typeof entry?.host === 'string' ? entry.host.trim().toLowerCase() : '', max_upload_mb: entry?.max_upload_mb })) : null;
     const hostsOk = hosts !== null && hosts.length <= 50 && new Set(hosts.map((entry) => entry.host)).size === hosts.length && hosts.every((entry) => hostnameOk(entry.host) && within(entry.max_upload_mb, 102400));
-    const idle = next.idle_timeout_seconds;
-    if (!within(next.max_upload_mb, 102400) || !within(next.per_ip_concurrent, 1000000) || !within(next.total_concurrent, 1000000) || !(idle === 0 || (within(idle, 3600) && idle >= 5)) || !within(next.min_upload_kb_per_second, 100000) || !hostsOk) fail('invalid_connection_limits');
-    connectionLimits = { ...next, hosts: hosts! };
+    const offOrWithin = (value: unknown) => value === 0 || (within(value, 3600) && (value as number) >= 5);
+    const timeouts = Array.isArray(next.response_timeouts) ? next.response_timeouts.map((entry) => ({ host: typeof entry?.host === 'string' ? entry.host.trim().toLowerCase() : '', response_timeout_seconds: entry?.response_timeout_seconds })) : null;
+    const timeoutsOk = timeouts !== null && timeouts.length <= 50 && new Set(timeouts.map((entry) => entry.host)).size === timeouts.length && timeouts.every((entry) => hostnameOk(entry.host) && offOrWithin(entry.response_timeout_seconds));
+    // 실제 서버처럼 모든 키가 있어야 합니다(응답 대기 시간 이전의 콘솔이 저장해 값을 지우지 않도록).
+    if (next.response_timeout_seconds === undefined || next.response_timeouts === undefined) fail('invalid_request');
+    if (!within(next.max_upload_mb, 102400) || !within(next.per_ip_concurrent, 1000000) || !within(next.total_concurrent, 1000000) || !offOrWithin(next.idle_timeout_seconds) || !within(next.min_upload_kb_per_second, 100000) || !hostsOk ||
+      !offOrWithin(next.response_timeout_seconds) || !timeoutsOk) fail('invalid_connection_limits');
+    connectionLimits = { ...next, hosts: hosts!, response_timeouts: timeouts! };
     return structuredClone(connectionLimits);
   }
   if (path === '/api/v1/security/tunnel-guard') return tunnelGuardApi(method, input);

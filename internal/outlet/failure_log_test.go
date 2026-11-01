@@ -69,9 +69,7 @@ func (f proxyFixture) limitHost(tb testing.TB, host string) {
 // the client got and the service involved; the ones that went well, and
 // requests for addresses nobody routes, are not.
 func TestFailureLogCauses(t *testing.T) {
-	previous := upstreamHeaderTimeout
-	upstreamHeaderTimeout = 200 * time.Millisecond
-	defer func() { upstreamHeaderTimeout = previous }()
+	shortenResponseTimeouts(t, 200*time.Millisecond)
 	app := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		switch r.URL.Path {
@@ -227,9 +225,7 @@ func TestFailureLogTurnedAway(t *testing.T) {
 // A request that goes on to another service is logged once, for how it
 // ended, and not at all when that was well.
 func TestFailureLogCountsARetryOnce(t *testing.T) {
-	previous := upstreamHeaderTimeout
-	upstreamHeaderTimeout = 200 * time.Millisecond
-	defer func() { upstreamHeaderTimeout = previous }()
+	shortenResponseTimeouts(t, 200*time.Millisecond)
 	broken := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
 	hang := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
 	for _, c := range []struct {

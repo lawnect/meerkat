@@ -255,7 +255,7 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 - 접속 주소는 Caddy가 붙인 `X-Forwarded-For`의 마지막 항목이다. 없으면 IP·서브넷·IP별 엔드포인트 제한은 건너뛴다(모든 클라이언트가 한 버킷을 나누는 일을 피한다). Caddy가 내부 주소(Host `outlet:8080`, `X-Forwarded-For` 없음)로 보내는 `/.well-known/meerkat/cert-ask` 확인은 제한하지 않는다. 클라이언트가 Caddy를 거쳐 같은 Host를 보내면 `X-Forwarded-For`가 붙으므로 인증서 확인으로 취급하지 않는다. ACME HTTP-01 응답(`/.well-known/acme-challenge/`)은 Caddy가 직접 처리하므로 Outlet에 도달한 같은 경로는 일반 요청이다. 80번 포트 요청은 본문을 읽지 않고 HTTPS로 리디렉션만 하므로 제한하지 않는다. 로컬 관리 포트는 이 제한을 거치지 않는다.
 - 버킷은 10분 동안 쓰지 않으면 지우고 전체 약 10만 개를 넘으면 가장 오래 쓰지 않은 것부터 지운다.
 
-**연결 제한(connection limits).** 요청 하나나 클라이언트 하나가 붙잡을 수 있는 자원을 제한한다. `GET`과 `PUT /api/v1/security/connection-limits`는 같은 객체를 주고받으며 `PUT`은 모든 키를 담아야 하고 범위를 벗어나면 `400 invalid_connection_limits`이다. 설정은 재시작 없이 바로 적용하고, 값이 0이면 그 제한은 꺼진다. 아래가 기본값이다.
+**연결 제한(connection limits).** 요청 하나나 클라이언트 하나가 붙잡을 수 있는 자원을 제한한다. `GET`과 `PUT /api/v1/security/connection-limits`는 같은 객체를 주고받으며 `PUT`은 모든 키를 담아야 하고(`hosts`·`response_timeouts` 항목의 두 키도. 없거나 `null`이면 0, 곧 제한 없음으로 읽히지 않도록 `400 invalid_request`), 범위를 벗어나면 `400 invalid_connection_limits`이다. 설정은 재시작 없이 바로 적용하고, 값이 0이면 그 제한은 꺼진다. 아래가 기본값이다.
 
 ~~~
 {
@@ -264,7 +264,9 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
   "total_concurrent": 4096,
   "idle_timeout_seconds": 30,
   "min_upload_kb_per_second": 1,
-  "hosts": [{"host": "files.example.com", "max_upload_mb": 4096}]
+  "hosts": [{"host": "files.example.com", "max_upload_mb": 4096}],
+  "response_timeout_seconds": 60,
+  "response_timeouts": [{"host": "ai.example.com", "response_timeout_seconds": 600}]
 }
 ~~~
 
@@ -272,6 +274,7 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 - `per_ip_concurrent`(0–1000000)는 클라이언트 주소(IPv6는 /56 단위)당 처리 중인 공개 요청 수다. 관리 호스트와 커넥터 API를 포함한 모든 공개 요청에 적용하며, 넘으면 `429`, `Retry-After: 1`, 본문 `Too many requests in progress from this address`다.
 - `total_concurrent`(0–1000000)는 모든 클라이언트를 합쳐 서비스로 전달 중인 요청 수다. 처리 중인 요청 하나에 Outlet 메모리 약 170KB가 들므로 기본값 4096이면 최대 약 700MB다. 넘으면 `503`, `Retry-After: 5`다. 관리 호스트와 커넥터 API 요청은 세지 않으므로 프록시가 가득 차도 관리 화면과 터널 상태 보고는 계속 동작한다.
 - `idle_timeout_seconds`(0 또는 5–3600)는 클라이언트가 보내는 본문 읽기와 클라이언트로의 응답 쓰기 각각에 주는 시간이다. 그동안 진행이 없으면 연결을 끊고, 업로드 중이었다면 `408`을 반환한다. 서비스의 응답을 기다리는 시간, 스트림 응답 중간의 쉼, keep-alive 연결의 다음 요청 대기, 업그레이드(WebSocket) 이후의 연결은 포함하지 않는다.
+- `response_timeout_seconds`(0 또는 5–3600)는 요청을 본문까지 서비스로 보낸 뒤 응답 헤더를 기다리는 시간이다(nginx의 `proxy_read_timeout`과 같은 기본 60초). 넘으면 `504`, 본문 `upstream timed out`이고 실패 요청에 `timeout`으로 남는다. 헤더가 온 뒤 본문(스트림)은 이 시간과 관계없이 이어진다. `response_timeouts`(최대 50개, 호스트 이름 하나와 그 시간, 0이면 제한 없음)에 있는 호스트는 그 값을 따른다. 첫 조각이 올 때까지 헤더를 보내지 않는 LLM 게이트웨이처럼 응답 시작이 늦은 서비스에 쓴다. 서비스 자체의 시한이 있으면 그보다 조금 길게 두어 서비스의 오류 응답이 클라이언트에 닿게 한다. 이 키가 없던 때 저장한 설정은 60초로 읽고, 이 키가 없는 `PUT`은 `400 invalid_request`다(이전 콘솔이 저장해 값을 지우지 않도록). 0이면 연결된 채 응답하지 않는 서비스를 클라이언트가 떠날 때까지 기다리고, 다음 서비스로 재시도하지도 않는다. `PUT` 본문은 64KB까지다.
 - `min_upload_kb_per_second`(0–100000)는 요청이 시작된 뒤 평균 업로드 속도의 하한이다. 처음 유휴 시간(유휴 제한이 꺼져 있으면 30초)을 유예한 뒤 이보다 느리면 `408`로 끊는다. 응답(다운로드)에는 적용하지 않는다.
 - 본문을 끝까지 받지 않고 답한 요청(404, 429, 413, 서비스의 조기 응답 등)은 남은 본문을 기다려 비우지 않고, 응답 뒤 연결을 닫는다. 본문 일부만 보내고 멈춘 클라이언트가 제한에 잡히지 않은 채 연결을 붙잡지 못하게 하기 위해서다.
 - 동시 요청 제한으로 거부한 요청은 요청 제한 거부와 함께 `rate_limited`로 집계하며 `rate_limit` 알림에는 `concurrent`(IP별)와 `capacity`(전체)로 나타난다.

@@ -25,11 +25,6 @@ const certificateAskPath = "/.well-known/meerkat/cert-ask"
 // expression in time proportional to its length.
 const maxPublicPath = 8192
 
-// upstreamHeaderTimeout bounds the wait for an application's response
-// headers, like nginx's proxy_read_timeout; the body may stream for longer.
-// Tests shorten it before building a handler.
-var upstreamHeaderTimeout = 60 * time.Second
-
 // upstreamIdlePerService keeps an idle connection for every request that was
 // in flight at once, so a burst never closes connections it will need again.
 const upstreamIdlePerService = 16384
@@ -45,13 +40,79 @@ func upstreamTransport() *http.Transport {
 		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		MaxIdleConnsPerHost:   upstreamIdlePerService,
 		IdleConnTimeout:       90 * time.Second,
-		ResponseHeaderTimeout: upstreamHeaderTimeout,
 		ExpectContinueTimeout: time.Second,
 		// A proxy passes encodings through; transparent gzip would make the
 		// Outlet decompress responses the client did not ask to compress.
 		DisableCompression:     true,
 		MaxResponseHeaderBytes: 1 << 20,
 	}
+}
+
+// headerTimeoutKey carries a proxied request's response timeout to
+// headerDeadline.
+type headerTimeoutKey struct{}
+
+// errHeaderTimeout fails a proxied request whose service took longer than
+// the response timeout to send its response headers. It is a timeout, so the
+// proxy answers 504.
+var errHeaderTimeout error = headerTimeoutError{}
+
+type headerTimeoutError struct{}
+
+func (headerTimeoutError) Error() string   { return "timeout awaiting response headers" }
+func (headerTimeoutError) Timeout() bool   { return true }
+func (headerTimeoutError) Temporary() bool { return true }
+
+// headerDeadline gives the service the response timeout of the request's
+// hostname to send its response headers, counted like net/http's
+// ResponseHeaderTimeout from when the request is written, again for each
+// attempt the transport makes. That one is set per transport, and a
+// transport per timeout would split the pool, redialing tunnel channels for
+// every change of a timeout and for every hostname of a service with its own.
+// Once the headers are in, the body streams for as long as it takes.
+type headerDeadline struct{ *http.Transport }
+
+func (t headerDeadline) RoundTrip(r *http.Request) (*http.Response, error) {
+	timeout, _ := r.Context().Value(headerTimeoutKey{}).(time.Duration)
+	if timeout <= 0 {
+		return t.Transport.RoundTrip(r)
+	}
+	ctx, cancel := context.WithCancelCause(r.Context())
+	var mu sync.Mutex
+	var timer *time.Timer
+	answered := false
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		WroteRequest: func(httptrace.WroteRequestInfo) {
+			mu.Lock()
+			defer mu.Unlock()
+			// A service may answer before it has the whole body; the
+			// wait is over then.
+			if answered {
+				return
+			}
+			if timer != nil {
+				timer.Stop()
+			}
+			timer = time.AfterFunc(timeout, func() { cancel(errHeaderTimeout) })
+		},
+	})
+	res, err := t.Transport.RoundTrip(r.WithContext(ctx))
+	mu.Lock()
+	answered = true
+	if timer != nil {
+		timer.Stop()
+	}
+	mu.Unlock()
+	// The deadline may have passed as the headers came in; the body would
+	// fail on the cancelled context.
+	if context.Cause(ctx) == errHeaderTimeout {
+		if res != nil {
+			res.Body.Close()
+		}
+		return nil, errHeaderTimeout
+	}
+	// The context ends with the client's request, after the body is read.
+	return res, err
 }
 
 type bufferPool struct{ pool sync.Pool }
@@ -189,7 +250,7 @@ func (s *Store) certificateAllowed(ctx context.Context, hostname string) (bool, 
 // expose the administrator API for arbitrary public hostnames.
 func (s *Store) PublicHandler() http.Handler {
 	admin := s.Handler()
-	transport := upstreamTransport()
+	transport := headerDeadline{upstreamTransport()}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(context.WithValue(r.Context(), originKey{}, publicOrigin{ip: forwardedClient(r)}))
 		if s.isCertificateAsk(r) {
@@ -334,6 +395,7 @@ func (s *Store) PublicHandler() http.Handler {
 		// A request that can't reach one service goes on to the next, when
 		// it can be sent again (see retryable). The next one is chosen afresh:
 		// by then its route may be gone or the service down.
+		headerTimeout := limits.responseTimeout(host)
 		tried := map[string]bool{}
 		// waited is the time spent on attempts that failed, the services'.
 		var waited time.Duration
@@ -394,7 +456,8 @@ func (s *Store) PublicHandler() http.Handler {
 					if forwardedFor != "" {
 						pr.Out.Header.Set("X-Forwarded-For", forwardedFor)
 					}
-					pr.Out = pr.Out.WithContext(httptrace.WithClientTrace(pr.Out.Context(), &httptrace.ClientTrace{
+					outbound := context.WithValue(pr.Out.Context(), headerTimeoutKey{}, headerTimeout)
+					pr.Out = pr.Out.WithContext(httptrace.WithClientTrace(outbound, &httptrace.ClientTrace{
 						GotConn: func(httptrace.GotConnInfo) { timed.ready.Store(time.Now().UnixNano()) },
 						WroteHeaders: func() {
 							timed.sent.Store(time.Now().UnixNano())

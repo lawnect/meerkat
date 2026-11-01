@@ -254,6 +254,12 @@ export interface HostUpload {
   max_upload_mb: number;
 }
 
+// 호스트별 응답 대기 시간(초). 0이면 그 호스트는 기다리는 시간을 제한하지 않습니다.
+export interface HostResponseTimeout {
+  host: string;
+  response_timeout_seconds: number;
+}
+
 export interface ConnectionLimits {
   max_upload_mb: number;
   per_ip_concurrent: number;
@@ -261,6 +267,8 @@ export interface ConnectionLimits {
   idle_timeout_seconds: number;
   min_upload_kb_per_second: number;
   hosts: HostUpload[];
+  response_timeout_seconds: number; // 서비스가 응답 헤더를 보낼 때까지 기다리는 시간. 0 또는 5–3600, 기본 60
+  response_timeouts: HostResponseTimeout[];
 }
 
 // 관리 콘솔 접근 제한(GET/PUT /api/v1/security/admin-access). 켜져 있으면 공개 관리 주소의 콘솔은 허용 대역에서만 열립니다.

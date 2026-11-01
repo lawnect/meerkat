@@ -612,9 +612,7 @@ func TestLatencySplitsOutletAndUpstream(t *testing.T) {
 // side, and the time a service that timed out took before a retry counts
 // for the services, not the Outlet.
 func TestLatencyCountsTheServicesTime(t *testing.T) {
-	previous := upstreamHeaderTimeout
-	upstreamHeaderTimeout = 200 * time.Millisecond
-	defer func() { upstreamHeaderTimeout = previous }()
+	shortenResponseTimeouts(t, 200*time.Millisecond)
 	hang := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
 	app := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)

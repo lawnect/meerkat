@@ -17,10 +17,18 @@ import (
 	"github.com/lawnect/meerkat/internal/control"
 )
 
+// setConnectionLimits saves limits, with the default response timeout when
+// it is zero; a test of no response timeout saves it with request.
 func (f proxyFixture) setConnectionLimits(tb testing.TB, limits control.ConnectionLimits) {
 	tb.Helper()
 	if limits.Hosts == nil {
 		limits.Hosts = []control.HostUpload{}
+	}
+	if limits.ResponseTimeouts == nil {
+		limits.ResponseTimeouts = []control.HostResponseTimeout{}
+	}
+	if limits.ResponseTimeoutSeconds == 0 {
+		limits.ResponseTimeoutSeconds = control.DefaultResponseTimeoutSeconds
 	}
 	if w := request(f.store.Handler(), "PUT", "/api/v1/security/connection-limits", f.admin, limits); w.Code != 200 {
 		tb.Fatalf("connection limits: %d %s", w.Code, w.Body.String())
@@ -45,7 +53,8 @@ func TestConnectionLimitsAPI(t *testing.T) {
 	f := newProxyFixture(t)
 	w := request(f.store.Handler(), "GET", "/api/v1/security/connection-limits", f.admin, nil)
 	var got control.ConnectionLimits
-	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil || got.MaxUploadMB != 100 || got.IdleTimeoutSeconds != 30 || got.Hosts == nil {
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil || got.MaxUploadMB != 100 || got.IdleTimeoutSeconds != 30 || got.Hosts == nil ||
+		got.ResponseTimeoutSeconds != 60 || got.ResponseTimeouts == nil {
 		t.Fatalf("defaults: %d %s", w.Code, w.Body.String())
 	}
 	for _, bad := range []control.ConnectionLimits{
@@ -55,9 +64,16 @@ func TestConnectionLimitsAPI(t *testing.T) {
 		{TotalConcurrent: 1_000_001},
 		{Hosts: []control.HostUpload{{Host: "*", MaxUploadMB: 1}}},
 		{Hosts: []control.HostUpload{{Host: "a.example.com"}, {Host: "A.example.com"}}},
+		{ResponseTimeoutSeconds: 4},
+		{ResponseTimeoutSeconds: 3601},
+		{ResponseTimeouts: []control.HostResponseTimeout{{Host: "ai.example.com", Seconds: 3601}}},
+		{ResponseTimeouts: []control.HostResponseTimeout{{Host: "*.example.com", Seconds: 600}}},
 	} {
 		if bad.Hosts == nil {
 			bad.Hosts = []control.HostUpload{}
+		}
+		if bad.ResponseTimeouts == nil {
+			bad.ResponseTimeouts = []control.HostResponseTimeout{}
 		}
 		if w := request(f.store.Handler(), "PUT", "/api/v1/security/connection-limits", f.admin, bad); w.Code != 400 || !strings.Contains(w.Body.String(), "invalid_connection_limits") {
 			t.Fatalf("%+v: %d %s", bad, w.Code, w.Body.String())
@@ -67,10 +83,75 @@ func TestConnectionLimitsAPI(t *testing.T) {
 	if w.Code != 400 {
 		t.Fatalf("partial settings accepted: %d", w.Code)
 	}
-	f.setConnectionLimits(t, control.ConnectionLimits{MaxUploadMB: 5, Hosts: []control.HostUpload{{Host: " Big.Example.com ", MaxUploadMB: 0}}})
+	// A per-host entry without its value would read as no limit.
+	bodyWith := func(hosts, timeouts any) map[string]any {
+		return map[string]any{"max_upload_mb": 1, "per_ip_concurrent": 0, "total_concurrent": 0, "idle_timeout_seconds": 0, "min_upload_kb_per_second": 0,
+			"hosts": hosts, "response_timeout_seconds": 60, "response_timeouts": timeouts}
+	}
+	for name, body := range map[string]map[string]any{
+		"null timeout":    bodyWith([]any{}, []any{map[string]any{"host": "ai.example.com", "response_timeout_seconds": nil}}),
+		"missing timeout": bodyWith([]any{}, []any{map[string]any{"host": "ai.example.com"}}),
+		"unknown key":     bodyWith([]any{}, []any{map[string]any{"host": "ai.example.com", "response_timeout_seconds": 600, "seconds": 600}}),
+		"null upload":     bodyWith([]any{map[string]any{"host": "big.example.com", "max_upload_mb": nil}}, []any{}),
+		"missing upload":  bodyWith([]any{map[string]any{"host": "big.example.com"}}, []any{}),
+		"missing host":    bodyWith([]any{}, []any{map[string]any{"response_timeout_seconds": 600}}),
+	} {
+		if w := request(f.store.Handler(), "PUT", "/api/v1/security/connection-limits", f.admin, body); w.Code != 400 {
+			t.Fatalf("%s accepted: %d %s", name, w.Code, w.Body.String())
+		}
+	}
+	if w := request(f.store.Handler(), "PUT", "/api/v1/security/connection-limits", f.admin,
+		bodyWith([]any{map[string]any{"host": "big.example.com", "max_upload_mb": 0}}, []any{map[string]any{"host": "ai.example.com", "response_timeout_seconds": 0}})); w.Code != 200 {
+		t.Fatalf("explicit zeros: %d %s", w.Code, w.Body.String())
+	}
+	// A console from before the response timeout can't save them away.
+	old := map[string]any{"max_upload_mb": 1, "per_ip_concurrent": 0, "total_concurrent": 0, "idle_timeout_seconds": 0, "min_upload_kb_per_second": 0, "hosts": []any{}}
+	if w := request(f.store.Handler(), "PUT", "/api/v1/security/connection-limits", f.admin, old); w.Code != 400 {
+		t.Fatalf("settings without response timeouts accepted: %d %s", w.Code, w.Body.String())
+	}
+	f.setConnectionLimits(t, control.ConnectionLimits{MaxUploadMB: 5, Hosts: []control.HostUpload{{Host: " Big.Example.com ", MaxUploadMB: 0}},
+		ResponseTimeoutSeconds: 30, ResponseTimeouts: []control.HostResponseTimeout{{Host: " AI.Example.com ", Seconds: 600}, {Host: "batch.example.com", Seconds: 0}}})
 	limits := f.store.connectionLimits()
 	if limits.uploadLimit("big.example.com") != 0 || limits.uploadLimit("app.example.com") != 5<<20 {
 		t.Fatalf("saved limits not applied: %+v", limits.ConnectionLimits)
+	}
+	if limits.responseTimeout("ai.example.com") != 600*time.Second || limits.responseTimeout("batch.example.com") != 0 || limits.responseTimeout("app.example.com") != 30*time.Second {
+		t.Fatalf("saved response timeouts not applied: %+v", limits.ConnectionLimits)
+	}
+	// Up to 50 hostnames of the longest kind in each list fit in a request.
+	long := strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + "." + strings.Repeat("d", 57) + ".com"
+	full := control.ConnectionLimits{ResponseTimeoutSeconds: 60}
+	for i := range control.MaxUploadHosts {
+		full.Hosts = append(full.Hosts, control.HostUpload{Host: fmt.Sprintf("%02d%s", i, long[2:]), MaxUploadMB: 1})
+		full.ResponseTimeouts = append(full.ResponseTimeouts, control.HostResponseTimeout{Host: fmt.Sprintf("%02d%s", i, long[2:]), Seconds: 600})
+	}
+	f.setConnectionLimits(t, full)
+}
+
+// A hostname given a longer response timeout keeps waiting for its service
+// after others would have given up, and one with none waits as long as the
+// service takes; the rest answer 504 at the default.
+func TestResponseTimeoutPerHost(t *testing.T) {
+	shortenResponseTimeouts(t, 200*time.Millisecond)
+	f := newProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(time.Second)
+		_, _ = io.WriteString(w, "late")
+	}))
+	f.route(t, 0, "app.example.com")
+	f.route(t, 0, "ai.example.com")
+	f.route(t, 0, "batch.example.com")
+	f.setConnectionLimits(t, control.ConnectionLimits{ResponseTimeouts: []control.HostResponseTimeout{
+		{Host: "ai.example.com", Seconds: 600}, // 2s here
+		{Host: "batch.example.com", Seconds: 0},
+	}})
+	start := time.Now()
+	if code, _ := f.get("app.example.com"); code != http.StatusGatewayTimeout || time.Since(start) > 900*time.Millisecond {
+		t.Fatalf("default host: %d after %s", code, time.Since(start))
+	}
+	for _, host := range []string{"ai.example.com", "batch.example.com"} {
+		if code, body := f.get(host); code != 200 || body != "late" {
+			t.Fatalf("%s: %d %q", host, code, body)
+		}
 	}
 }
 
@@ -357,3 +438,67 @@ func TestUnreadBodiesAreCutNotDrained(t *testing.T) {
 		}
 	}
 }
+
+// Hostnames with different response timeouts share the connections to their
+// service, and a changed timeout keeps them: each new one is a tunnel channel.
+func TestResponseTimeoutsShareConnections(t *testing.T) {
+	var mu sync.Mutex
+	peers := map[string]bool{}
+	f := newProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		peers[r.RemoteAddr] = true
+		mu.Unlock()
+		_, _ = io.WriteString(w, "ok")
+	}))
+	f.route(t, 0, "app.example.com")
+	f.route(t, 0, "ai.example.com")
+	f.setConnectionLimits(t, control.ConnectionLimits{ResponseTimeouts: []control.HostResponseTimeout{{Host: "ai.example.com", Seconds: 600}}})
+	for range 3 {
+		for _, host := range []string{"app.example.com", "ai.example.com"} {
+			if code, _ := f.get(host); code != 200 {
+				t.Fatalf("%s: %d", host, code)
+			}
+		}
+	}
+	f.setConnectionLimits(t, control.ConnectionLimits{ResponseTimeoutSeconds: 90})
+	for _, host := range []string{"app.example.com", "ai.example.com"} {
+		if code, _ := f.get(host); code != 200 {
+			t.Fatalf("%s after the change: %d", host, code)
+		}
+	}
+	if len(peers) != 1 {
+		t.Fatalf("%d connections to the service, want 1", len(peers))
+	}
+}
+
+// A service that answers before it has the whole request body has kept to
+// the response timeout: its response streams on past it as the rest of the
+// body goes out.
+func TestResponseTimeoutEndsWithEarlyAnswer(t *testing.T) {
+	shortenResponseTimeouts(t, 200*time.Millisecond)
+	answered := make(chan struct{})
+	f := newProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = http.NewResponseController(w).EnableFullDuplex()
+		w.WriteHeader(http.StatusOK)
+		_ = http.NewResponseController(w).Flush()
+		close(answered)
+		_, _ = io.Copy(io.Discard, r.Body)
+		time.Sleep(600 * time.Millisecond)
+		_, _ = io.WriteString(w, "done")
+	}))
+	f.route(t, 0, "app.example.com")
+	// The body ends only once the answer is under way.
+	body := onlyReader{readerFunc(func(p []byte) (int, error) {
+		<-answered
+		time.Sleep(100 * time.Millisecond)
+		return copy(p, "rest"), io.EOF
+	})}
+	w := f.post("app.example.com", body, -1, "")
+	if w.Code != 200 || w.Body.String() != "done" {
+		t.Fatalf("early answer: %d %q", w.Code, w.Body.String())
+	}
+}
+
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
