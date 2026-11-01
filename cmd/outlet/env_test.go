@@ -107,3 +107,18 @@ func TestQuotedValues(t *testing.T) {
 		t.Fatalf("%+v %v", defaults, warnings)
 	}
 }
+
+// MEERKAT_ADMIN_IP_LIMIT=false lifts the console's admin IP limit for a
+// locked-out administrator; anything but a boolean leaves it as saved.
+func TestAdminIPLimitFromEnvironment(t *testing.T) {
+	for _, tc := range []struct {
+		value  string
+		lifted bool
+		warns  bool
+	}{{"", false, false}, {"true", false, false}, {"false", true, false}, {" 0 ", true, false}, {"off", false, true}} {
+		defaults, warnings := environmentDefaults(env(map[string]string{"MEERKAT_ADMIN_IP_LIMIT": tc.value}))
+		if defaults.AdminIPLimitLifted != tc.lifted || (len(warnings) != 0) != tc.warns {
+			t.Fatalf("%q: lifted %v, warnings %v", tc.value, defaults.AdminIPLimitLifted, warnings)
+		}
+	}
+}

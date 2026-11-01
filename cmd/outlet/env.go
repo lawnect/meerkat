@@ -20,6 +20,7 @@ import (
 //	MEERKAT_ADMIN_EMAILS, MEERKAT_ADMIN_GROUPS   who signs in as administrator
 //	MEERKAT_PASSWORD_LOGIN                        false: public addresses use SSO only
 //	MEERKAT_TELEGRAM_BOT_TOKEN, MEERKAT_TELEGRAM_CHAT_ID, MEERKAT_TELEGRAM_ENABLED
+//	MEERKAT_ADMIN_IP_LIMIT                        false: lift the console's admin IP limit
 //
 // Lists are separated by commas or spaces. A missing or invalid value never
 // stops the Outlet, which keeps tunnels running: that setting is left out
@@ -62,6 +63,14 @@ func environmentDefaults(getenv func(string) string) (control.Defaults, []string
 		}
 	}
 	defaults.Domain = domain
+
+	// An administrator locked out by the console's IP limit, with no SSH
+	// to the local admin port, lifts it here.
+	if limit, err := boolean("MEERKAT_ADMIN_IP_LIMIT", true); err != nil {
+		warnings = append(warnings, err.Error()+"; the admin console IP limit stays as saved")
+	} else {
+		defaults.AdminIPLimitLifted = !limit
+	}
 
 	issuer := value("MEERKAT_OIDC_ISSUER")
 	if issuer == "" {

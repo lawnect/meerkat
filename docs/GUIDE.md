@@ -350,6 +350,10 @@ Public addresses send `Strict-Transport-Security: max-age=31536000` on HTTPS, on
 
 Upgrading from 0.6.0 turns it on. Rolling back to 0.6.0 works on the same data: 0.6.0 ignores the setting and sends no header on public addresses, and browsers that already have it keep using HTTPS, which 0.6.0 serves.
 
+### Admin console access
+
+Under Settings → Security, you can limit the console on the public admin address to IP ranges: **Add current IP** adds the address you're using (for IPv6, its /64), and you can enter more addresses and CIDR ranges, up to 50. Other addresses get `404`, as if nothing were there. The Connector API and access protection's sign-in stay open, so tunnels and visitors of protected addresses keep working; public addresses and the local admin port over SSH aren't limited. Saving on the public address refuses a list without your current address; over SSH, an empty list closes the console to the internet. Locked out without SSH, set `MEERKAT_ADMIN_IP_LIMIT=false` and restart the Outlet; the console shows the limit as lifted until you remove it. The limit uses the address Caddy sees, so it doesn't work with a CDN or proxy in front of Caddy.
+
 ### Tunnel port protection
 
 rathole's server, behind the tunnel port (2333 by default), starts a Noise handshake (an X25519 key exchange) for anyone who opens a connection, before it checks any token, and it has no limits of its own. A flood of anonymous connections would exhaust it and drop every tunnel, and the HTTP limits above don't reach it. So the Outlet listens on the tunnel port itself and decides before rathole sees a byte; rathole listens on `127.0.0.1:2334` inside the Outlet's network namespace (`tunnel_internal_address` in `outlet.json`, loopback only; unless you set it, it is the port after the tunnel port, so 2334 for 2333 and 2335 if you move the tunnel port to 2334), and the Outlet passes on only the connections it admits.
@@ -394,6 +398,7 @@ The Outlet also reads these settings from its environment, so a deployment can s
 | `MEERKAT_OIDC_LABEL`, `MEERKAT_OIDC_SCOPES`, `MEERKAT_OIDC_GROUPS_CLAIM` | Provider name for administrators (the sign-in page shows "Sign in with SSO"), scopes (default `openid email profile`), groups claim (default `groups`). |
 | `MEERKAT_ADMIN_EMAILS`, `MEERKAT_ADMIN_GROUPS` | Who signs in as administrator: emails or `@domain`, and groups. When both are set, a person must match both. |
 | `MEERKAT_PASSWORD_LOGIN` | `false` allows only single sign-on on public addresses (the local admin port over SSH still takes passwords). |
+| `MEERKAT_ADMIN_IP_LIMIT` | `false` lifts the admin console IP limit saved under Settings → Security, for an administrator locked out without SSH. |
 | `MEERKAT_TELEGRAM_BOT_TOKEN`, `MEERKAT_TELEGRAM_CHAT_ID`, `MEERKAT_TELEGRAM_ENABLED` | Telegram alerts (enabled unless `false`). |
 | `MEERKAT_CADDY_UPSTREAM`, `MEERKAT_CADDY_METRICS` | Where Caddy reaches the Outlet (default `outlet:8080`) and where the Outlet reads Caddy's metrics (default `caddy:9090`). The public address check also connects to that host, on port 443. Set them when the services have other names, such as `outlet-k3x9:8080` and `caddy-k3x9:9090`, so Compose stacks don't collide. An invalid value stops the Outlet rather than fall back to a name another stack may use. Not shown in the console. |
 

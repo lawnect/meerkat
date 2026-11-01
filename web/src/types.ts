@@ -263,6 +263,19 @@ export interface ConnectionLimits {
   hosts: HostUpload[];
 }
 
+// 관리 콘솔 접근 제한(GET/PUT /api/v1/security/admin-access). 켜져 있으면 공개 관리 주소의 콘솔은 허용 대역에서만 열립니다.
+export interface AdminAccessSettings {
+  restricted: boolean;
+  allowed: string[];
+}
+
+// client와 client_range는 공개 주소로 접속했을 때만 있고, lifted는 MEERKAT_ADMIN_IP_LIMIT=false로 제한이 해제된 상태입니다.
+export interface AdminAccessView extends AdminAccessSettings {
+  client: string | null;
+  client_range: string | null;
+  lifted: boolean;
+}
+
 // HSTS(GET/PUT /api/v1/security/hsts). 켜져 있으면 공개 주소의 HTTPS 응답에 max-age 1년을 붙입니다.
 export interface HstsSettings {
   enabled: boolean;

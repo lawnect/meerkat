@@ -120,6 +120,8 @@ type Store struct {
 	connections  *connectionLimiter
 	// hsts is the HSTS setting for public addresses.
 	hsts atomic.Bool
+	// adminAccess limits the management console on public addresses.
+	adminAccess atomic.Pointer[adminAccessRule]
 	// guard admits connections to the public tunnel port.
 	guard  *tunnelGuard
 	blocks blockState
@@ -320,6 +322,9 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 		return nil, err
 	}
 	if err := s.reloadHSTS(context.Background()); err != nil {
+		return nil, err
+	}
+	if err := s.reloadAdminAccess(context.Background()); err != nil {
 		return nil, err
 	}
 	if err := s.reloadBlockRules(context.Background()); err != nil {

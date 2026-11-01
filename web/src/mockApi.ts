@@ -1,4 +1,4 @@
-import type { AccessCounts, AccessLogEntry, AccessMetrics, AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ClientBan, ClientBanSettings, ClientBansView, ConnectionLimits, HstsSettings, RateLimitSettings, Connector, DomainMode, FailureCause, FailureLogEntry, LatencySeries, LatencyStats, LogSettings, LogView, Outlet, RequestLogEntry, RequestTopRow, RequestTopView, Route, Service, SsoSettings, Target, TunnelGuardSettings, TunnelGuardView, UsageBucket, UsageSeries, UsageUnit } from './types';
+import type { AccessCounts, AccessLogEntry, AccessMetrics, AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ClientBan, ClientBanSettings, ClientBansView, ConnectionLimits, HstsSettings, AdminAccessSettings, AdminAccessView, RateLimitSettings, Connector, DomainMode, FailureCause, FailureLogEntry, LatencySeries, LatencyStats, LogSettings, LogView, Outlet, RequestLogEntry, RequestTopRow, RequestTopView, Route, Service, SsoSettings, Target, TunnelGuardSettings, TunnelGuardView, UsageBucket, UsageSeries, UsageUnit } from './types';
 import { accessDecisions, accessMethods, accessRequesters, failureCauseGroups, failureCauses, refusedCauses, requestClasses, requestTopPeriods, requestTopSorts, serviceCauses } from './types';
 
 const now = (): string => new Date().toISOString();
@@ -214,6 +214,10 @@ let connectionLimits: ConnectionLimits = {
   hosts: [{ host: 'photos.example.test', max_upload_mb: 2048 }],
 };
 let hsts: HstsSettings = { enabled: true };
+// 데모는 공개 주소에서 203.0.113.24로 접속한 것으로 둡니다.
+const mockClient = '203.0.113.24';
+let adminAccess: AdminAccessSettings = { restricted: false, allowed: [] };
+const adminAccessView = (): AdminAccessView => ({ ...structuredClone(adminAccess), client: mockClient, client_range: mockClient, lifted: false });
 let blockRules: BlockRule[] = [
   {
     id: 'honeypot',
@@ -1355,6 +1359,17 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     if (!issuer) fail('invalid_issuer');
     if (new URL(issuer).hostname.endsWith('.invalid')) fail('provider_unreachable');
     return { authorization_endpoint: `${issuer}/o/oauth2/v2/auth` };
+  }
+  if (path === '/api/v1/security/admin-access' && method === 'GET') return adminAccessView();
+  if (path === '/api/v1/security/admin-access' && method === 'PUT') {
+    const next = input as unknown as AdminAccessSettings;
+    if (typeof next.restricted !== 'boolean' || !Array.isArray(next.allowed) || next.allowed.length > 50) fail('invalid_admin_access');
+    const allowed = [...new Set(next.allowed.map((entry) => String(entry).trim().toLowerCase()))];
+    if (allowed.some((entry) => !/^[0-9a-f:.]+(\/\d{1,3})?$/.test(entry))) fail('invalid_admin_access');
+    // 실제 Outlet처럼, 현재 주소가 빠진 목록으로 제한을 켜면 거부합니다(데모는 단일 주소만 비교).
+    if (next.restricted && !allowed.some((entry) => entry === mockClient || (entry.includes('/') && mockClient.startsWith(entry.split('/')[0].split('.').slice(0, 3).join('.') + '.')))) fail('admin_access_locks_out');
+    adminAccess = { restricted: next.restricted, allowed };
+    return adminAccessView();
   }
   if (path === '/api/v1/security/hsts' && method === 'GET') return structuredClone(hsts);
   if (path === '/api/v1/security/hsts' && method === 'PUT') {

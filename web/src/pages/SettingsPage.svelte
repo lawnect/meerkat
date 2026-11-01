@@ -22,6 +22,7 @@
   import BlockRuleSettings from '../components/BlockRuleSettings.svelte';
   import ConnectionLimitSettings from '../components/ConnectionLimitSettings.svelte';
   import HstsSettings from '../components/HstsSettings.svelte';
+  import AdminAccessSettings from '../components/AdminAccessSettings.svelte';
   import RateLimitSettings from '../components/RateLimitSettings.svelte';
   import TunnelGuardSettings from '../components/TunnelGuardSettings.svelte';
   import InfoTooltip from '../components/InfoTooltip.svelte';
@@ -557,6 +558,7 @@
           {@render footerActions(securityDirty, busy.security, resetSecurity, saveSecurity)}
         </Card.Root>
 
+      <AdminAccessSettings />
       <SsoSettings />
       <RateLimitSettings />
       <ConnectionLimitSettings />

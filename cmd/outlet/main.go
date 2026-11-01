@@ -68,6 +68,9 @@ func run() error {
 	}
 	cfg.CaddyUpstream, cfg.CaddyMetrics = upstream, metrics
 	slog.Info("settings from the environment", "sso", defaults.SSO != nil, "telegram", defaults.Telegram != nil, "caddy_upstream", upstream, "caddy_metrics", metrics)
+	if defaults.AdminIPLimitLifted {
+		slog.Warn("MEERKAT_ADMIN_IP_LIMIT=false: the admin console answers every address, whatever its saved IP limit")
+	}
 	store, err := outlet.OpenWithControl(cfg, *dir, controlDB)
 	if err != nil {
 		return err

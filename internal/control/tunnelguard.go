@@ -44,20 +44,30 @@ func (s TunnelGuardSettings) Normalize() (TunnelGuardSettings, bool) {
 	if (s.Mode != TunnelGuardLimited && s.Mode != TunnelGuardStrict) || len(s.Allowed) > MaxTunnelGuardAllowed {
 		return s, false
 	}
-	allowed := make([]string, 0, len(s.Allowed))
-	seen := map[string]bool{}
-	for _, raw := range s.Allowed {
-		entry, ok := normalizeRange(strings.TrimSpace(raw))
-		if !ok {
-			return s, false
-		}
-		if !seen[entry] {
-			seen[entry] = true
-			allowed = append(allowed, entry)
-		}
+	allowed, ok := normalizeRanges(s.Allowed)
+	if !ok {
+		return s, false
 	}
 	s.Allowed = allowed
 	return s, true
+}
+
+// normalizeRanges puts each range in normalizeRange's form, once, in the
+// order given, and reports whether every one is valid.
+func normalizeRanges(list []string) ([]string, bool) {
+	ranges := make([]string, 0, len(list))
+	seen := map[string]bool{}
+	for _, raw := range list {
+		entry, ok := normalizeRange(strings.TrimSpace(raw))
+		if !ok {
+			return nil, false
+		}
+		if !seen[entry] {
+			seen[entry] = true
+			ranges = append(ranges, entry)
+		}
+	}
+	return ranges, true
 }
 
 func normalizeRange(raw string) (string, bool) {

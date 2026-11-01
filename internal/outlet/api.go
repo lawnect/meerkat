@@ -114,6 +114,8 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/security/rate-limit", s.putRateLimit)
 	mux.HandleFunc("GET /api/v1/security/connection-limits", s.getConnectionLimits)
 	mux.HandleFunc("PUT /api/v1/security/connection-limits", s.putConnectionLimits)
+	mux.HandleFunc("GET /api/v1/security/admin-access", s.getAdminAccess)
+	mux.HandleFunc("PUT /api/v1/security/admin-access", s.putAdminAccess)
 	mux.HandleFunc("GET /api/v1/security/hsts", s.getHSTS)
 	mux.HandleFunc("PUT /api/v1/security/hsts", s.putHSTS)
 	mux.HandleFunc("GET /api/v1/security/tunnel-guard", s.getTunnelGuard)

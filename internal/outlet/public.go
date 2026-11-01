@@ -237,6 +237,11 @@ func (s *Store) PublicHandler() http.Handler {
 		}
 		outlet := routing.Outlet
 		if host == outlet.AdminHostname {
+			// Outside the allowed ranges the console isn't there at all.
+			if !s.adminReachable(r) {
+				http.NotFound(w, r)
+				return
+			}
 			admin.ServeHTTP(w, r)
 			return
 		}

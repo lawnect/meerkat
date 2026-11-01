@@ -349,6 +349,10 @@ SSH 터널로 여는 **로컬 관리 포트**(`https://localhost:18443`)에서�
 
 0.6.0에서 업그레이드하면 켜진 상태가 됩니다. 0.6.0으로 되돌릴 때는 같은 데이터를 그대로 쓸 수 있습니다. 0.6.0은 이 설정을 무시하고 공개 주소에 헤더를 보내지 않으며, 이미 헤더를 받은 브라우저는 0.6.0도 제공하는 HTTPS를 계속 씁니다.
 
+### 관리 콘솔 접근 제한
+
+설정 → 보안에서 공개 관리 주소의 콘솔을 지정한 IP 대역에서만 열리게 할 수 있습니다. **현재 IP 추가**는 지금 접속한 주소(IPv6는 그 /64)를 넣고, 주소와 CIDR을 50개까지 더 넣을 수 있습니다. 그 밖의 주소에는 아무것도 없는 것처럼 `404`로 응답합니다. Connector API와 접근 보호 로그인은 열려 있으므로 터널과 보호된 주소의 방문자에게는 영향이 없고, 공개 주소와 SSH로 연결한 로컬 관리 포트도 제한하지 않습니다. 공개 관리 주소에서 저장할 때 현재 주소가 목록에 없으면 저장하지 않습니다. SSH로 연결해 빈 목록으로 저장하면 인터넷에서 콘솔을 닫을 수 있습니다. SSH 없이 접속이 막혔다면 `MEERKAT_ADMIN_IP_LIMIT=false`를 설정하고 Outlet을 다시 시작하십시오. 이 값을 지울 때까지 콘솔에 제한이 해제되었다고 표시됩니다. 이 제한은 Caddy가 본 접속 주소를 쓰므로 Caddy 앞에 CDN이나 프록시가 있으면 쓸 수 없습니다.
+
 ### 터널 포트 보호
 
 rathole 서버는 터널 포트(기본 2333)로 연결한 누구에게나 토큰을 확인하기 전에 Noise 핸드셰이크(X25519 키 교환)를 시작하고 자체 제한이 없습니다. 익명 연결이 몰리면 rathole이 마비되어 모든 터널이 끊기며, 위의 HTTP 제한은 이 포트에 닿지 않습니다. 그래서 Outlet이 터널 포트를 직접 수신하고 rathole이 한 바이트도 보기 전에 연결을 받을지 정합니다. rathole은 Outlet과 같은 네트워크 네임스페이스의 `127.0.0.1:2334`(`outlet.json`의 `tunnel_internal_address`, 루프백만 허용)에서 수신하고, Outlet은 통과시킨 연결만 전달합니다. 이 값을 정하지 않으면 터널 포트 다음 포트를 쓰므로 2333이면 2334, 터널 포트를 2334로 옮기면 2335입니다.
@@ -393,6 +397,7 @@ SYN flood는 커널의 SYN 쿠키에, 회선을 채우는 대규모 공격은 �
 | `MEERKAT_OIDC_LABEL`, `MEERKAT_OIDC_SCOPES`, `MEERKAT_OIDC_GROUPS_CLAIM` | 관리자용 공급자 이름(로그인 화면에는 "SSO로 로그인"으로 표시), 범위(기본 `openid email profile`), 그룹 클레임(기본 `groups`). |
 | `MEERKAT_ADMIN_EMAILS`, `MEERKAT_ADMIN_GROUPS` | 관리자로 로그인할 사람: 이메일이나 `@도메인`, 그룹. 둘 다 쓰면 둘 다 맞아야 합니다. |
 | `MEERKAT_PASSWORD_LOGIN` | `false`면 공개 주소에서는 SSO로만 로그인합니다(SSH로 연결한 로컬 관리 포트는 예외). |
+| `MEERKAT_ADMIN_IP_LIMIT` | `false`면 설정 → 보안에서 저장한 관리 콘솔 IP 제한을 해제합니다. SSH 없이 접속이 막힌 관리자를 위한 값입니다. |
 | `MEERKAT_TELEGRAM_BOT_TOKEN`, `MEERKAT_TELEGRAM_CHAT_ID`, `MEERKAT_TELEGRAM_ENABLED` | 텔레그램 알림(`false`가 아니면 켜짐). |
 | `MEERKAT_CADDY_UPSTREAM`, `MEERKAT_CADDY_METRICS` | Caddy가 Outlet에 연결하는 주소(기본 `outlet:8080`)와 Outlet이 Caddy 지표를 읽는 주소(기본 `caddy:9090`). 공개 주소 점검도 이 주소의 호스트에서 443 포트로 연결합니다. 서비스 이름을 바꾼 경우 `outlet-k3x9:8080`, `caddy-k3x9:9090`처럼 지정해 다른 Compose 스택과 이름이 충돌하지 않게 합니다. 값이 올바르지 않으면 다른 스택이 쓸 수 있는 기본 이름으로 대체하지 않고 Outlet이 시작되지 않습니다. 관리 화면에는 표시되지 않습니다. |
 

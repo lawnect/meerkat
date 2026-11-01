@@ -24,6 +24,8 @@ type Defaults struct {
 	// replace it. An empty AdminLabel keeps a generated one.
 	Domain     string
 	AdminLabel string
+	// AdminIPLimitLifted ignores the stored admin console IP limit.
+	AdminIPLimitLifted bool
 }
 
 // SetDefaults installs the environment's settings. Call it once, before the
