@@ -251,9 +251,19 @@ func (p poc) setUp(n *tunnel) {
 	} else if !os.IsNotExist(err) {
 		p.t.Fatal(err)
 	} else {
-		var created control.Connector
-		p.call("POST", "/api/v1/connectors", map[string]string{"name": n.name()}, 201, &created)
-		n.id = created.ID
+		// A run cut off between creating the tunnel and writing its token
+		// left the tunnel behind; names are unique, so it is reused.
+		connectors, _ := p.connectors()
+		for _, c := range connectors {
+			if c.Name == n.name() {
+				n.id = c.ID
+			}
+		}
+		if n.id == "" {
+			var created control.Connector
+			p.call("POST", "/api/v1/connectors", map[string]string{"name": n.name()}, 201, &created)
+			n.id = created.ID
+		}
 		n.token = p.issueToken(n.id, "")
 		// Renamed into place, so the waiting Connector never reads half a token.
 		partial := tokenPath + ".partial"

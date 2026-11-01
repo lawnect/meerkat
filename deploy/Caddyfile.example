@@ -3,6 +3,7 @@
 		per_host
 	}
 	servers {
+		strict_sni_host on
 		max_header_size 16KB
 		timeouts {
 			read_header 10s

@@ -128,6 +128,12 @@ func isPlainHTTP(r *http.Request) bool {
 // redirect elsewhere. Nothing is cached: a host's registration can change.
 func (s *Store) redirectToHTTPS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	// The body is never read. Without this the server would wait to drain
+	// it after answering, and a client trickling a chunked body would hold
+	// the connection with none of the HTTPS path's transfer limits.
+	if r.ContentLength != 0 {
+		w.Header().Set("Connection", "close")
+	}
 	host := strings.TrimSuffix(strings.ToLower(r.Host), ":80")
 	// Origin-form only: "*" (OPTIONS) and CONNECT's authority have no path.
 	target := r.URL.RequestURI()
@@ -397,7 +403,7 @@ func (s *Store) PublicHandler() http.Handler {
 					}
 					s.answered(target.serviceID)
 					dropAccessSetCookie(res.Header)
-					keepAppHSTS(w, res)
+					s.applyHSTS(w, res)
 					if res.StatusCode < 500 {
 						s.noteServed(target.serviceID)
 					} else {

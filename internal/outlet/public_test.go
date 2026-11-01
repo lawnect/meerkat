@@ -263,6 +263,43 @@ func TestPlainHTTPRedirectsOnlyRegisteredHosts(t *testing.T) {
 	}
 }
 
+// The redirect never reads a request body, so the connection closes after
+// it instead of waiting for a body the client trickles: the public listener
+// has no read timeout, and the HTTPS path's transfer limits don't apply here.
+func TestPlainHTTPDoesNotWaitForTheBody(t *testing.T) {
+	f := newProxyFixture(t, echo("A"))
+	f.route(t, 0, "app.example.com")
+	server := httptest.NewServer(f.handler)
+	defer server.Close()
+	for _, host := range []string{"app.example.com", "evil.example"} {
+		conn, err := net.Dial("tcp", strings.TrimPrefix(server.URL, "http://"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Closed before server.Close, which would otherwise wait for a
+		// handler still draining the body.
+		defer conn.Close()
+		_, _ = io.WriteString(conn, "POST /upload HTTP/1.1\r\nHost: "+host+"\r\nX-Forwarded-Proto: http\r\nX-Forwarded-For: 198.51.100.4\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na\r\n")
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		res, err := http.ReadResponse(bufio.NewReader(conn), nil)
+		if err != nil {
+			t.Fatalf("%s: no answer while the body trickles: %v", host, err)
+		}
+		if (res.StatusCode != http.StatusPermanentRedirect && res.StatusCode != http.StatusNotFound) || !res.Close {
+			t.Fatalf("%s: %d, close %v", host, res.StatusCode, res.Close)
+		}
+	}
+	// A request without a body keeps the connection for the next one.
+	r := httptest.NewRequest("GET", "/", nil)
+	r.Host = "app.example.com"
+	r.Header.Set("X-Forwarded-Proto", "http")
+	w := httptest.NewRecorder()
+	f.handler.ServeHTTP(w, r)
+	if w.Code != http.StatusPermanentRedirect || w.Header().Get("Connection") != "" {
+		t.Fatalf("GET: %d %v", w.Code, w.Header())
+	}
+}
+
 // Run with -race: public traffic while routes, domain modes, rate limits and
 // Connector state change must never reach the wrong service or a deleted route.
 func TestPublicRoutingUnderConfigChurn(t *testing.T) {

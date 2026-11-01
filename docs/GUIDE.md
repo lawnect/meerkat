@@ -155,7 +155,8 @@ Keep using HTTPS so that session cookies work correctly. Even with Telegram logi
 
    The root (`@`) is needed only if you set the tunnel address directly to the root. If you use IPv6, also set AAAA records.
 3. Open TCP ports 80 and 443 and the tunnel port (default 2333) to the outside. For HTTP-01 validation, requests on port 80 must
-   reach Caddy. Port 80 redirects only addresses registered with the Outlet to HTTPS and answers other hosts with `404`.
+   reach Caddy. Port 80 redirects only addresses registered with the Outlet to HTTPS and answers other hosts with `404`;
+   while the Outlet is restarting, it answers `502`.
 
 Besides the admin API (`https://ADMIN_HOSTNAME`), a Connector connects over TCP to the **tunnel address** to open the data
 tunnel. The default is `ADMIN_HOSTNAME:2333`, so you don't need to create a separate DNS record, and the root can stay on another server.
@@ -346,6 +347,8 @@ Separate limits stop one request or one client from holding the Outlet's resourc
 ### HSTS
 
 Public addresses send `Strict-Transport-Security: max-age=31536000` on HTTPS, on both the app's responses and the Outlet's own (limits, access sign-in, block rules), so a browser that has visited one opens it only over HTTPS for a year. Subdomains aren't included. An app that sends its own header keeps it, `max-age=0` included. The admin console always sends it. Turn it off under Settings → Security before moving a public address to a server without HTTPS; browsers that already have it keep using HTTPS until it expires.
+
+Upgrading from 0.6.0 turns it on. Rolling back to 0.6.0 works on the same data: 0.6.0 ignores the setting and sends no header on public addresses, and browsers that already have it keep using HTTPS, which 0.6.0 serves.
 
 ### Tunnel port protection
 

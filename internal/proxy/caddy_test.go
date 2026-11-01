@@ -52,6 +52,10 @@ func TestCaddyfileRefusesTargetsThatArentPaths(t *testing.T) {
 	if count := strings.Count(config, refuse); count != 2 {
 		t.Fatalf("expected both sites to refuse non-path targets before proxying, got %d: %q", count, config)
 	}
+	// HTTPS requests must name the host their TLS handshake asked for.
+	if !strings.Contains(config, "\tservers {\n\t\tstrict_sni_host on\n") {
+		t.Fatalf("strict SNI host matching missing: %q", config)
+	}
 }
 
 func TestEmptyCaddyfileHasNoPublicHost(t *testing.T) {

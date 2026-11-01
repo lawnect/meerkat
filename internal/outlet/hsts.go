@@ -27,19 +27,23 @@ func (s *Store) reloadHSTS(ctx context.Context) error {
 }
 
 // setHSTS adds the header to an HTTPS answer on a public address when the
-// setting is on. A proxied app that sends its own keeps it (see
-// keepAppHSTS).
+// setting is on: the Outlet's own answers. A proxied app's response gets
+// it from applyHSTS.
 func (s *Store) setHSTS(w http.ResponseWriter) {
 	if s.hsts.Load() {
 		w.Header().Set(hstsHeader, hstsValue)
 	}
 }
 
-// keepAppHSTS drops the Outlet's header when the app's response has one,
-// max-age=0 included, so the app's choice is the only one browsers see.
-func keepAppHSTS(w http.ResponseWriter, res *http.Response) {
-	if len(res.Header.Values(hstsHeader)) != 0 {
-		w.Header().Del(hstsHeader)
+// applyHSTS moves the header onto the app's response itself, unless the
+// app sent its own (max-age=0 included), which is then the only one
+// browsers see. One left on w would be lost: the proxy clears w's headers
+// after relaying an informational answer such as 103 Early Hints or 100
+// Continue.
+func (s *Store) applyHSTS(w http.ResponseWriter, res *http.Response) {
+	w.Header().Del(hstsHeader)
+	if s.hsts.Load() && len(res.Header.Values(hstsHeader)) == 0 {
+		res.Header.Set(hstsHeader, hstsValue)
 	}
 }
 

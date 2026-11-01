@@ -61,6 +61,36 @@ func TestHSTSOnPublicAddresses(t *testing.T) {
 	expect(send("https", f.adminHost, "/api/v1/setup/status"), 200, hstsValue)
 }
 
+// The proxy clears the headers it holds after relaying an app's
+// informational answer, such as 103 Early Hints; the final response still
+// carries HSTS.
+func TestHSTSSurvivesInformationalAnswers(t *testing.T) {
+	f := newProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Link", "</style.css>; rel=preload")
+		w.WriteHeader(http.StatusEarlyHints)
+		w.Header().Del("Link")
+		_, _ = io.WriteString(w, "app")
+	}))
+	f.route(t, 0, "app.example.com")
+	server := httptest.NewServer(f.handler)
+	defer server.Close()
+	r, err := http.NewRequest("GET", server.URL+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Host = "app.example.com"
+	r.Header.Set("X-Forwarded-Proto", "https")
+	r.Header.Set("X-Forwarded-For", "198.51.100.4")
+	res, err := server.Client().Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if got := res.Header.Values(hstsHeader); res.StatusCode != 200 || !slices.Equal(got, []string{hstsValue}) {
+		t.Fatalf("%d %q", res.StatusCode, got)
+	}
+}
+
 func TestHSTSSettingsAPI(t *testing.T) {
 	a := newAlertFixture(t)
 	h := a.store.Handler()

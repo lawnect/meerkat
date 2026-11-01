@@ -8,10 +8,16 @@ package proxy
 // limits itself, and Caddy passes the stall on to it; Caddy's own body and
 // write idle timeouts sit above the longest the Outlet allows, as a backstop
 // that never cuts first.
+//
+// strict_sni_host answers 421 when an HTTPS request's host isn't the name
+// its TLS handshake asked for (certificates are per host, so browsers never
+// do this): the Host header can't pick another address, and neither can an
+// HTTP/2 :path holding a URL, which @not_a_path doesn't see.
 const caddyGlobal = `	metrics {
 		per_host
 	}
 	servers {
+		strict_sni_host on
 		max_header_size 16KB
 		timeouts {
 			read_header 10s

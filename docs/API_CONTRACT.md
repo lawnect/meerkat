@@ -65,9 +65,9 @@ PUT    /api/v1/addresses/:hostname
 Service 생성은 외부 공개를 뜻하지 않는다. Route를 활성화해야 외부 endpoint가 생긴다.
 서비스의 앱 호스트와 포트는 `PATCH /api/v1/connectors/:id/services/:service_id`에 `{"target":{"host":"app","port":3000}}`을 보내 수정한다. 한 터널에 여러 서비스를 등록할 수 있지만, 같은 터널 안에서 대상 호스트(대소문자 구분 없음)와 포트의 조합은 고유해야 한다. 생성·수정 시 중복이면 `409 service_target_taken`을 반환한다. 같은 앱의 공개 주소가 여러 개 필요하면 하나의 서비스에 Route를 여러 개 추가한다. 서비스 추가·수정·삭제 시 설정 revision을 올린다. Connector는 새 설정을 받아 Rathole에 반영하고, Outlet은 변경된 서비스의 probe 결과가 확인될 때까지 그 공개 경로만 보류한다. 변경되지 않은 서비스의 상태와 공개 경로는 유지한다.
 
-**HTTP(80번 포트).** Caddy는 80번 포트에서 ACME HTTP-01 응답만 직접 처리하고, 나머지 요청은 `X-Forwarded-Proto: http`를 붙여 Outlet에 넘긴다. 클라이언트가 보낸 이 헤더는 Caddy가 버린다. Outlet은 인증서를 허용하는 호스트(관리 주소, 도메인, Route가 있는 주소로 `cert-ask`와 같은 기준)에만 `308`과 `Location: https://<호스트><요청 URI>`로 응답한다. 그 밖의 Host는 `404`다. 두 응답 모두 `Cache-Control: no-store`이고, 평문 HTTP 요청은 앱으로 전달하지 않는다.
+**HTTP(80번 포트).** Caddy는 80번 포트에서 ACME HTTP-01 응답만 직접 처리하고, 나머지 요청은 `X-Forwarded-Proto: http`를 붙여 Outlet에 넘긴다. 클라이언트가 보낸 이 헤더는 Caddy가 버린다. Outlet은 인증서를 허용하는 호스트(관리 주소, 도메인, Route가 있는 주소로 `cert-ask`와 같은 기준)에만 `308`과 `Location: https://<호스트><요청 URI>`로 응답한다. 그 밖의 Host는 `404`다. 두 응답 모두 `Cache-Control: no-store`이고, 평문 HTTP 요청은 앱으로 전달하지 않는다. 요청 본문은 읽지 않으며, 본문이 있는 요청은 응답한 뒤 연결을 닫는다. Outlet이 응답하지 않는 동안(재시작 중 등) 80번 포트는 Caddy의 `502`다.
 
-**요청 대상 형식.** Caddy는 80번과 443번 포트 모두에서 요청 줄의 대상이 경로(`/`로 시작)가 아니면 Outlet에 넘기지 않고 `400`으로 답한다. 절대 주소(`GET http://host/path`)를 받으면 Caddy와 Outlet은 RFC 9112에 따라 `Host` 헤더 대신 그 주소의 호스트를 쓰는데, 브라우저는 이런 요청을 보내지 않는다. 그래서 `Host` 헤더와 다른 호스트로 라우팅되는 요청은 받지 않는다. `CONNECT`도 마찬가지이고, `OPTIONS *`는 Go 서버가 라우트 전에 직접 답한다. Outlet도 80번 포트 요청의 호스트를 같은 기준으로 다시 판단한다.
+**요청 대상 형식과 SNI.** 클라이언트가 고른 호스트는 Outlet까지 한 가지로만 전달된다. 443번 포트에서 Caddy는 요청의 호스트(`Host`, HTTP/2의 `:authority`, 또는 `:path`에 적은 URL의 호스트)가 TLS 핸드셰이크의 SNI와 다르면 `421`로 답한다(`strict_sni_host`, 대소문자와 `:443`은 무시). 인증서는 호스트마다 따로라 브라우저는 이런 요청을 보내지 않는다. 80번과 443번 포트 모두에서 HTTP/1.1 요청 줄의 대상이 경로(`/`로 시작)가 아니면 Outlet에 넘기지 않고 `400`으로 답한다. 절대 주소(`GET http://host/path`)를 받으면 Caddy와 Outlet은 RFC 9112에 따라 `Host` 헤더 대신 그 주소의 호스트를 쓰는데, 이런 요청을 받지 않기 위해서다. `CONNECT`도 마찬가지이고, `OPTIONS *`는 Go 서버가 라우트 전에 직접 답한다. 80번 포트에는 TLS가 없으므로 Outlet이 요청의 호스트를 다시 판단한다.
 
 **공유 주소.** 같은 hostname을 여러 서비스(다른 터널 포함)가 함께 쓸 수 있다.
 
@@ -252,7 +252,7 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 - `endpoints`는 최대 50개이며 `host`(호스트 이름 또는 모든 호스트를 뜻하는 `*`)와 `/`로 시작하는 `path_prefix`가 같은 요청에 적용된다. 가장 긴 접두사가 이기고, 길이가 같으면 이름이 있는 호스트가 `*`보다 우선한다. 경로는 `//`, `.`, `..`을 정리하고 소문자로 바꿔 비교한다. `per`가 `total`이면 모든 클라이언트를 합쳐, `ip`이면 클라이언트 IP마다 제한한다. 같은 `host`와 `path_prefix`는 한 번만 쓸 수 있다.
 - 저장된 설정이 없으면 위 값이 기본이며 관리 호스트의 로그인 경로 규칙도 목록에 포함된다. 대표 도메인을 바꾸면 저장된 규칙의 관리 호스트도 새 이름으로 바뀐다.
 - 요청은 해당하는 모든 버킷에 토큰이 있어야 통과하고, 하나라도 비어 있으면 거부한다. 거부된 요청은 다른 버킷의 토큰을 쓰지 않는다. 거부는 `429 Too Many Requests`, `Retry-After: 1`, 본문 `Too many requests (ip limit)` 형태이며 `ip`, `subnet`, `address`, `endpoint` 중 어느 제한인지 알려 준다. 프록시하지 않는다.
-- 접속 주소는 Caddy가 붙인 `X-Forwarded-For`의 마지막 항목이다. 없으면 IP·서브넷·IP별 엔드포인트 제한은 건너뛴다(모든 클라이언트가 한 버킷을 나누는 일을 피한다). Caddy가 내부 주소(Host `outlet:8080`, `X-Forwarded-For` 없음)로 보내는 `/.well-known/meerkat/cert-ask` 확인은 제한하지 않는다. 클라이언트가 Caddy를 거쳐 같은 Host를 보내면 `X-Forwarded-For`가 붙으므로 인증서 확인으로 취급하지 않는다. ACME HTTP-01 응답(`/.well-known/acme-challenge/`)은 Caddy가 직접 처리하므로 Outlet에 도달한 같은 경로는 일반 요청이다. 80번 포트 요청은 HTTPS로 리디렉션만 하므로 제한하지 않는다. 로컬 관리 포트는 이 제한을 거치지 않는다.
+- 접속 주소는 Caddy가 붙인 `X-Forwarded-For`의 마지막 항목이다. 없으면 IP·서브넷·IP별 엔드포인트 제한은 건너뛴다(모든 클라이언트가 한 버킷을 나누는 일을 피한다). Caddy가 내부 주소(Host `outlet:8080`, `X-Forwarded-For` 없음)로 보내는 `/.well-known/meerkat/cert-ask` 확인은 제한하지 않는다. 클라이언트가 Caddy를 거쳐 같은 Host를 보내면 `X-Forwarded-For`가 붙으므로 인증서 확인으로 취급하지 않는다. ACME HTTP-01 응답(`/.well-known/acme-challenge/`)은 Caddy가 직접 처리하므로 Outlet에 도달한 같은 경로는 일반 요청이다. 80번 포트 요청은 본문을 읽지 않고 HTTPS로 리디렉션만 하므로 제한하지 않는다. 로컬 관리 포트는 이 제한을 거치지 않는다.
 - 버킷은 10분 동안 쓰지 않으면 지우고 전체 약 10만 개를 넘으면 가장 오래 쓰지 않은 것부터 지운다.
 
 **연결 제한(connection limits).** 요청 하나나 클라이언트 하나가 붙잡을 수 있는 자원을 제한한다. `GET`과 `PUT /api/v1/security/connection-limits`는 같은 객체를 주고받으며 `PUT`은 모든 키를 담아야 하고 범위를 벗어나면 `400 invalid_connection_limits`이다. 설정은 재시작 없이 바로 적용하고, 값이 0이면 그 제한은 꺼진다. 아래가 기본값이다.
