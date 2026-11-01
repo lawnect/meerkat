@@ -43,7 +43,20 @@ func EmptyCaddyfile() []byte { return []byte(caddyHeader) }
 // 30 s idle timeout does; otherwise it spends its CPU opening connections
 // and reuses ones the Outlet has just closed. upstream must already be a
 // validated host:port; it is written into the configuration as is.
+//
+// Port 80 goes to the Outlet too, which sends only the hosts it would certify
+// on to HTTPS: a redirect written here would send any Host a client names.
+// Caddy answers ACME HTTP-01 challenges before a site's routes, and sets
+// X-Forwarded-Proto from the connection itself, so the Outlet sees "http"
+// for exactly these requests.
 func DynamicCaddyfile(upstream string) []byte {
+	toOutlet := `	reverse_proxy http://` + upstream + ` {
+		transport http {
+			keepalive 25s
+			keepalive_idle_conns_per_host 4096
+		}
+	}
+`
 	return []byte(`{
 ` + caddyGlobal + `	on_demand_tls {
 		ask http://` + upstream + `/.well-known/meerkat/cert-ask
@@ -55,8 +68,7 @@ func DynamicCaddyfile(upstream string) []byte {
 }
 
 http:// {
-	redir https://{host}{uri} permanent
-}
+` + toOutlet + `}
 
 https:// {
 	tls {
@@ -65,12 +77,6 @@ https:// {
 			disable_tlsalpn_challenge
 		}
 	}
-	reverse_proxy http://` + upstream + ` {
-		transport http {
-			keepalive 25s
-			keepalive_idle_conns_per_host 4096
-		}
-	}
-}
+` + toOutlet + `}
 `)
 }

@@ -1,6 +1,7 @@
 package outlet
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -175,6 +176,90 @@ func TestPublicRoutingFollowsAdminChanges(t *testing.T) {
 	expect("app.example.com", 404, "")
 	if f.certificateAsk("app.example.com") != 404 {
 		t.Fatal("certificate allowed for a deleted Connector's route")
+	}
+}
+
+// Caddy sends port 80 here with X-Forwarded-Proto: http. A host the Outlet
+// would certify is sent on to HTTPS on the same host; any other Host, or one
+// an absolute-form request target names, gets 404 and no Location, and
+// nothing goes to the app over plain HTTP.
+func TestPlainHTTPRedirectsOnlyRegisteredHosts(t *testing.T) {
+	f := newProxyFixture(t, echo("A"))
+	app := f.route(t, 0, "app.example.com")
+	plain := func(r *http.Request) *httptest.ResponseRecorder {
+		t.Helper()
+		r.Header.Set("X-Forwarded-Proto", "http")
+		r.Header.Set("X-Forwarded-For", "198.51.100.4")
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, r)
+		if got := w.Header().Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("%s %s: Cache-Control %q", r.Host, r.URL, got)
+		}
+		if strings.Contains(w.Body.String(), "A ") {
+			t.Fatalf("%s %s: proxied to the app over plain HTTP", r.Host, r.URL)
+		}
+		return w
+	}
+	redirects := func(host, target, location string) {
+		t.Helper()
+		r := httptest.NewRequest("GET", target, nil)
+		r.Host = host
+		if w := plain(r); w.Code != http.StatusPermanentRedirect || w.Header().Get("Location") != location {
+			t.Fatalf("%s %s: %d %q, want 308 %q", host, target, w.Code, w.Header().Get("Location"), location)
+		}
+	}
+	refuses := func(r *http.Request) {
+		t.Helper()
+		if w := plain(r); w.Code != http.StatusNotFound || w.Header().Get("Location") != "" {
+			t.Fatalf("%s %s: %d %q, want 404 and no Location", r.Host, r.URL, w.Code, w.Header().Get("Location"))
+		}
+	}
+	raw := func(request string) *http.Request {
+		t.Helper()
+		r, err := http.ReadRequest(bufio.NewReader(strings.NewReader(request)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	redirects("app.example.com", "/a/b%20c?d=e&f", "https://app.example.com/a/b%20c?d=e&f")
+	redirects("APP.Example.com:80", "/", "https://app.example.com/")
+	redirects("app.example.com", "//evil.example/x", "https://app.example.com//evil.example/x")
+	redirects(f.adminHost, "/connectors", "https://"+f.adminHost+"/connectors")
+	// The same names as the certificate check: the Outlet domain answers its
+	// Connector API on HTTPS.
+	if f.certificateAsk("example.com") != 204 {
+		t.Fatal("certificate refused for the Outlet domain")
+	}
+	redirects("example.com", "/connector/v1/config", "https://example.com/connector/v1/config")
+	// The variants the external check tried: case, a trailing dot, a port,
+	// no Host at all (HTTP/1.0), the IP address, and Caddy's own upstream.
+	for _, host := range []string{"evil.example", "EVIL.Example", "evil.example.", "evil.example:8080", "api.example.com", "app.example.com:8080", "app.example.com.", "198.51.100.4", "", "outlet:8080"} {
+		r := httptest.NewRequest("GET", "/admin", nil)
+		r.Host = host
+		refuses(r)
+	}
+	// Go takes the host from an absolute-form target over the Host header.
+	refuses(raw("GET http://evil.example/admin HTTP/1.1\r\nHost: app.example.com\r\n\r\n"))
+	refuses(raw("OPTIONS * HTTP/1.1\r\nHost: app.example.com\r\n\r\n"))
+	refuses(raw("CONNECT app.example.com:443 HTTP/1.1\r\nHost: app.example.com:443\r\n\r\n"))
+	w := plain(raw("GET http://app.example.com/admin HTTP/1.1\r\nHost: evil.example\r\n\r\n"))
+	if w.Code != http.StatusPermanentRedirect || w.Header().Get("Location") != "https://app.example.com/admin" {
+		t.Fatalf("absolute-form to a registered host: %d %q", w.Code, w.Header().Get("Location"))
+	}
+	// A removed address stops redirecting at once.
+	f.unroute(t, 0, app)
+	refuses(httptest.NewRequest("GET", "http://app.example.com/", nil))
+	// What Caddy received on 443 still reaches the app.
+	f.route(t, 0, "app.example.com")
+	r := httptest.NewRequest("GET", "/", nil)
+	r.Host = "app.example.com"
+	r.Header.Set("X-Forwarded-Proto", "https")
+	r.Header.Set("X-Forwarded-For", "198.51.100.4")
+	w = httptest.NewRecorder()
+	f.handler.ServeHTTP(w, r)
+	if w.Code != 200 || w.Body.String() != "A app.example.com" {
+		t.Fatalf("HTTPS request: %d %q", w.Code, w.Body.String())
 	}
 }
 

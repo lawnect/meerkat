@@ -114,6 +114,40 @@ func publicHostname(raw string) string {
 	return host
 }
 
+// isPlainHTTP reports whether Caddy received r on port 80. Caddy sets
+// X-Forwarded-Proto from its own connection and drops the client's value,
+// since it trusts no proxy in front of it.
+func isPlainHTTP(r *http.Request) bool {
+	return r.Header.Get("X-Forwarded-Proto") == "http"
+}
+
+// redirectToHTTPS answers a request Caddy received on port 80 (Caddy has
+// already answered ACME HTTP-01 challenges there). Only a host the Outlet
+// would certify is sent on to HTTPS, so neither a forged Host nor an
+// absolute-form request target, which Go puts in r.Host, can make it
+// redirect elsewhere. Nothing is cached: a host's registration can change.
+func (s *Store) redirectToHTTPS(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	host := strings.TrimSuffix(strings.ToLower(r.Host), ":80")
+	// Origin-form only: "*" (OPTIONS) and CONNECT's authority have no path.
+	target := r.URL.RequestURI()
+	if r.Method == http.MethodConnect || !strings.HasPrefix(target, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	allowed, err := s.certificateAllowed(r.Context(), host)
+	if err != nil {
+		http.Error(w, "route unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if !allowed {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Location", "https://"+host+target)
+	w.WriteHeader(http.StatusPermanentRedirect)
+}
+
 // certificateAllowed is an authorization check, not a DNS or health check.
 // It prevents an arbitrary SNI from causing an ACME order.
 func (s *Store) certificateAllowed(ctx context.Context, hostname string) (bool, error) {
@@ -160,6 +194,10 @@ func (s *Store) PublicHandler() http.Handler {
 			} else {
 				w.WriteHeader(http.StatusNoContent)
 			}
+			return
+		}
+		if isPlainHTTP(r) {
+			s.redirectToHTTPS(w, r)
 			return
 		}
 		began := time.Now()

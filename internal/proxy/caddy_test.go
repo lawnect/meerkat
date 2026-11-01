@@ -23,6 +23,27 @@ func TestCaddyfileUsesStableOnDemandRouting(t *testing.T) {
 	}
 }
 
+// Port 80 must not redirect on its own: {host} is whatever the client sent,
+// so only the Outlet, which knows the registered hosts, may answer there.
+func TestCaddyfileSendsPlainHTTPToTheOutlet(t *testing.T) {
+	config := string(DynamicCaddyfile(DefaultUpstream))
+	if strings.Contains(config, "redir") || strings.Contains(config, "{host}") {
+		t.Fatalf("Caddy redirects to a client-chosen host: %q", config)
+	}
+	start := strings.Index(config, "http:// {\n")
+	if start < 0 {
+		t.Fatalf("no plain HTTP site: %q", config)
+	}
+	site := config[start:]
+	site = site[:strings.Index(site, "\n}\n")]
+	if !strings.Contains(site, "\treverse_proxy http://outlet:8080 {") || strings.Contains(site, "tls") {
+		t.Fatalf("plain HTTP site doesn't proxy to the Outlet: %q", site)
+	}
+	if count := strings.Count(config, "reverse_proxy http://outlet:8080 {"); count != 2 {
+		t.Fatalf("expected the HTTP and HTTPS sites to proxy to the Outlet, got %d: %q", count, config)
+	}
+}
+
 func TestEmptyCaddyfileHasNoPublicHost(t *testing.T) {
 	config := string(EmptyCaddyfile())
 	if !strings.Contains(config, ":9090 {\n\tmetrics /metrics") || strings.Contains(config, "issuer acme") {

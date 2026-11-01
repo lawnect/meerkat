@@ -155,7 +155,7 @@ Keep using HTTPS so that session cookies work correctly. Even with Telegram logi
 
    The root (`@`) is needed only if you set the tunnel address directly to the root. If you use IPv6, also set AAAA records.
 3. Open TCP ports 80 and 443 and the tunnel port (default 2333) to the outside. For HTTP-01 validation, requests on port 80 must
-   reach Caddy.
+   reach Caddy. Port 80 redirects only addresses registered with the Outlet to HTTPS and answers other hosts with `404`.
 
 Besides the admin API (`https://ADMIN_HOSTNAME`), a Connector connects over TCP to the **tunnel address** to open the data
 tunnel. The default is `ADMIN_HOSTNAME:2333`, so you don't need to create a separate DNS record, and the root can stay on another server.
