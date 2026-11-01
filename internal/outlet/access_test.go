@@ -193,7 +193,8 @@ func TestAccessChallengesOnlyProtectedPaths(t *testing.T) {
 		t.Fatalf("unprotected host: %d", w.Code)
 	}
 	w := f.visit("app.example.com", "/admin/settings?tab=1")
-	if w.Code != http.StatusFound || w.Header().Get("Cache-Control") != "no-store" {
+	const vary = "Accept, Accept-Language, Sec-Fetch-Mode"
+	if w.Code != http.StatusFound || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Vary") != vary {
 		t.Fatalf("navigation: %d %v", w.Code, w.Header())
 	}
 	start, _ := url.Parse(w.Header().Get("Location"))
@@ -206,8 +207,8 @@ func TestAccessChallengesOnlyProtectedPaths(t *testing.T) {
 	r.Header.Set("Accept", "application/json")
 	api := httptest.NewRecorder()
 	f.handler.ServeHTTP(api, r)
-	if api.Code != http.StatusUnauthorized {
-		t.Fatalf("API request: %d", api.Code)
+	if api.Code != http.StatusUnauthorized || api.Header().Get("Cache-Control") != "no-store" || api.Header().Get("Vary") != vary {
+		t.Fatalf("API request: %d %v", api.Code, api.Header())
 	}
 	upgrade := httptest.NewRequest("GET", "/admin/live", nil)
 	upgrade.Host = "app.example.com"
