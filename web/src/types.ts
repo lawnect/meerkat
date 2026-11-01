@@ -269,11 +269,13 @@ export interface AdminAccessSettings {
   allowed: string[];
 }
 
-// client와 client_range는 공개 주소로 접속했을 때만 있고, lifted는 MEERKAT_ADMIN_IP_LIMIT=false로 제한이 해제된 상태입니다.
+// client와 client_range는 공개 주소로 접속했을 때만 있고, client_shared는 그 주소가 프록시·사설망·CDN 주소로 보일 때 참이며, lifted는 MEERKAT_ADMIN_IP_LIMIT=false로 제한이 해제된 상태, damaged는 저장값을 읽지 못해 공개 주소의 콘솔을 닫은 상태입니다.
 export interface AdminAccessView extends AdminAccessSettings {
   client: string | null;
   client_range: string | null;
+  client_shared: boolean;
   lifted: boolean;
+  damaged: boolean;
 }
 
 // HSTS(GET/PUT /api/v1/security/hsts). 켜져 있으면 공개 주소의 HTTPS 응답에 max-age 1년을 붙입니다.

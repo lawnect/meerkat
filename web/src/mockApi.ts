@@ -217,7 +217,7 @@ let hsts: HstsSettings = { enabled: true };
 // 데모는 공개 주소에서 203.0.113.24로 접속한 것으로 둡니다.
 const mockClient = '203.0.113.24';
 let adminAccess: AdminAccessSettings = { restricted: false, allowed: [] };
-const adminAccessView = (): AdminAccessView => ({ ...structuredClone(adminAccess), client: mockClient, client_range: mockClient, lifted: false });
+const adminAccessView = (): AdminAccessView => ({ ...structuredClone(adminAccess), client: mockClient, client_range: mockClient, client_shared: false, lifted: false, damaged: false });
 let blockRules: BlockRule[] = [
   {
     id: 'honeypot',

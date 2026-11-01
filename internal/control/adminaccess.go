@@ -7,7 +7,14 @@ import (
 	"time"
 )
 
-var ErrInvalidAdminAccess = errors.New("invalid admin access settings")
+var (
+	ErrInvalidAdminAccess = errors.New("invalid admin access settings")
+	// ErrDamagedAdminAccess comes with ClosedAdminAccess when the stored
+	// settings can't be read, such as ones a later version wrote before a
+	// rollback: an access control fails closed, and the local admin port and
+	// MEERKAT_ADMIN_IP_LIMIT=false still get in.
+	ErrDamagedAdminAccess = errors.New("stored admin access settings are damaged")
+)
 
 const (
 	settingAdminAccess = "admin_access"
@@ -26,6 +33,9 @@ type AdminAccess struct {
 
 func DefaultAdminAccess() AdminAccess { return AdminAccess{Allowed: []string{}} }
 
+// ClosedAdminAccess closes the console on public addresses.
+func ClosedAdminAccess() AdminAccess { return AdminAccess{Restricted: true, Allowed: []string{}} }
+
 // Normalize reports whether the settings are valid and puts the ranges in
 // normalizeRange's form, once each, in the order given.
 func (a AdminAccess) Normalize() (AdminAccess, bool) {
@@ -40,7 +50,9 @@ func (a AdminAccess) Normalize() (AdminAccess, bool) {
 	return a, true
 }
 
-// AdminAccess returns the stored settings, or the defaults.
+// AdminAccess returns the stored settings, the defaults when none are
+// stored, or ClosedAdminAccess with ErrDamagedAdminAccess when the stored
+// ones can't be read.
 func (d *Database) AdminAccess(ctx context.Context) (AdminAccess, error) {
 	raw, err := getSetting(ctx, d.db, settingAdminAccess)
 	if err != nil || raw == "" {
@@ -48,12 +60,12 @@ func (d *Database) AdminAccess(ctx context.Context) (AdminAccess, error) {
 	}
 	var a AdminAccess
 	if json.Unmarshal([]byte(raw), &a) != nil {
-		return DefaultAdminAccess(), nil
+		return ClosedAdminAccess(), ErrDamagedAdminAccess
 	}
 	if a, ok := a.Normalize(); ok {
 		return a, nil
 	}
-	return DefaultAdminAccess(), nil
+	return ClosedAdminAccess(), ErrDamagedAdminAccess
 }
 
 func (d *Database) SetAdminAccess(ctx context.Context, a AdminAccess, now time.Time) (AdminAccess, error) {

@@ -3,6 +3,7 @@ package outlet
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -38,15 +39,18 @@ func (rule *adminAccessRule) allows(ip string) bool {
 }
 
 // adminOpenPaths answer on the management host whatever the IP limit: the
-// Connector API, which tunnels reach from anywhere, and access protection's
-// sign-in, where visitors of protected addresses are sent. Exact paths, so
-// no unclean variant of one gets past the limit to a ServeMux redirect.
+// Connector API, which tunnels reach from anywhere, access protection's
+// sign-in, where visitors of protected addresses are sent, and /healthz,
+// which the guide has external monitors check from addresses nobody can
+// list. Exact paths, so no unclean variant of one gets past the limit to a
+// ServeMux redirect.
 var adminOpenPaths = map[string]bool{
 	"/connector/v1/enrollment": true,
 	"/connector/v1/config":     true,
 	"/connector/v1/heartbeat":  true,
 	accessStartPath:            true,
 	accessCallbackPath:         true,
+	"/healthz":                 true,
 }
 
 func (s *Store) reloadAdminAccess(ctx context.Context) error {
@@ -54,7 +58,9 @@ func (s *Store) reloadAdminAccess(ctx context.Context) error {
 		return nil
 	}
 	a, err := s.control.AdminAccess(ctx)
-	if err != nil {
+	if errors.Is(err, control.ErrDamagedAdminAccess) {
+		slog.Warn("the saved admin console IP limit can't be read, so the console is closed on public addresses until it is saved again over SSH or MEERKAT_ADMIN_IP_LIMIT=false lifts it")
+	} else if err != nil {
 		return err
 	}
 	s.adminAccess.Store(compileAdminAccess(a))
@@ -72,6 +78,12 @@ func (s *Store) adminReachable(r *http.Request) bool {
 	return rule.allows(ip)
 }
 
+// isAdminHost reports whether host is the management host.
+func (s *Store) isAdminHost(ctx context.Context, host string) bool {
+	routing, err := s.control.Routing(ctx)
+	return err == nil && host != "" && host == routing.Outlet.AdminHostname
+}
+
 // clientRange is what "add current IP" adds: the address itself for IPv4,
 // and its /64 for IPv6, where a client's address changes within its network.
 func clientRange(ip string) string {
@@ -86,12 +98,32 @@ func clientRange(ip string) string {
 	return netip.PrefixFrom(addr, 64).Masked().String()
 }
 
+// sharedClient reports whether the address the Outlet sees is likely one
+// many clients share: a private, loopback or link-local address (a proxy or
+// Docker's port forwarding in front of Caddy) or a request through a CDN.
+// Allowing it would let everyone behind it in.
+func sharedClient(r *http.Request, ip string) bool {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return false
+	}
+	addr = addr.Unmap()
+	cgnat := netip.MustParsePrefix("100.64.0.0/10")
+	return addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast() || cgnat.Contains(addr) ||
+		r.Header.Get("Cf-Ray") != "" || r.Header.Get("Cdn-Loop") != ""
+}
+
 type adminAccessView struct {
 	control.AdminAccess
 	// Client is the address the request came from on a public address, and
 	// ClientRange what adding it would add; both are null on the local port.
 	Client      *string `json:"client"`
 	ClientRange *string `json:"client_range"`
+	// ClientShared says the client address looks shared (see sharedClient).
+	ClientShared bool `json:"client_shared"`
+	// Damaged says the stored settings couldn't be read and the console is
+	// closed on public addresses until they are saved again.
+	Damaged bool `json:"damaged"`
 	// Lifted says MEERKAT_ADMIN_IP_LIMIT=false is ignoring the limit.
 	Lifted bool `json:"lifted"`
 }
@@ -100,7 +132,7 @@ func (s *Store) adminAccessView(r *http.Request, a control.AdminAccess) adminAcc
 	view := adminAccessView{AdminAccess: a, Lifted: s.control.AdminIPLimitLifted()}
 	if ip, public := requestOrigin(r); public && ip != "" {
 		addRange := clientRange(ip)
-		view.Client, view.ClientRange = &ip, &addRange
+		view.Client, view.ClientRange, view.ClientShared = &ip, &addRange, sharedClient(r, ip)
 	}
 	return view
 }
@@ -110,11 +142,14 @@ func (s *Store) getAdminAccess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a, err := s.control.AdminAccess(r.Context())
-	if err != nil {
+	damaged := errors.Is(err, control.ErrDamagedAdminAccess)
+	if err != nil && !damaged {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	reply(w, 200, s.adminAccessView(r, a))
+	view := s.adminAccessView(r, a)
+	view.Damaged = damaged
+	reply(w, 200, view)
 }
 
 func (s *Store) putAdminAccess(w http.ResponseWriter, r *http.Request) {

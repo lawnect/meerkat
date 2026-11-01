@@ -146,6 +146,11 @@ func (s *Store) redirectToHTTPS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "route unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	// The management host redirects only those its IP limit lets in, so
+	// port 80 doesn't show it to the rest.
+	if allowed && s.isAdminHost(r.Context(), host) && !s.adminReachable(r) {
+		allowed = false
+	}
 	if !allowed {
 		http.NotFound(w, r)
 		return

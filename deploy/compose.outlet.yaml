@@ -19,6 +19,10 @@ services:
     entrypoint: [/usr/local/bin/outlet]
     command: [-config, /config/outlet.json, -data-dir, /state]
     networks: [control]
+    environment:
+      # Set MEERKAT_ADMIN_IP_LIMIT=false in compose.env and run up -d again to
+      # lift the console's saved IP limit when locked out without SSH.
+      MEERKAT_ADMIN_IP_LIMIT: ${MEERKAT_ADMIN_IP_LIMIT:-}
     volumes:
       - "${MEERKAT_DEPLOY_DIR:?set MEERKAT_DEPLOY_DIR}/configs/outlet.json:/config/outlet.json:ro"
       - "${MEERKAT_DEPLOY_DIR}/configs/api-cert.pem:/config/api-cert.pem:ro"

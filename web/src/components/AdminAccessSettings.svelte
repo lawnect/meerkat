@@ -17,9 +17,10 @@
 
   // 설정 > 보안의 관리 콘솔 접근 제한 카드. 공개 관리 주소의 콘솔을 허용 대역에서만 열고, 되돌리기·저장으로만 반영합니다.
   // 현재 IP 추가는 서버가 알려 준 client_range(IPv4는 주소, IPv6는 /64)를 넣으며, 로컬 관리 포트에서는 보이지 않습니다.
+  // 대역 미지정 안내는 빈 목록을 저장할 수 있는 로컬 관리 포트에서만 보입니다(공개 주소에서는 409).
   const t = translations({
     title: 'Admin console access',
-    tip: 'Limits the console and admin API on the public admin address to the allowed ranges; other addresses get 404. The Connector API and access protection sign-in stay open, and the local admin port over SSH is never limited. If you are locked out without SSH, set MEERKAT_ADMIN_IP_LIMIT=false and restart the Outlet.',
+    tip: 'Limits the console and admin API on the public admin address to the allowed ranges; other addresses get 404. The Connector API and access protection sign-in stay open, and the local admin port over SSH is never limited. If you are locked out without SSH, set MEERKAT_ADMIN_IP_LIMIT=false in compose.env and run docker compose up -d again.',
     restricted: 'Allow listed IP ranges only',
     current: (ip: string) => `Current IP ${ip}`,
     local: 'Local admin port, not limited',
@@ -28,7 +29,9 @@
     allowedHint: 'IPv4 or IPv6 address or CIDR, up to 50',
     emptyClosed: 'With no ranges, the console is closed on the public address',
     addCurrent: 'Add current IP',
-    lifted: 'MEERKAT_ADMIN_IP_LIMIT=false lifts this limit. Remove it and restart the Outlet to apply the limit.',
+    lifted: 'MEERKAT_ADMIN_IP_LIMIT=false lifts this limit. Remove it and run docker compose up -d again to apply the limit.',
+    shared: 'The current IP looks like a proxy, a private network or a CDN rather than your own. Allowing it lets in every client that comes through it.',
+    damaged: 'The saved limit could not be read, so the console is closed on the public address. Save the settings again.',
     revert: 'Revert',
     save: 'Save',
     saving: 'Saving…',
@@ -39,7 +42,7 @@
     loadFailed: (code: string) => `Couldn't load admin console access: ${code}`,
   }, {
     title: '관리 콘솔 접근 제한',
-    tip: '공개 관리 주소의 콘솔과 관리 API를 허용 대역에서만 제공하며, 그 밖의 주소에는 404로 응답합니다. Connector API와 접근 보호 로그인은 제한하지 않으며, SSH로 연결한 로컬 관리 포트에는 적용되지 않습니다. SSH 없이 접속이 차단된 경우 MEERKAT_ADMIN_IP_LIMIT=false를 설정하고 Outlet을 재시작하십시오.',
+    tip: '공개 관리 주소의 콘솔과 관리 API를 허용 대역에서만 제공하며, 그 밖의 주소에는 404로 응답합니다. Connector API와 접근 보호 로그인은 제한하지 않으며, SSH로 연결한 로컬 관리 포트에는 적용되지 않습니다. SSH 없이 접속이 차단된 경우 compose.env에 MEERKAT_ADMIN_IP_LIMIT=false를 설정하고 docker compose up -d를 다시 실행하십시오.',
     restricted: '허용 대역에서만 접속 허용',
     current: (ip: string) => `현재 접속 IP ${ip}`,
     local: '로컬 관리 포트 접속, 제한 미적용',
@@ -48,7 +51,9 @@
     allowedHint: 'IPv4·IPv6 주소 또는 CIDR, 최대 50개',
     emptyClosed: '대역 미지정 시 공개 주소의 콘솔 접속 차단',
     addCurrent: '현재 IP 추가',
-    lifted: 'MEERKAT_ADMIN_IP_LIMIT=false 환경 변수로 제한이 해제되어 있습니다. 제한을 적용하려면 환경 변수를 제거하고 Outlet을 재시작하십시오.',
+    lifted: 'MEERKAT_ADMIN_IP_LIMIT=false 환경 변수로 제한이 해제되어 있습니다. 제한을 적용하려면 환경 변수를 제거하고 docker compose up -d를 다시 실행하십시오.',
+    shared: '현재 접속 IP가 본인 주소가 아닌 프록시, 사설망 또는 CDN의 주소로 보입니다. 이 주소를 허용하면 같은 경로로 들어오는 모든 클라이언트가 허용됩니다.',
+    damaged: '저장된 제한 설정을 읽을 수 없어 공개 주소의 콘솔 접속이 차단되었습니다. 설정을 다시 저장하십시오.',
     revert: '변경 취소',
     save: '저장',
     saving: '저장 중…',
@@ -109,6 +114,8 @@
       <Skeleton class="h-32 w-full" />
     {:else}
       {#if view.lifted}<Alert.Root><Warning aria-hidden="true" /><Alert.Description>{t().lifted}</Alert.Description></Alert.Root>{/if}
+      {#if view.damaged}<Alert.Root variant="destructive"><Warning aria-hidden="true" /><Alert.Description>{t().damaged}</Alert.Description></Alert.Root>{/if}
+      {#if view.client_shared}<Alert.Root><Warning aria-hidden="true" /><Alert.Description>{t().shared}</Alert.Description></Alert.Root>{/if}
       {#if error}<Alert.Root variant="destructive"><Warning aria-hidden="true" /><Alert.Description>{error}</Alert.Description></Alert.Root>{/if}
       <Field.Group class="gap-0">
         <Field.Field orientation="horizontal">
@@ -127,7 +134,7 @@
             {/if}
           </div>
           <TagInput id="admin-access-allowed" ariaLabel={t().allowed} bind:values={draft.allowed} lowercase mono placeholder="203.0.113.0/24, 2001:db8::/48" />
-          <Field.Description>{draft.restricted && draft.allowed.length === 0 ? t().emptyClosed : t().allowedHint}</Field.Description>
+          <Field.Description>{draft.restricted && draft.allowed.length === 0 && !view.client ? t().emptyClosed : t().allowedHint}</Field.Description>
         </Field.Field>
       </Field.Group>
     {/if}

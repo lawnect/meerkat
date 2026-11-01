@@ -234,7 +234,7 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 | 터널 | `connector.create`, `connector.delete`, `connector.describe`, `connector.rename`, `connector.token_issue`, `connector.token_reset`, `connector.enroll`, `connector.enroll_failed` |
 | 서비스·공개 주소 | `service.create`, `service.update`, `service.delete`, `route.create`, `route.delete` |
 | 도메인·터널 주소 | `domain.set`, `domain.add`, `domain.remove`, `domain.mode`, `tunnel.update` |
-| 알림·보안 | `telegram.update`, `telegram.test`, `telegram.delete`, `alert_rules.update`, `second_factor.update`, `security.rate_limit`, `security.connection_limits`, `security.tunnel_guard`, `security.block_rules`, `security.client_bans`, `security.client_ban_release`, `security.sso`, `security.sso_reset` |
+| 알림·보안 | `telegram.update`, `telegram.test`, `telegram.delete`, `alert_rules.update`, `second_factor.update`, `security.rate_limit`, `security.connection_limits`, `security.tunnel_guard`, `security.block_rules`, `security.client_bans`, `security.client_ban_release`, `security.sso`, `security.sso_reset`, `security.hsts`, `security.admin_access` |
 
 **요청 제한(rate limit).** 공개 경로(`PublicHandler`)에서 프록시하기 전에, 데이터베이스를 조회하기 전에 토큰 버킷으로 제한한다. `GET`과 `PUT /api/v1/security/rate-limit`은 같은 객체를 주고받으며 `PUT`은 모든 키를 담아야 하고 범위를 벗어나면 `400 invalid_rate_limit`이다. 설정은 재시작 없이 바로 적용한다.
 
@@ -281,15 +281,22 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 
 - 켜져 있으면 공개 주소의 HTTPS 응답에 `Strict-Transport-Security: max-age=31536000`을 붙인다. 앱 응답과 Outlet이 직접 한 응답(요청 제한, 접근 보호, 차단 규칙 등)에 모두 붙고, `includeSubDomains`와 `preload`는 붙이지 않는다.
 - 앱 응답에 이 헤더가 있으면 Outlet의 값을 빼고 앱의 값만 전달한다(`max-age=0` 포함).
-- 80번 포트의 리디렉션에는 붙이지 않는다. 관리 주소에는 설정과 관계없이 항상 붙는다.
+- 80번 포트의 리디렉션에는 붙이지 않는다. 관리 콘솔 응답에는 설정과 관계없이 항상 붙는다(관리 콘솔 접근 제한으로 막힌 요청의 `404`는 이 설정을 따른다).
 - 브라우저는 한 번 받은 주소를 1년 동안 HTTPS로만 연다. 공개 주소를 HTTPS가 없는 서버로 옮기려면 미리 끄고 그 기간이 지나야 한다.
 
-**관리 콘솔 접근 제한.** `GET`과 `PUT /api/v1/security/admin-access`는 `{"restricted": bool, "allowed": [...]}`를 다룬다. `PUT`은 두 키를 모두 담아야 하고, `allowed`는 IPv4·IPv6 주소 또는 CIDR 최대 50개로 터널 포트 보호와 같은 형태로 정리한다. 형식이 맞지 않으면 `400 invalid_admin_access`다. 응답에는 저장된 값과 함께 `client`(공개 주소로 접속했으면 그 주소, 로컬 관리 포트에서는 `null`), `client_range`(현재 IP를 추가할 때 넣을 값으로 IPv4는 주소, IPv6는 그 /64), `lifted`(환경 변수로 제한이 해제됨)가 있다. 저장하면 바로 적용하고 `security.admin_access`(`{"restricted", "allowed"}`)로 감사 기록을 남긴다.
+**관리 콘솔 접근 제한.** `GET`과 `PUT /api/v1/security/admin-access`는 `{"restricted": bool, "allowed": [...]}`를 다룬다. `PUT`은 두 키를 모두 담아야 하고, `allowed`는 IPv4·IPv6 주소 또는 CIDR 최대 50개로 터널 포트 보호와 같은 형태로 정리한다. 형식이 맞지 않으면 `400 invalid_admin_access`다. 응답에는 저장된 값과 함께 다음이 있다. 저장하면 바로 적용하고 `security.admin_access`(`{"restricted", "allowed"}`)로 감사 기록을 남긴다.
 
-- `restricted`가 `true`이면 공개 경로로 관리 주소에 온 요청은 접속 주소(`X-Forwarded-For`의 마지막 항목)가 `allowed`에 있어야 한다. 없으면 일반 `404`(`404 page not found`)이며, 콘솔 화면, 관리 API, `/healthz`가 모두 해당한다.
-- Connector API(`/connector/v1/enrollment`, `/connector/v1/config`, `/connector/v1/heartbeat`)와 접근 보호 로그인(`/api/v1/access/start`, `/api/v1/access/callback`)은 경로가 정확히 일치할 때만 제한하지 않는다. 공개 주소의 앱, 대표 도메인 루트, 로컬 관리 포트에는 적용하지 않는다.
+- `client`: 공개 주소로 접속했으면 그 주소, 로컬 관리 포트에서는 `null`이다. `client_range`는 현재 IP를 추가할 때 넣을 값으로 IPv4는 주소, IPv6는 그 /64다.
+- `client_shared`: 그 주소가 사설·루프백·링크 로컬·CGNAT(100.64.0.0/10) 주소이거나 요청에 `CF-Ray`·`CDN-Loop`가 있어 여러 클라이언트가 함께 쓰는 주소로 보이면 `true`다. 허용하면 같은 경로로 들어오는 모든 클라이언트가 들어온다.
+- `lifted`: 환경 변수로 제한이 해제된 상태다. `damaged`: 저장된 값을 읽을 수 없어 공개 주소의 콘솔을 닫은 상태다.
+
+동작은 다음과 같다.
+
+- `restricted`가 `true`이면 공개 경로로 관리 주소에 온 요청은 접속 주소(`X-Forwarded-For`의 마지막 항목)가 `allowed`에 있어야 한다. 없으면 콘솔 화면과 관리 API는 일반 `404`(`404 page not found`)이고, 80번 포트에서 관리 주소로 온 요청도 리디렉션 대신 `404`다.
+- Connector API(`/connector/v1/enrollment`, `/connector/v1/config`, `/connector/v1/heartbeat`), 접근 보호 로그인(`/api/v1/access/start`, `/api/v1/access/callback`), 외부 감시용 `/healthz`는 경로가 정확히 일치할 때만 제한하지 않는다. 공개 주소의 앱, 대표 도메인 루트, 로컬 관리 포트에는 적용하지 않는다.
 - 공개 주소에서 `restricted: true`로 저장할 때 지금 접속한 주소가 `allowed`에 없으면 `409 admin_access_locks_out`이다. 로컬 관리 포트에서는 빈 목록으로 저장해 공개 주소의 콘솔을 닫을 수 있다.
-- `MEERKAT_ADMIN_IP_LIMIT=false`이면 저장된 값과 관계없이 제한하지 않고, Outlet이 시작할 때 경고를 남긴다. SSH를 쓸 수 없을 때 잠긴 관리자가 들어오는 경로다.
+- 저장된 값을 읽을 수 없으면(형식 오류, 이후 버전이 쓴 값 등) 접근 통제이므로 공개 주소의 콘솔을 닫고 시작할 때 경고를 남긴다. 로컬 관리 포트에서 다시 저장하면 풀린다.
+- `MEERKAT_ADMIN_IP_LIMIT=false`이면 저장된 값과 관계없이 제한하지 않고, Outlet이 시작할 때 경고를 남긴다. SSH를 쓸 수 없을 때 잠긴 관리자가 들어오는 경로이며, `compose.outlet.yaml`이 `compose.env`의 값을 Outlet에 넘긴다. 바꾼 뒤에는 `docker compose ... up -d`로 컨테이너를 다시 만들어야 한다.
 - 접속 주소는 Caddy가 본 주소이므로 Caddy 앞에 CDN이나 다른 프록시가 있으면 이 제한을 쓸 수 없다.
 
 **터널 포트 보호(tunnel guard).** rathole 서버(터널 포트, 기본 2333)는 연결한 누구에게나 토큰을 확인하기 전에 Noise 핸드셰이크(X25519)를 해 주고 자체 제한이 없어, 익명 연결이 몰리면 rathole이 마비되어 모든 터널이 끊긴다. 그래서 Outlet이 `outlet.json`의 `tunnel_listen_address`(기본 `0.0.0.0:2333`)를 직접 수신하고, 통과시킨 연결만 `tunnel_internal_address`의 rathole로 전달한다. 생략하면 기본은 수신 포트 + 1의 `127.0.0.1`이다(수신 포트가 65535면 − 1). 수신 포트 2333이면 `127.0.0.1:2334`, 2334이면 `127.0.0.1:2335`다. 내부 주소는 루프백 IP 리터럴이어야 하고 수신 포트와 달라야 하며, 직접 적은 값이 어긋나면 Outlet이 시작하지 않는다. 생성하는 `server.toml`의 `bind_addr`는 내부 주소다. rathole은 Outlet과 같은 네트워크 네임스페이스(`network_mode: service:outlet`)에서 실행하므로 Compose 파일은 그대로다. 수신 포트를 잡지 못하면(업그레이드 직후 이전 rathole이 아직 포트를 쥐고 있는 경우) 경고를 남기고 1초부터 30초까지 간격을 늘려 다시 시도하며, Outlet은 멈추지 않는다. 통과시킨 연결은 내부 주소로 연결하고(제한 5초) 양방향으로 복사한다. 한쪽의 데이터 끝은 `CloseWrite`로 반대쪽에 전달(half-close)하고, 오류가 나면 양쪽을 닫는다. rathole 쪽이 먼저 끝나면(닫거나 half-close) 클라이언트에게 마무리할 시간 5초를 주고, 그때까지 끝내지 않으면(클라이언트 쪽 읽기 기한) 양쪽을 닫는다. 그 밖의 방향이나 살아 있는 연결에는 시간 제한을 두지 않는다. TCP keepalive를 켠다. Outlet을 종료하면 수신을 멈추고 전달 중인 연결을 모두 닫는다.

@@ -1,10 +1,15 @@
 package outlet
 
 import (
+	"context"
+	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"net/http/httptest"
+	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/lawnect/meerkat/internal/control"
 )
@@ -49,7 +54,7 @@ func TestAdminAccessLimitsTheConsoleOnly(t *testing.T) {
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &view) != nil || !view.Restricted || !slices.Equal(view.Allowed, []string{"203.0.113.0/24", "2001:db8:1::/48"}) {
 		t.Fatalf("save: %d %s", w.Code, w.Body.String())
 	}
-	for _, target := range []string{"/", "/connectors", "/ko/settings", "/api/v1/setup/status", "/api/v1/security/admin-access", "/healthz",
+	for _, target := range []string{"/", "/connectors", "/ko/settings", "/api/v1/setup/status", "/api/v1/security/admin-access", "/healthz/",
 		"/connector/v1/../api/v1/setup/status", "//api/v1/setup/status", "/connector/v1/heartbeat/../../../api/v1/outlet"} {
 		if w := console(target, "198.51.100.9"); w.Code != 404 || w.Body.String() != notThere {
 			t.Fatalf("%s from outside: %d %q", target, w.Code, w.Body.String())
@@ -60,10 +65,23 @@ func TestAdminAccessLimitsTheConsoleOnly(t *testing.T) {
 			t.Fatalf("from %s: %d", ip, w.Code)
 		}
 	}
-	// Open whatever the limit: tunnels and visitors of protected addresses.
+	// Port 80 redirects the management host only for those let in.
+	for ip, code := range map[string]int{"198.51.100.9": 404, "203.0.113.5": 308} {
+		r := httptest.NewRequest("GET", "/api/v1/setup/status", nil)
+		r.Host = f.adminHost
+		r.Header.Set("X-Forwarded-Proto", "http")
+		r.Header.Set("X-Forwarded-For", ip)
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, r)
+		if w.Code != code || (code == 404) != (w.Header().Get("Location") == "") {
+			t.Fatalf("port 80 from %s: %d %q", ip, w.Code, w.Header().Get("Location"))
+		}
+	}
+	// Open whatever the limit: tunnels, visitors of protected addresses and
+	// external monitors of /healthz.
 	for _, open := range []struct{ method, target string }{
 		{"POST", "/connector/v1/heartbeat"}, {"GET", "/connector/v1/config"}, {"POST", "/connector/v1/enrollment"},
-		{"GET", accessStartPath}, {"GET", accessCallbackPath},
+		{"GET", accessStartPath}, {"GET", accessCallbackPath}, {"GET", "/healthz"},
 	} {
 		if w := send(open.method, f.adminHost, open.target, "198.51.100.9", nil); w.Body.String() == notThere {
 			t.Fatalf("%s %s refused by the limit: %d", open.method, open.target, w.Code)
@@ -80,7 +98,18 @@ func TestAdminAccessLimitsTheConsoleOnly(t *testing.T) {
 	if w := console("/api/v1/setup/status", "198.51.100.9"); w.Code != 200 {
 		t.Fatalf("lifted: %d", w.Code)
 	}
+	// Let in that way, they can turn the limit off from where they are,
+	// but not save one that still leaves them out.
+	if w := save("198.51.100.9", control.AdminAccess{Restricted: true, Allowed: []string{"203.0.113.0/24"}}); w.Code != 409 {
+		t.Fatalf("lifted, saving a limit without the saver: %d", w.Code)
+	}
+	if w := save("198.51.100.9", control.AdminAccess{Restricted: false, Allowed: []string{"203.0.113.0/24"}}); w.Code != 200 {
+		t.Fatalf("lifted, turning the limit off: %d %s", w.Code, w.Body.String())
+	}
 	f.db.SetDefaults(control.Defaults{})
+	if w := console("/api/v1/setup/status", "198.51.100.9"); w.Code != 200 {
+		t.Fatalf("turned off: %d", w.Code)
+	}
 	// The local admin port can close the console to the internet entirely.
 	if w := request(f.store.Handler(), "PUT", "/api/v1/security/admin-access", f.admin, control.AdminAccess{Restricted: true, Allowed: []string{}}); w.Code != 200 {
 		t.Fatalf("close over SSH: %d %s", w.Code, w.Body.String())
@@ -150,5 +179,98 @@ func TestAdminAccessSettingsAPI(t *testing.T) {
 	a.db.SetDefaults(control.Defaults{AdminIPLimitLifted: true})
 	if view := read(request(h, "GET", "/api/v1/security/admin-access", a.admin, nil)); !view.Lifted {
 		t.Fatalf("lifted not shown: %+v", view)
+	}
+}
+
+// A restarted Outlet applies the saved limit from its first request.
+func TestAdminAccessHoldsAcrossRestarts(t *testing.T) {
+	f := newProxyFixture(t)
+	if _, err := f.db.SetAdminAccess(context.Background(), control.AdminAccess{Restricted: true, Allowed: []string{"203.0.113.0/24"}}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	key := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	cfg := Config{ListenAddress: "127.0.0.1:8443", AdminTokenHash: Hash(f.admin), EnrollmentTTLSeconds: 600, CredentialTTLSeconds: 3600, TunnelRemoteAddress: "outlet:2333", TunnelServerPublicKey: key}
+	restarted, err := OpenWithControl(cfg, t.TempDir(), f.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for ip, code := range map[string]int{"198.51.100.9": 404, "203.0.113.5": 200} {
+		r := httptest.NewRequest("GET", "/api/v1/setup/status", nil)
+		r.Host = f.adminHost
+		r.Header.Set("X-Forwarded-Proto", "https")
+		r.Header.Set("X-Forwarded-For", ip)
+		w := httptest.NewRecorder()
+		restarted.PublicHandler().ServeHTTP(w, r)
+		if w.Code != code {
+			t.Fatalf("after a restart, from %s: %d, want %d", ip, w.Code, code)
+		}
+	}
+}
+
+// The card warns when the address the Outlet sees is likely shared by many
+// clients: allowing it would let all of them in.
+func TestAdminAccessFlagsSharedClientAddresses(t *testing.T) {
+	a := newAlertFixture(t)
+	for _, tc := range []struct {
+		ip, header string
+		shared     bool
+	}{{"203.0.113.5", "", false}, {"2001:db8::5", "", false}, {"10.0.0.5", "", true}, {"192.168.215.1", "", true}, {"fd00::1", "", true}, {"100.64.1.1", "", true}, {"127.0.0.1", "", true}, {"203.0.113.5", "Cf-Ray", true}, {"203.0.113.5", "Cdn-Loop", true}} {
+		r := jsonRequest("GET", "/api/v1/security/admin-access", nil)
+		r.Host = a.host
+		r.Header.Set("X-Forwarded-For", tc.ip)
+		r.Header.Set("Authorization", "Bearer "+a.admin)
+		if tc.header != "" {
+			r.Header.Set(tc.header, "x")
+		}
+		w := httptest.NewRecorder()
+		a.store.PublicHandler().ServeHTTP(w, r)
+		var view adminAccessView
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &view) != nil || view.ClientShared != tc.shared {
+			t.Fatalf("%s %s: %d %s", tc.ip, tc.header, w.Code, w.Body.String())
+		}
+	}
+}
+
+// Stored settings the Outlet can't read close the console on public
+// addresses instead of opening it; the local admin port says why.
+func TestAdminAccessFailsClosedOnDamagedSettings(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "control.db")
+	db, err := control.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	outlet, err := db.SetDomain(ctx, "example.com", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`INSERT INTO outlet_settings(key, value, updated_at) VALUES ('admin_access', '{"restricted":true,"allowed":["nope"]}', '2026-11-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	admin := Token()
+	key := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	cfg := Config{ListenAddress: "127.0.0.1:8443", AdminTokenHash: Hash(admin), EnrollmentTTLSeconds: 600, CredentialTTLSeconds: 3600, TunnelRemoteAddress: "outlet:2333", TunnelServerPublicKey: key}
+	store, err := OpenWithControl(cfg, t.TempDir(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("GET", "/api/v1/setup/status", nil)
+	r.Host = outlet.AdminHostname
+	r.Header.Set("X-Forwarded-Proto", "https")
+	r.Header.Set("X-Forwarded-For", "203.0.113.5")
+	w := httptest.NewRecorder()
+	store.PublicHandler().ServeHTTP(w, r)
+	if w.Code != 404 {
+		t.Fatalf("damaged settings opened the console: %d", w.Code)
+	}
+	var view adminAccessView
+	if w := request(store.Handler(), "GET", "/api/v1/security/admin-access", admin, nil); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &view) != nil || !view.Damaged || !view.Restricted {
+		t.Fatalf("local port: %d %s", w.Code, w.Body.String())
 	}
 }
