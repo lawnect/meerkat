@@ -118,6 +118,8 @@ type Store struct {
 	tunnelEvents tunnelEvents
 	limiter      *rateLimiter
 	connections  *connectionLimiter
+	// hsts is the HSTS setting for public addresses.
+	hsts atomic.Bool
 	// guard admits connections to the public tunnel port.
 	guard  *tunnelGuard
 	blocks blockState
@@ -315,6 +317,9 @@ func OpenWithControl(config Config, dir string, controlDB *control.Database) (*S
 	}
 	s.connections = &connectionLimiter{}
 	if err := s.reloadConnectionLimits(context.Background()); err != nil {
+		return nil, err
+	}
+	if err := s.reloadHSTS(context.Background()); err != nil {
 		return nil, err
 	}
 	if err := s.reloadBlockRules(context.Background()); err != nil {

@@ -200,6 +200,9 @@ func (s *Store) PublicHandler() http.Handler {
 			s.redirectToHTTPS(w, r)
 			return
 		}
+		// Every answer from here on is HTTPS, the Outlet's own (limits,
+		// access sign-in, block rules) and an app's.
+		s.setHSTS(w)
 		began := time.Now()
 		limits := s.connectionLimits()
 		w, body := guardTransfer(w, r, limits)
@@ -394,6 +397,7 @@ func (s *Store) PublicHandler() http.Handler {
 					}
 					s.answered(target.serviceID)
 					dropAccessSetCookie(res.Header)
+					keepAppHSTS(w, res)
 					if res.StatusCode < 500 {
 						s.noteServed(target.serviceID)
 					} else {

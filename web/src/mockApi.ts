@@ -1,4 +1,4 @@
-import type { AccessCounts, AccessLogEntry, AccessMetrics, AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ClientBan, ClientBanSettings, ClientBansView, ConnectionLimits, RateLimitSettings, Connector, DomainMode, FailureCause, FailureLogEntry, LatencySeries, LatencyStats, LogSettings, LogView, Outlet, RequestLogEntry, RequestTopRow, RequestTopView, Route, Service, SsoSettings, Target, TunnelGuardSettings, TunnelGuardView, UsageBucket, UsageSeries, UsageUnit } from './types';
+import type { AccessCounts, AccessLogEntry, AccessMetrics, AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ClientBan, ClientBanSettings, ClientBansView, ConnectionLimits, HstsSettings, RateLimitSettings, Connector, DomainMode, FailureCause, FailureLogEntry, LatencySeries, LatencyStats, LogSettings, LogView, Outlet, RequestLogEntry, RequestTopRow, RequestTopView, Route, Service, SsoSettings, Target, TunnelGuardSettings, TunnelGuardView, UsageBucket, UsageSeries, UsageUnit } from './types';
 import { accessDecisions, accessMethods, accessRequesters, failureCauseGroups, failureCauses, refusedCauses, requestClasses, requestTopPeriods, requestTopSorts, serviceCauses } from './types';
 
 const now = (): string => new Date().toISOString();
@@ -213,6 +213,7 @@ let connectionLimits: ConnectionLimits = {
   min_upload_kb_per_second: 1,
   hosts: [{ host: 'photos.example.test', max_upload_mb: 2048 }],
 };
+let hsts: HstsSettings = { enabled: true };
 let blockRules: BlockRule[] = [
   {
     id: 'honeypot',
@@ -1354,6 +1355,13 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     if (!issuer) fail('invalid_issuer');
     if (new URL(issuer).hostname.endsWith('.invalid')) fail('provider_unreachable');
     return { authorization_endpoint: `${issuer}/o/oauth2/v2/auth` };
+  }
+  if (path === '/api/v1/security/hsts' && method === 'GET') return structuredClone(hsts);
+  if (path === '/api/v1/security/hsts' && method === 'PUT') {
+    const next = input as unknown as HstsSettings;
+    if (typeof next.enabled !== 'boolean') fail('invalid_request');
+    hsts = { enabled: next.enabled };
+    return structuredClone(hsts);
   }
   if (path === '/api/v1/security/connection-limits' && method === 'GET') return structuredClone(connectionLimits);
   if (path === '/api/v1/security/connection-limits' && method === 'PUT') {

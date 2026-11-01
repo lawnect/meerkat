@@ -21,6 +21,7 @@
   import BannedClients from '../components/BannedClients.svelte';
   import BlockRuleSettings from '../components/BlockRuleSettings.svelte';
   import ConnectionLimitSettings from '../components/ConnectionLimitSettings.svelte';
+  import HstsSettings from '../components/HstsSettings.svelte';
   import RateLimitSettings from '../components/RateLimitSettings.svelte';
   import TunnelGuardSettings from '../components/TunnelGuardSettings.svelte';
   import InfoTooltip from '../components/InfoTooltip.svelte';
@@ -559,6 +560,7 @@
       <SsoSettings />
       <RateLimitSettings />
       <ConnectionLimitSettings />
+      <HstsSettings />
       <TunnelGuardSettings />
       <BlockRuleSettings />
       <!-- 차단된 클라이언트 표는 검색어·페이지를 주소 query(bans_q, bans_page)에 담으므로 고른 탭에서만 그립니다. -->

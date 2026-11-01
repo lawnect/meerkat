@@ -275,6 +275,13 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 - 동시 요청 제한으로 거부한 요청은 요청 제한 거부와 함께 `rate_limited`로 집계하며 `rate_limit` 알림에는 `concurrent`(IP별)와 `capacity`(전체)로 나타난다.
 - Caddy는 16KB를 넘는 요청 헤더를 거부하고 헤더를 10초 안에 받아야 한다. Caddy 자체의 본문·응답 유휴 제한은 1시간으로 두어 Outlet 설정이 먼저 적용된다.
 
+**HSTS.** `GET`과 `PUT /api/v1/security/hsts`는 `{"enabled": bool}`을 주고받는다. 저장된 값이 없으면 `true`이고, `PUT`에 `enabled`가 없거나 bool이 아니면 `400`이다. 저장하면 바로 적용하고 `security.hsts`(`{"enabled"}`)로 감사 기록을 남긴다.
+
+- 켜져 있으면 공개 주소의 HTTPS 응답에 `Strict-Transport-Security: max-age=31536000`을 붙인다. 앱 응답과 Outlet이 직접 한 응답(요청 제한, 접근 보호, 차단 규칙 등)에 모두 붙고, `includeSubDomains`와 `preload`는 붙이지 않는다.
+- 앱 응답에 이 헤더가 있으면 Outlet의 값을 빼고 앱의 값만 전달한다(`max-age=0` 포함).
+- 80번 포트의 리디렉션에는 붙이지 않는다. 관리 주소에는 설정과 관계없이 항상 붙는다.
+- 브라우저는 한 번 받은 주소를 1년 동안 HTTPS로만 연다. 공개 주소를 HTTPS가 없는 서버로 옮기려면 미리 끄고 그 기간이 지나야 한다.
+
 **터널 포트 보호(tunnel guard).** rathole 서버(터널 포트, 기본 2333)는 연결한 누구에게나 토큰을 확인하기 전에 Noise 핸드셰이크(X25519)를 해 주고 자체 제한이 없어, 익명 연결이 몰리면 rathole이 마비되어 모든 터널이 끊긴다. 그래서 Outlet이 `outlet.json`의 `tunnel_listen_address`(기본 `0.0.0.0:2333`)를 직접 수신하고, 통과시킨 연결만 `tunnel_internal_address`의 rathole로 전달한다. 생략하면 기본은 수신 포트 + 1의 `127.0.0.1`이다(수신 포트가 65535면 − 1). 수신 포트 2333이면 `127.0.0.1:2334`, 2334이면 `127.0.0.1:2335`다. 내부 주소는 루프백 IP 리터럴이어야 하고 수신 포트와 달라야 하며, 직접 적은 값이 어긋나면 Outlet이 시작하지 않는다. 생성하는 `server.toml`의 `bind_addr`는 내부 주소다. rathole은 Outlet과 같은 네트워크 네임스페이스(`network_mode: service:outlet`)에서 실행하므로 Compose 파일은 그대로다. 수신 포트를 잡지 못하면(업그레이드 직후 이전 rathole이 아직 포트를 쥐고 있는 경우) 경고를 남기고 1초부터 30초까지 간격을 늘려 다시 시도하며, Outlet은 멈추지 않는다. 통과시킨 연결은 내부 주소로 연결하고(제한 5초) 양방향으로 복사한다. 한쪽의 데이터 끝은 `CloseWrite`로 반대쪽에 전달(half-close)하고, 오류가 나면 양쪽을 닫는다. rathole 쪽이 먼저 끝나면(닫거나 half-close) 클라이언트에게 마무리할 시간 5초를 주고, 그때까지 끝내지 않으면(클라이언트 쪽 읽기 기한) 양쪽을 닫는다. 그 밖의 방향이나 살아 있는 연결에는 시간 제한을 두지 않는다. TCP keepalive를 켠다. Outlet을 종료하면 수신을 멈추고 전달 중인 연결을 모두 닫는다.
 
 `GET /api/v1/security/tunnel-guard`(관리자)는 설정, Outlet이 시작한 뒤의 통계, 알고 있는 Connector 주소를 반환한다.

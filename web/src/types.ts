@@ -263,6 +263,11 @@ export interface ConnectionLimits {
   hosts: HostUpload[];
 }
 
+// HSTS(GET/PUT /api/v1/security/hsts). 켜져 있으면 공개 주소의 HTTPS 응답에 max-age 1년을 붙입니다.
+export interface HstsSettings {
+  enabled: boolean;
+}
+
 // 차단 규칙(GET/PUT /api/v1/security/block-rules). 조건 중 하나라도 맞는 요청은 403으로 거부합니다.
 export type BlockOperator = 'equals' | 'starts_with' | 'ends_with' | 'contains' | 'matches';
 
