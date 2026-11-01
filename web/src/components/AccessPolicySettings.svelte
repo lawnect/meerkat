@@ -21,7 +21,7 @@
   import { toast } from 'svelte-sonner';
   import { api, errorMessage } from '../api';
   import { intlLocale, translations } from '../i18n.svelte';
-  import { Add12, Dismiss, ReOrder, Shield20, Warning } from '../icons';
+  import { Add12, Dismiss, ReOrder, Shield20, Warning, Warning12 } from '../icons';
   import { accessMethods, type AccessAction, type AccessMethod, type AccessPoliciesView, type AccessPolicy, type AccessToken, type BlockCondition, type BlockOperator } from '../types';
   import AddressSelect from './AddressSelect.svelte';
   import IconButton from './IconButton.svelte';
@@ -89,6 +89,7 @@
     selectedTokens: 'Selected tokens',
     needsToken: 'Choose at least one token.',
     bypassNote: 'Compared with the path exactly as the app gets it, case included',
+    openPrefix: (value: string) => `Also matches paths like ${value}x. Enter ${value}/ for paths under it only.`,
     bypassPaths: 'Enter bypass paths as the app gets them, without \\, //, or segments that are . or .. or end in a dot or space.',
     operators: { equals: 'equals', starts_with: 'starts with', ends_with: 'ends with', contains: 'contains', matches: 'matches regex' } as Record<BlockOperator, string>,
     placeholders: { equals: '/admin', starts_with: '/private/', ends_with: '.pdf', contains: '/internal', matches: '^/(admin|reports)/' } as Record<BlockOperator, string>,
@@ -169,6 +170,7 @@
     selectedTokens: '선택한 토큰',
     needsToken: '토큰을 하나 이상 선택하십시오.',
     bypassNote: '앱이 받는 경로와 대소문자까지 그대로 비교',
+    openPrefix: (value: string) => `${value}x 등 다른 경로도 포함됩니다. 하위 경로만 지정하려면 ${value}/로 입력하십시오.`,
     bypassPaths: '우회 조건은 앱이 받는 경로 그대로 입력하십시오. \\, //, . 또는 .. 조각, 점이나 공백으로 끝나는 조각은 사용할 수 없습니다.',
     operators: { equals: '같음', starts_with: '다음으로 시작', ends_with: '다음으로 끝남', contains: '포함', matches: '정규식과 일치' },
     placeholders: { equals: '/admin', starts_with: '/private/', ends_with: '.pdf', contains: '/internal', matches: '^/(admin|reports)/' },
@@ -283,6 +285,11 @@
 
   const editing = $derived(editingId ? policies?.find((policy) => policy.id === editingId) : undefined);
   const hasRegex = $derived(form.paths === 'selected' && form.conditions.some((condition) => condition.operator === 'matches'));
+  // 우회의 '다음으로 시작' 값이 /로 끝나지 않으면 /v1이 /v1x, /v10까지 엽니다. 저장은 막지 않고 알리기만 합니다.
+  const openPrefix = (condition: { operator: BlockOperator; value: string }): string => {
+    const value = condition.value.trim();
+    return form.action === 'bypass' && condition.operator === 'starts_with' && value !== '' && !value.endsWith('/') ? value : '';
+  };
 
   const adopt = (view: AccessPoliciesView) => {
     policies = view.policies;
@@ -705,9 +712,13 @@
                         spellcheck={false}
                         pattern=".*\S.*"
                         required
+                        aria-describedby={openPrefix(condition) ? `access-policy-value-${condition.key}-open` : undefined}
                       />
                       <IconButton label={t().removeCondition} icon={Dismiss} variant="outline" size="icon" disabled={form.conditions.length <= 1} onclick={() => form.conditions.splice(index, 1)} />
                     </div>
+                    {#if openPrefix(condition)}
+                      <Field.Description id={`access-policy-value-${condition.key}-open`} class="flex items-start gap-1"><Warning12 class="mt-0.75 size-3 shrink-0" aria-hidden="true" />{t().openPrefix(openPrefix(condition))}</Field.Description>
+                    {/if}
                   {/each}
                 </div>
                 {#if form.action === 'bypass'}<Field.Description>{t().bypassNote}</Field.Description>{:else if hasRegex}<Field.Description>{t().regexNote}</Field.Description>{/if}

@@ -143,6 +143,7 @@ export { default as History } from '~icons/fluent/history-16-regular';
 
 // 12px 전용 아이콘. text-xs 글자 옆의 작은 아이콘(탭, 정보 툴팁, 작은 버튼)은 16px 아이콘을 줄이지 않고 12px 버전을 size-3으로 씁니다.
 export { default as Info12 } from '~icons/fluent/info-12-regular';
+export { default as Warning12 } from '~icons/fluent/warning-12-regular';
 export { default as Home12 } from '~icons/fluent/home-12-regular';
 export { default as ArrowTrending12 } from '~icons/fluent/arrow-trending-12-regular';
 export { default as Alert12 } from '~icons/fluent/alert-12-regular';
