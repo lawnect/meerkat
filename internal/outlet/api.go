@@ -590,6 +590,19 @@ func (s *Store) setupAdmin(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "control_database_unavailable")
 		return
 	}
+	// Once setup is over the setup code isn't even compared, so the endpoint
+	// can't be used to test codes; before that, tries are limited like
+	// sign-ins (the code is 256 random bits, so this is defense in depth).
+	if complete, err := s.setupComplete(r); err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	} else if complete {
+		fail(w, r, 409, "setup_complete")
+		return
+	}
+	if !s.allowLogin(w, r) {
+		return
+	}
 	var req adminCredentials
 	if !decode(w, r, &req, "email", "password") {
 		return

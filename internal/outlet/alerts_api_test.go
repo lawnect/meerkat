@@ -598,6 +598,44 @@ func TestLoginAttemptsAreRateLimited(t *testing.T) {
 	}
 }
 
+// The setup code is tried no more often than a password, and once an
+// administrator exists it isn't compared at all: a wrong code and the right
+// one get the same 409, so the endpoint can't confirm a guess.
+func TestSetupCodeIsLimitedAndIgnoredAfterSetup(t *testing.T) {
+	a := newAlertFixture(t)
+	setup := func(code, forwardedFor string) *httptest.ResponseRecorder {
+		r := jsonRequest("POST", "/api/v1/setup/admin", adminLogin)
+		r.Host = a.host
+		r.Header.Set("X-Forwarded-For", forwardedFor)
+		if code != "" {
+			r.Header.Set("Authorization", "Bearer "+code)
+		}
+		w := httptest.NewRecorder()
+		a.store.PublicHandler().ServeHTTP(w, r)
+		return w
+	}
+	for i := 0; i < loginAttempts; i++ {
+		if w := setup("wrong", "198.51.100.7"); w.Code != 401 || errorCode(t, w) != "invalid_setup_credential" {
+			t.Fatalf("attempt %d: %d %s", i, w.Code, w.Body.String())
+		}
+	}
+	if w := setup(a.admin, "198.51.100.7"); w.Code != 429 || errorCode(t, w) != "rate_limited" || w.Header().Get("Retry-After") != "60" {
+		t.Fatalf("limit: %d %s", w.Code, w.Body.String())
+	}
+	if w := setup(a.admin, "198.51.100.8"); w.Code != 201 {
+		t.Fatalf("setup from another address: %d %s", w.Code, w.Body.String())
+	}
+	for _, code := range []string{"wrong", a.admin, ""} {
+		if w := setup(code, "198.51.100.9"); w.Code != 409 || errorCode(t, w) != "setup_complete" {
+			t.Fatalf("after setup, code %q: %d %s", code, w.Code, w.Body.String())
+		}
+	}
+	// The local admin port answers the same once setup is over.
+	if w := request(a.store.Handler(), "POST", "/api/v1/setup/admin", a.admin, adminLogin); w.Code != 409 {
+		t.Fatalf("local port after setup: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func loginEvents(t *testing.T, a alertFixture) []control.AlertEvent {
 	t.Helper()
 	events, err := a.db.RecentAlerts(context.Background(), 50)
