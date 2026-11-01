@@ -22,7 +22,8 @@
   import { api, errorMessage } from '../api';
   import { intlLocale, translations } from '../i18n.svelte';
   import { Add12, Dismiss, ReOrder, Shield20, Warning, Warning12 } from '../icons';
-  import { accessMethods, type AccessAction, type AccessMethod, type AccessPoliciesView, type AccessPolicy, type AccessToken, type BlockCondition, type BlockOperator } from '../types';
+  import { isIpRange, joinScope, splitScope, tagSuggestions, unknownTags } from '../ipScope.svelte';
+  import { accessMethods, type AccessAction, type AccessMethod, type AccessPoliciesView, type AccessPolicy, type AccessToken, type BlockCondition, type BlockOperator, type IpTagUse } from '../types';
   import AddressSelect from './AddressSelect.svelte';
   import IconButton from './IconButton.svelte';
   import InfoTooltip from './InfoTooltip.svelte';
@@ -33,7 +34,9 @@
   // 스위치, 순서 변경, 대화상자의 저장·삭제는 모두 바로 서버에 저장하고, 응답으로 목록을 다시 채웁니다.
   // providerEnabled는 접근 보호 SSO가 켜져 있는지(알 수 없으면 null)로, 꺼져 있으면 정책이 적용되지 않는다고 안내합니다.
   // tokens는 접근 토큰 목록(알 수 없으면 null)으로, 토큰 조건에서 토큰을 고르고 이름을 보여 주는 데 씁니다.
-  let { providerEnabled = null, tokens = null }: { providerEnabled?: boolean | null; tokens?: AccessToken[] | null } = $props();
+  // ipTags는 IP 주소록의 태그(알 수 없으면 null)로, 접속 IP 조건에서 태그를 제안하고 없는 태그를 저장 전에 알리는 데 씁니다.
+  // onsaved는 정책을 서버에 저장할 때마다(스위치, 순서 변경, 대화상자의 저장·삭제 포함) 부릅니다.
+  let { providerEnabled = null, tokens = null, ipTags = null, onsaved }: { providerEnabled?: boolean | null; tokens?: AccessToken[] | null; ipTags?: IpTagUse[] | null; onsaved?: () => void } = $props();
 
   const t = translations({
     title: 'Access policies',
@@ -58,7 +61,7 @@
     reorderTip: 'Drag, or press ↑ ↓',
     orderSaved: 'Order saved',
     neverApplies: 'Never applies',
-    neverAppliesTip: 'An earlier policy covers every address, path, method and token of this one.',
+    neverAppliesTip: 'An earlier policy covers every address, path, method, token and client IP of this one.',
     openWithoutToken: 'Open without a token',
     openWithoutTokenTip: 'No policy below covers every path and method of its addresses for requests that send no token, so those requests reach the app unprotected. Add an all-paths policy below it.',
     noPolicies: 'No access policies',
@@ -81,6 +84,16 @@
     selectedMethods: 'Selected methods',
     methodsHint: 'Applies only to requests with the selected methods; others go to the policies below. GET includes HEAD.',
     needsMethod: 'Choose at least one method.',
+    clientIp: 'Client IP',
+    clientIpTip: 'Limits the policy to requests from these addresses; requests from other addresses go on to the policies below. A tag stands for every address in the IP address book that carries it.',
+    anyIp: 'All IPs',
+    selectedIps: 'Selected IPs',
+    ipPlaceholder: 'Tag, IP or CIDR',
+    ipHint: 'Tags from the IP address book, or IPv4 or IPv6 addresses or CIDR',
+    ipShort: 'IP',
+    ipRequired: 'Choose at least one tag, IP or CIDR.',
+    unknownTag: (tag: string) => `Not a tag in the IP address book: ${tag}`,
+    ipTooMany: 'Choose up to 20 tags and 50 IPs or CIDR ranges.',
     token: 'Access token',
     tokenHint: 'Applies only to requests whose X-Meerkat-Access-Token header carries a token valid for the address and client; others go to the policies below.',
     noToken: 'Not required',
@@ -139,7 +152,7 @@
     reorderTip: '드래그 또는 ↑ ↓ 키로 이동',
     orderSaved: '순서가 저장되었습니다',
     neverApplies: '적용 안 됨',
-    neverAppliesTip: '앞선 정책이 이 정책의 주소, 경로, 메서드, 토큰에 먼저 적용됩니다.',
+    neverAppliesTip: '앞선 정책이 이 정책의 주소, 경로, 메서드, 토큰, 접속 IP에 먼저 적용됩니다.',
     openWithoutToken: '토큰 없는 요청 열림',
     openWithoutTokenTip: '토큰을 보내지 않은 요청에 적용할 정책이 아래에 없어, 그런 요청은 보호 없이 앱으로 전달됩니다. 아래에 전체 경로 정책을 두십시오.',
     noPolicies: '접근 정책이 없습니다',
@@ -162,6 +175,16 @@
     selectedMethods: '선택한 메서드',
     methodsHint: '선택한 메서드의 요청에만 적용되며, 다른 요청은 아래 정책이 판단합니다. GET을 선택하면 HEAD도 포함됩니다.',
     needsMethod: '메서드를 하나 이상 선택하십시오.',
+    clientIp: '접속 IP',
+    clientIpTip: '선택한 주소에서 온 요청에만 이 정책을 적용하며, 그 밖의 주소에서 온 요청에는 아래 정책이 적용됩니다. 태그는 IP 주소록에서 그 태그가 붙은 모든 주소를 의미합니다.',
+    anyIp: '모든 IP',
+    selectedIps: '선택한 IP',
+    ipPlaceholder: '태그, IP 또는 CIDR',
+    ipHint: 'IP 주소록의 태그, IPv4·IPv6 주소 또는 CIDR',
+    ipShort: 'IP',
+    ipRequired: '태그, IP 또는 CIDR을 하나 이상 지정하십시오.',
+    unknownTag: (tag: string) => `IP 주소록에 없는 태그입니다: ${tag}`,
+    ipTooMany: '태그는 최대 20개, IP·CIDR은 최대 50개까지 지정할 수 있습니다.',
     token: '접근 토큰',
     tokenHint: 'X-Meerkat-Access-Token 헤더의 토큰이 주소와 클라이언트에 유효한 요청에만 적용되며, 다른 요청은 아래 정책이 판단합니다.',
     noToken: '조건 없음',
@@ -202,6 +225,8 @@
   const maxPolicies = 100;
   const maxConditions = 50;
   const maxHosts = 100;
+  const maxIpTags = 20;
+  const maxIpRanges = 50;
   const operators: BlockOperator[] = ['equals', 'starts_with', 'ends_with', 'contains', 'matches'];
   const actions: AccessAction[] = ['allow', 'bypass', 'block'];
   const operatorLabel = (operator: BlockOperator): string => t().operators[operator] ?? operator;
@@ -233,7 +258,7 @@
     return parts.every((part, index) => ((index === 0 || index === parts.length - 1) && part === '') || (part !== '' && part !== '.' && part !== '..' && !((index < parts.length - 1 || whole) && /[. ]$/.test(part))));
   };
 
-  // 앞선 활성화된 정책이 이 정책의 주소, 경로, 메서드를 모두 덮으면, 이 정책은 적용될 일이 없습니다. 경로는 앞선 정책이 전체 경로이거나,
+  // 앞선 활성화된 정책이 이 정책의 주소, 경로, 메서드, 토큰, 접속 IP를 모두 덮으면, 이 정책은 적용될 일이 없습니다. 경로는 앞선 정책이 전체 경로이거나,
   // 우회가 아닌 앞선 정책의 '다음으로 시작' 조건이 이 정책의 '같음'·'다음으로 시작' 조건을 모두 덮는 경우입니다(서버처럼 소문자로, 끝에 /를 붙여 비교).
   const hostCovers = (pattern: string, host: string): boolean => pattern === host || (pattern.startsWith('*.') && host.endsWith(pattern.slice(1)));
   // 같음 조건은 서버가 요청을 비교하는 모양(소문자, 겹친 / 하나로, 끝에 / 하나)으로 바꿔 봅니다.
@@ -256,15 +281,19 @@
   // 메서드는 앞선 정책이 모든 메서드이거나, 이 정책이 고른 메서드를 모두 고른 경우입니다.
   const methodsCover = (earlier: AccessPolicy, later: AccessPolicy): boolean =>
     !earlier.methods.length || (later.methods.length > 0 && later.methods.every((method) => earlier.methods.includes(method)));
+  // 접속 IP는 앞선 정책이 모든 IP에 적용될 때만 덮습니다. 특정 IP로 한정한 정책은 그 밖의 IP에서 온 요청을 아래 정책에 넘기므로(서버도 그렇게 봅니다)
+  // 아래 정책을 가리지 않고, 두 정책의 IP 범위가 겹치는지는 따지지 않습니다.
+  const ipsCover = (earlier: AccessPolicy): boolean => !earlier.ip_tags.length && !earlier.ip_ranges.length;
   // 토큰은 앞선 정책이 토큰 조건이 없거나, 이 정책도 토큰이 필요하고 앞선 정책이 모든 토큰 또는 이 정책이 고른 토큰을 모두 받는 경우입니다.
   const tokensCover = (earlier: AccessPolicy, later: AccessPolicy): boolean =>
     !earlier.require_token || (later.require_token && (!earlier.tokens.length || (later.tokens.length > 0 && later.tokens.every((id) => earlier.tokens.includes(id)))));
-  // 토큰이 필요한 정책은 토큰 없는 요청을 아래 정책에 넘기므로, 아래에 그 주소의 모든 경로와 메서드를 토큰 없이 받는 활성화된 정책이 없으면 그런 요청은 열려 있습니다.
+  // 토큰이 필요한 정책은 토큰 없는 요청을 아래 정책에 넘기므로, 아래에 그 주소의 모든 경로와 메서드, 모든 IP를 토큰 없이 받는 활성화된 정책이 없으면 그런 요청은 열려 있습니다.
+  // 특정 접속 IP로 한정한 정책은 다른 IP의 요청을 받지 않으므로 여기서 세지 않습니다.
   const openWithoutToken = (list: AccessPolicy[], index: number): boolean =>
     list[index].enabled && list[index].require_token && list[index].hosts.some((host) => !list.slice(index + 1).some((later) =>
-      later.enabled && !later.require_token && !later.methods.length && (later.all_paths || startsWith(later).includes('/')) && later.hosts.some((pattern) => hostCovers(pattern, host))));
+      later.enabled && !later.require_token && !later.methods.length && ipsCover(later) && (later.all_paths || startsWith(later).includes('/')) && later.hosts.some((pattern) => hostCovers(pattern, host))));
   const neverApplies = (list: AccessPolicy[], index: number): boolean =>
-    list.slice(0, index).some((earlier) => earlier.enabled && methodsCover(earlier, list[index]) && tokensCover(earlier, list[index]) && pathsCover(earlier, list[index]) && list[index].hosts.every((host) => earlier.hosts.some((pattern) => hostCovers(pattern, host))));
+    list.slice(0, index).some((earlier) => earlier.enabled && methodsCover(earlier, list[index]) && ipsCover(earlier) && tokensCover(earlier, list[index]) && pathsCover(earlier, list[index]) && list[index].hosts.every((host) => earlier.hosts.some((pattern) => hostCovers(pattern, host))));
 
   let policies = $state<AccessPolicy[] | null>(null);
   let addresses = $state<string[]>([]);
@@ -278,8 +307,8 @@
   let deleteName = $state('');
   let editingId = $state('');
   // 선택한 경로의 조건 줄은 항상 하나 이상 남겨 두어, "선택한 경로"를 고르면 바로 입력할 수 있게 합니다.
-  let form = $state<{ name: string; enabled: boolean; action: AccessAction; hosts: HostRow[]; paths: 'all' | 'selected'; conditions: ConditionRow[]; methods: 'all' | 'selected'; chosen: AccessMethod[]; token: 'none' | 'any' | 'selected'; tokens: string[]; everyone: boolean; users: string[]; groups: string[]; admins: boolean }>({
-    name: '', enabled: true, action: 'allow', hosts: [], paths: 'all', conditions: [], methods: 'all', chosen: [], token: 'none', tokens: [], everyone: false, users: [], groups: [], admins: false,
+  let form = $state<{ name: string; enabled: boolean; action: AccessAction; hosts: HostRow[]; paths: 'all' | 'selected'; conditions: ConditionRow[]; methods: 'all' | 'selected'; chosen: AccessMethod[]; ips: 'all' | 'selected'; ipValues: string[]; token: 'none' | 'any' | 'selected'; tokens: string[]; everyone: boolean; users: string[]; groups: string[]; admins: boolean }>({
+    name: '', enabled: true, action: 'allow', hosts: [], paths: 'all', conditions: [], methods: 'all', chosen: [], ips: 'all', ipValues: [], token: 'none', tokens: [], everyone: false, users: [], groups: [], admins: false,
   });
   let formError = $state('');
 
@@ -314,6 +343,7 @@
 
   async function put(next: AccessPolicy[]): Promise<void> {
     adopt(await api<AccessPoliciesView>('/api/v1/security/access-policies', { method: 'PUT', body: JSON.stringify({ policies: next }) }));
+    onsaved?.();
   }
 
   onMount(() => {
@@ -381,6 +411,8 @@
       conditions: policy?.conditions.length ? policy.conditions.map((condition) => newRow(condition)) : [newRow()],
       methods: policy?.methods.length ? 'selected' : 'all',
       chosen: policy ? [...policy.methods] : [],
+      ips: policy?.ip_tags.length || policy?.ip_ranges.length ? 'selected' : 'all',
+      ipValues: policy ? joinScope(policy.ip_tags, policy.ip_ranges) : [],
       token: !policy?.require_token ? 'none' : policy.tokens.length ? 'selected' : 'any',
       tokens: policy ? [...policy.tokens] : [],
       everyone: policy?.allow_everyone ?? false,
@@ -430,6 +462,23 @@
       formError = t().needsMethod;
       return;
     }
+    // 접속 IP는 태그와 IP·CIDR을 한 칸에 받아 나눕니다. 주소록에 없는 태그는 서버가 거부하므로, 목록을 아는 때에만 미리 알립니다.
+    const scope = form.ips === 'selected' ? splitScope(form.ipValues) : { tags: [], ranges: [] };
+    if (form.ips === 'selected') {
+      if (!form.ipValues.length) {
+        formError = t().ipRequired;
+        return;
+      }
+      const unknown = ipTags ? unknownTags(scope.tags, ipTags) : [];
+      if (unknown.length) {
+        formError = t().unknownTag(unknown[0]);
+        return;
+      }
+      if (scope.tags.length > maxIpTags || scope.ranges.length > maxIpRanges) {
+        formError = t().ipTooMany;
+        return;
+      }
+    }
     // 지워진 토큰은 빼고 보냅니다. 남은 토큰이 없으면 고르게 합니다.
     const chosenTokens = tokens ? form.tokens.filter((id) => tokens.some((token) => token.id === id)) : [...form.tokens];
     if (form.token === 'selected' && !chosenTokens.length) {
@@ -446,6 +495,8 @@
       all_paths: form.paths === 'all',
       conditions: form.paths === 'selected' ? form.conditions.map((condition) => ({ operator: condition.operator, value: condition.value.trim() })) : [],
       methods: form.methods === 'selected' ? accessMethods.filter((method) => form.chosen.includes(method)) : [],
+      ip_tags: scope.tags,
+      ip_ranges: scope.ranges,
       require_token: form.token !== 'none',
       tokens: form.token === 'selected' ? chosenTokens : [],
       allow_everyone: allow && form.everyone,
@@ -611,6 +662,13 @@
                             {/if}
                           </span>
                         {/if}
+                        {#if policy.ip_tags.length || policy.ip_ranges.length}
+                          {@const count = policy.ip_tags.length + policy.ip_ranges.length}
+                          <span class="flex items-center gap-1.5">
+                            <span class="max-w-40 truncate">{t().ipShort} <span class={[!policy.ip_tags.length && 'font-mono']}>{policy.ip_tags[0] ?? policy.ip_ranges[0]}</span></span>
+                            {#if count > 1}<span class="tabular-nums">+{(count - 1).toLocaleString(intlLocale())}</span>{/if}
+                          </span>
+                        {/if}
                       </span>
                     </div>
                   </Table.Cell>
@@ -754,6 +812,27 @@
                     </Field.Field>
                   {/each}
                 </div>
+              {/if}
+            </Field.Set>
+          </Item.Root>
+          <Item.Root variant="outline" size="sm" class="flex-col items-stretch bg-muted/50">
+            <Field.Set>
+              <Field.Legend variant="label" class="flex items-center gap-1">{t().clientIp}<InfoTooltip id="access-policy-ips-tip" label={t().clientIp} description={t().clientIpTip} /></Field.Legend>
+              <RadioGroup.Root value={form.ips} onValueChange={(value) => { form.ips = value === 'selected' ? 'selected' : 'all'; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
+                <Field.Field orientation="horizontal" class="w-auto">
+                  <RadioGroup.Item value="all" id="access-policy-ips-all" />
+                  <Field.Label for="access-policy-ips-all" class="font-normal">{t().anyIp}</Field.Label>
+                </Field.Field>
+                <Field.Field orientation="horizontal" class="w-auto">
+                  <RadioGroup.Item value="selected" id="access-policy-ips-selected" />
+                  <Field.Label for="access-policy-ips-selected" class="font-normal">{t().selectedIps}</Field.Label>
+                </Field.Field>
+              </RadioGroup.Root>
+              {#if form.ips === 'selected'}
+                <Field.Field>
+                  <TagInput id="access-policy-ips" ariaLabel={t().clientIp} bind:values={form.ipValues} suggestions={tagSuggestions(ipTags)} autoselect secondary={(value) => !isIpRange(value)} mono placeholder={t().ipPlaceholder} />
+                  <Field.Description>{t().ipHint}</Field.Description>
+                </Field.Field>
               {/if}
             </Field.Set>
           </Item.Root>

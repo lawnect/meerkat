@@ -1,4 +1,5 @@
-import type { AccessCounts, AccessLogEntry, AccessMetrics, AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ClientBan, ClientBanSettings, ClientBansView, ConnectionLimits, HstsSettings, AdminAccessSettings, AdminAccessView, RateLimitSettings, Connector, DomainMode, FailureCause, FailureLogEntry, LatencySeries, LatencyStats, LogSettings, LogView, Outlet, RequestLogEntry, RequestTopRow, RequestTopView, Route, Service, SsoSettings, Target, TunnelGuardSettings, TunnelGuardView, UsageBucket, UsageSeries, UsageUnit } from './types';
+import type { AccessCounts, AccessLogEntry, AccessMetrics, AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ClientBan, ClientBanSettings, ClientBansView, ConnectionLimits, HstsSettings, IpAddressEntry, IpAddressesView, IpAddressInput, IpTagUse, AdminAccessSettings, AdminAccessView, RateLimitSettings, Connector, DomainMode, FailureCause, FailureLogEntry, LatencySeries, LatencyStats, LogSettings, LogView, Outlet, RequestLogEntry, RequestTopRow, RequestTopView, Route, Service, SsoSettings, Target, TunnelGuardSettings, TunnelGuardView, UsageBucket, UsageSeries, UsageUnit } from './types';
+import { isIpRange } from './ipScope.svelte';
 import { accessDecisions, accessMethods, accessRequesters, failureCauseGroups, failureCauses, refusedCauses, requestClasses, requestTopPeriods, requestTopSorts, serviceCauses } from './types';
 
 const now = (): string => new Date().toISOString();
@@ -216,8 +217,84 @@ let connectionLimits: ConnectionLimits = {
 let hsts: HstsSettings = { enabled: true };
 // 데모는 공개 주소에서 203.0.113.24로 접속한 것으로 둡니다.
 const mockClient = '203.0.113.24';
-let adminAccess: AdminAccessSettings = { restricted: false, allowed: [] };
+let adminAccess: AdminAccessSettings = { restricted: false, allowed: [], allowed_tags: [] };
 const adminAccessView = (): AdminAccessView => ({ ...structuredClone(adminAccess), client: mockClient, client_range: mockClient, client_shared: false, lifted: false, damaged: false });
+// IP 주소록 데모 상태. 접근 정책(ip_tags)과 관리 콘솔 접근 제한(allowed_tags)은 태그로 항목을 가리킵니다.
+let ipAddresses: IpAddressEntry[] = [
+  { id: seedId('ip-hq'), range: '203.0.113.0/24', note: '본사', tags: ['사무실'] },
+  { id: seedId('ip-hq-v6'), range: '2001:db8:10::/48', note: '본사 IPv6', tags: ['사무실'] },
+  { id: seedId('ip-home'), range: '198.51.100.24', note: '김OO 재택', tags: ['재택', '임원'] },
+  { id: seedId('ip-vpn'), range: '192.0.2.0/24', note: 'VPN 출구', tags: ['VPN'] },
+];
+const sameTag = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
+// 주소록의 표기(처음 나온 철자)로 바꿉니다. 주소록에 없는 태그면 undefined입니다.
+const bookTag = (name: string): string | undefined => ipAddresses.flatMap((entry) => entry.tags).find((tag) => sameTag(tag, name));
+// 서버처럼 대소문자를 무시하고 묶어 이름순으로 돌려주며, 쓰는 곳(정책 이름, 관리 콘솔 접근 제한)을 함께 보여 줍니다.
+function ipAddressesView(): IpAddressesView {
+  const tags = new Map<string, IpTagUse>();
+  for (const entry of ipAddresses) {
+    for (const tag of entry.tags) {
+      const use = tags.get(tag.toLowerCase()) ?? {
+        name: tag,
+        count: 0,
+        policies: accessPolicies.filter((policy) => policy.ip_tags.some((name) => sameTag(name, tag))).map((policy) => policy.name),
+        admin_access: adminAccess.allowed_tags.some((name) => sameTag(name, tag)),
+      };
+      use.count += 1;
+      tags.set(tag.toLowerCase(), use);
+    }
+  }
+  return structuredClone({ entries: ipAddresses, tags: [...tags.values()].sort((a, b) => a.name.localeCompare(b.name)), damaged: false });
+}
+// 서버처럼 주소(단일 주소는 접두어 없이, 범위는 호스트 비트를 지운 CIDR), 메모(100자 이하), 태그(10개 이하, 1–32자, 쉼표·IP 모양 불가, 대소문자 무시 중복 제거)를 확인합니다.
+function ipAddressInput(input: unknown): IpAddressInput {
+  const body = (input ?? {}) as Partial<IpAddressInput>;
+  const text = typeof body.range === 'string' ? body.range.trim().toLowerCase() : '';
+  const range = isIpRange(text) ? normalizeRange(text) : null;
+  const note = typeof body.note === 'string' ? body.note.trim() : '';
+  if (!range || [...note].length > 100 || /[\u0000-\u001f\u007f]/.test(note) || (body.tags !== undefined && body.tags !== null && !Array.isArray(body.tags))) fail('invalid_ip_address');
+  const tags: string[] = [];
+  for (const raw of body.tags ?? []) {
+    const tag = typeof raw === 'string' ? raw.trim() : '';
+    if (!tag || [...tag].length > 32 || tag.includes(',') || /[\u0000-\u001f\u007f]/.test(tag) || isIpRange(tag)) fail('invalid_ip_address');
+    if (!tags.some((item) => sameTag(item, tag))) tags.push(tag);
+  }
+  if (tags.length > 10) fail('invalid_ip_address');
+  return { range: range.replace(/\/(32|128)$/, ''), note, tags };
+}
+// 정책이나 관리 콘솔 접근 제한이 쓰는 태그는 항목이 하나는 남아야 하고, 접속한 클라이언트가 허용 IP에서 빠지면 거부합니다.
+function ipAddressesKept(next: IpAddressEntry[]): void {
+  const used = [...accessPolicies.flatMap((policy) => policy.ip_tags), ...adminAccess.allowed_tags];
+  if (used.some((name) => !next.some((entry) => entry.tags.some((tag) => sameTag(tag, name))))) fail('ip_tag_in_use');
+  if (adminAccess.restricted && !clientAllowed(adminAccess, next)) fail('admin_access_locks_out');
+}
+// 데모는 IPv4 CIDR 포함만 비교합니다(접속 주소가 IPv4). 그 밖의 값은 문자열이 같을 때만 맞습니다.
+function v4Number(value: string): number | null {
+  const match = value.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  const octets = match ? match.slice(1).map(Number) : [];
+  return match && octets.every((octet) => octet <= 255) ? octets.reduce((sum, octet) => sum * 256 + octet, 0) : null;
+}
+function rangeHolds(range: string, address: string): boolean {
+  if (range.toLowerCase() === address.toLowerCase()) return true;
+  const [base, bitsText] = range.split('/');
+  const target = v4Number(address);
+  const start = v4Number(base);
+  const bits = Number(bitsText);
+  if (bitsText === undefined || target === null || start === null || !(bits >= 0 && bits <= 32)) return false;
+  const size = 2 ** (32 - bits);
+  return Math.floor(target / size) === Math.floor(start / size);
+}
+// 접속한 클라이언트가 직접 적은 IP·CIDR에 들거나, allowed_tags의 태그가 붙은 항목에 듭니다.
+const clientAllowed = (settings: AdminAccessSettings, entries: IpAddressEntry[]): boolean =>
+  settings.allowed.some((range) => rangeHolds(range, mockClient))
+  || entries.some((entry) => entry.tags.some((tag) => settings.allowed_tags.some((name) => sameTag(name, tag))) && rangeHolds(entry.range, mockClient));
+// 접근 정책과 관리 콘솔 접근 제한의 태그: 주소록에 있는 태그만 받아 주소록의 표기로 저장하고 최대 20개, 중복은 한 번만 둡니다.
+function resolveTags(value: unknown, code: string): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 20) fail(code);
+  const tags = value.map((name) => (typeof name === 'string' ? bookTag(name.trim()) : undefined) ?? fail(code));
+  return tags.filter((tag, index) => tags.findIndex((other) => sameTag(other, tag)) === index);
+}
 let blockRules: BlockRule[] = [
   {
     id: 'honeypot',
@@ -282,8 +359,8 @@ let accessProvider: Omit<AccessProviderView, 'redirect_uri' | 'available'> = {
   session_hours: 24,
 };
 let accessPolicies: AccessPolicy[] = [
-  { id: 'vault-api', name: 'Vault API', enabled: true, action: 'bypass', hosts: ['vault.example.test'], all_paths: false, conditions: [{ operator: 'starts_with', value: '/v1/' }], methods: ['GET', 'POST'], require_token: true, tokens: ['deploybot'], allow_everyone: false, allowed_users: [], allowed_groups: [], allow_admins: false },
-  { id: 'vault', name: 'Vault members', enabled: true, action: 'allow', hosts: ['vault.example.test'], all_paths: true, conditions: [], methods: [], require_token: false, tokens: [], allow_everyone: false, allowed_users: ['@example.test'], allowed_groups: [], allow_admins: true },
+  { id: 'vault-api', name: 'Vault API', enabled: true, action: 'bypass', hosts: ['vault.example.test'], all_paths: false, conditions: [{ operator: 'starts_with', value: '/v1/' }], methods: ['GET', 'POST'], require_token: true, tokens: ['deploybot'], ip_tags: [], ip_ranges: [], allow_everyone: false, allowed_users: [], allowed_groups: [], allow_admins: false },
+  { id: 'vault', name: 'Vault members', enabled: true, action: 'allow', hosts: ['vault.example.test'], all_paths: true, conditions: [], methods: [], require_token: false, tokens: [], ip_tags: ['사무실'], ip_ranges: [], allow_everyone: false, allowed_users: ['@example.test'], allowed_groups: [], allow_admins: true },
 ];
 const accessPoliciesResponse = (): AccessPoliciesView => structuredClone({ policies: accessPolicies, addresses: publicAddresses() });
 // 접근 토큰 데모 상태. 값은 만들 때만 돌려줍니다.
@@ -1366,10 +1443,37 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     if (typeof next.restricted !== 'boolean' || !Array.isArray(next.allowed) || next.allowed.length > 50) fail('invalid_admin_access');
     const allowed = [...new Set(next.allowed.map((entry) => String(entry).trim().toLowerCase()))];
     if (allowed.some((entry) => !/^[0-9a-f:.]+(\/\d{1,3})?$/.test(entry))) fail('invalid_admin_access');
-    // 실제 Outlet처럼, 현재 주소가 빠진 목록으로 제한을 켜면 거부합니다(데모는 단일 주소만 비교).
-    if (next.restricted && !allowed.some((entry) => entry === mockClient || (entry.includes('/') && mockClient.startsWith(entry.split('/')[0].split('.').slice(0, 3).join('.') + '.')))) fail('admin_access_locks_out');
-    adminAccess = { restricted: next.restricted, allowed };
+    const allowedTags = resolveTags(next.allowed_tags, 'invalid_admin_access');
+    // 실제 Outlet처럼, 현재 주소가 빠진 허용 IP로 제한을 켜면 거부합니다(데모는 IPv4 CIDR 포함만 비교합니다).
+    if (next.restricted && !clientAllowed({ restricted: true, allowed, allowed_tags: allowedTags }, ipAddresses)) fail('admin_access_locks_out');
+    adminAccess = { restricted: next.restricted, allowed, allowed_tags: allowedTags };
     return adminAccessView();
+  }
+  if (path === '/api/v1/security/ip-addresses' && method === 'GET') return ipAddressesView();
+  if (path === '/api/v1/security/ip-addresses' && method === 'POST') {
+    const entry = { id: id(), ...ipAddressInput(input) };
+    if (ipAddresses.some((other) => other.range === entry.range)) fail('ip_address_taken');
+    ipAddresses = [...ipAddresses, entry];
+    return structuredClone(entry);
+  }
+  const ipAddressMatch = path.match(/^\/api\/v1\/security\/ip-addresses\/([^/]+)$/);
+  if (ipAddressMatch && method === 'PUT') {
+    const entryId = decodeURIComponent(ipAddressMatch[1]);
+    if (!ipAddresses.some((entry) => entry.id === entryId)) fail('ip_address_not_found');
+    const entry = { id: entryId, ...ipAddressInput(input) };
+    if (ipAddresses.some((other) => other.id !== entryId && other.range === entry.range)) fail('ip_address_taken');
+    const next = ipAddresses.map((other) => (other.id === entryId ? entry : other));
+    ipAddressesKept(next);
+    ipAddresses = next;
+    return structuredClone(entry);
+  }
+  if (ipAddressMatch && method === 'DELETE') {
+    const entryId = decodeURIComponent(ipAddressMatch[1]);
+    if (!ipAddresses.some((entry) => entry.id === entryId)) fail('ip_address_not_found');
+    const next = ipAddresses.filter((entry) => entry.id !== entryId);
+    ipAddressesKept(next);
+    ipAddresses = next;
+    return undefined;
   }
   if (path === '/api/v1/security/hsts' && method === 'GET') return structuredClone(hsts);
   if (path === '/api/v1/security/hsts' && method === 'PUT') {
@@ -1533,6 +1637,9 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
       if (ids.length > 100 || ids.some((id) => typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,32}$/.test(id))) fail('invalid_access_policies');
       const tokens = policy.require_token ? ids : [];
       if (tokens.some((id) => !accessTokens.some((token) => token.id === id))) fail('invalid_access_policies');
+      // IP 범위: 태그는 주소록에 있는 것만 받아 주소록의 표기로 저장하고, IP·CIDR은 표준 표기로 정리합니다.
+      const ipTags = resolveTags(policy.ip_tags, 'invalid_access_policies');
+      const ipRanges = normalizeAddresses(policy.ip_ranges ?? []) ?? fail('invalid_access_policies');
       let everyone = policy.allow_everyone;
       let admins = policy.allow_admins;
       // 서버처럼 우회·차단 정책은 허용 대상을, 전체 허용은 사용자·그룹·관리자를 비웁니다.
@@ -1540,7 +1647,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
       if (action !== 'allow' || everyone) [allowedUsers, allowedGroups, admins] = [[], [], false];
       // 아무도 허용하지 않는 허용 정책은 주소를 모두에게 닫아 버립니다.
       if (action === 'allow' && !everyone && allowedUsers.length + allowedGroups.length === 0 && !admins) fail('invalid_access_policies');
-      return { id: policy.id, name, enabled: policy.enabled, action, hosts, all_paths: policy.all_paths, conditions, methods, require_token: policy.require_token === true, tokens, allow_everyone: everyone, allowed_users: allowedUsers, allowed_groups: allowedGroups, allow_admins: admins };
+      return { id: policy.id, name, enabled: policy.enabled, action, hosts, all_paths: policy.all_paths, conditions, methods, require_token: policy.require_token === true, tokens, ip_tags: ipTags, ip_ranges: ipRanges, allow_everyone: everyone, allowed_users: allowedUsers, allowed_groups: allowedGroups, allow_admins: admins };
     });
     const ids = policies.map((policy) => policy.id).filter(Boolean);
     if (new Set(ids).size !== ids.length) fail('invalid_access_policies');

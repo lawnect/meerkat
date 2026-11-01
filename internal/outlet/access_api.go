@@ -174,7 +174,10 @@ func (s *Store) putAccessPolicies(w http.ResponseWriter, r *http.Request) {
 	s.saving.Lock()
 	saved, err := s.control.SetAccessPolicies(r.Context(), req, s.now())
 	if err == nil {
-		s.access.config.Store(compileAccess(saved))
+		var book control.IPAddresses
+		if book, err = s.ipAddressBook(r.Context()); err == nil {
+			s.access.config.Store(compileAccess(saved, book))
+		}
 	}
 	s.saving.Unlock()
 	if errors.Is(err, control.ErrInvalidAccessPolicies) {
@@ -195,6 +198,8 @@ func (s *Store) putAccessPolicies(w http.ResponseWriter, r *http.Request) {
 		Methods  []string `json:"methods,omitempty"`
 		Token    bool     `json:"require_token,omitempty"`
 		Tokens   []string `json:"tokens,omitempty"`
+		IPTags   []string `json:"ip_tags,omitempty"`
+		IPRanges []string `json:"ip_ranges,omitempty"`
 		Everyone bool     `json:"allow_everyone,omitempty"`
 		Users    []string `json:"allowed_users,omitempty"`
 		Groups   []string `json:"allowed_groups,omitempty"`
@@ -202,7 +207,7 @@ func (s *Store) putAccessPolicies(w http.ResponseWriter, r *http.Request) {
 	}
 	policies := make([]logged, 0, len(saved.Policies))
 	for _, p := range saved.Policies {
-		policies = append(policies, logged{p.Name, p.Enabled, p.Action, p.Hosts, p.Methods, p.RequireToken, p.Tokens, p.AllowEveryone, p.AllowedUsers, p.AllowedGroups, p.AllowAdmins})
+		policies = append(policies, logged{p.Name, p.Enabled, p.Action, p.Hosts, p.Methods, p.RequireToken, p.Tokens, p.IPTags, p.IPRanges, p.AllowEveryone, p.AllowedUsers, p.AllowedGroups, p.AllowAdmins})
 	}
 	s.audited(r, "security.access_policies", "security", "access_policies", map[string]any{"policies": policies})
 	view, err := s.accessPoliciesView(r.Context(), saved)

@@ -173,7 +173,7 @@ func TestAdminAccessSettingsAPI(t *testing.T) {
 	if view := read(public("PUT", "203.0.113.5", control.AdminAccess{Restricted: true, Allowed: []string{"203.0.113.5/32", "198.51.100.0/24"}})); !slices.Equal(view.Allowed, []string{"203.0.113.5", "198.51.100.0/24"}) {
 		t.Fatalf("saved: %+v", view)
 	}
-	if e := a.lastAudit(t); e.Action != "security.admin_access" || e.ResourceID != "admin_access" || string(e.Detail) != `{"allowed":["203.0.113.5","198.51.100.0/24"],"restricted":true}` {
+	if e := a.lastAudit(t); e.Action != "security.admin_access" || e.ResourceID != "admin_access" || string(e.Detail) != `{"allowed":["203.0.113.5","198.51.100.0/24"],"allowed_tags":[],"restricted":true}` {
 		t.Fatalf("audit = %s %s %s", e.Action, e.ResourceID, e.Detail)
 	}
 	a.db.SetDefaults(control.Defaults{AdminIPLimitLifted: true})

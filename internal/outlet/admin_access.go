@@ -6,37 +6,22 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
-	"slices"
 
 	"github.com/lawnect/meerkat/internal/control"
 )
 
-// adminAccessRule is the compiled control.AdminAccess.
+// adminAccessRule is the compiled control.AdminAccess: its ranges and the
+// address book entries carrying its tags.
 type adminAccessRule struct {
 	control.AdminAccess
 	allowed []netip.Prefix
 }
 
-func compileAdminAccess(a control.AdminAccess) *adminAccessRule {
-	rule := &adminAccessRule{AdminAccess: a}
-	for _, entry := range a.Allowed {
-		if prefix, err := netip.ParsePrefix(entry); err == nil {
-			rule.allowed = append(rule.allowed, prefix)
-		} else if addr, err := netip.ParseAddr(entry); err == nil {
-			rule.allowed = append(rule.allowed, netip.PrefixFrom(addr, addr.BitLen()))
-		}
-	}
-	return rule
+func compileAdminAccess(a control.AdminAccess, book control.IPAddresses) *adminAccessRule {
+	return &adminAccessRule{AdminAccess: a, allowed: scopePrefixes(book, a.AllowedTags, a.Allowed)}
 }
 
-func (rule *adminAccessRule) allows(ip string) bool {
-	addr, err := netip.ParseAddr(ip)
-	if err != nil {
-		return false
-	}
-	addr = addr.Unmap()
-	return slices.ContainsFunc(rule.allowed, func(prefix netip.Prefix) bool { return prefix.Contains(addr) })
-}
+func (rule *adminAccessRule) allows(ip string) bool { return prefixesContain(rule.allowed, ip) }
 
 // adminOpenPaths answer on the management host whatever the IP limit: the
 // Connector API, which tunnels reach from anywhere, access protection's
@@ -63,7 +48,11 @@ func (s *Store) reloadAdminAccess(ctx context.Context) error {
 	} else if err != nil {
 		return err
 	}
-	s.adminAccess.Store(compileAdminAccess(a))
+	book, err := s.ipAddressBook(ctx)
+	if err != nil {
+		return err
+	}
+	s.adminAccess.Store(compileAdminAccess(a, book))
 	return nil
 }
 
@@ -168,14 +157,23 @@ func (s *Store) putAdminAccess(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 400, "invalid_admin_access")
 		return
 	}
-	// Saving from the internet must not shut out the one saving: their
-	// address has to be in the list. The local admin port can close the
-	// console to the internet altogether.
-	if ip, public := requestOrigin(r); public && next.Restricted && !compileAdminAccess(next).allows(ip) {
-		fail(w, r, 409, "admin_access_locks_out")
-		return
-	}
 	s.saving.Lock()
+	// Saving from the internet must not shut out the one saving: their
+	// address has to be in the ranges or carry one of the tags. The local
+	// admin port can close the console to the internet altogether.
+	if ip, public := requestOrigin(r); public && next.Restricted {
+		book, err := s.ipAddressBook(r.Context())
+		if err != nil {
+			s.saving.Unlock()
+			fail(w, r, 503, "persistence_failed")
+			return
+		}
+		if !compileAdminAccess(next, book).allows(ip) {
+			s.saving.Unlock()
+			fail(w, r, 409, "admin_access_locks_out")
+			return
+		}
+	}
 	saved, err := s.control.SetAdminAccess(r.Context(), next, s.now())
 	if err == nil {
 		err = s.reloadAdminAccess(context.WithoutCancel(r.Context()))
@@ -189,6 +187,6 @@ func (s *Store) putAdminAccess(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	s.audited(r, "security.admin_access", "security", "admin_access", map[string]any{"restricted": saved.Restricted, "allowed": saved.Allowed})
+	s.audited(r, "security.admin_access", "security", "admin_access", map[string]any{"restricted": saved.Restricted, "allowed": saved.Allowed, "allowed_tags": saved.AllowedTags})
 	reply(w, 200, s.adminAccessView(r, saved))
 }

@@ -29,12 +29,18 @@ const (
 type AdminAccess struct {
 	Restricted bool     `json:"restricted"`
 	Allowed    []string `json:"allowed"`
+	// AllowedTags let in every address book entry carrying one of them.
+	AllowedTags []string `json:"allowed_tags"`
 }
 
-func DefaultAdminAccess() AdminAccess { return AdminAccess{Allowed: []string{}} }
+func DefaultAdminAccess() AdminAccess {
+	return AdminAccess{Allowed: []string{}, AllowedTags: []string{}}
+}
 
 // ClosedAdminAccess closes the console on public addresses.
-func ClosedAdminAccess() AdminAccess { return AdminAccess{Restricted: true, Allowed: []string{}} }
+func ClosedAdminAccess() AdminAccess {
+	return AdminAccess{Restricted: true, Allowed: []string{}, AllowedTags: []string{}}
+}
 
 // Normalize reports whether the settings are valid and puts the ranges in
 // normalizeRange's form, once each, in the order given.
@@ -46,7 +52,11 @@ func (a AdminAccess) Normalize() (AdminAccess, bool) {
 	if !ok {
 		return a, false
 	}
-	a.Allowed = allowed
+	tags, ok := NormalizeTags(a.AllowedTags, MaxScopeTags)
+	if !ok {
+		return a, false
+	}
+	a.Allowed, a.AllowedTags = allowed, tags
 	return a, true
 }
 
@@ -68,16 +78,35 @@ func (d *Database) AdminAccess(ctx context.Context) (AdminAccess, error) {
 	return ClosedAdminAccess(), ErrDamagedAdminAccess
 }
 
+// SetAdminAccess saves the limit. Each tag must name an address book
+// entry, and is saved as the address book spells it.
 func (d *Database) SetAdminAccess(ctx context.Context, a AdminAccess, now time.Time) (AdminAccess, error) {
 	a, ok := a.Normalize()
 	if !ok {
 		return a, ErrInvalidAdminAccess
 	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return a, err
+	}
+	defer tx.Rollback()
+	if len(a.AllowedTags) != 0 {
+		book, err := readIPAddresses(ctx, tx)
+		if err != nil {
+			return a, ErrInvalidAdminAccess
+		}
+		if a.AllowedTags, ok = resolveTags(book, a.AllowedTags); !ok {
+			return a, ErrInvalidAdminAccess
+		}
+	}
 	raw, err := json.Marshal(a)
 	if err != nil {
 		return a, err
 	}
-	return a, putSetting(ctx, d.db, settingAdminAccess, string(raw), now)
+	if err := putSetting(ctx, tx, settingAdminAccess, string(raw), now); err != nil {
+		return a, err
+	}
+	return a, tx.Commit()
 }
 
 // AdminIPLimitLifted reports whether the environment lifted the limit

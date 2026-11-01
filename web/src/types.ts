@@ -267,6 +267,7 @@ export interface ConnectionLimits {
 export interface AdminAccessSettings {
   restricted: boolean;
   allowed: string[];
+  allowed_tags: string[]; // 이 태그가 붙은 IP 주소록 항목도 허용(최대 20개, 있는 태그만)
 }
 
 // client와 client_range는 공개 주소로 접속했을 때만 있고, client_shared는 그 주소가 프록시·사설망·CDN 주소로 보일 때 참이며, lifted는 MEERKAT_ADMIN_IP_LIMIT=false로 제한이 해제된 상태, damaged는 저장값을 읽지 못해 공개 주소의 콘솔을 닫은 상태입니다.
@@ -276,6 +277,31 @@ export interface AdminAccessView extends AdminAccessSettings {
   client_shared: boolean;
   lifted: boolean;
   damaged: boolean;
+}
+
+// IP 주소록(GET/POST /api/v1/security/ip-addresses, PUT·DELETE …/{id}). IP·CIDR마다 메모와 태그를 달고,
+// 접근 정책(ip_tags)과 관리 콘솔 접근 제한(allowed_tags)이 태그로 그 태그가 붙은 모든 항목을 가리킵니다.
+export interface IpAddressEntry {
+  id: string;
+  range: string; // 서버가 정리한 형태: 단일 주소는 접두어 없이, 범위는 호스트 비트를 지운 CIDR
+  note: string; // 최대 100자
+  tags: string[]; // 최대 10개, 1–32자, 쉼표 없이, IP·CIDR로 읽히지 않는 이름. 대소문자 무시하고 한 번씩
+}
+
+export type IpAddressInput = Omit<IpAddressEntry, 'id'>;
+
+// 태그별 항목 수와 그 태그를 쓰는 곳(정책 이름, 관리 콘솔 접근 제한).
+export interface IpTagUse {
+  name: string;
+  count: number;
+  policies: string[];
+  admin_access: boolean;
+}
+
+export interface IpAddressesView {
+  entries: IpAddressEntry[];
+  tags: IpTagUse[]; // 이름순
+  damaged: boolean; // 저장된 주소록을 읽지 못함(태그가 어떤 주소에도 맞지 않음)
 }
 
 // HSTS(GET/PUT /api/v1/security/hsts). 켜져 있으면 공개 주소의 HTTPS 응답에 max-age 1년을 붙입니다.
@@ -398,6 +424,8 @@ export interface AccessPolicy {
   methods: AccessMethod[]; // 이 메서드의 요청에만 적용. 비어 있으면 모든 메서드, 서버가 accessMethods 순서로 정리합니다
   require_token: boolean; // true이면 그 주소와 클라이언트에 유효한 접근 토큰을 보낸 요청에만 적용
   tokens: string[]; // require_token일 때 받는 토큰 ID. 비어 있으면 모든 토큰, 있는 토큰만
+  ip_tags: string[]; // 이 태그가 붙은 IP 주소록 항목에서 온 요청에만 적용(최대 20개, 있는 태그만, 서버가 주소록의 표기로 저장)
+  ip_ranges: string[]; // 이 IP·CIDR에서 온 요청에만 적용(최대 50개). ip_tags와 함께 비어 있으면 모든 IP
   // 아래는 allow일 때만 의미가 있고, 서버는 bypass·block이면 비웁니다.
   allow_everyone: boolean; // 접근 보호 SSO로 로그인한 모든 사용자. 켜면 사용자·그룹·관리자 허용은 비웁니다
   allowed_users: string[]; // 이메일 또는 '@도메인', 소문자

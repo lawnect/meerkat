@@ -82,6 +82,15 @@ type accessRule struct {
 	exact  exactMatch
 	all    bool
 	policy control.AccessPolicy
+	// ips are the client addresses the policy is limited to, when
+	// ipLimited: its ranges and the address book entries with its tags.
+	ipLimited bool
+	ips       []netip.Prefix
+}
+
+// coversClient reports whether the rule applies to a request from ip.
+func (rule *accessRule) coversClient(ip string) bool {
+	return !rule.ipLimited || prefixesContain(rule.ips, ip)
 }
 
 // exactMatch is a bypass policy's conditions, compared with a request path
@@ -148,14 +157,14 @@ func plainPath(u *url.URL) bool {
 
 type accessConfig struct{ rules []accessRule }
 
-// matching returns the first rule that covers a request for host and u's
-// path, with method, that sent the access token with ID token, valid for
-// it, or none when token is empty; or nil. Allow and block conditions compare the path broadly, in the
+// matching returns the first rule that covers a request from client
+// address ip for host and u's path, with method, that sent the access token
+// with ID token, valid for it, or none when token is empty; or nil. Allow and block conditions compare the path broadly, in the
 // form rules take: a path an app may read differently matches them all, so
 // it can't slip past one, and one with an escape still in it after decoding
 // is also compared decoded once more, as an app decoding again reads it. A
 // bypass condition, which opens paths, matches only a plain path, exactly.
-func (c *accessConfig) matching(host, method string, u *url.URL, token string) *accessRule {
+func (c *accessConfig) matching(host, method string, u *url.URL, token, ip string) *accessRule {
 	if c == nil {
 		return nil
 	}
@@ -164,7 +173,7 @@ func (c *accessConfig) matching(host, method string, u *url.URL, token string) *
 	for i := range c.rules {
 		rule := &c.rules[i]
 		switch {
-		case !rule.match.covers(host) || !control.CoversMethod(rule.policy.Methods, method) || !rule.policy.TakesToken(token):
+		case !rule.match.covers(host) || !control.CoversMethod(rule.policy.Methods, method) || !rule.policy.TakesToken(token) || !rule.coversClient(ip):
 			continue
 		case rule.all:
 			return rule
@@ -288,6 +297,10 @@ func (c *accessConfig) signingIn(host string) []*accessRule {
 // each of later's equals and starts-with conditions does, compared as
 // requests are. The console marks the same as never applying.
 func (rule *accessRule) shadows(later *accessRule) bool {
+	// Limited to some client addresses, it leaves the others to later.
+	if rule.ipLimited {
+		return false
+	}
 	if len(rule.policy.Methods) != 0 && (len(later.policy.Methods) == 0 || slices.ContainsFunc(later.policy.Methods, func(method string) bool { return !control.CoversMethod(rule.policy.Methods, method) })) {
 		return false
 	}
@@ -518,13 +531,18 @@ func (s *Store) isAdminEmail(ctx context.Context, email string) (bool, error) {
 type accessIdentityKey struct{}
 type accessServiceKey struct{}
 
-func compileAccess(policies control.AccessPolicies) *accessConfig {
+func compileAccess(policies control.AccessPolicies, book control.IPAddresses) *accessConfig {
 	config := &accessConfig{}
 	for _, policy := range policies.Policies {
 		if !policy.Enabled || len(policy.Hosts) == 0 {
 			continue
 		}
 		rule := accessRule{match: compileBlockRule(policy.Hosts, policy.Conditions), all: policy.AllPaths, policy: policy}
+		if len(policy.IPTags)+len(policy.IPRanges) != 0 {
+			// A tag no address carries any more adds none: the policy then
+			// applies to the ranges alone, or to no request.
+			rule.ipLimited, rule.ips = true, scopePrefixes(book, policy.IPTags, policy.IPRanges)
+		}
 		if policy.Action == control.AccessBypass {
 			rule.match, rule.exact = compileBlockRule(policy.Hosts, nil), compileExact(policy.Conditions)
 		}
@@ -595,7 +613,11 @@ func (s *Store) reloadAccess(ctx context.Context) error {
 	case err != nil:
 		return err
 	default:
-		s.access.config.Store(compileAccess(policies))
+		book, err := s.ipAddressBook(ctx)
+		if err != nil {
+			return err
+		}
+		s.access.config.Store(compileAccess(policies, book))
 	}
 	if err := s.reloadAccessTokens(ctx); err != nil {
 		return err
@@ -692,7 +714,8 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 			valid = token.ID
 		}
 	}
-	rule := s.access.config.Load().matching(host, r.Method, r.URL, valid)
+	client, _ := requestOrigin(r)
+	rule := s.access.config.Load().matching(host, r.Method, r.URL, valid, client)
 	if rule == nil {
 		return r, true
 	}

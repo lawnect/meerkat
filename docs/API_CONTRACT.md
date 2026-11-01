@@ -234,7 +234,7 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 | 터널 | `connector.create`, `connector.delete`, `connector.describe`, `connector.rename`, `connector.token_issue`, `connector.token_reset`, `connector.enroll`, `connector.enroll_failed` |
 | 서비스·공개 주소 | `service.create`, `service.update`, `service.delete`, `route.create`, `route.delete` |
 | 도메인·터널 주소 | `domain.set`, `domain.add`, `domain.remove`, `domain.mode`, `tunnel.update` |
-| 알림·보안 | `telegram.update`, `telegram.test`, `telegram.delete`, `alert_rules.update`, `second_factor.update`, `security.rate_limit`, `security.connection_limits`, `security.tunnel_guard`, `security.block_rules`, `security.client_bans`, `security.client_ban_release`, `security.sso`, `security.sso_reset`, `security.hsts`, `security.admin_access` |
+| 알림·보안 | `telegram.update`, `telegram.test`, `telegram.delete`, `alert_rules.update`, `second_factor.update`, `security.rate_limit`, `security.connection_limits`, `security.tunnel_guard`, `security.block_rules`, `security.client_bans`, `security.client_ban_release`, `security.sso`, `security.sso_reset`, `security.hsts`, `security.admin_access`, `security.ip_address_create`, `security.ip_address_update`, `security.ip_address_delete` |
 
 **요청 제한(rate limit).** 공개 경로(`PublicHandler`)에서 프록시하기 전에, 데이터베이스를 조회하기 전에 토큰 버킷으로 제한한다. `GET`과 `PUT /api/v1/security/rate-limit`은 같은 객체를 주고받으며 `PUT`은 모든 키를 담아야 하고 범위를 벗어나면 `400 invalid_rate_limit`이다. 설정은 재시작 없이 바로 적용한다.
 
@@ -284,7 +284,7 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 - 80번 포트의 리디렉션에는 붙이지 않는다. 관리 콘솔 응답에는 설정과 관계없이 항상 붙는다(관리 콘솔 접근 제한으로 막힌 요청의 `404`는 이 설정을 따른다).
 - 브라우저는 한 번 받은 주소를 1년 동안 HTTPS로만 연다. 공개 주소를 HTTPS가 없는 서버로 옮기려면 미리 끄고 그 기간이 지나야 한다.
 
-**관리 콘솔 접근 제한.** `GET`과 `PUT /api/v1/security/admin-access`는 `{"restricted": bool, "allowed": [...]}`를 다룬다. `PUT`은 두 키를 모두 담아야 하고, `allowed`는 IPv4·IPv6 주소 또는 CIDR 최대 50개로 터널 포트 보호와 같은 형태로 정리한다. 형식이 맞지 않으면 `400 invalid_admin_access`다. 응답에는 저장된 값과 함께 다음이 있다. 저장하면 바로 적용하고 `security.admin_access`(`{"restricted", "allowed"}`)로 감사 기록을 남긴다.
+**관리 콘솔 접근 제한.** `GET`과 `PUT /api/v1/security/admin-access`는 `{"restricted": bool, "allowed": [...], "allowed_tags": [...]}`를 다룬다. `PUT`은 `restricted`와 `allowed`를 담아야 하고, `allowed`는 IPv4·IPv6 주소 또는 CIDR 최대 50개로 터널 포트 보호와 같은 형태로 정리한다. `allowed_tags`(최대 20개)는 IP 주소록의 태그이며, 그 태그가 붙은 항목도 허용한다. 주소록에 없는 태그나 맞지 않는 형식은 `400 invalid_admin_access`다. 응답에는 저장된 값과 함께 다음이 있다. 저장하면 바로 적용하고 `security.admin_access`(`{"restricted", "allowed"}`)로 감사 기록을 남긴다(`allowed_tags` 포함).
 
 - `client`: 공개 주소로 접속했으면 그 주소, 로컬 관리 포트에서는 `null`이다. `client_range`는 현재 IP를 추가할 때 넣을 값으로 IPv4는 주소, IPv6는 그 /64다.
 - `client_shared`: 그 주소가 사설·루프백·링크 로컬·CGNAT(100.64.0.0/10) 주소이거나 요청에 `CF-Ray`·`CDN-Loop`가 있어 여러 클라이언트가 함께 쓰는 주소로 보이면 `true`다. 허용하면 같은 경로로 들어오는 모든 클라이언트가 들어온다.
@@ -407,12 +407,13 @@ POST   https://<보호 주소>/.meerkat/access/logout
 - `sessions/revoke`는 세션 서명 키를 바꿔 모든 보호 주소의 세션을 끝낸다(`204`, `security.access_sessions_revoke`).
 
 **정책**
-- `GET`/`PUT /api/v1/security/access-policies`는 `{"policies": [...], "addresses": [공개 주소]}`이다(`GET`은 저장된 정책이 손상되었으면 `"damaged": true`를 더한다). 정책은 `{"id", "name", "enabled", "action", "hosts", "all_paths", "conditions", "methods", "require_token", "tokens", "allow_everyone", "allowed_users", "allowed_groups", "allow_admins"}`이다.
+- `GET`/`PUT /api/v1/security/access-policies`는 `{"policies": [...], "addresses": [공개 주소]}`이다(`GET`은 저장된 정책이 손상되었으면 `"damaged": true`를 더한다). 정책은 `{"id", "name", "enabled", "action", "hosts", "all_paths", "conditions", "methods", "require_token", "tokens", "ip_tags", "ip_ranges", "allow_everyone", "allowed_users", "allowed_groups", "allow_admins"}`이다.
 - 정책은 목록 순서대로 확인하며, 요청에 처음 일치하는 활성화된 정책 하나가 그 요청을 정한다. 순서를 바꾸려면 목록을 그 순서로 저장한다.
 - `action`은 `allow`(로그인 후 허용 대상만, 생략 시 기본), `bypass`(로그인 없이 누구나), `block`(모두 `403`)이다. `bypass`·`block`은 허용 대상을 두지 않으며 저장할 때 비운다.
 - `hosts`는 하나 이상의 주소 또는 `*.도메인`이다.
 - `all_paths`가 `false`이면 `conditions`가 필요하다. 조건은 차단 규칙과 같은 연산자, 값 정리, 경로 비교를 쓴다. 요청 경로는 한 번 디코딩하고 `;` 매개변수를 뺀 형태로 비교하므로, 정규식이 아닌 값에 `%XX` 인코딩이나 `;`가 있으면 `400 invalid_access_policies`이다.
 - `methods`가 있으면 그 메서드의 요청에만 적용되고, 다른 메서드의 요청은 아래 정책이 정한다. 값은 `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`이며(대소문자 무관, 이 순서로 저장), `GET`은 `HEAD`도 포함한다. 요청의 메서드는 대소문자 구분 없이 비교한다(`post`도 `POST`로 보는 앱이 있다). 비거나 생략하면 모든 메서드다. 그 밖의 값은 `400 invalid_access_policies`이다.
+- `ip_tags`(IP 주소록의 태그, 최대 20개)나 `ip_ranges`(IP·CIDR, 최대 50개)가 있으면, 접속 주소(`X-Forwarded-For`의 마지막 항목)가 그 범위 안인 요청에만 적용되고, 다른 주소의 요청은 아래 정책이 정한다. 태그는 그 태그가 붙은 주소록의 모든 항목을 뜻한다. 둘 다 비거나 생략하면 모든 주소다. 주소록에 없는 태그는 `400 invalid_access_policies`이며, 태그는 주소록의 표기로 저장한다. 주소록이 바뀌면 정책에 바로 반영한다. 접속 IP를 제한한 정책은 뒤의 정책을 가리지 않는다(다른 주소의 요청을 뒤 정책이 받는다).
 - `require_token`이 `true`이면 그 요청에 유효한 접근 토큰(아래 **접근 토큰**)을 보낸 요청에만 적용되고, 다른 요청은 아래 정책이 정한다. `tokens`(토큰 ID)가 있으면 그 토큰만, 비면 모든 토큰을 받는다. `require_token`이 `false`이면 `tokens`는 비운다. 없는 토큰을 지정하면 `400 invalid_access_policies`이다. 동작과 함께 쓰면 `bypass`는 토큰만으로 통과, `allow`는 토큰과 허용 대상의 세션이 모두 필요, `block`은 그 토큰을 보낸 요청을 거부한다. 토큰 없는 요청을 받을 정책이 아래에 없으면 그런 요청은 보호 없이 전달되므로, 콘솔은 그 정책에 표시한다. 다른 출처의 브라우저가 부르는 경로는 preflight `OPTIONS`가 토큰 없이 오므로 그 `OPTIONS`도 열어 두어야 한다.
 - 경로 조건은 Outlet에 도달한 요청에만 적용된다. 단일 페이지 앱은 화면을 브라우저 안에서 바꾸므로, 앱 전체를 보호하고 외부 클라이언트가 부르는 경로만 우회한다.
 - `bypass` 조건은 경로를 여는 만큼 넓히지 않고 그대로 비교한다. 값은 대소문자를 포함해 입력한 그대로 저장하며, `\`, 빈 조각, `.`·`..` 조각, 끝나는 곳이 확실한 조각 끝의 점이나 공백이 있으면 `400 invalid_access_policies`이다. 정규식은 대소문자를 구분한다. 요청은 꼭 필요한 바이트만 대문자 `%XX`로 인코딩해 온 경로(`%2F`, `%7E`, `%2A`, 소문자 hex 등이 없음. `!`, `'`, `(`, `)`, `*`, `[`, `]` 같은 문자는 그대로 와야 한다)이고, 디코딩 뒤 `%XX`·`\`·`;`·제어 문자·UTF-8이 아닌 바이트가 없으며, 빈·`.`·`..` 조각이나 점·공백으로 끝나는 조각이 없을 때만 디코딩한 경로 그대로(끝에 `/`를 붙이지 않고, 대소문자 구분) 비교한다. 그 밖의 요청은 우회 정책에 일치하지 않는다. 쿼리 문자열은 비교하지 않으므로, 쿼리로 다른 동작을 고르는 앱은 그 경로를 우회하지 않는다.
@@ -432,6 +433,13 @@ POST   https://<보호 주소>/.meerkat/access/logout
 - `__Host-meerkat_access`로 시작하는 쿠키 이름은 Outlet 전용이다. 요청에서는 이름의 앞뒤 공백과 대소문자에 관계없이 지워 앱에 전달하지 않고, 앱 응답이 이 이름으로 설정하는 `Set-Cookie`도 지운다.
 
 정책이 판정한 요청의 지표와 기록은 아래 **관찰**에 있다.
+
+**IP 주소록**
+- 클라이언트 주소를 한 번 등록하고 태그로 묶는다. 항목은 `{"id", "range", "note", "tags"}`이다. `range`는 IPv4·IPv6 주소 또는 CIDR로 터널 포트 보호와 같은 형태로 정리하며 주소록 안에서 한 번만 쓸 수 있다. `note`는 100자까지, `tags`는 10개까지이고, 태그는 쉼표·제어 문자 없이 1~32자이며 IP·CIDR로 읽히지 않아야 한다. 태그는 대소문자를 구분하지 않고 비교하며 처음 쓴 표기를 따른다. 주소록은 500개 항목까지다.
+- `GET /api/v1/security/ip-addresses`는 `{"entries": [...], "tags": [{"name", "count", "policies", "admin_access"}], "damaged"}`를 반환한다. `tags`는 이름순이며, `policies`는 그 태그를 쓰는 접근 정책의 이름, `admin_access`는 관리 콘솔 접근 제한이 쓰는지다. 저장된 주소록을 읽을 수 없으면 `damaged`가 `true`이고 태그는 어떤 주소에도 맞지 않는다.
+- `POST`는 `{"range", "note", "tags"}`를 받아 `201`과 항목을, `PUT …/{id}`는 같은 본문으로 `200`과 항목을, `DELETE …/{id}`는 `204`를 반환한다. 형식이 맞지 않으면 `400 invalid_ip_address`, 같은 `range`가 있으면 `409 ip_address_taken`, 없는 항목이면 `404 ip_address_not_found`다.
+- 접근 정책이나 관리 콘솔 접근 제한이 쓰는 태그에는 항목이 하나 이상 남아야 한다. 마지막 항목을 지우거나 그 태그를 떼면 `409 ip_tag_in_use`다. 공개 주소에서 바꿀 때 관리 콘솔 접근 제한이 태그를 쓰고 있고, 지금 허용된 접속 주소가 그 변경으로 허용되지 않게 되면 `409 admin_access_locks_out`이다. 로컬 관리 포트에서는 막지 않는다.
+- 변경은 접근 정책과 관리 콘솔 접근 제한에 바로 반영하고 `security.ip_address_create`·`security.ip_address_update`·`security.ip_address_delete`(`{"range", "note", "tags"}`)로 감사 기록을 남긴다.
 
 **접근 토큰**
 - 스크립트, CI, 다른 서비스처럼 로그인할 수 없는 클라이언트는 `X-Meerkat-Access-Token: <값>` 헤더를 보낸다. 값이 맞고 만료되지 않았으며 이용 범위 안이면 그 요청에 유효한 토큰이고, 그 토큰을 받는 정책(`require_token`)에 해당한다. 값의 앞뒤 공백은 무시한다. 유효하지 않은 토큰은 보내지 않은 것처럼 정책을 고른다.

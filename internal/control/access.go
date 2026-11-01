@@ -144,6 +144,11 @@ type AccessPolicy struct {
 	// valid for them: one of Tokens, by ID, or any when Tokens is empty.
 	RequireToken bool     `json:"require_token"`
 	Tokens       []string `json:"tokens"`
+	// IPTags and IPRanges limit the policy to requests from client
+	// addresses in them: every address book entry carrying one of the tags,
+	// and the ranges themselves. With neither, every address.
+	IPTags   []string `json:"ip_tags"`
+	IPRanges []string `json:"ip_ranges"`
 	// Who an AccessAllow policy lets in: everyone the access provider signs
 	// in, or else those each list that is set matches, as for the
 	// administrators' single sign-on; AllowAdmins also lets in anyone whose
@@ -272,6 +277,12 @@ func (a AccessPolicies) Normalize() (AccessPolicies, bool) {
 			tokens = []string{}
 		}
 		policy.Tokens = tokens
+		tags, okTags := NormalizeTags(policy.IPTags, MaxScopeTags)
+		ranges, okRanges := normalizeRanges(policy.IPRanges)
+		if !okTags || !okRanges || len(ranges) > MaxScopeRanges {
+			return a, false
+		}
+		policy.IPTags, policy.IPRanges = tags, ranges
 		switch policy.Action {
 		case AccessAllow:
 		case AccessBypass, AccessBlock:
@@ -306,7 +317,7 @@ func (a AccessPolicies) Readable() AccessPolicies {
 			policy.Action = AccessAllow
 		}
 		seen[policy.ID] = true
-		for _, list := range []*[]string{&policy.Hosts, &policy.Methods, &policy.Tokens, &policy.AllowedUsers, &policy.AllowedGroups} {
+		for _, list := range []*[]string{&policy.Hosts, &policy.Methods, &policy.Tokens, &policy.IPTags, &policy.IPRanges, &policy.AllowedUsers, &policy.AllowedGroups} {
 			if *list == nil {
 				*list = []string{}
 			}
@@ -456,7 +467,8 @@ func (d *Database) AccessPolicies(ctx context.Context) (AccessPolicies, error) {
 }
 
 // SetAccessPolicies replaces the policies. The access tokens they name
-// must exist.
+// must exist, and each IP tag must name an address book entry; tags are
+// saved as the address book spells them.
 func (d *Database) SetAccessPolicies(ctx context.Context, policies AccessPolicies, now time.Time) (AccessPolicies, error) {
 	policies, ok := policies.Normalize()
 	if !ok {
@@ -480,6 +492,22 @@ func (d *Database) SetAccessPolicies(ctx context.Context, policies AccessPolicie
 			if !slices.ContainsFunc(tokens, func(token AccessToken) bool { return token.ID == id }) {
 				return policies, ErrInvalidAccessPolicies
 			}
+		}
+	}
+	if slices.ContainsFunc(policies.Policies, func(policy AccessPolicy) bool { return len(policy.IPTags) != 0 }) {
+		book, err := readIPAddresses(ctx, tx)
+		if err != nil {
+			return policies, ErrInvalidAccessPolicies
+		}
+		for i := range policies.Policies {
+			tags, ok := resolveTags(book, policies.Policies[i].IPTags)
+			if !ok {
+				return policies, ErrInvalidAccessPolicies
+			}
+			policies.Policies[i].IPTags = tags
+		}
+		if raw, err = json.Marshal(policies); err != nil {
+			return policies, err
 		}
 	}
 	if err := putSetting(ctx, tx, settingAccessPolicies, string(raw), now); err != nil {
