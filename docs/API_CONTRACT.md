@@ -65,7 +65,9 @@ PUT    /api/v1/addresses/:hostname
 Service 생성은 외부 공개를 뜻하지 않는다. Route를 활성화해야 외부 endpoint가 생긴다.
 서비스의 앱 호스트와 포트는 `PATCH /api/v1/connectors/:id/services/:service_id`에 `{"target":{"host":"app","port":3000}}`을 보내 수정한다. 한 터널에 여러 서비스를 등록할 수 있지만, 같은 터널 안에서 대상 호스트(대소문자 구분 없음)와 포트의 조합은 고유해야 한다. 생성·수정 시 중복이면 `409 service_target_taken`을 반환한다. 같은 앱의 공개 주소가 여러 개 필요하면 하나의 서비스에 Route를 여러 개 추가한다. 서비스 추가·수정·삭제 시 설정 revision을 올린다. Connector는 새 설정을 받아 Rathole에 반영하고, Outlet은 변경된 서비스의 probe 결과가 확인될 때까지 그 공개 경로만 보류한다. 변경되지 않은 서비스의 상태와 공개 경로는 유지한다.
 
-**HTTP(80번 포트).** Caddy는 80번 포트에서 ACME HTTP-01 응답만 직접 처리하고, 나머지 요청은 `X-Forwarded-Proto: http`를 붙여 Outlet에 넘긴다. 클라이언트가 보낸 이 헤더는 Caddy가 버린다. Outlet은 인증서를 허용하는 호스트(관리 주소, 도메인, Route가 있는 주소로 `cert-ask`와 같은 기준)에만 `308`과 `Location: https://<호스트><요청 URI>`로 응답한다. 그 밖의 Host는 `404`이며, 요청 줄에 절대 주소로 적은 호스트도 마찬가지다. 두 응답 모두 `Cache-Control: no-store`이고, 평문 HTTP 요청은 앱으로 전달하지 않는다.
+**HTTP(80번 포트).** Caddy는 80번 포트에서 ACME HTTP-01 응답만 직접 처리하고, 나머지 요청은 `X-Forwarded-Proto: http`를 붙여 Outlet에 넘긴다. 클라이언트가 보낸 이 헤더는 Caddy가 버린다. Outlet은 인증서를 허용하는 호스트(관리 주소, 도메인, Route가 있는 주소로 `cert-ask`와 같은 기준)에만 `308`과 `Location: https://<호스트><요청 URI>`로 응답한다. 그 밖의 Host는 `404`다. 두 응답 모두 `Cache-Control: no-store`이고, 평문 HTTP 요청은 앱으로 전달하지 않는다.
+
+**요청 대상 형식.** Caddy는 80번과 443번 포트 모두에서 요청 줄의 대상이 경로(`/`로 시작)가 아니면 Outlet에 넘기지 않고 `400`으로 답한다. 절대 주소(`GET http://host/path`)를 받으면 Caddy와 Outlet은 RFC 9112에 따라 `Host` 헤더 대신 그 주소의 호스트를 쓰는데, 브라우저는 이런 요청을 보내지 않는다. 그래서 `Host` 헤더와 다른 호스트로 라우팅되는 요청은 받지 않는다. `CONNECT`도 마찬가지이고, `OPTIONS *`는 Go 서버가 라우트 전에 직접 답한다. Outlet도 80번 포트 요청의 호스트를 같은 기준으로 다시 판단한다.
 
 **공유 주소.** 같은 hostname을 여러 서비스(다른 터널 포함)가 함께 쓸 수 있다.
 

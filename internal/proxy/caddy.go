@@ -49,8 +49,16 @@ func EmptyCaddyfile() []byte { return []byte(caddyHeader) }
 // Caddy answers ACME HTTP-01 challenges before a site's routes, and sets
 // X-Forwarded-Proto from the connection itself, so the Outlet sees "http"
 // for exactly these requests.
+//
+// Both sites refuse a request target that isn't a path: an absolute-form
+// "GET http://host/path" makes Caddy and the Outlet route by that host and
+// ignore the Host header, as RFC 9112 says, which an external check read
+// as a Host filter bypass. Browsers never send one, nor a CONNECT; Go
+// answers "OPTIONS *" itself before any route.
 func DynamicCaddyfile(upstream string) []byte {
-	toOutlet := `	reverse_proxy http://` + upstream + ` {
+	toOutlet := "\t@not_a_path expression `!{http.request.orig_uri}.startsWith(\"/\")`\n" +
+		"\trespond @not_a_path 400\n" +
+		`	reverse_proxy http://` + upstream + ` {
 		transport http {
 			keepalive 25s
 			keepalive_idle_conns_per_host 4096

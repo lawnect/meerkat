@@ -20,6 +20,8 @@
 }
 
 http:// {
+	@not_a_path expression `!{http.request.orig_uri}.startsWith("/")`
+	respond @not_a_path 400
 	reverse_proxy http://outlet:8080 {
 		transport http {
 			keepalive 25s
@@ -35,6 +37,8 @@ https:// {
 			disable_tlsalpn_challenge
 		}
 	}
+	@not_a_path expression `!{http.request.orig_uri}.startsWith("/")`
+	respond @not_a_path 400
 	reverse_proxy http://outlet:8080 {
 		transport http {
 			keepalive 25s

@@ -44,6 +44,16 @@ func TestCaddyfileSendsPlainHTTPToTheOutlet(t *testing.T) {
 	}
 }
 
+// An absolute-form target routes by its own host, not the Host header;
+// both sites refuse any target that isn't a path before proxying.
+func TestCaddyfileRefusesTargetsThatArentPaths(t *testing.T) {
+	config := string(DynamicCaddyfile(DefaultUpstream))
+	refuse := "\t@not_a_path expression `!{http.request.orig_uri}.startsWith(\"/\")`\n\trespond @not_a_path 400\n\treverse_proxy "
+	if count := strings.Count(config, refuse); count != 2 {
+		t.Fatalf("expected both sites to refuse non-path targets before proxying, got %d: %q", count, config)
+	}
+}
+
 func TestEmptyCaddyfileHasNoPublicHost(t *testing.T) {
 	config := string(EmptyCaddyfile())
 	if !strings.Contains(config, ":9090 {\n\tmetrics /metrics") || strings.Contains(config, "issuer acme") {
