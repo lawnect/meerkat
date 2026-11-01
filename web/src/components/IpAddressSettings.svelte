@@ -53,6 +53,7 @@
     damaged: 'The saved address book could not be read, so tags match no address. Add the addresses again.',
     invalid: 'Check the values. Enter an IPv4 or IPv6 address or CIDR, a note of up to 100 characters, and up to 10 tags of 1–32 characters without commas that are not addresses.',
     taken: 'This IP or range is already in the address book.',
+    full: 'The address book holds up to 500 IPs.',
     tagInUse: 'A tag used by an access policy or the admin console limit must keep at least one IP.',
     locksOut: 'This change would cut your current IP off from the admin console. Make it over SSH or keep your address tagged.',
     failed: (code: string) => `Couldn't save: ${code}`,
@@ -84,6 +85,7 @@
     damaged: '저장된 주소록을 읽을 수 없어 태그가 어떤 주소에도 일치하지 않습니다. 주소를 다시 등록하십시오.',
     invalid: '입력값이 올바르지 않습니다. IPv4·IPv6 주소 또는 CIDR, 최대 100자의 메모, 쉼표 없이 1–32자이며 주소 형식이 아닌 태그를 최대 10개까지 지정할 수 있습니다.',
     taken: '이미 주소록에 있는 IP 또는 대역입니다.',
+    full: 'IP 주소록에는 최대 500개까지 등록할 수 있습니다.',
     tagInUse: '접근 정책이나 관리 콘솔 접근 제한에서 사용 중인 태그에는 IP가 하나 이상 있어야 합니다.',
     locksOut: '현재 접속 IP의 관리 콘솔 접근이 차단됩니다. SSH로 연결해 변경하거나 이 주소의 태그를 유지하십시오.',
     failed: (code: string) => `저장 중 오류가 발생했습니다: ${code}`,
@@ -159,6 +161,7 @@
     switch (code) {
       case 'invalid_ip_address': return t().invalid;
       case 'ip_address_taken': return t().taken;
+      case 'ip_addresses_full': return t().full;
       case 'ip_tag_in_use': return t().tagInUse;
       case 'admin_access_locks_out': return t().locksOut;
       default: return t().failed(code);

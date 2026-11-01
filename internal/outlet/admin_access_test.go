@@ -43,13 +43,13 @@ func TestAdminAccessLimitsTheConsoleOnly(t *testing.T) {
 		t.Fatalf("unlimited by default: %d", w.Code)
 	}
 	// From the internet, a limit leaving out the address saving it is refused.
-	if w := save("198.51.100.9", control.AdminAccess{Restricted: true, Allowed: []string{"203.0.113.0/24"}}); w.Code != 409 || errorCode(t, w) != "admin_access_locks_out" {
+	if w := save("198.51.100.9", control.AdminAccess{AllowedTags: []string{}, Restricted: true, Allowed: []string{"203.0.113.0/24"}}); w.Code != 409 || errorCode(t, w) != "admin_access_locks_out" {
 		t.Fatalf("lock-out: %d %s", w.Code, w.Body.String())
 	}
 	if w := console("/api/v1/setup/status", "198.51.100.9"); w.Code != 200 {
 		t.Fatalf("a refused save changed something: %d", w.Code)
 	}
-	w := save("203.0.113.5", control.AdminAccess{Restricted: true, Allowed: []string{"203.0.113.0/24", " 2001:DB8:1::/48 "}})
+	w := save("203.0.113.5", control.AdminAccess{AllowedTags: []string{}, Restricted: true, Allowed: []string{"203.0.113.0/24", " 2001:DB8:1::/48 "}})
 	var view adminAccessView
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &view) != nil || !view.Restricted || !slices.Equal(view.Allowed, []string{"203.0.113.0/24", "2001:db8:1::/48"}) {
 		t.Fatalf("save: %d %s", w.Code, w.Body.String())
@@ -100,10 +100,10 @@ func TestAdminAccessLimitsTheConsoleOnly(t *testing.T) {
 	}
 	// Let in that way, they can turn the limit off from where they are,
 	// but not save one that still leaves them out.
-	if w := save("198.51.100.9", control.AdminAccess{Restricted: true, Allowed: []string{"203.0.113.0/24"}}); w.Code != 409 {
+	if w := save("198.51.100.9", control.AdminAccess{AllowedTags: []string{}, Restricted: true, Allowed: []string{"203.0.113.0/24"}}); w.Code != 409 {
 		t.Fatalf("lifted, saving a limit without the saver: %d", w.Code)
 	}
-	if w := save("198.51.100.9", control.AdminAccess{Restricted: false, Allowed: []string{"203.0.113.0/24"}}); w.Code != 200 {
+	if w := save("198.51.100.9", control.AdminAccess{AllowedTags: []string{}, Restricted: false, Allowed: []string{"203.0.113.0/24"}}); w.Code != 200 {
 		t.Fatalf("lifted, turning the limit off: %d %s", w.Code, w.Body.String())
 	}
 	f.db.SetDefaults(control.Defaults{})
@@ -111,7 +111,7 @@ func TestAdminAccessLimitsTheConsoleOnly(t *testing.T) {
 		t.Fatalf("turned off: %d", w.Code)
 	}
 	// The local admin port can close the console to the internet entirely.
-	if w := request(f.store.Handler(), "PUT", "/api/v1/security/admin-access", f.admin, control.AdminAccess{Restricted: true, Allowed: []string{}}); w.Code != 200 {
+	if w := request(f.store.Handler(), "PUT", "/api/v1/security/admin-access", f.admin, control.AdminAccess{AllowedTags: []string{}, Restricted: true, Allowed: []string{}}); w.Code != 200 {
 		t.Fatalf("close over SSH: %d %s", w.Code, w.Body.String())
 	}
 	if w := console("/api/v1/setup/status", "203.0.113.5"); w.Code != 404 {
@@ -170,7 +170,7 @@ func TestAdminAccessSettingsAPI(t *testing.T) {
 	if len(a.auditLog(t)) != before {
 		t.Fatal("a refused save was audited")
 	}
-	if view := read(public("PUT", "203.0.113.5", control.AdminAccess{Restricted: true, Allowed: []string{"203.0.113.5/32", "198.51.100.0/24"}})); !slices.Equal(view.Allowed, []string{"203.0.113.5", "198.51.100.0/24"}) {
+	if view := read(public("PUT", "203.0.113.5", control.AdminAccess{AllowedTags: []string{}, Restricted: true, Allowed: []string{"203.0.113.5/32", "198.51.100.0/24"}})); !slices.Equal(view.Allowed, []string{"203.0.113.5", "198.51.100.0/24"}) {
 		t.Fatalf("saved: %+v", view)
 	}
 	if e := a.lastAudit(t); e.Action != "security.admin_access" || e.ResourceID != "admin_access" || string(e.Detail) != `{"allowed":["203.0.113.5","198.51.100.0/24"],"allowed_tags":[],"restricted":true}` {
@@ -185,7 +185,7 @@ func TestAdminAccessSettingsAPI(t *testing.T) {
 // A restarted Outlet applies the saved limit from its first request.
 func TestAdminAccessHoldsAcrossRestarts(t *testing.T) {
 	f := newProxyFixture(t)
-	if _, err := f.db.SetAdminAccess(context.Background(), control.AdminAccess{Restricted: true, Allowed: []string{"203.0.113.0/24"}}, time.Now()); err != nil {
+	if _, err := f.db.SetAdminAccess(context.Background(), control.AdminAccess{AllowedTags: []string{}, Restricted: true, Allowed: []string{"203.0.113.0/24"}}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	key := base64.StdEncoding.EncodeToString(make([]byte, 32))

@@ -151,7 +151,91 @@ func TestIPAddressesAPI(t *testing.T) {
 	if w := request(h, "DELETE", "/api/v1/security/ip-addresses/"+office.ID, f.admin, nil); w.Code != 409 || errorCode(t, w) != "ip_tag_in_use" {
 		t.Fatalf("deleting the last 사무실 entry: %d %s", w.Code, w.Body.String())
 	}
-	if !slices.ContainsFunc(view.Entries, func(e control.IPAddress) bool { return e.Note == "지사" }) {
-		t.Fatal("note lost")
+	var after ipAddressesView
+	if w := request(h, "GET", "/api/v1/security/ip-addresses", f.admin, nil); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &after) != nil {
+		t.Fatalf("view after delete: %d", w.Code)
+	}
+	if len(after.Entries) != 1 || after.Entries[0].ID != office.ID || slices.ContainsFunc(after.Tags, func(tag ipTagUse) bool { return tag.Name == "지사" }) {
+		t.Fatalf("after delete = %+v", after)
+	}
+}
+
+// Policies and address book changes made through the API apply to requests
+// at once, without any reload by hand, and are audited.
+func TestAddressBookAndPoliciesApplyThroughTheAPI(t *testing.T) {
+	f := newAccessFixture(t)
+	h := f.store.Handler()
+	w := request(h, "POST", "/api/v1/security/ip-addresses", f.admin, map[string]any{"range": "203.0.113.0/24", "note": "본사", "tags": []string{"사무실"}})
+	var office control.IPAddress
+	if w.Code != 201 || json.Unmarshal(w.Body.Bytes(), &office) != nil {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	policy := func(name, action string, tags []string, everyone bool) map[string]any {
+		return map[string]any{"name": name, "ip_tags": tags, "ip_ranges": []string{}, "enabled": true, "action": action, "hosts": []string{"app.example.com"}, "all_paths": true, "allow_everyone": everyone}
+	}
+	body := map[string]any{"policies": []any{policy("office", "bypass", []string{"사무실"}, false), policy("everyone else", "allow", []string{}, true)}}
+	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, body); w.Code != 200 {
+		t.Fatalf("policies: %d %s", w.Code, w.Body.String())
+	}
+	if w := f.visitFrom("203.0.113.40", "app.example.com", "/"); w.Code != 200 {
+		t.Fatalf("office after the policy save: %d", w.Code)
+	}
+	if w := request(h, "PUT", "/api/v1/security/ip-addresses/"+office.ID, f.admin, map[string]any{"range": "192.0.2.0/24", "note": "본사", "tags": []string{"사무실"}}); w.Code != 200 {
+		t.Fatalf("move: %d %s", w.Code, w.Body.String())
+	}
+	if w := f.visitFrom("203.0.113.40", "app.example.com", "/"); w.Code != http.StatusFound {
+		t.Fatalf("old office after the move: %d", w.Code)
+	}
+	if w := f.visitFrom("192.0.2.40", "app.example.com", "/"); w.Code != 200 {
+		t.Fatalf("new office after the move: %d", w.Code)
+	}
+	var events struct {
+		Events []control.AuditEvent `json:"events"`
+	}
+	if w := request(h, "GET", "/api/v1/audit?action=security.ip_address", f.admin, nil); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &events) != nil || len(events.Events) != 2 {
+		t.Fatalf("audit: %d %s", w.Code, w.Body.String())
+	}
+	// A console from before client IP conditions sends policies without
+	// them; saving that would widen the bypass to every address.
+	old := map[string]any{"name": "office", "enabled": true, "action": "bypass", "hosts": []string{"app.example.com"}, "all_paths": true}
+	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []any{old}}); w.Code != 400 || errorCode(t, w) != "access_policies_outdated" {
+		t.Fatalf("old console: %d %s", w.Code, w.Body.String())
+	}
+	if w := request(h, "PUT", "/api/v1/security/admin-access", f.admin, map[string]any{"restricted": false, "allowed": []string{}}); w.Code != 400 {
+		t.Fatalf("admin limit without allowed_tags: %d", w.Code)
+	}
+}
+
+// An unknown tag in the console limit is refused as such from anywhere,
+// not reported as a lock-out.
+func TestAdminLimitRefusesUnknownTagsFirst(t *testing.T) {
+	f := newProxyFixture(t)
+	r := jsonRequest("PUT", "/api/v1/security/admin-access", map[string]any{"restricted": true, "allowed": []string{}, "allowed_tags": []string{"nobody"}})
+	r.Host = f.adminHost
+	r.Header.Set("X-Forwarded-Proto", "https")
+	r.Header.Set("X-Forwarded-For", "198.51.100.9")
+	r.Header.Set("Authorization", "Bearer "+f.admin)
+	w := httptest.NewRecorder()
+	f.handler.ServeHTTP(w, r)
+	if w.Code != 400 || errorCode(t, w) != "invalid_admin_access" {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+}
+
+// Saved policies that fail the checks keep an allow policy limited to client
+// IPs closed to everyone; an unreadable address book leaves a block policy
+// naming tags covering every address.
+func TestClientIPPoliciesFailClosed(t *testing.T) {
+	closed := closedAccess(control.AccessPolicies{Policies: []control.AccessPolicy{
+		{ID: "a", Enabled: true, Action: control.AccessAllow, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}, IPTags: []string{"office"}},
+	}})
+	if p := closed.rules[0].policy; p.AllowEveryone || len(p.AllowedUsers) != 0 || p.AllowAdmins {
+		t.Fatalf("an office-only allow policy let people in from anywhere: %+v", p)
+	}
+	block := control.AccessPolicy{Name: "attackers", Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true, IPTags: []string{"attackers"}}
+	bypass := control.AccessPolicy{Name: "office", Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, AllPaths: true, IPTags: []string{"office"}}
+	config := compileAccess(control.AccessPolicies{Policies: []control.AccessPolicy{block, bypass}}, control.IPAddresses{}, true)
+	if config.rules[0].ipLimited || !config.rules[1].ipLimited || len(config.rules[1].ips) != 0 {
+		t.Fatalf("with the address book unreadable: block limited %v, bypass limited %v to %v", config.rules[0].ipLimited, config.rules[1].ipLimited, config.rules[1].ips)
 	}
 }

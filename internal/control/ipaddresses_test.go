@@ -2,7 +2,9 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -85,5 +87,80 @@ func TestIPAddressBook(t *testing.T) {
 	}
 	if _, err := db.DeleteIPAddress(ctx, home.ID, now); err != nil {
 		t.Fatalf("delete after the limit let go of VPN: %v", err)
+	}
+}
+
+// Policies limited to client IPs are stored with a method 0.6.2 and earlier
+// refuse, so they read them as damaged and keep closed what they protect
+// instead of dropping the limit; this version reads them back without it.
+func TestClientIPPoliciesAreStoredForOlderVersionsToRefuse(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if slices.Contains(AccessMethods, clientIPMarker) {
+		t.Fatal("the marker is a method this version accepts")
+	}
+	limited := AccessPolicy{Name: "office", Enabled: true, Action: AccessBypass, Hosts: []string{"app.example.com"}, AllPaths: true, Methods: []string{"GET"}, IPRanges: []string{"203.0.113.0/24"}}
+	open := AccessPolicy{Name: "everyone", Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowEveryone: true}
+	if _, err := db.SetAccessPolicies(ctx, AccessPolicies{Policies: []AccessPolicy{limited, open}}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := getSetting(ctx, db.db, settingAccessPolicies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored AccessPolicies
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(stored.Policies[0].Methods, []string{"GET", clientIPMarker}) || slices.Contains(stored.Policies[1].Methods, clientIPMarker) {
+		t.Fatalf("stored methods = %v, %v", stored.Policies[0].Methods, stored.Policies[1].Methods)
+	}
+	read, err := db.AccessPolicies(ctx)
+	if err != nil || !slices.Equal(read.Policies[0].Methods, []string{"GET"}) || !slices.Equal(read.Policies[0].IPRanges, []string{"203.0.113.0/24"}) {
+		t.Fatalf("read back = %+v, %v", read.Policies[0], err)
+	}
+}
+
+func TestIPTagsThatLookLikeAddressesAreRefused(t *testing.T) {
+	for _, tag := range []string{"cafe:babe", "a:b", "1.2.3.4/33", "999.1.1.1", "10.0.0.1/", "::ffff:1.2.3.4/90", "203.0.113.7"} {
+		if _, ok := NormalizeTags([]string{tag}, MaxIPTags); ok {
+			t.Fatalf("%q accepted as a tag", tag)
+		}
+	}
+	for _, tag := range []string{"office", "사무실", "2024", "vpn-1", "본사 3층", "a.b"} {
+		if _, ok := NormalizeTags([]string{tag}, MaxIPTags); !ok {
+			t.Fatalf("%q refused as a tag", tag)
+		}
+	}
+}
+
+// A new entry takes the spelling of a tag the address book already has, and
+// the book holds MaxIPAddresses entries at most.
+func TestIPAddressBookSpellingAndCapacity(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now()
+	if _, err := db.CreateIPAddress(ctx, IPAddress{Range: "10.0.0.1", Tags: []string{"Office"}}, now); err != nil {
+		t.Fatal(err)
+	}
+	second, err := db.CreateIPAddress(ctx, IPAddress{Range: "10.0.0.2", Tags: []string{"OFFICE", "vpn"}}, now)
+	if err != nil || !slices.Equal(second.Tags, []string{"Office", "vpn"}) {
+		t.Fatalf("second = %+v, %v", second, err)
+	}
+	for i := 3; i <= MaxIPAddresses; i++ {
+		if _, err := db.CreateIPAddress(ctx, IPAddress{Range: fmt.Sprintf("10.0.%d.%d", i/256, i%256), Tags: []string{}}, now); err != nil {
+			t.Fatalf("entry %d: %v", i, err)
+		}
+	}
+	if _, err := db.CreateIPAddress(ctx, IPAddress{Range: "192.0.2.1", Tags: []string{}}, now); !errors.Is(err, ErrIPAddressesFull) {
+		t.Fatalf("entry %d: %v", MaxIPAddresses+1, err)
 	}
 }

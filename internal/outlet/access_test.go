@@ -518,7 +518,7 @@ func TestAccessPoliciesByMethod(t *testing.T) {
 	}
 	// Saved through the API, methods come back in one order and are audited.
 	h := f.store.Handler()
-	policy := map[string]any{"name": "API", "enabled": true, "action": "bypass", "hosts": []string{"app.example.com"}, "all_paths": true, "methods": []string{"post", "GET"}}
+	policy := map[string]any{"name": "API", "ip_tags": []string{}, "ip_ranges": []string{}, "enabled": true, "action": "bypass", "hosts": []string{"app.example.com"}, "all_paths": true, "methods": []string{"post", "GET"}}
 	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []any{policy}}); w.Code != 200 || !strings.Contains(w.Body.String(), `"methods":["GET","POST"]`) {
 		t.Fatalf("save methods: %d %s", w.Code, w.Body.String())
 	}
@@ -769,10 +769,10 @@ func TestAccessSettingsAPI(t *testing.T) {
 	if w := request(h, "PUT", "/api/v1/security/access-provider", f.admin, map[string]any{"enabled": true, "issuer": "http://x", "client_id": "a", "scopes": []string{}, "groups_claim": "", "session_hours": 8}); w.Code != 400 {
 		t.Fatalf("bad provider: %d", w.Code)
 	}
-	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []map[string]any{{"name": "x", "enabled": true, "hosts": []string{"app.example.com"}, "all_paths": true}}}); w.Code != 400 {
+	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []map[string]any{{"name": "x", "ip_tags": []string{}, "ip_ranges": []string{}, "enabled": true, "hosts": []string{"app.example.com"}, "all_paths": true}}}); w.Code != 400 {
 		t.Fatalf("policy without anyone allowed: %d", w.Code)
 	}
-	w = request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []map[string]any{{"name": "Staff", "enabled": true, "hosts": []string{"other.example.com"}, "all_paths": true, "allowed_users": []string{"@corp.example.com"}}}})
+	w = request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []map[string]any{{"name": "Staff", "ip_tags": []string{}, "ip_ranges": []string{}, "enabled": true, "hosts": []string{"other.example.com"}, "all_paths": true, "allowed_users": []string{"@corp.example.com"}}}})
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"addresses":["app.example.com","other.example.com"]`) {
 		t.Fatalf("policies: %d %s", w.Code, w.Body.String())
 	}
@@ -818,7 +818,7 @@ func TestAccessPolicySavesLeaveTheSavedOneInForce(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range 20 {
 		wg.Go(func() {
-			body := map[string]any{"policies": []map[string]any{{"name": fmt.Sprint("policy ", i), "enabled": true, "hosts": []string{"app.example.com"}, "all_paths": true, "allowed_users": []string{"@corp.example.com"}}}}
+			body := map[string]any{"policies": []map[string]any{{"name": fmt.Sprint("policy ", i), "ip_tags": []string{}, "ip_ranges": []string{}, "enabled": true, "hosts": []string{"app.example.com"}, "all_paths": true, "allowed_users": []string{"@corp.example.com"}}}}
 			if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, body); w.Code != 200 {
 				t.Errorf("save %d: %d %s", i, w.Code, w.Body.String())
 			}
@@ -1420,7 +1420,7 @@ func TestAccessAuditDetail(t *testing.T) {
 	if event := f.lastAudit(t); event.Action != "access.login" || json.Unmarshal(event.Detail, &login) != nil || login["subject"] != "subject-alice@corp.example.com" || login["issuer"] != f.idp.server.URL {
 		t.Fatalf("login: %s %s", event.Action, event.Detail)
 	}
-	body := map[string]any{"policies": []map[string]any{{"name": "Staff", "enabled": true, "hosts": []string{"app.example.com"}, "all_paths": true, "allowed_users": []string{"@corp.example.com"}, "allowed_groups": []string{"staff"}, "allow_admins": true}}}
+	body := map[string]any{"policies": []map[string]any{{"name": "Staff", "ip_tags": []string{}, "ip_ranges": []string{}, "enabled": true, "hosts": []string{"app.example.com"}, "all_paths": true, "allowed_users": []string{"@corp.example.com"}, "allowed_groups": []string{"staff"}, "allow_admins": true}}}
 	if w := request(f.store.Handler(), "PUT", "/api/v1/security/access-policies", f.admin, body); w.Code != 200 {
 		t.Fatalf("save: %d", w.Code)
 	}
@@ -1478,7 +1478,7 @@ func TestAccessTokens(t *testing.T) {
 			t.Fatalf("create %v: %d", body, w.Code)
 		}
 	}
-	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []map[string]any{{"name": "x", "enabled": true, "hosts": []string{"app.example.com"}, "all_paths": true, "action": "bypass", "require_token": true, "tokens": []string{"nosuchtoken"}}}}); w.Code != 400 {
+	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []map[string]any{{"name": "x", "ip_tags": []string{}, "ip_ranges": []string{}, "enabled": true, "hosts": []string{"app.example.com"}, "all_paths": true, "action": "bypass", "require_token": true, "tokens": []string{"nosuchtoken"}}}}); w.Code != 400 {
 		t.Fatalf("policy naming an unknown token: %d", w.Code)
 	}
 	deployPath := []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/deploy/"}}
@@ -1732,7 +1732,7 @@ func TestAccessTokenScope(t *testing.T) {
 	if event := f.lastAuditAction(t); event != "security.access_token_update" {
 		t.Fatalf("audit: %s", event)
 	}
-	body := map[string]any{"policies": []map[string]any{{"name": "CI", "enabled": true, "action": "bypass", "hosts": []string{"app.example.com"}, "all_paths": true, "require_token": true, "tokens": []string{created.Token.ID}}}}
+	body := map[string]any{"policies": []map[string]any{{"name": "CI", "ip_tags": []string{}, "ip_ranges": []string{}, "enabled": true, "action": "bypass", "hosts": []string{"app.example.com"}, "all_paths": true, "require_token": true, "tokens": []string{created.Token.ID}}}}
 	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, body); w.Code != 200 {
 		t.Fatalf("policies: %d %s", w.Code, w.Body.String())
 	}

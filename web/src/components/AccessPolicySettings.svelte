@@ -64,6 +64,9 @@
     neverAppliesTip: 'An earlier policy covers every address, path, method, token and client IP of this one.',
     openWithoutToken: 'Open without a token',
     openWithoutTokenTip: 'No policy below covers every path and method of its addresses for requests that send no token, so those requests reach the app unprotected. Add an all-paths policy below it.',
+    openToOtherIps: 'Open to other IPs',
+    openToOtherIpsTip: 'Requests from other addresses go on to the policies below, and no policy below covers every path and method of its addresses for them, so they reach the app unprotected. Add an all-paths policy below it.',
+    booksDamaged: 'The IP address book could not be read, so tags cannot be used. Register the addresses again on the IP address book tab.',
     noPolicies: 'No access policies',
     addTitle: 'Add policy',
     editTitle: 'Edit policy',
@@ -155,6 +158,9 @@
     neverAppliesTip: '앞선 정책이 이 정책의 주소, 경로, 메서드, 토큰, 접속 IP에 먼저 적용됩니다.',
     openWithoutToken: '토큰 없는 요청 열림',
     openWithoutTokenTip: '토큰을 보내지 않은 요청에 적용할 정책이 아래에 없어, 그런 요청은 보호 없이 앱으로 전달됩니다. 아래에 전체 경로 정책을 두십시오.',
+    openToOtherIps: '다른 IP 요청 열림',
+    openToOtherIpsTip: '다른 주소에서 온 요청은 아래 정책으로 넘어가는데, 그 요청에 적용할 정책이 아래에 없어 보호 없이 앱으로 전달됩니다. 아래에 전체 경로 정책을 두십시오.',
+    booksDamaged: 'IP 주소록을 읽을 수 없어 태그를 사용할 수 없습니다. IP 주소록 탭에서 주소를 다시 등록하십시오.',
     noPolicies: '접근 정책이 없습니다',
     addTitle: '정책 추가',
     editTitle: '정책 편집',
@@ -230,7 +236,7 @@
   const operators: BlockOperator[] = ['equals', 'starts_with', 'ends_with', 'contains', 'matches'];
   const actions: AccessAction[] = ['allow', 'bypass', 'block'];
   const operatorLabel = (operator: BlockOperator): string => t().operators[operator] ?? operator;
-  const describe = (code: string): string => (code === 'invalid_access_policies' ? t().invalid : t().failed(code));
+  const describe = (code: string): string => (code === 'invalid_access_policies' ? t().invalid : code === 'ip_addresses_damaged' ? t().booksDamaged : t().failed(code));
 
   // 대화상자의 줄은 지워도 입력 칸이 섞이지 않도록 고유한 key를 가집니다.
   type ConditionRow = BlockCondition & { key: number };
@@ -289,9 +295,14 @@
     !earlier.require_token || (later.require_token && (!earlier.tokens.length || (later.tokens.length > 0 && later.tokens.every((id) => earlier.tokens.includes(id)))));
   // 토큰이 필요한 정책은 토큰 없는 요청을 아래 정책에 넘기므로, 아래에 그 주소의 모든 경로와 메서드, 모든 IP를 토큰 없이 받는 활성화된 정책이 없으면 그런 요청은 열려 있습니다.
   // 특정 접속 IP로 한정한 정책은 다른 IP의 요청을 받지 않으므로 여기서 세지 않습니다.
+  // 아래에서 그 주소의 모든 경로, 메서드, IP의 요청을 토큰 없이 받는 활성화된 정책.
+  const catchesAll = (later: AccessPolicy, host: string): boolean =>
+    later.enabled && !later.require_token && !later.methods.length && ipsCover(later) && (later.all_paths || startsWith(later).includes('/')) && later.hosts.some((pattern) => hostCovers(pattern, host));
   const openWithoutToken = (list: AccessPolicy[], index: number): boolean =>
-    list[index].enabled && list[index].require_token && list[index].hosts.some((host) => !list.slice(index + 1).some((later) =>
-      later.enabled && !later.require_token && !later.methods.length && ipsCover(later) && (later.all_paths || startsWith(later).includes('/')) && later.hosts.some((pattern) => hostCovers(pattern, host))));
+    list[index].enabled && list[index].require_token && list[index].hosts.some((host) => !list.slice(index + 1).some((later) => catchesAll(later, host)));
+  // 접속 IP로 한정한 정책도 다른 IP의 요청을 아래 정책에 넘기므로, 아래에 그런 정책이 없으면 다른 IP의 요청은 열려 있습니다.
+  const openToOtherIps = (list: AccessPolicy[], index: number): boolean =>
+    list[index].enabled && !ipsCover(list[index]) && list[index].hosts.some((host) => !list.slice(index + 1).some((later) => catchesAll(later, host)));
   const neverApplies = (list: AccessPolicy[], index: number): boolean =>
     list.slice(0, index).some((earlier) => earlier.enabled && methodsCover(earlier, list[index]) && ipsCover(earlier) && tokensCover(earlier, list[index]) && pathsCover(earlier, list[index]) && list[index].hosts.every((host) => earlier.hosts.some((pattern) => hostCovers(pattern, host))));
 
@@ -630,6 +641,13 @@
                             <Badge variant="destructive" class="select-none">{t().openWithoutToken}</Badge>
                           </Tooltip.Trigger>
                           <Tooltip.Content>{t().openWithoutTokenTip}</Tooltip.Content>
+                        </Tooltip.Root>
+                      {:else if openToOtherIps(policies, index)}
+                        <Tooltip.Root>
+                          <Tooltip.Trigger class="relative z-10 outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+                            <Badge variant="destructive" class="select-none">{t().openToOtherIps}</Badge>
+                          </Tooltip.Trigger>
+                          <Tooltip.Content>{t().openToOtherIpsTip}</Tooltip.Content>
                         </Tooltip.Root>
                       {/if}
                     </span>

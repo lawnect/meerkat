@@ -3,6 +3,7 @@ package outlet
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -46,13 +47,13 @@ func prefixesContain(prefixes []netip.Prefix, ip string) bool {
 }
 
 // ipAddressBook reads the address book; one that can't be read is empty,
-// so its tags match no address.
-func (s *Store) ipAddressBook(ctx context.Context) (control.IPAddresses, error) {
-	book, err := s.control.IPAddresses(ctx)
+// so its tags match no address, and damaged says so.
+func (s *Store) ipAddressBook(ctx context.Context) (book control.IPAddresses, damaged bool, err error) {
+	book, err = s.control.IPAddresses(ctx)
 	if errors.Is(err, control.ErrStoredIPAddresses) {
-		return book, nil
+		return book, true, nil
 	}
-	return book, err
+	return book, false, err
 }
 
 type ipTagUse struct {
@@ -129,7 +130,7 @@ func (s *Store) changeIPAddress(w http.ResponseWriter, r *http.Request, action s
 	s.saving.Lock()
 	defer s.saving.Unlock()
 	if ip, public := requestOrigin(r); public {
-		book, err := s.ipAddressBook(r.Context())
+		book, _, err := s.ipAddressBook(r.Context())
 		if err != nil {
 			fail(w, r, 503, "persistence_failed")
 			return
@@ -139,7 +140,10 @@ func (s *Store) changeIPAddress(w http.ResponseWriter, r *http.Request, action s
 			fail(w, r, 503, "persistence_failed")
 			return
 		}
-		if admin.Restricted && len(admin.AllowedTags) != 0 && !s.control.AdminIPLimitLifted() &&
+		// Refused when the limit lets this address in now and wouldn't after,
+		// whether or not MEERKAT_ADMIN_IP_LIMIT lifts it, as saving the limit
+		// itself is.
+		if admin.Restricted && len(admin.AllowedTags) != 0 &&
 			compileAdminAccess(admin, book).allows(ip) && !compileAdminAccess(admin, prospective(book)).allows(ip) {
 			fail(w, r, 409, "admin_access_locks_out")
 			return
@@ -147,9 +151,12 @@ func (s *Store) changeIPAddress(w http.ResponseWriter, r *http.Request, action s
 	}
 	saved, err := save()
 	if err == nil {
+		// Saved: it is audited, and both reloads run even if one fails.
+		s.audited(r, action, "ip_address", saved.ID, map[string]any{"range": saved.Range, "note": saved.Note, "tags": saved.Tags})
 		ctx := context.WithoutCancel(r.Context())
-		if err = s.reloadAccess(ctx); err == nil {
-			err = s.reloadAdminAccess(ctx)
+		err = errors.Join(s.reloadAccess(ctx), s.reloadAdminAccess(ctx))
+		if err != nil {
+			slog.Error("an IP address book change was saved but not applied", "error", err)
 		}
 	}
 	switch {
@@ -157,6 +164,8 @@ func (s *Store) changeIPAddress(w http.ResponseWriter, r *http.Request, action s
 		fail(w, r, 400, "invalid_ip_address")
 	case errors.Is(err, control.ErrIPAddressTaken):
 		fail(w, r, 409, "ip_address_taken")
+	case errors.Is(err, control.ErrIPAddressesFull):
+		fail(w, r, 409, "ip_addresses_full")
 	case errors.Is(err, control.ErrIPTagInUse):
 		fail(w, r, 409, "ip_tag_in_use")
 	case errors.Is(err, control.ErrIPAddressNotFound):
@@ -164,7 +173,6 @@ func (s *Store) changeIPAddress(w http.ResponseWriter, r *http.Request, action s
 	case err != nil:
 		fail(w, r, 503, "persistence_failed")
 	default:
-		s.audited(r, action, "ip_address", saved.ID, map[string]any{"range": saved.Range, "note": saved.Note, "tags": saved.Tags})
 		if created {
 			reply(w, 201, saved)
 		} else if r.Method == http.MethodDelete {

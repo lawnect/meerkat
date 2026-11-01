@@ -26,7 +26,10 @@
     autoselect?: boolean;
   } = $props();
 
-  const t = translations({ remove: (value: string) => `Remove ${value}` }, { remove: (value: string) => `${value} 삭제` });
+  const t = translations(
+    { remove: (value: string) => `Remove ${value}`, suggestions: (label: string) => `${label} suggestions` },
+    { remove: (value: string) => `${value} 삭제`, suggestions: (label: string) => `${label} 제안` },
+  );
 
   const listId = $props.id();
   let draft = $state('');
@@ -35,10 +38,20 @@
   let active = $state(-1);
 
   const taken = (value: string) => values.some((item) => item.toLowerCase() === value.toLowerCase());
+  // 같은 이름, 그 이름으로 시작하는 것, 포함하는 것 순서입니다. autoselect는 앞의 둘만 미리 고릅니다: 입력한 태그보다
+  // 이름순으로 앞선 다른 태그(예: vpn을 입력했는데 corp-vpn)가 Enter로 들어가지 않게 합니다.
+  const rank = (value: string, query: string): number => (value === query ? 0 : value.startsWith(query) ? 1 : 2);
   const matches = $derived.by(() => {
     const query = draft.trim().toLowerCase();
-    return suggestions.filter((item) => !taken(item.value) && (!query || item.value.toLowerCase().includes(query))).slice(0, 8);
+    return suggestions
+      .filter((item) => !taken(item.value) && (!query || item.value.toLowerCase().includes(query)))
+      .sort((a, b) => rank(a.value.toLowerCase(), query) - rank(b.value.toLowerCase(), query))
+      .slice(0, 8);
   });
+  const preselect = (): number => {
+    const query = draft.trim().toLowerCase();
+    return autoselect && query && matches.length && rank(matches[0].value.toLowerCase(), query) < 2 ? 0 : -1;
+  };
   const expanded = $derived(open && matches.length > 0);
   const optionId = (index: number) => `${listId}-option-${index}`;
 
@@ -100,11 +113,23 @@
     }
   }
 
+  // 제안이 있는 칸의 값(태그)은 공백을 담을 수 있으므로 쉼표와 줄바꿈으로만 나눕니다.
   function onpaste(event: ClipboardEvent): void {
     const text = event.clipboardData?.getData('text') ?? '';
-    if (!/[\s,]/.test(text.trim())) return;
+    const separator = suggestions.length ? /[,\n]+/ : /[\s,]+/;
+    if (!separator.test(text.trim())) return;
     event.preventDefault();
-    add(text.split(/[\s,]+/));
+    add(text.split(separator));
+  }
+
+  // autoselect 칸에서 입력하다 벗어나면, 제안과 같은 이름이거나 어떤 제안에도 맞지 않는 값(IP 등)만 넣고,
+  // 제안의 일부만 입력한 값은 칩으로 만들지 않고 입력칸에 남겨 둡니다.
+  function onblur(): void {
+    const query = draft.trim().toLowerCase();
+    open = false;
+    active = -1;
+    if (autoselect && query && matches.length && !matches.some((item) => item.value.toLowerCase() === query)) return;
+    commit();
   }
 </script>
 
@@ -128,12 +153,12 @@
       aria-activedescendant={expanded && active >= 0 ? optionId(active) : undefined}
       {onkeydown}
       {onpaste}
-      oninput={() => { open = draft.trim() !== ''; active = autoselect && open && matches.length ? 0 : -1; }}
+      oninput={() => { open = draft.trim() !== ''; active = preselect(); }}
       onclick={() => { open = true; }}
-      onblur={() => { open = false; active = -1; commit(); }}
+      {onblur}
     />
     {#if expanded}
-      <ul id={listId} role="listbox" aria-label={ariaLabel} class="absolute inset-x-0 top-full z-50 mt-1 max-h-60 overflow-y-auto bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
+      <ul id={listId} role="listbox" aria-label={t().suggestions(ariaLabel)} class="absolute inset-x-0 top-full z-50 mt-1 max-h-60 overflow-y-auto bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
         {#each matches as item, index (item.value)}
           <!-- 입력칸이 포커스를 잃지 않도록 mousedown에서 막고, 클릭으로 고릅니다. 키보드는 입력칸(aria-activedescendant)이 다룹니다. -->
           <!-- svelte-ignore a11y_click_events_have_key_events -->

@@ -93,7 +93,8 @@ func (d *Database) SetAdminAccess(ctx context.Context, a AdminAccess, now time.T
 	if len(a.AllowedTags) != 0 {
 		book, err := readIPAddresses(ctx, tx)
 		if err != nil {
-			return a, ErrInvalidAdminAccess
+			// ErrStoredIPAddresses among them: tags can't be checked.
+			return a, err
 		}
 		if a.AllowedTags, ok = resolveTags(book, a.AllowedTags); !ok {
 			return a, ErrInvalidAdminAccess

@@ -1,7 +1,9 @@
 package outlet
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -163,25 +165,64 @@ func (s *Store) getAccessPolicies(w http.ResponseWriter, r *http.Request) {
 	reply(w, 200, view)
 }
 
+// policyBody is a policy as PUT sends it, noting whether it names its
+// client IP condition (ip_tags and ip_ranges), as the console does since
+// 0.7.0. Unknown fields are refused, as for the rest of the body.
+type policyBody struct {
+	control.AccessPolicy
+	namesClientIPs bool
+}
+
+func (p *policyBody) UnmarshalJSON(raw []byte) error {
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		return err
+	}
+	_, tags := keys["ip_tags"]
+	_, ranges := keys["ip_ranges"]
+	p.namesClientIPs = tags && ranges
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.DisallowUnknownFields()
+	return d.Decode(&p.AccessPolicy)
+}
+
 func (s *Store) putAccessPolicies(w http.ResponseWriter, r *http.Request) {
 	if !s.alertsAdmin(w, r) {
 		return
 	}
-	var req control.AccessPolicies
-	if !decodeLimited(w, r, &req, maxBlockRulesBody, "policies") {
+	var body struct {
+		Policies []policyBody `json:"policies"`
+	}
+	if !decodeLimited(w, r, &body, maxBlockRulesBody, "policies") {
 		return
+	}
+	req := control.AccessPolicies{Policies: make([]control.AccessPolicy, 0, len(body.Policies))}
+	for _, policy := range body.Policies {
+		// Every policy must name its client IP condition, even empty: a
+		// console from before client IPs, left open across the upgrade, would
+		// drop it and widen the policy to every address.
+		if !policy.namesClientIPs {
+			fail(w, r, 400, "access_policies_outdated")
+			return
+		}
+		req.Policies = append(req.Policies, policy.AccessPolicy)
 	}
 	s.saving.Lock()
 	saved, err := s.control.SetAccessPolicies(r.Context(), req, s.now())
 	if err == nil {
 		var book control.IPAddresses
-		if book, err = s.ipAddressBook(r.Context()); err == nil {
-			s.access.config.Store(compileAccess(saved, book))
+		var damaged bool
+		if book, damaged, err = s.ipAddressBook(r.Context()); err == nil {
+			s.access.config.Store(compileAccess(saved, book, damaged))
 		}
 	}
 	s.saving.Unlock()
 	if errors.Is(err, control.ErrInvalidAccessPolicies) {
 		fail(w, r, 400, "invalid_access_policies")
+		return
+	}
+	if errors.Is(err, control.ErrStoredIPAddresses) {
+		fail(w, r, 409, "ip_addresses_damaged")
 		return
 	}
 	if err != nil {

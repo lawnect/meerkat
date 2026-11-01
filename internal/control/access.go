@@ -159,6 +159,27 @@ type AccessPolicy struct {
 	AllowAdmins   bool     `json:"allow_admins"`
 }
 
+// clientIPMarker is stored among the methods of a policy limited to client
+// IPs and removed again on reading. 0.6.2 and earlier don't know client IP
+// conditions: they would drop them, and a bypass for the office's addresses
+// would then cover every address. The marker isn't a method they accept, so
+// they read the saved policies as damaged instead and keep closed what the
+// policies protect, leaving bypass policies out, as for any policies they
+// can't read.
+const clientIPMarker = "CLIENT-IP"
+
+// withClientIPMarker returns the policies as they are stored.
+func withClientIPMarker(policies AccessPolicies) AccessPolicies {
+	out := AccessPolicies{Policies: make([]AccessPolicy, len(policies.Policies))}
+	for i, policy := range policies.Policies {
+		if len(policy.IPTags)+len(policy.IPRanges) != 0 {
+			policy.Methods = append(slices.Clone(policy.Methods), clientIPMarker)
+		}
+		out.Policies[i] = policy
+	}
+	return out
+}
+
 // AccessMethods are the HTTP methods a policy can be limited to.
 var AccessMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
 
@@ -455,6 +476,9 @@ func (d *Database) AccessPolicies(ctx context.Context) (AccessPolicies, error) {
 	if json.Unmarshal([]byte(raw), &stored) != nil || stored.Policies == nil {
 		return AccessPolicies{Policies: []AccessPolicy{}}, ErrStoredAccessPolicies
 	}
+	for i := range stored.Policies {
+		stored.Policies[i].Methods = slices.DeleteFunc(stored.Policies[i].Methods, func(method string) bool { return method == clientIPMarker })
+	}
 	// Normalize gives a new policy an ID; a saved one without was damaged.
 	if slices.ContainsFunc(stored.Policies, func(policy AccessPolicy) bool { return policy.ID == "" }) {
 		return stored, ErrStoredAccessPolicies
@@ -474,7 +498,7 @@ func (d *Database) SetAccessPolicies(ctx context.Context, policies AccessPolicie
 	if !ok {
 		return policies, ErrInvalidAccessPolicies
 	}
-	raw, err := json.Marshal(policies)
+	raw, err := json.Marshal(withClientIPMarker(policies))
 	if err != nil {
 		return policies, err
 	}
@@ -497,7 +521,8 @@ func (d *Database) SetAccessPolicies(ctx context.Context, policies AccessPolicie
 	if slices.ContainsFunc(policies.Policies, func(policy AccessPolicy) bool { return len(policy.IPTags) != 0 }) {
 		book, err := readIPAddresses(ctx, tx)
 		if err != nil {
-			return policies, ErrInvalidAccessPolicies
+			// ErrStoredIPAddresses among them: tags can't be checked.
+			return policies, err
 		}
 		for i := range policies.Policies {
 			tags, ok := resolveTags(book, policies.Policies[i].IPTags)
@@ -506,7 +531,7 @@ func (d *Database) SetAccessPolicies(ctx context.Context, policies AccessPolicie
 			}
 			policies.Policies[i].IPTags = tags
 		}
-		if raw, err = json.Marshal(policies); err != nil {
+		if raw, err = json.Marshal(withClientIPMarker(policies)); err != nil {
 			return policies, err
 		}
 	}

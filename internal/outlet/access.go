@@ -531,14 +531,17 @@ func (s *Store) isAdminEmail(ctx context.Context, email string) (bool, error) {
 type accessIdentityKey struct{}
 type accessServiceKey struct{}
 
-func compileAccess(policies control.AccessPolicies, book control.IPAddresses) *accessConfig {
+// compileAccess compiles saved policies. While the address book can't be
+// read (bookDamaged), tags match no address, and a block policy naming tags
+// covers every address so that it doesn't open what it blocked.
+func compileAccess(policies control.AccessPolicies, book control.IPAddresses, bookDamaged bool) *accessConfig {
 	config := &accessConfig{}
 	for _, policy := range policies.Policies {
 		if !policy.Enabled || len(policy.Hosts) == 0 {
 			continue
 		}
 		rule := accessRule{match: compileBlockRule(policy.Hosts, policy.Conditions), all: policy.AllPaths, policy: policy}
-		if len(policy.IPTags)+len(policy.IPRanges) != 0 {
+		if len(policy.IPTags)+len(policy.IPRanges) != 0 && !(bookDamaged && policy.Action == control.AccessBlock && len(policy.IPTags) != 0) {
 			// A tag no address carries any more adds none: the policy then
 			// applies to the ranges alone, or to no request.
 			rule.ipLimited, rule.ips = true, scopePrefixes(book, policy.IPTags, policy.IPRanges)
@@ -579,7 +582,9 @@ func closedAccess(policies control.AccessPolicies) *accessConfig {
 		}
 		rule := nobody
 		rule.match = compileBlockRule(hosts, nil)
-		if (policy.Action == control.AccessAllow || policy.Action == "") && !policy.RequireToken {
+		// An allow policy limited to client IPs, like one requiring a token,
+		// lets nobody in: whom it names may only come from those addresses.
+		if (policy.Action == control.AccessAllow || policy.Action == "") && !policy.RequireToken && len(policy.IPTags)+len(policy.IPRanges) == 0 {
 			// Whom it names, in the form sessions carry, as saving would put it.
 			rule.policy.AllowEveryone, rule.policy.AllowAdmins = policy.AllowEveryone, policy.AllowAdmins
 			for _, user := range policy.AllowedUsers {
@@ -613,11 +618,14 @@ func (s *Store) reloadAccess(ctx context.Context) error {
 	case err != nil:
 		return err
 	default:
-		book, err := s.ipAddressBook(ctx)
+		book, damaged, err := s.ipAddressBook(ctx)
 		if err != nil {
 			return err
 		}
-		s.access.config.Store(compileAccess(policies, book))
+		if damaged {
+			slog.Error("the saved IP address book is invalid; tags match no address, and block policies naming tags cover every address until it is saved again")
+		}
+		s.access.config.Store(compileAccess(policies, book, damaged))
 	}
 	if err := s.reloadAccessTokens(ctx); err != nil {
 		return err

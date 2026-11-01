@@ -23,7 +23,7 @@
   // 허용 IP 미지정 안내는 빈 목록을 저장할 수 있는 로컬 관리 포트에서만 보입니다(공개 주소에서는 409).
   const t = translations({
     title: 'Admin console access',
-    tip: 'Limits the console and admin API on the public admin address to the allowed ranges; other addresses get 404. The Connector API and access protection sign-in stay open, and the local admin port over SSH is never limited. If you are locked out without SSH, set MEERKAT_ADMIN_IP_LIMIT=false in compose.env and run docker compose up -d again.',
+    tip: 'Limits the console and admin API on the public admin address to the allowed IPs; other addresses get 404. The Connector API and access protection sign-in stay open, and the local admin port over SSH is never limited. If you are locked out without SSH, set MEERKAT_ADMIN_IP_LIMIT=false in compose.env and run docker compose up -d again.',
     restricted: 'Allow listed IPs only',
     current: (ip: string) => `Current IP ${ip}`,
     local: 'Local admin port, not limited',
@@ -32,6 +32,7 @@
     allowedHint: 'Tags from the IP address book, or IPv4 or IPv6 addresses or CIDR',
     placeholder: 'Tag, IP or CIDR',
     unknownTag: (tag: string) => `Not a tag in the IP address book: ${tag}`,
+    booksDamaged: 'The IP address book could not be read, so tags cannot be used. Register the addresses again on the IP address book tab.',
     tooMany: 'Choose up to 20 tags and 50 IPs or CIDR ranges.',
     emptyClosed: 'With nothing listed, the console is closed on the public address',
     addCurrent: 'Add current IP',
@@ -48,7 +49,7 @@
     loadFailed: (code: string) => `Couldn't load admin console access: ${code}`,
   }, {
     title: '관리 콘솔 접근 제한',
-    tip: '공개 관리 주소의 콘솔과 관리 API를 허용 대역에서만 제공하며, 그 밖의 주소에는 404로 응답합니다. Connector API와 접근 보호 로그인은 제한하지 않으며, SSH로 연결한 로컬 관리 포트에는 적용되지 않습니다. SSH 없이 접속이 차단된 경우 compose.env에 MEERKAT_ADMIN_IP_LIMIT=false를 설정하고 docker compose up -d를 다시 실행하십시오.',
+    tip: '공개 관리 주소의 콘솔과 관리 API를 허용 IP에서만 제공하며, 그 밖의 주소에는 404로 응답합니다. Connector API와 접근 보호 로그인은 제한하지 않으며, SSH로 연결한 로컬 관리 포트에는 적용되지 않습니다. SSH 없이 접속이 차단된 경우 compose.env에 MEERKAT_ADMIN_IP_LIMIT=false를 설정하고 docker compose up -d를 다시 실행하십시오.',
     restricted: '허용 IP에서만 접속 허용',
     current: (ip: string) => `현재 접속 IP ${ip}`,
     local: '로컬 관리 포트 접속, 제한 미적용',
@@ -57,6 +58,7 @@
     allowedHint: 'IP 주소록의 태그, IPv4·IPv6 주소 또는 CIDR',
     placeholder: '태그, IP 또는 CIDR',
     unknownTag: (tag: string) => `IP 주소록에 없는 태그입니다: ${tag}`,
+    booksDamaged: 'IP 주소록을 읽을 수 없어 태그를 사용할 수 없습니다. IP 주소록 탭에서 주소를 다시 등록하십시오.',
     tooMany: '태그는 최대 20개, IP·CIDR은 최대 50개까지 지정할 수 있습니다.',
     emptyClosed: '미지정 시 공개 주소의 콘솔 접속 차단',
     addCurrent: '현재 IP 추가',
@@ -111,7 +113,7 @@
       toast.success(t().saved);
     } catch (cause) {
       const code = errorMessage(cause);
-      error = code === 'admin_access_locks_out' ? t().locksOut : code === 'invalid_admin_access' ? t().invalid : t().failed(code);
+      error = code === 'admin_access_locks_out' ? t().locksOut : code === 'invalid_admin_access' ? t().invalid : code === 'ip_addresses_damaged' ? t().booksDamaged : t().failed(code);
     } finally {
       busy = false;
     }

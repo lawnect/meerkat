@@ -48,7 +48,7 @@ func (s *Store) reloadAdminAccess(ctx context.Context) error {
 	} else if err != nil {
 		return err
 	}
-	book, err := s.ipAddressBook(ctx)
+	book, _, err := s.ipAddressBook(ctx)
 	if err != nil {
 		return err
 	}
@@ -146,7 +146,8 @@ func (s *Store) putAdminAccess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req control.AdminAccess
-	if !decode(w, r, &req, "restricted", "allowed") {
+	// allowed_tags too: a console from before tags would drop them.
+	if !decode(w, r, &req, "restricted", "allowed", "allowed_tags") {
 		return
 	}
 	if req.Allowed == nil {
@@ -162,11 +163,24 @@ func (s *Store) putAdminAccess(w http.ResponseWriter, r *http.Request) {
 	// address has to be in the ranges or carry one of the tags. The local
 	// admin port can close the console to the internet altogether.
 	if ip, public := requestOrigin(r); public && next.Restricted {
-		book, err := s.ipAddressBook(r.Context())
+		book, damaged, err := s.ipAddressBook(r.Context())
 		if err != nil {
 			s.saving.Unlock()
 			fail(w, r, 503, "persistence_failed")
 			return
+		}
+		// Unknown tags are refused as such before the lock-out check, which
+		// would otherwise report them as leaving this address out.
+		for _, tag := range next.AllowedTags {
+			if _, ok := book.Spelling(tag); !ok {
+				s.saving.Unlock()
+				if damaged {
+					fail(w, r, 409, "ip_addresses_damaged")
+				} else {
+					fail(w, r, 400, "invalid_admin_access")
+				}
+				return
+			}
 		}
 		if !compileAdminAccess(next, book).allows(ip) {
 			s.saving.Unlock()
@@ -181,6 +195,10 @@ func (s *Store) putAdminAccess(w http.ResponseWriter, r *http.Request) {
 	s.saving.Unlock()
 	if errors.Is(err, control.ErrInvalidAdminAccess) {
 		fail(w, r, 400, "invalid_admin_access")
+		return
+	}
+	if errors.Is(err, control.ErrStoredIPAddresses) {
+		fail(w, r, 409, "ip_addresses_damaged")
 		return
 	}
 	if err != nil {

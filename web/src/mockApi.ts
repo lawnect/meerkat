@@ -252,7 +252,7 @@ function ipAddressInput(input: unknown): IpAddressInput {
   const text = typeof body.range === 'string' ? body.range.trim().toLowerCase() : '';
   const range = isIpRange(text) ? normalizeRange(text) : null;
   const note = typeof body.note === 'string' ? body.note.trim() : '';
-  if (!range || [...note].length > 100 || /[\u0000-\u001f\u007f]/.test(note) || (body.tags !== undefined && body.tags !== null && !Array.isArray(body.tags))) fail('invalid_ip_address');
+  if (!range || [...note].length > 100 || /[\u0000-\u001f\u007f]/.test(note) || !Array.isArray(body.tags)) fail('invalid_ip_address');
   const tags: string[] = [];
   for (const raw of body.tags ?? []) {
     const tag = typeof raw === 'string' ? raw.trim() : '';
@@ -262,11 +262,17 @@ function ipAddressInput(input: unknown): IpAddressInput {
   if (tags.length > 10) fail('invalid_ip_address');
   return { range: range.replace(/\/(32|128)$/, ''), note, tags };
 }
-// 정책이나 관리 콘솔 접근 제한이 쓰는 태그는 항목이 하나는 남아야 하고, 접속한 클라이언트가 허용 IP에서 빠지면 거부합니다.
+// 서버처럼, 관리 콘솔 접근 제한이 태그를 쓰고 접속한 클라이언트가 지금은 허용되는데 변경 후 빠지면 먼저 거부하고,
+// 정책이나 관리 콘솔 접근 제한이 쓰는 태그에 항목이 하나도 남지 않으면 거부합니다.
 function ipAddressesKept(next: IpAddressEntry[]): void {
+  if (adminAccess.restricted && adminAccess.allowed_tags.length && clientAllowed(adminAccess, ipAddresses) && !clientAllowed(adminAccess, next)) fail('admin_access_locks_out');
   const used = [...accessPolicies.flatMap((policy) => policy.ip_tags), ...adminAccess.allowed_tags];
-  if (used.some((name) => !next.some((entry) => entry.tags.some((tag) => sameTag(tag, name))))) fail('ip_tag_in_use');
-  if (adminAccess.restricted && !clientAllowed(adminAccess, next)) fail('admin_access_locks_out');
+  if (used.some((name) => ipAddresses.some((entry) => entry.tags.some((tag) => sameTag(tag, name))) && !next.some((entry) => entry.tags.some((tag) => sameTag(tag, name))))) fail('ip_tag_in_use');
+}
+// 다른 항목에 이미 있는 태그는 그 표기를 따릅니다.
+function spelledTags(entry: IpAddressEntry): IpAddressEntry {
+  const others = ipAddresses.filter((other) => other.id !== entry.id).flatMap((other) => other.tags);
+  return { ...entry, tags: entry.tags.map((tag) => others.find((other) => sameTag(other, tag)) ?? tag) };
 }
 // 데모는 IPv4 CIDR 포함만 비교합니다(접속 주소가 IPv4). 그 밖의 값은 문자열이 같을 때만 맞습니다.
 function v4Number(value: string): number | null {
@@ -359,8 +365,9 @@ let accessProvider: Omit<AccessProviderView, 'redirect_uri' | 'available'> = {
   session_hours: 24,
 };
 let accessPolicies: AccessPolicy[] = [
+  { id: 'office', name: 'Office network', enabled: true, action: 'bypass', hosts: ['vault.example.test'], all_paths: true, conditions: [], methods: [], require_token: false, tokens: [], ip_tags: ['사무실'], ip_ranges: [], allow_everyone: false, allowed_users: [], allowed_groups: [], allow_admins: false },
   { id: 'vault-api', name: 'Vault API', enabled: true, action: 'bypass', hosts: ['vault.example.test'], all_paths: false, conditions: [{ operator: 'starts_with', value: '/v1/' }], methods: ['GET', 'POST'], require_token: true, tokens: ['deploybot'], ip_tags: [], ip_ranges: [], allow_everyone: false, allowed_users: [], allowed_groups: [], allow_admins: false },
-  { id: 'vault', name: 'Vault members', enabled: true, action: 'allow', hosts: ['vault.example.test'], all_paths: true, conditions: [], methods: [], require_token: false, tokens: [], ip_tags: ['사무실'], ip_ranges: [], allow_everyone: false, allowed_users: ['@example.test'], allowed_groups: [], allow_admins: true },
+  { id: 'vault', name: 'Vault members', enabled: true, action: 'allow', hosts: ['vault.example.test'], all_paths: true, conditions: [], methods: [], require_token: false, tokens: [], ip_tags: [], ip_ranges: [], allow_everyone: false, allowed_users: ['@example.test'], allowed_groups: [], allow_admins: true },
 ];
 const accessPoliciesResponse = (): AccessPoliciesView => structuredClone({ policies: accessPolicies, addresses: publicAddresses() });
 // 접근 토큰 데모 상태. 값은 만들 때만 돌려줍니다.
@@ -1451,7 +1458,8 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
   }
   if (path === '/api/v1/security/ip-addresses' && method === 'GET') return ipAddressesView();
   if (path === '/api/v1/security/ip-addresses' && method === 'POST') {
-    const entry = { id: id(), ...ipAddressInput(input) };
+    const entry = spelledTags({ id: id(), ...ipAddressInput(input) });
+    if (ipAddresses.length >= 500) fail('ip_addresses_full');
     if (ipAddresses.some((other) => other.range === entry.range)) fail('ip_address_taken');
     ipAddresses = [...ipAddresses, entry];
     return structuredClone(entry);
@@ -1460,7 +1468,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
   if (ipAddressMatch && method === 'PUT') {
     const entryId = decodeURIComponent(ipAddressMatch[1]);
     if (!ipAddresses.some((entry) => entry.id === entryId)) fail('ip_address_not_found');
-    const entry = { id: entryId, ...ipAddressInput(input) };
+    const entry = spelledTags({ id: entryId, ...ipAddressInput(input) });
     if (ipAddresses.some((other) => other.id !== entryId && other.range === entry.range)) fail('ip_address_taken');
     const next = ipAddresses.map((other) => (other.id === entryId ? entry : other));
     ipAddressesKept(next);

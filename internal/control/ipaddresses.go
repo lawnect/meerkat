@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ var (
 	ErrInvalidIPAddress  = errors.New("invalid IP address entry")
 	ErrIPAddressNotFound = errors.New("IP address entry not found")
 	ErrIPAddressTaken    = errors.New("IP address entry already exists")
+	ErrIPAddressesFull   = errors.New("the IP address book is full")
 	// ErrIPTagInUse refuses a change that would leave a tag an access policy
 	// or the admin console limit names with no address.
 	ErrIPTagInUse = errors.New("IP tag in use")
@@ -50,9 +52,15 @@ type IPAddresses struct {
 	Entries []IPAddress `json:"entries"`
 }
 
+// addressLike is what the console reads as an address or range rather than a
+// tag (web/src/ipScope.svelte.ts): a dotted quad with an optional prefix, or
+// hex digits, dots and colons with at least one colon. Tags must not match,
+// even ones no parser accepts as an address, such as 999.1.1.1 or cafe:babe.
+var addressLike = regexp.MustCompile(`(?i)^((\d{1,3}\.){3}\d{1,3}(/\d*)?|[0-9a-f:.]*:[0-9a-f:.]*(/\d*)?)$`)
+
 // NormalizeTags trims tags and keeps each once, comparing case-insensitively
 // and keeping the first spelling. A tag is 1 to 32 characters without
-// commas or control characters, and can't be read as an address or range,
+// commas or control characters, and doesn't look like an address or range,
 // so a value naming either is never ambiguous.
 func NormalizeTags(tags []string, max int) ([]string, bool) {
 	if len(tags) > max {
@@ -64,7 +72,7 @@ func NormalizeTags(tags []string, max int) ([]string, bool) {
 		if tag == "" || len([]rune(tag)) > maxIPTagLen || strings.ContainsRune(tag, ',') || strings.IndexFunc(tag, unicode.IsControl) >= 0 {
 			return nil, false
 		}
-		if _, isRange := normalizeRange(tag); isRange {
+		if _, isRange := normalizeRange(tag); isRange || addressLike.MatchString(tag) {
 			return nil, false
 		}
 		if !slices.ContainsFunc(out, func(seen string) bool { return strings.EqualFold(seen, tag) }) {
@@ -138,6 +146,20 @@ func (a IPAddresses) With(e IPAddress) IPAddresses {
 		out.Entries = append(out.Entries, e)
 	}
 	return out
+}
+
+// spelledAs puts e's tags in the spelling the rest of the address book uses.
+func (a IPAddresses) spelledAs(e IPAddress) IPAddress {
+	others := a.Without(e.ID)
+	tags := make([]string, len(e.Tags))
+	for i, tag := range e.Tags {
+		if spelled, ok := others.Spelling(tag); ok {
+			tag = spelled
+		}
+		tags[i] = tag
+	}
+	e.Tags = tags
+	return e
 }
 
 func readIPAddresses(ctx context.Context, q conn) (IPAddresses, error) {
@@ -244,11 +266,12 @@ func (d *Database) CreateIPAddress(ctx context.Context, e IPAddress, now time.Ti
 	e.ID = id
 	err = d.changeIPAddresses(ctx, now, func(book IPAddresses) (IPAddresses, error) {
 		if len(book.Entries) >= MaxIPAddresses {
-			return book, ErrInvalidIPAddress
+			return book, ErrIPAddressesFull
 		}
 		if slices.ContainsFunc(book.Entries, func(old IPAddress) bool { return old.Range == e.Range }) {
 			return book, ErrIPAddressTaken
 		}
+		e = book.spelledAs(e)
 		return book.With(e), nil
 	})
 	return e, err
@@ -267,6 +290,7 @@ func (d *Database) UpdateIPAddress(ctx context.Context, id string, e IPAddress, 
 		if slices.ContainsFunc(book.Entries, func(old IPAddress) bool { return old.ID != id && old.Range == e.Range }) {
 			return book, ErrIPAddressTaken
 		}
+		e = book.spelledAs(e)
 		return book.With(e), nil
 	})
 	return e, err
