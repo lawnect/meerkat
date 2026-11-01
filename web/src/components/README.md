@@ -43,6 +43,8 @@ shadcn-svelte CLI가 관리하는 코드입니다. 새 컴포넌트는 저장소
 | `BannedClients` | 설정 > 보안의 차단된 클라이언트 카드. 클라이언트 차단 규칙(허니팟 등)에 해당해 차단된 클라이언트를 `/api/v1/security/client-bans`에서 서버가 거르고 나눈 페이지로 받아 표(클라이언트·규칙·요청·차단 시각/해제 예정·차단 횟수·해제 버튼)로 보여 줍니다. `LogCard`와 같은 서버 표 구성이고 검색어·페이지는 같은 탭의 다른 표와 겹치지 않게 `bans_q`·`bans_page`(`urlTableState`의 `prefix: 'bans_'`)이며 한 페이지는 10건입니다. 머리글에 새로 고침·차단 설정(`ClientBanSettingsDialog`)·모두 해제(확인 `AlertDialog`)를 두고, 규칙 열은 `web/src/blockRules.svelte.ts`가 차단 규칙 카드에서 받은 이름(기본 규칙은 화면 언어)으로 바꿔 보여 주며 지워진 규칙은 "삭제됨"입니다. 설정 탭의 `tab=security`일 때만 그립니다 |
 | `ClientBanSettingsDialog` | 차단 시간(1–10080분)과 제외 대상(`TagInput`, IP·CIDR 50개 이하)을 저장하는 대화상자. 항목마다 `Item.Root` 상자 하나이고, 저장하면 바로 서버에 반영합니다. `BannedClients`의 설정 버튼이 엽니다 |
 | `TunnelGuardSettings` | 설정 > 보안의 터널 포트 보호 카드. 방식(`RadioGroup` 한 줄, 선택지마다 호버 툴팁)과 허용 범위(`TagInput`)는 되돌리기·저장으로만 반영하고, 머리글의 연결 수 줄(활성 연결·허용·거부, 거부 내역은 툴팁)과 알려진 커넥터 표(IP·마지막 인증)는 읽기 전용이라 새로 고침 버튼으로 다시 받습니다 |
+| `HstsSettings` | 설정 > 보안의 HSTS 카드. 공개 주소에 HSTS를 붙일지 정하는 스위치 하나(`Field` 가로 배치)이며 되돌리기·저장으로만 반영합니다. 관리 콘솔에는 설정과 관계없이 붙는다는 점과 HTTPS가 없는 서버로 옮길 때의 주의는 제목 옆 `InfoTooltip`에 둡니다 |
+| `AdminAccessSettings` | 설정 > 보안의 관리 콘솔 접근 제한 카드(SSO 카드 위). 제한 스위치와 허용 대역(`TagInput`)을 되돌리기·저장으로 반영합니다. "현재 IP 추가"는 서버가 준 `client_range`(IPv4는 주소, IPv6는 /64)를 넣고 로컬 관리 포트에서는 보이지 않습니다. 저장 시 `409 admin_access_locks_out`은 안내 문구로 바꿔 보여 주고, 환경 변수로 해제됨(`lifted`)·저장값 손상(`damaged`)·공유 주소로 보임(`client_shared`)은 카드 위쪽 `Alert`로 알립니다 |
 
 ## 지켜야 할 것
 

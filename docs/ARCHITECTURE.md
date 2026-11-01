@@ -19,7 +19,7 @@ WireGuard와 서버 간 공통 인트라넷은 기본 구성요소에서 제외�
 - 서비스 배포 시 `service-connector`를 함께 실행할 수 있는 Docker Compose 구성을 제공한다.
 - Connector는 등록, 인증, 아웃바운드 터널 유지, 로컬 서비스 전달, 상태 보고를 담당한다.
 - Connector는 기본적으로 같은 Compose 네트워크의 서비스로만 연결한다.
-- HTTP/HTTPS와 TCP를 지원한다. 공개 UDP 프록시는 MVP에서 제외한다.
+- HTTP/HTTPS와 TCP를 지원한다. 공개 UDP 프록시는 MVP에서 제외한다. (현재 구현은 HTTP/HTTPS와 WebSocket이며, TCP 공개는 아직 구현하지 않았다. `docs/TODO.md` 참고)
 - HTTP/HTTPS 인증서는 Outlet에서 종료한다.
 - Caddy가 HTTP/HTTPS 인증서를 발급·갱신하고, Outlet API가 상태·오류를 관찰한다.
 - DB/Redis 같은 TCP 서비스는 기본적으로 공개하지 않는다.
@@ -159,6 +159,8 @@ HTTP Route는 Caddy가 해당 호스트 이름에 발급한 인증서를 사용�
 
 Outlet은 공개 앱으로 프록시할 때 원래 `Host`를 유지하고 `X-Forwarded-Host`, `X-Forwarded-Proto: https`, `X-Forwarded-Port: 443`, `X-Forwarded-For`를 명시한다. 클라이언트가 보낸 표준 `Forwarded` 헤더는 전달하지 않는다. 내부 앱은 HTTP 연결을 받으므로 외부 HTTPS 여부를 이 헤더로 판단하려면 신뢰할 프록시 설정이 필요하다.
 
+공개 경로는 Outlet이 판단한다. 80번 포트에서 Caddy는 ACME HTTP-01 응답만 직접 처리하고 나머지를 Outlet에 넘기며, Outlet은 인증서를 허용하는 호스트에만 HTTPS 리디렉션을 보내고 평문 요청을 앱에 넘기지 않는다. 443번 포트에서 Caddy는 TLS SNI와 다른 호스트를 담은 요청(`421`)과 경로가 아닌 요청 대상(`400`)을 Outlet에 넘기기 전에 거부한다. 그 뒤 Outlet이 요청 제한, 차단 규칙, 접근 보호를 차례로 적용한다. 관리 주소의 콘솔과 관리 API는 IP 대역으로 제한할 수 있으며, Connector API와 접근 보호 로그인은 제한하지 않는다. 공개 주소의 응답에는 설정에 따라 HSTS를 붙인다.
+
 ### 6.4 Connector 터널
 
 Connector는 rathole client를 실행해 Outlet의 rathole server로 아웃바운드 연결을 만든다.
@@ -188,7 +190,7 @@ Outlet 자체의 메타데이터는 SQLite에 저장한다.
 
 ## 8. API와 UI
 
-관리 UI는 SvelteKit/TypeScript로 구현한다. 관리 API와 Connector API는 인증·권한 모델을 분리한다.
+관리 UI는 Svelte 5와 TypeScript로 만든 SPA(Vite 빌드, shadcn-svelte)이며, Outlet 바이너리에 내장해 엄격한 CSP(`script-src 'self'`, `style-src 'self'`)로 제공한다. 관리 API와 Connector API는 인증·권한 모델을 분리한다.
 
 ```text
 /api/v1/*        관리자 UI/API

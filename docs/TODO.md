@@ -135,7 +135,7 @@
 
 - [x] 기본 네트워크 모델 — 터널별 아웃바운드 Connector 연결과 서비스별 전달 포트
 - [x] 서버 간 WireGuard 인트라넷 — 사용하지 않음
-- [x] 프론트엔드 — SvelteKit/TypeScript
+- [x] 프론트엔드 — Svelte 5/TypeScript SPA(Vite, shadcn-svelte), Outlet에 내장
 - [x] 백엔드·Connector — Go
 - [x] MVP 관리 DB — SQLite
 - [x] HTTP 프록시·인증서 — Caddy

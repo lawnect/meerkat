@@ -64,6 +64,8 @@ rathole은 공식 릴리스 바이너리 대신 v0.5.0 소스에서 직접 빌�
 
 새 서버의 첫 실행은 아래 **Outlet 초기 접속** 순서대로 진행합니다. 기존 설치를 업데이트할 때는
 서버의 `compose.env`와 `compose.outlet.yaml`을 확인한 뒤 이미지를 가져와 Compose를 다시 실행합니다.
+릴리스가 `deploy/compose.outlet.yaml`을 바꾸면 릴리스 노트에 적혀 있으니 새 파일을 먼저 서버에 복사하십시오. Coolify처럼
+직접 만든 Compose 파일로 배포한다면 같은 변경을 그 파일에도 옮기십시오(0.6.2는 `MEERKAT_ADMIN_IP_LIMIT`를 Outlet에 넘깁니다).
 GHCR 패키지가 private이면 VM에서 `read:packages` 권한이 있는 GitHub 토큰으로 `docker login ghcr.io`를 실행합니다.
 운영 배포에서는 `latest` 대신 `ghcr.io/lawnect/meerkat:v1.0.0` 같은 릴리스 태그를 `MEERKAT_IMAGE`(와 `MEERKAT_CADDY_IMAGE`)에 고정하는 것을 권장합니다.
 
@@ -234,7 +236,7 @@ E2E는 실행 중인 `meerkat-poc` 프로젝트만 대상으로 합니다. 관�
 
 E2E는 `admin.token`으로 인증합니다. 관리 화면에서 첫 관리자를 설정하면 관리 API가 이 토큰을 더 이상 받지 않으므로, PoC에서는 초기 설정을 완료하지 않습니다.
 
-2026-10-29 검증: macOS/ARM64 Docker 환경에서 새 테스트 설정과 같은 설정의 재실행 모두 E2E 6개 항목 통과. AMD64의 전체 E2E는 아직 수행하지 않았습니다.
+2026-11-01 검증(0.6.1, 0.6.2): macOS/ARM64 Docker 환경에서 새 테스트 설정과 같은 설정의 재실행 모두 E2E 6개 항목 통과. AMD64의 전체 E2E는 아직 수행하지 않았습니다.
 
 다른 설정 디렉터리를 사용했다면 Compose의 `--env-file` 경로를 바꾸고 E2E에 그 절대 경로를 전달합니다.
 

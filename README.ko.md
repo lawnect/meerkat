@@ -52,8 +52,8 @@ flowchart LR
 ## 기능
 
 - **공개:** Connector 하나에 여러 서비스, 자동 HTTPS, 정상 대상 사이의 장애 조치·부하 분산.
-- **접근 제어:** 주소·경로 단위 OpenID Connect 로그인, 순서가 있는 정책, 자동화용 토큰.
-- **트래픽 제어:** 요청·연결·업로드 제한, 스캐너를 차단하는 허니팟이 포함된 차단 규칙, 터널 포트 접속 제어.
+- **접근 제어:** 주소·경로 단위 OpenID Connect 로그인, 순서가 있는 정책, 자동화용 토큰, 관리 콘솔 IP 허용 목록.
+- **트래픽 제어:** 요청·연결·업로드 제한, 스캐너를 차단하는 허니팟이 포함된 차단 규칙, 터널 포트 접속 제어, 공개 주소의 HSTS.
 - **관찰:** 요청·접근·실패·감사 기록, 엔드포인트별 통계, Outlet·업스트림으로 나눈 지연 시간, CSV 내보내기.
 - **운영:** Connector 관리와 버전 표시, Telegram 알림, 관리자 SSO, SSH 복구 경로.
 
@@ -105,11 +105,12 @@ docker run -d --restart unless-stopped --name meerkat-my-server \
   ghcr.io/lawnect/meerkat:latest connect <설치 코드>
 ```
 
-설치 코드에는 터널의 실행 토큰이 들어 있으므로 비밀로 다룹니다. 운영 환경에서는 `ghcr.io/lawnect/meerkat:v0.5.2`처럼 릴리스를 고정하고, 업그레이드 전에 `/opt/meerkat-outlet`을 백업한 뒤 릴리스 노트를 따릅니다. 데이터베이스 마이그레이션은 시작할 때 실행됩니다. 업그레이드는 [배포](docs/GUIDE.ko.md#github-actions와-ghcr-배포), 개발 환경은 [로컬 실행](docs/GUIDE.ko.md#로컬에서-실행)을 참고하십시오.
+설치 코드에는 터널의 실행 토큰이 들어 있으므로 비밀로 다룹니다. 운영 환경에서는 `ghcr.io/lawnect/meerkat:v0.6.2`처럼 릴리스를 고정하고, 업그레이드 전에 `/opt/meerkat-outlet`을 백업한 뒤 릴리스 노트를 따릅니다. 데이터베이스 마이그레이션은 시작할 때 실행됩니다. 업그레이드는 [배포](docs/GUIDE.ko.md#github-actions와-ghcr-배포), 개발 환경은 [로컬 실행](docs/GUIDE.ko.md#로컬에서-실행)을 참고하십시오.
 
 ## 보안 모델
 
-- **노출:** Caddy가 TCP `80`·`443`, 터널이 `2333`을 엽니다. Outlet의 관리 포트는 루프백에만 묶이며, 콘솔과 Connector API는 관리 주소를 통해 Caddy로 들어옵니다.
+- **노출:** Caddy가 TCP `80`·`443`, 터널이 `2333`을 엽니다. Outlet의 관리 포트는 루프백에만 묶이며, 콘솔과 Connector API는 관리 주소를 통해 Caddy로 들어옵니다. 관리 주소의 콘솔은 IP 대역으로 제한할 수 있고, 그 밖의 주소에는 `404`로 응답합니다. Connector API와 접근 보호 로그인은 계속 열려 있습니다.
+- **HTTP 처리:** 80번 포트는 Outlet이 제공하는 주소만 HTTPS로 리디렉션하고, 평문 HTTP를 앱에 넘기지 않습니다. HTTPS 요청은 TLS 핸드셰이크에서 요청한 호스트와 같은 호스트를 써야 하고(아니면 `421`), 요청 대상이 경로가 아니면 `400`입니다. 따라서 `Host` 헤더에 보이지 않는 호스트로 라우팅되는 요청은 없습니다. 공개 주소는 끄지 않는 한 HSTS(1년)를 보내며, 앱이 직접 보내는 헤더가 우선합니다.
 - **터널:** Noise NK로 Outlet의 고정 키를 인증하고, 서비스마다 토큰을 씁니다. Outlet이 rathole보다 먼저 터널 연결을 받아, 알려진 Connector는 통과시키고 모르는 클라이언트는 제한하거나 거부합니다.
 - **자격 증명:** 실행 토큰, Connector 자격 증명, 관리 API 토큰은 SHA-256 검증값으로 저장하고, 설정 코드는 복구용으로 `configs/admin.token`에 남습니다. Outlet이 보관해야 하는 키와 비밀(Noise 키, rathole 서비스 토큰, Telegram 봇 토큰)은 `0700` 디렉터리에 두며, 키와 토큰 파일은 `0600`입니다. Connector는 자격 증명을 tmpfs에만 두며, 재시작하면 설치 코드로 다시 등록합니다.
 - **클라이언트 주소:** 위조할 수 있는 주소 헤더(`X-Real-IP`, `Forwarded`, `CF-Connecting-IP` 등)는 지우고, `X-Real-IP`는 Caddy가 본 주소로 다시 설정합니다.

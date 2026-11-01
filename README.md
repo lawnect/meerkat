@@ -52,8 +52,8 @@ Solid arrows show the request path; the dashed arrow shows the Connector opening
 ## Features
 
 - **Publishing:** multiple services per Connector, automatic HTTPS, and failover or load balancing across healthy targets.
-- **Access:** OpenID Connect sign-in in front of addresses or paths, ordered policies, and tokens for automation.
-- **Traffic controls:** rate, connection and upload limits, block rules with a scanner-banning honeypot, and admission control on the tunnel port.
+- **Access:** OpenID Connect sign-in in front of addresses or paths, ordered policies, tokens for automation, and an IP allowlist for the admin console.
+- **Traffic controls:** rate, connection and upload limits, block rules with a scanner-banning honeypot, admission control on the tunnel port, and HSTS on public addresses.
 - **Observability:** request, access, failure and audit logs, per-endpoint statistics, latency split into Outlet and upstream time, and CSV export.
 - **Operations:** Connector management with versions, Telegram alerts, administrator SSO, and SSH recovery access.
 
@@ -105,11 +105,12 @@ docker run -d --restart unless-stopped --name meerkat-my-server \
   ghcr.io/lawnect/meerkat:latest connect <install-code>
 ```
 
-The install code contains the tunnel's run token; treat it as a secret. For production, pin a release such as `ghcr.io/lawnect/meerkat:v0.5.2`, back up `/opt/meerkat-outlet` before upgrading, and follow the release notes. Database migrations run on start. See [deployment](docs/GUIDE.md#deploy-with-github-actions-and-ghcr) for upgrades and [running locally](docs/GUIDE.md#run-locally) for development.
+The install code contains the tunnel's run token; treat it as a secret. For production, pin a release such as `ghcr.io/lawnect/meerkat:v0.6.2`, back up `/opt/meerkat-outlet` before upgrading, and follow the release notes. Database migrations run on start. See [deployment](docs/GUIDE.md#deploy-with-github-actions-and-ghcr) for upgrades and [running locally](docs/GUIDE.md#run-locally) for development.
 
 ## Security model
 
-- **Exposure:** Caddy on TCP `80` and `443` and the tunnel on `2333`. The Outlet's admin port is bound to loopback; the console and Connector API are reached through Caddy on the admin hostname.
+- **Exposure:** Caddy on TCP `80` and `443` and the tunnel on `2333`. The Outlet's admin port is bound to loopback; the console and Connector API are reached through Caddy on the admin hostname. The console there can be limited to IP ranges, answering `404` to other addresses, while the Connector API and access protection's sign-in stay open.
+- **HTTP handling:** port 80 redirects only addresses the Outlet serves, and never passes plain HTTP to an app. An HTTPS request must name the host its TLS handshake asked for (`421` otherwise), and a request target that isn't a path gets `400`, so no request is routed by a host its `Host` header doesn't show. Public addresses send HSTS for a year unless it's turned off; an app's own header wins.
 - **Tunnels:** Noise NK, authenticated by the Outlet's static key, with a token per service. The Outlet admits tunnel connections before rathole reads them: known Connectors pass, unknown clients are rate-limited or refused.
 - **Credentials:** run tokens, Connector credentials and the admin API token are stored as SHA-256 verifiers; the setup code stays in `configs/admin.token` for recovery. Keys and secrets the Outlet must keep (the Noise key, rathole service tokens, the Telegram bot token) live in `0700` directories, key and token files with mode `0600`. The Connector keeps its credentials in tmpfs; restarting it re-enrolls with the install code.
 - **Client addresses:** forgeable client-address headers (`X-Real-IP`, `Forwarded`, `CF-Connecting-IP` and the like) are dropped; `X-Real-IP` is set from the address Caddy saw.

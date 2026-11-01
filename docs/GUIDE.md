@@ -64,6 +64,8 @@ A release without a pre-release suffix also moves `latest`; `meerkat-v1.1.0-rc.1
 
 For the first run on a new server, follow the **Initial Outlet access** steps below. To update an existing installation,
 check the server's `compose.env` and `compose.outlet.yaml`, pull the image, and run Compose again.
+When a release changes `deploy/compose.outlet.yaml`, its notes say so; copy the new file to the server first. If you deploy
+with your own Compose file, such as one in Coolify, carry the change over there (0.6.2 passes `MEERKAT_ADMIN_IP_LIMIT` to the Outlet).
 If the GHCR package is private, run `docker login ghcr.io` on the VM with a GitHub token that has the `read:packages` scope.
 For production deployments, we recommend pinning a release such as `ghcr.io/lawnect/meerkat:v1.0.0` in `MEERKAT_IMAGE` (and `MEERKAT_CADDY_IMAGE`) instead of `latest`.
 
@@ -235,7 +237,7 @@ The E2E test targets only the running `meerkat-poc` project. It creates the two 
 
 The E2E test signs in with `admin.token`, which the admin API no longer accepts once the console's first administrator is set up. Don't complete the console setup on the PoC.
 
-Verified on 2026-10-29: on macOS/ARM64 Docker, the 6 E2E items passed on a new fixture and again on the same fixture. The full E2E run on AMD64 hasn't been done yet.
+Verified on 2026-11-01 with 0.6.1 and 0.6.2: on macOS/ARM64 Docker, the 6 E2E items passed on a new fixture and again on the same fixture. The full E2E run on AMD64 hasn't been done yet.
 
 If you used a different configuration directory, change the Compose `--env-file` path and pass its absolute path to the E2E tests.
 
