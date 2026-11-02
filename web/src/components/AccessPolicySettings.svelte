@@ -21,7 +21,7 @@
   import { toast } from 'svelte-sonner';
   import { api, errorMessage } from '../api';
   import { intlLocale, translations } from '../i18n.svelte';
-  import { Add12, Dismiss, ReOrder, Shield20, Warning, Warning12 } from '../icons';
+  import { Add12, Copy, Dismiss, ReOrder, Shield20, Warning, Warning12 } from '../icons';
   import { isIpRange, splitScope, tagSuggestions, unknownTags } from '../ipScope.svelte';
   import { accessMethods, type AccessAction, type AccessCondition, type AccessConditionField, type AccessPoliciesView, type AccessPolicy, type AccessToken, type BlockOperator, type IpTagUse } from '../types';
   import AddressSelect from './AddressSelect.svelte';
@@ -41,7 +41,7 @@
 
   const t = translations({
     title: 'Access policies',
-    tip: 'Policies are checked from the top; the first enabled one whose addresses and conditions match a request applies. Drag a policy to change the order. Allow lets in, after a sign-in with access SSO, only who the policy allows, Bypass lets anyone in without one, and Block lets nobody in. The signed-in email reaches the app in the X-Meerkat-Access-Email header, and the access token\'s name in X-Meerkat-Access-Service.',
+    tip: 'Policies are checked from the top; the first enabled one whose addresses and conditions match a request applies. Drag a policy to change the order; policies whose addresses overlap share a color bar on the left. Allow lets in, after a sign-in with access SSO, only who the policy allows, Bypass lets anyone in without one, and Block lets nobody in. The signed-in email reaches the app in the X-Meerkat-Access-Email header, and the access token\'s name in X-Meerkat-Access-Service.',
     providerOff: 'Access SSO is off, so no one can sign in to protected addresses.',
     damaged: 'Saved policies are invalid, so their addresses are closed.',
     damagedEmpty: 'Saved policies can\'t be read, so every public address is closed.',
@@ -63,6 +63,7 @@
     order: 'Order',
     reorder: (name: string) => `Move ${name}`,
     reorderTip: 'Drag, or press ↑ ↓',
+    group: (n: number) => `Address group ${n}`,
     orderSaved: 'Order saved',
     neverApplies: 'Never applies',
     neverAppliesTip: 'An earlier policy covers this one\'s addresses and every request its conditions match.',
@@ -115,6 +116,13 @@
     allowAdminsTip: 'Anyone whose email, as verified by the access SSO provider, is a Meerkat administrator\'s is let in, whether or not they match the allowed users and groups.',
     administrators: 'Administrators',
     delete: 'Delete',
+    duplicate: 'Duplicate',
+    copyName: (name: string) => `${name} (copy)`,
+    fix: 'Fix automatically',
+    fixTip: 'Saves, and adds a policy below the last one on these addresses that blocks the requests this one leaves and no other policy takes.',
+    fixUnavailable: 'This policy\'s "not" path conditions can\'t be used in a block policy as they are. Add the block policy yourself.',
+    fixName: (name: string) => `${name} (others blocked)`,
+    fixed: (name: string) => `Added ${name}`,
     deleteTitle: 'Delete this policy?',
     deleted: 'Deleted',
     cancel: 'Cancel',
@@ -129,7 +137,7 @@
     loadFailed: (code: string) => `Couldn't load access policies: ${code}`,
   }, {
     title: '접근 정책',
-    tip: '정책은 위에서부터 순서대로 확인하며, 주소와 조건이 요청에 처음 일치하는 활성화된 정책 하나가 적용됩니다. 순서는 드래그하여 변경합니다. 허용은 접근 보호 SSO 로그인 후 허용 대상만, 우회는 로그인 없이 누구나 접근할 수 있으며, 차단은 모두 거부합니다. 로그인한 사용자의 이메일은 X-Meerkat-Access-Email 헤더로, 접근 토큰 이름은 X-Meerkat-Access-Service 헤더로 앱에 전달됩니다.',
+    tip: '정책은 위에서부터 순서대로 확인하며, 주소와 조건이 요청에 처음 일치하는 활성화된 정책 하나가 적용됩니다. 순서는 드래그하여 변경하며, 적용 주소가 겹치는 정책은 왼쪽에 같은 색 띠로 표시됩니다. 허용은 접근 보호 SSO 로그인 후 허용 대상만, 우회는 로그인 없이 누구나 접근할 수 있으며, 차단은 모두 거부합니다. 로그인한 사용자의 이메일은 X-Meerkat-Access-Email 헤더로, 접근 토큰 이름은 X-Meerkat-Access-Service 헤더로 앱에 전달됩니다.',
     providerOff: '접근 보호 SSO가 비활성화되어 보호 대상 주소에 로그인할 수 없습니다.',
     damaged: '저장된 정책이 올바르지 않아 해당 주소를 차단 중입니다.',
     damagedEmpty: '저장된 정책을 읽을 수 없어 모든 공개 주소를 차단 중입니다.',
@@ -151,6 +159,7 @@
     order: '순서',
     reorder: (name: string) => `${name} 순서 변경`,
     reorderTip: '드래그 또는 ↑ ↓ 키로 이동',
+    group: (n: number) => `주소 그룹 ${n}`,
     orderSaved: '순서가 저장되었습니다',
     neverApplies: '적용 안 됨',
     neverAppliesTip: '앞선 정책이 이 정책의 주소와 조건에 해당하는 모든 요청에 먼저 적용됩니다.',
@@ -203,6 +212,13 @@
     allowAdminsTip: '접근 보호 SSO에서 인증된 이메일이 Meerkat 관리자 이메일과 같은 사용자는 허용 사용자·그룹 조건과 무관하게 접근할 수 있습니다.',
     administrators: '관리자',
     delete: '삭제',
+    duplicate: '복제',
+    copyName: (name: string) => `${name} (복사본)`,
+    fix: '자동 해결',
+    fixTip: '저장 후, 이 정책의 조건 외 요청 중 다른 정책이 처리하지 않는 요청을 차단하는 정책을 해당 주소의 마지막 정책 아래에 추가합니다.',
+    fixUnavailable: '이 정책의 부정 경로 조건은 차단 정책에 그대로 사용할 수 없어 자동 해결할 수 없습니다. 차단 정책을 직접 추가하십시오.',
+    fixName: (name: string) => `${name} (조건 외 차단)`,
+    fixed: (name: string) => `${name} 정책이 추가되었습니다`,
     deleteTitle: '이 정책을 삭제하시겠습니까?',
     deleted: '삭제되었습니다',
     cancel: '취소',
@@ -281,6 +297,9 @@
   // 서버의 shadows와 같은 판단(보수적으로, 확실할 때만): 앞선 활성화된 정책이 이 정책의 주소를 모두 덮고, 앞선 정책의 조건마다
   // 항상 성립하거나 이 정책의 어떤 조건이 성립할 때 반드시 성립하면, 이 정책은 적용될 일이 없습니다.
   const hostCovers = (pattern: string, host: string): boolean => pattern === host || (pattern.startsWith('*.') && host.endsWith(pattern.slice(1)));
+  // 같은 주소, 와일드카드가 덮는 주소, 서로 겹치는 와일드카드는 같은 요청을 받을 수 있습니다.
+  const hostsOverlap = (a: string, b: string): boolean =>
+    hostCovers(a, b) || hostCovers(b, a) || (a.startsWith('*.') && b.startsWith('*.') && (a.endsWith(b.slice(1)) || b.endsWith(a.slice(1))));
   const covers = (outer: string[], inner: string[], match: (inner: string, outer: string) => boolean = (a, b) => a === b): boolean =>
     inner.every((value) => outer.some((other) => match(value, other)));
   const methodCovers = (method: string, other: string): boolean => method === other;
@@ -292,8 +311,12 @@
     if (later.field === 'path') {
       if (strictPath(laterAction, later.not) !== strictPath(earlierAction, earlier.not)) return false;
       if (earlier.not) return later.operator === earlier.operator && covers(later.values, earlier.values);
+      // 넓게 비교하는 '같음' 값은 끝에 /를 붙인 경로로도 비교하므로, '다음으로 시작'에 대해서도 그 형태로 봅니다(서버와 같음).
+      const slashed = (value: string): string => (strictPath(laterAction, false) || value === '/' ? value : `${value}/`);
       return covers(earlier.values, later.values, (value, other) =>
-        (later.operator === earlier.operator && value === other) || (earlier.operator === 'starts_with' && later.operator === 'starts_with' && value.startsWith(other)));
+        (later.operator === earlier.operator && value === other)
+        || (earlier.operator === 'starts_with' && later.operator === 'starts_with' && value.startsWith(other))
+        || (earlier.operator === 'starts_with' && later.operator === 'equals' && slashed(value).startsWith(other)));
     }
     if (later.field === 'token') {
       if (earlier.not) return later.operator === 'any' || (earlier.operator === 'in' && covers(later.values, earlier.values));
@@ -325,24 +348,92 @@
     }
     return false;
   };
+  // 앱이 받는 그대로 비교하는 경로 값(우회, 또는 보호 정책의 부정 경로)을 넓게 비교하는 형태로 바꿉니다: 그런 값은 평범한 경로라
+  // 서버의 정규화는 소문자로 바꾸고 '같음'의 끝 /를 떼는 것뿐입니다(normalizeCondition). 정규식은 그대로 대소문자 없이 비교됩니다.
+  // 소문자 변환은 ASCII만 합니다: 브라우저와 Go는 일부 유니코드(İ 등)를 다르게 바꾸므로, 그런 값은 일치하지 않는 쪽으로 봅니다.
+  const asciiLower = (value: string): string => value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+  const broadValue = (operator: string, value: string): string =>
+    operator === 'matches' ? value : operator === 'equals' && value !== '/' ? asciiLower(value).replace(/\/+$/, '') || '/' : asciiLower(value);
+  const broadened = (condition: AccessCondition): AccessCondition => ({ ...condition, values: condition.values.map((value) => broadValue(condition.operator, value)) });
+  // later가 성립하는 요청에 earlier도 반드시 성립하는지(경로). 비교 방식이 다르면 앱이 받는 그대로 비교하는 쪽이 성립하는 요청은
+  // 평범한 경로라, 그 값을 넓은 형태로 바꿔 같은 방식으로 비교합니다. 부정이 아니면 later가, 부정이면 earlier가 그쪽이어야 합니다.
+  const pathImplies = (later: AccessCondition, laterAction: AccessAction, earlier: AccessCondition, earlierAction: AccessAction): boolean => {
+    if (later.field !== 'path' || earlier.field !== 'path' || later.not !== earlier.not) return false;
+    const laterStrict = strictPath(laterAction, later.not);
+    const earlierStrict = strictPath(earlierAction, earlier.not);
+    if (laterStrict === earlierStrict) return implies(later, laterAction, earlier, earlierAction);
+    if (!later.not && laterStrict) return implies(broadened(later), earlierAction, earlier, earlierAction);
+    if (later.not && earlierStrict) return implies(later, laterAction, broadened(earlier), laterAction);
+    return false;
+  };
   // other가 그 주소에서 policy의 경로·메서드 조건에 맞고 row에 맞지 않는 요청 모두에 적용되는지. 조건마다 항상 성립하거나, row가
   // 성립하지 않을 때 성립하거나, policy의 경로·메서드 조건이 성립할 때 반드시 성립해야 합니다.
   const takesFailures = (other: AccessPolicy, host: string, policy: AccessPolicy, row: AccessCondition): boolean =>
     other.enabled && other.hosts.some((pattern) => hostCovers(pattern, host))
     && other.conditions.every((condition) => always(condition, other.action)
       || holdsWhenFails(condition, other.action, row, policy.action)
-      || policy.conditions.some((own) => (own.field === 'path' || own.field === 'method') && implies(own, policy.action, condition, other.action)));
+      || policy.conditions.some((own) => (own.field === 'path' ? pathImplies(own, policy.action, condition, other.action)
+        : own.field === 'method' && implies(own, policy.action, condition, other.action))));
   // 접속 IP·접근 토큰 조건이 있는 허용·우회 정책은 같은 경로라도 조건에 맞지 않는 요청을 다른 정책에 넘깁니다. 위아래 어디에도
   // 그런 요청을 모두 받는 정책이 없으면(예: 위에 "접속 IP 다음에 포함되지 않음 → 차단", 아래에 그 주소의 모든 요청을 받는 정책)
   // 그런 요청은 보호 없이 전달됩니다. 차단 정책은 일부만 막는 것이 의도일 수 있어 표시하지 않습니다.
-  const unprotected = (list: AccessPolicy[], index: number): boolean => {
+  // 그런 요청이 보호 없이 전달되는 주소들입니다.
+  const unprotectedHosts = (list: AccessPolicy[], index: number): string[] => {
     const policy = list[index];
     const rows = policy.conditions.filter((condition) => condition.field === 'client_ip' || condition.field === 'token');
-    return policy.enabled && policy.action !== 'block' && rows.length > 0
-      && policy.hosts.some((host) => rows.some((row) => !list.some((other, at) => at !== index && takesFailures(other, host, policy, row))));
+    if (!policy.enabled || policy.action === 'block' || !rows.length) return [];
+    return policy.hosts.filter((host) => rows.some((row) => !list.some((other, at) => at !== index && takesFailures(other, host, policy, row))));
   };
+  const unprotected = (list: AccessPolicy[], index: number): boolean => unprotectedHosts(list, index).length > 0;
+  // 정책 이름은 64자까지라, 덧붙인 이름이 넘치면 원래 이름을 줄입니다.
+  const maxName = 64;
+  const suffixed = (name: string, make: (name: string) => string): string => {
+    const chars = Array.from(name);
+    const extra = Array.from(make('')).length;
+    return make(chars.length + extra > maxName ? chars.slice(0, Math.max(1, maxName - extra - 1)).join('') + '…' : name);
+  };
+  // 자동 해결: 이 정책의 경로·메서드 조건만 가진 차단 정책을, 그 주소에 걸리는 마지막 정책 아래에 둡니다. 그래서 다른 정책이
+  // 처리하던 요청은 그대로 그 정책이 처리하고, 어떤 정책에도 해당하지 않아 보호 없이 전달되던 요청만 차단됩니다. 주소는 그런
+  // 요청이 있던 주소만 담습니다.
+  const withLeftoversBlocked = (list: AccessPolicy[], index: number): AccessPolicy[] => {
+    const hosts = unprotectedHosts(list, index);
+    if (!hosts.length) return list;
+    const policy = list[index];
+    const block: AccessPolicy = {
+      id: '', name: suffixed(policy.name, t().fixName), enabled: true, action: 'block', hosts,
+      conditions: policy.conditions.filter((condition) => condition.field === 'path' || condition.field === 'method').map((condition) => ({ ...condition, values: [...condition.values] })),
+      allow_everyone: false, allowed_users: [], allowed_groups: [], allow_admins: false,
+    };
+    const at = list.reduce((last, other, i) => (i > index && other.hosts.some((host) => hosts.some((own) => hostsOverlap(host, own))) ? i : last), index);
+    return [...list.slice(0, at + 1), block, ...list.slice(at + 1)];
+  };
+  // 차단 정책에서는 부정 경로를 앱이 받는 그대로 비교하므로, 우회의 부정 경로 값 중에는 차단 정책에 쓸 수 없는 것이 있습니다.
+  const blockable = (policy: AccessPolicy): boolean =>
+    policy.conditions.every((condition) => condition.field !== 'path' || !strictPath('block', condition.not) || condition.values.every((value) => plainPathValue(condition.operator, value)));
 
   let policies = $state<AccessPolicy[] | null>(null);
+  // 적용 주소가 겹치는 정책(같은 주소, 와일드카드가 덮는 주소, 서로 겹치는 와일드카드)끼리 묶고, 겹침이 이어지면 한 묶음으로 봅니다.
+  // 정책이 둘 이상인 묶음에만 목록에서 처음 나오는 순서대로 색을 붙입니다(그룹이 6개를 넘으면 색이 반복됩니다).
+  const groupColors = ['bg-group-1', 'bg-group-2', 'bg-group-3', 'bg-group-4', 'bg-group-5', 'bg-group-6'];
+  const groups = $derived.by(() => {
+    const list = policies ?? [];
+    const root = list.map((_, index) => index);
+    const find = (index: number): number => (root[index] === index ? index : (root[index] = find(root[index])));
+    list.forEach((policy, index) => list.slice(0, index).forEach((earlier, at) => {
+      if (policy.hosts.some((host) => earlier.hosts.some((other) => hostsOverlap(host, other)))) root[find(index)] = find(at);
+    }));
+    const sizes = new Map<number, number>();
+    list.forEach((_, index) => sizes.set(find(index), (sizes.get(find(index)) ?? 0) + 1));
+    const numbers = new Map<number, number>();
+    const out = new Map<string, number>();
+    list.forEach((policy, index) => {
+      const group = find(index);
+      if ((sizes.get(group) ?? 0) < 2) return;
+      if (!numbers.has(group)) numbers.set(group, numbers.size);
+      out.set(policy.id, numbers.get(group)!);
+    });
+    return out;
+  });
   let addresses = $state<string[]>([]);
   let damaged = $state(false);
   let loadError = $state('');
@@ -359,6 +450,10 @@
   let formError = $state('');
 
   const editing = $derived(editingId ? policies?.find((policy) => policy.id === editingId) : undefined);
+  // 복제한 정책은 원본 바로 아래에 저장합니다.
+  let copyOf = $state('');
+  // 저장된 목록에서 이 정책에 조건 외 요청 미보호 표시가 있으면(적용 안 됨이 아니면) 자동 해결을 보여 줍니다.
+  const fixable = $derived(!!policies && !!editingId && policies.some((policy, index) => policy.id === editingId && !neverApplies(policies!, index) && unprotected(policies!, index)));
   // 여는 쪽 '다음으로 시작' 값이 /로 끝나지 않으면 /v1이 /v1x, /v10까지 엽니다. 저장은 막지 않고 알리기만 합니다.
   const openPrefix = (row: ConditionRow): string => {
     if (row.field !== 'path' || operatorOf(row) !== 'starts_with' || !strictPath(form.action, negated(row))) return '';
@@ -447,6 +542,7 @@
 
   function openPolicy(policy?: AccessPolicy): void {
     editingId = policy?.id ?? '';
+    copyOf = '';
     form = {
       name: policy?.name ?? '',
       enabled: policy?.enabled ?? true,
@@ -501,20 +597,19 @@
     return '';
   }
 
-  async function submit(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    if (!policies || busy) return;
+  // 대화상자의 입력으로 정책을 만듭니다. 걸리는 검사가 있으면 그 이유를 보여 주고 null을 돌려줍니다.
+  function built(): AccessPolicy | null {
     const allow = form.action === 'allow';
     // 허용 대상은 허용 정책에만 있고, 사용자 전체를 고르면 사용자·그룹·관리자는 따로 둘 필요가 없습니다.
     const named = allow && !form.everyone;
     if (allow && !form.everyone && !form.users.length && !form.groups.length && !form.admins) {
       formError = t().needsWho;
-      return;
+      return null;
     }
     const problem = form.rows.map(rowError).find(Boolean);
     if (problem) {
       formError = problem;
-      return;
+      return null;
     }
     const conditions: AccessCondition[] = form.rows.map((row) => {
       const operator = operatorOf(row) as AccessCondition['operator'];
@@ -524,9 +619,8 @@
         : row.values.map((value) => value.trim()).filter(Boolean);
       return { field: row.field, operator, not: negated(row), values };
     });
-    const current = editing;
-    const next: AccessPolicy = {
-      id: current?.id ?? '',
+    return {
+      id: editing?.id ?? '',
       name: form.name.trim(),
       enabled: form.enabled,
       action: form.action,
@@ -537,18 +631,63 @@
       allowed_groups: named ? [...form.groups] : [],
       allow_admins: named && form.admins,
     };
-    const list = $state.snapshot(policies);
+  }
+
+  // 편집 중인 정책을 바꾸거나 새 정책을 넣은 목록입니다. 새 정책은 끝에, 복제한 정책은 원본 바로 아래에 둡니다.
+  function withForm(next: AccessPolicy): AccessPolicy[] {
+    const list = $state.snapshot(policies) ?? [];
+    if (next.id) return list.map((entry) => (entry.id === next.id ? next : entry));
+    const at = copyOf ? list.findIndex((entry) => entry.id === copyOf) : -1;
+    return at < 0 ? [...list, next] : [...list.slice(0, at + 1), next, ...list.slice(at + 1)];
+  }
+
+  async function saveForm(list: AccessPolicy[], done: string): Promise<void> {
     busy = true;
     formError = '';
     try {
-      await put(current ? list.map((entry) => (entry.id === current.id ? next : entry)) : [...list, next]);
+      await put(list);
       dialogOpen = false;
-      toast.success(t().saved);
+      toast.success(done);
     } catch (cause) {
       formError = describe(errorMessage(cause));
     } finally {
       busy = false;
     }
+  }
+
+  async function submit(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    if (!policies || busy) return;
+    const next = built();
+    if (next) await saveForm(withForm(next), t().saved);
+  }
+
+  // 대화상자의 입력을 저장하면서, 그래도 조건 외 요청이 보호 없이 전달되면 바로 아래에 그 요청을 차단하는 정책을 추가합니다.
+  async function fix(): Promise<void> {
+    if (!policies || busy || !editing) return;
+    const next = built();
+    if (!next) return;
+    const list = withForm(next);
+    const fixed = withLeftoversBlocked(list, list.findIndex((entry) => entry.id === next.id));
+    const block = fixed.find((entry) => !entry.id && !list.includes(entry));
+    if (block && !blockable(block)) {
+      formError = t().fixUnavailable;
+      return;
+    }
+    await saveForm(fixed, block ? t().fixed(block.name) : t().saved);
+  }
+
+  // 복제: 대화상자의 입력 그대로 새 정책 추가로 바꿉니다. 저장하면 원본 바로 아래에 들어갑니다.
+  async function duplicate(): Promise<void> {
+    if (!editing || busy) return;
+    copyOf = editing.id;
+    editingId = '';
+    form.name = suffixed(form.name.trim() || editing.name, t().copyName);
+    formError = '';
+    await tick();
+    const input = document.getElementById('access-policy-name') as HTMLInputElement | null;
+    input?.focus();
+    input?.select();
   }
 
   async function remove(): Promise<void> {
@@ -616,6 +755,11 @@
                   ondrop={(event: DragEvent) => { event.preventDefault(); drop(policy.id); }}
                 >
                   <Table.Cell class="pl-2">
+                    {#if groups.has(policy.id)}
+                      {@const group = groups.get(policy.id)!}
+                      <span class={['absolute inset-y-0 left-0 w-1', groupColors[group % groupColors.length]]} aria-hidden="true"></span>
+                      <span class="sr-only">{t().group(group + 1)}</span>
+                    {/if}
                     <span class="flex items-center gap-1">
                       <IconButton
                         id={`access-policy-handle-${policy.id}`}
@@ -898,9 +1042,22 @@
       {#if formError}<Alert.Root variant="destructive"><Warning aria-hidden="true" /><Alert.Description>{formError}</Alert.Description></Alert.Root>{/if}
       <Dialog.Footer>
         {#if editingId}
-          <Button variant="destructive" disabled={busy} onclick={() => { deleteName = editing?.name ?? ''; confirmOpen = true; }}>{t().delete}</Button>
+          <div class="flex flex-col-reverse gap-2 sm:flex-row">
+            <Button variant="destructive" disabled={busy} onclick={() => { deleteName = editing?.name ?? ''; confirmOpen = true; }}>{t().delete}</Button>
+            <Button variant="outline" disabled={busy || (policies?.length ?? 0) >= maxPolicies} onclick={duplicate}><Copy aria-hidden="true" />{t().duplicate}</Button>
+          </div>
         {/if}
         <div class="flex flex-col-reverse gap-2 sm:ml-auto sm:flex-row">
+          {#if editingId && fixable}
+            <Tooltip.Root>
+              <Tooltip.Trigger>
+                {#snippet child({ props })}
+                  <Button {...props} variant="outline" disabled={busy || (policies?.length ?? 0) >= maxPolicies} onclick={fix}><Shield20 aria-hidden="true" />{t().fix}</Button>
+                {/snippet}
+              </Tooltip.Trigger>
+              <Tooltip.Content>{t().fixTip}</Tooltip.Content>
+            </Tooltip.Root>
+          {/if}
           <Button variant="outline" disabled={busy} onclick={() => (dialogOpen = false)}>{t().cancel}</Button>
           <Button type="submit" disabled={busy}>{#if busy}<Spinner aria-hidden="true" />{t().saving}{:else}{t().save}{/if}</Button>
         </div>
