@@ -30,7 +30,6 @@ const (
 	MaxAccessPolicies     = 100
 	maxAccessPolicyName   = 64
 	maxAccessHosts        = 100
-	maxAccessConditions   = 50
 	defaultAccessSession  = 24
 	maxAccessSessionHours = 720
 	MaxAccessTokens       = 100
@@ -122,8 +121,9 @@ const (
 	AccessBlock = "block"
 )
 
-// AccessPolicy covers requests for some public addresses, all their paths
-// or the ones its conditions match, and says what they get.
+// AccessPolicy covers the requests for some public addresses that meet all
+// its conditions, every request for them when it has none, and says what
+// they get.
 type AccessPolicy struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
@@ -132,23 +132,8 @@ type AccessPolicy struct {
 	// AccessAllow.
 	Action string `json:"action"`
 	// Hosts are hostnames or "*.domain"; a policy names at least one.
-	Hosts []string `json:"hosts"`
-	// AllPaths covers every path of the hosts; otherwise a path that any
-	// condition matches is covered.
-	AllPaths   bool             `json:"all_paths"`
-	Conditions []BlockCondition `json:"conditions"`
-	// Methods limits the policy to requests with these HTTP methods, GET
-	// taking HEAD along; none means every method.
-	Methods []string `json:"methods"`
-	// RequireToken limits the policy to requests that send an access token
-	// valid for them: one of Tokens, by ID, or any when Tokens is empty.
-	RequireToken bool     `json:"require_token"`
-	Tokens       []string `json:"tokens"`
-	// IPTags and IPRanges limit the policy to requests from client
-	// addresses in them: every address book entry carrying one of the tags,
-	// and the ranges themselves. With neither, every address.
-	IPTags   []string `json:"ip_tags"`
-	IPRanges []string `json:"ip_ranges"`
+	Hosts      []string          `json:"hosts"`
+	Conditions []AccessCondition `json:"conditions"`
 	// Who an AccessAllow policy lets in: everyone the access provider signs
 	// in, or else those each list that is set matches, as for the
 	// administrators' single sign-on; AllowAdmins also lets in anyone whose
@@ -159,29 +144,20 @@ type AccessPolicy struct {
 	AllowAdmins   bool     `json:"allow_admins"`
 }
 
-// clientIPMarker is stored among the methods of a policy limited to client
-// IPs and removed again on reading. 0.6.2 and earlier don't know client IP
-// conditions: they would drop them, and a bypass for the office's addresses
-// would then cover every address. The marker isn't a method they accept, so
-// they read the saved policies as damaged instead and keep closed what the
-// policies protect, leaving bypass policies out, as for any policies they
-// can't read.
+// clientIPMarker was stored among the methods of a policy limited to client
+// IPs before conditions (0.7), so that 0.6.2 and earlier, which don't know
+// client IPs, read the policies as damaged; it is dropped on reading.
 const clientIPMarker = "CLIENT-IP"
-
-// withClientIPMarker returns the policies as they are stored.
-func withClientIPMarker(policies AccessPolicies) AccessPolicies {
-	out := AccessPolicies{Policies: make([]AccessPolicy, len(policies.Policies))}
-	for i, policy := range policies.Policies {
-		if len(policy.IPTags)+len(policy.IPRanges) != 0 {
-			policy.Methods = append(slices.Clone(policy.Methods), clientIPMarker)
-		}
-		out.Policies[i] = policy
-	}
-	return out
-}
 
 // AccessMethods are the HTTP methods a policy can be limited to.
 var AccessMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
+
+// KnownMethod reports whether method, in any case, is one of AccessMethods
+// or HEAD.
+func KnownMethod(method string) bool {
+	method = strings.ToUpper(method)
+	return method == "HEAD" || slices.Contains(AccessMethods, method)
+}
 
 // CoversMethod reports whether a policy limited to methods covers a request with
 // method: every method when none are named, and HEAD with GET. Methods
@@ -203,7 +179,12 @@ type AccessPolicies struct {
 // Normalize checks the policies, puts conditions in the form requests are
 // compared in, and gives new policies an ID.
 func (a AccessPolicies) Normalize() (AccessPolicies, bool) {
-	if len(a.Policies) > MaxAccessPolicies {
+	return a.normalize(MaxAccessPolicies)
+}
+
+// normalize is Normalize for up to max policies.
+func (a AccessPolicies) normalize(max int) (AccessPolicies, bool) {
+	if len(a.Policies) > max {
 		return a, false
 	}
 	out := make([]AccessPolicy, 0, len(a.Policies))
@@ -241,42 +222,11 @@ func (a AccessPolicies) Normalize() (AccessPolicies, bool) {
 		if policy.Action == "" {
 			policy.Action = AccessAllow
 		}
-		conditions := make([]BlockCondition, 0, len(policy.Conditions))
-		if !policy.AllPaths {
-			if len(policy.Conditions) == 0 || len(policy.Conditions) > maxAccessConditions {
-				return a, false
-			}
-			for _, c := range policy.Conditions {
-				// A path the policy could never match would leave it open.
-				if c.Operator != BlockMatches && (percentEscape.MatchString(c.Value) || strings.Contains(c.Value, ";")) {
-					return a, false
-				}
-				normalized, ok := normalizeCondition(c)
-				if policy.Action == AccessBypass {
-					normalized, ok = bypassCondition(c)
-				}
-				if !ok {
-					return a, false
-				}
-				if !containsCondition(conditions, normalized) {
-					conditions = append(conditions, normalized)
-				}
-			}
+		conditions, valid := normalizeConditions(policy.Action, policy.Conditions)
+		if !valid {
+			return a, false
 		}
 		policy.Conditions = conditions
-		named := map[string]bool{}
-		for _, method := range policy.Methods {
-			if method = strings.ToUpper(strings.TrimSpace(method)); !slices.Contains(AccessMethods, method) {
-				return a, false
-			}
-			named[method] = true
-		}
-		policy.Methods = []string{}
-		for _, method := range AccessMethods {
-			if named[method] {
-				policy.Methods = append(policy.Methods, method)
-			}
-		}
 		var ok [2]bool
 		policy.AllowedUsers, ok[0] = normalizeSSOList(policy.AllowedUsers, true, allowedUserEntry)
 		policy.AllowedGroups, ok[1] = normalizeSSOList(policy.AllowedGroups, false, func(v string) bool {
@@ -285,25 +235,6 @@ func (a AccessPolicies) Normalize() (AccessPolicies, bool) {
 		if ok != [2]bool{true, true} {
 			return a, false
 		}
-		tokens := make([]string, 0, len(policy.Tokens))
-		for _, id := range policy.Tokens {
-			if !validRuleID(id) || len(tokens) == MaxAccessTokens {
-				return a, false
-			}
-			if !slices.Contains(tokens, id) {
-				tokens = append(tokens, id)
-			}
-		}
-		if !policy.RequireToken {
-			tokens = []string{}
-		}
-		policy.Tokens = tokens
-		tags, okTags := NormalizeTags(policy.IPTags, MaxScopeTags)
-		ranges, okRanges := normalizeRanges(policy.IPRanges)
-		if !okTags || !okRanges || len(ranges) > MaxScopeRanges {
-			return a, false
-		}
-		policy.IPTags, policy.IPRanges = tags, ranges
 		switch policy.Action {
 		case AccessAllow:
 		case AccessBypass, AccessBlock:
@@ -338,14 +269,19 @@ func (a AccessPolicies) Readable() AccessPolicies {
 			policy.Action = AccessAllow
 		}
 		seen[policy.ID] = true
-		for _, list := range []*[]string{&policy.Hosts, &policy.Methods, &policy.Tokens, &policy.IPTags, &policy.IPRanges, &policy.AllowedUsers, &policy.AllowedGroups} {
+		for _, list := range []*[]string{&policy.Hosts, &policy.AllowedUsers, &policy.AllowedGroups} {
 			if *list == nil {
 				*list = []string{}
 			}
 		}
-		if policy.Conditions == nil {
-			policy.Conditions = []BlockCondition{}
+		conditions := make([]AccessCondition, 0, len(policy.Conditions))
+		for _, c := range policy.Conditions {
+			if c.Values == nil {
+				c.Values = []string{}
+			}
+			conditions = append(conditions, c)
 		}
+		policy.Conditions = conditions
 		out = append(out, policy)
 	}
 	return AccessPolicies{Policies: out}
@@ -396,12 +332,6 @@ func bypassCondition(c BlockCondition) (BlockCondition, bool) {
 type AccessIdentity struct {
 	Email  string
 	Groups []string
-}
-
-// TakesToken reports whether the policy covers a request that sent the
-// access token with ID id, valid for it, or none when id is empty.
-func (p AccessPolicy) TakesToken(id string) bool {
-	return !p.RequireToken || id != "" && (len(p.Tokens) == 0 || slices.Contains(p.Tokens, id))
 }
 
 // Allows reports whether the identity may pass this policy; admin says
@@ -472,18 +402,18 @@ func (d *Database) AccessPolicies(ctx context.Context) (AccessPolicies, error) {
 	}
 	// Saved policies always have a list, perhaps empty: null, {} and the
 	// like are damage, not "no policies".
-	var stored AccessPolicies
-	if json.Unmarshal([]byte(raw), &stored) != nil || stored.Policies == nil {
+	var saved storedPolicies
+	if json.Unmarshal([]byte(raw), &saved) != nil || saved.Policies == nil {
 		return AccessPolicies{Policies: []AccessPolicy{}}, ErrStoredAccessPolicies
 	}
-	for i := range stored.Policies {
-		stored.Policies[i].Methods = slices.DeleteFunc(stored.Policies[i].Methods, func(method string) bool { return method == clientIPMarker })
-	}
+	stored := readPolicies(saved)
 	// Normalize gives a new policy an ID; a saved one without was damaged.
 	if slices.ContainsFunc(stored.Policies, func(policy AccessPolicy) bool { return policy.ID == "" }) {
 		return stored, ErrStoredAccessPolicies
 	}
-	policies, ok := stored.Normalize()
+	// Policies split on reading the form before conditions don't count
+	// against the limit: they were one policy each when saved.
+	policies, ok := stored.normalize(MaxAccessPolicies + len(stored.Policies) - len(saved.Policies))
 	if !ok {
 		return stored, ErrStoredAccessPolicies
 	}
@@ -498,10 +428,6 @@ func (d *Database) SetAccessPolicies(ctx context.Context, policies AccessPolicie
 	if !ok {
 		return policies, ErrInvalidAccessPolicies
 	}
-	raw, err := json.Marshal(withClientIPMarker(policies))
-	if err != nil {
-		return policies, err
-	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return policies, err
@@ -512,30 +438,42 @@ func (d *Database) SetAccessPolicies(ctx context.Context, policies AccessPolicie
 		return policies, err
 	}
 	for _, policy := range policies.Policies {
-		for _, id := range policy.Tokens {
-			if !slices.ContainsFunc(tokens, func(token AccessToken) bool { return token.ID == id }) {
-				return policies, ErrInvalidAccessPolicies
+		for _, c := range policy.Conditions {
+			if c.Field != ConditionToken {
+				continue
+			}
+			for _, id := range c.Values {
+				if !slices.ContainsFunc(tokens, func(token AccessToken) bool { return token.ID == id }) {
+					return policies, ErrInvalidAccessPolicies
+				}
 			}
 		}
 	}
-	if slices.ContainsFunc(policies.Policies, func(policy AccessPolicy) bool { return len(policy.IPTags) != 0 }) {
+	if slices.ContainsFunc(policies.Policies, func(policy AccessPolicy) bool { return len(policy.IPTags()) != 0 }) {
 		book, err := readIPAddresses(ctx, tx)
 		if err != nil {
 			// ErrStoredIPAddresses among them: tags can't be checked.
 			return policies, err
 		}
-		for i := range policies.Policies {
-			tags, ok := resolveTags(book, policies.Policies[i].IPTags)
-			if !ok {
-				return policies, ErrInvalidAccessPolicies
+		for _, policy := range policies.Policies {
+			for j, c := range policy.Conditions {
+				if c.Field != ConditionClientIP {
+					continue
+				}
+				tags, ranges := SplitScope(c.Values)
+				spelled, ok := resolveTags(book, tags)
+				if !ok {
+					return policies, ErrInvalidAccessPolicies
+				}
+				policy.Conditions[j].Values = append(spelled, ranges...)
 			}
-			policies.Policies[i].IPTags = tags
-		}
-		if raw, err = json.Marshal(withClientIPMarker(policies)); err != nil {
-			return policies, err
 		}
 	}
-	if err := putSetting(ctx, tx, settingAccessPolicies, string(raw), now); err != nil {
+	raw, err := marshalPolicies(policies)
+	if err != nil {
+		return policies, err
+	}
+	if err := putSetting(ctx, tx, settingAccessPolicies, raw, now); err != nil {
 		return policies, err
 	}
 	return policies, tx.Commit()
@@ -790,8 +728,8 @@ func (d *Database) DeleteAccessToken(ctx context.Context, id string, now time.Ti
 	if err != nil {
 		return AccessToken{}, err
 	}
-	var policies AccessPolicies
-	if raw != "" && json.Unmarshal([]byte(raw), &policies) == nil && slices.ContainsFunc(policies.Policies, func(policy AccessPolicy) bool { return slices.Contains(policy.Tokens, id) }) {
+	var saved storedPolicies
+	if raw != "" && json.Unmarshal([]byte(raw), &saved) == nil && slices.ContainsFunc(readPolicies(saved).Policies, func(policy AccessPolicy) bool { return policy.NamesToken(id) }) {
 		return AccessToken{}, ErrAccessTokenInUse
 	}
 	token := tokens[i]

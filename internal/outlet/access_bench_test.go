@@ -30,7 +30,7 @@ func BenchmarkAccessLog(b *testing.B) {
 			}
 			b.Run(name, func(b *testing.B) {
 				p := newPublicBench(b, 0)
-				policy := control.AccessPolicy{Name: "p", Enabled: true, Action: c.action, Hosts: []string{"app.example.com"}, AllPaths: true}
+				policy := control.AccessPolicy{Name: "p", Enabled: true, Action: c.action, Hosts: []string{"app.example.com"}}
 				if c.action == control.AccessAllow {
 					policy.AllowEveryone = true
 				}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -35,9 +36,9 @@ func TestAccessPolicyLimitedToClientAddresses(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.setPolicies(t,
-		control.AccessPolicy{Name: "blocked", Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true, IPRanges: []string{"192.0.2.0/24"}},
-		control.AccessPolicy{Name: "office", Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, AllPaths: true, IPTags: []string{"사무실"}},
-		control.AccessPolicy{Name: "everyone else", Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowEveryone: true},
+		control.AccessPolicy{Name: "blocked", Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: conditions(fromIPs("192.0.2.0/24"))},
+		control.AccessPolicy{Name: "office", Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: conditions(fromIPs("사무실"))},
+		control.AccessPolicy{Name: "everyone else", Enabled: true, Hosts: []string{"app.example.com"}, AllowEveryone: true},
 	)
 	if w := f.visitFrom("203.0.113.40", "app.example.com", "/"); w.Code != 200 || !strings.HasPrefix(w.Body.String(), "email= ") {
 		t.Fatalf("office: %d %q", w.Code, w.Body.String())
@@ -63,13 +64,15 @@ func TestAccessPolicyLimitedToClientAddresses(t *testing.T) {
 // A policy limited to some client addresses never hides the ones below it,
 // which still apply to every other address.
 func TestClientLimitedPolicyDoesNotShadow(t *testing.T) {
-	limited := &accessRule{all: true, ipLimited: true, policy: control.AccessPolicy{Action: control.AccessAllow}}
-	later := &accessRule{all: true, policy: control.AccessPolicy{Action: control.AccessAllow}}
-	if limited.shadows(later) {
+	config := compileAccess(control.AccessPolicies{Policies: []control.AccessPolicy{
+		{Enabled: true, Action: control.AccessAllow, Hosts: []string{"app.example.com"}, Conditions: conditions(fromIPs("192.0.2.0/24"))},
+		{Enabled: true, Action: control.AccessAllow, Hosts: []string{"app.example.com"}, Conditions: conditions()},
+	}}, control.IPAddresses{}, false)
+	limited, open := &config.rules[0], &config.rules[1]
+	if limited.shadows(open) {
 		t.Fatal("a policy for some addresses shadowed one for all")
 	}
-	open := &accessRule{all: true, policy: control.AccessPolicy{Action: control.AccessAllow}}
-	if !open.shadows(&accessRule{all: true, ipLimited: true, policy: control.AccessPolicy{Action: control.AccessAllow}}) {
+	if !open.shadows(limited) {
 		t.Fatal("a policy for every address should shadow a later one for some")
 	}
 }
@@ -171,7 +174,11 @@ func TestAddressBookAndPoliciesApplyThroughTheAPI(t *testing.T) {
 		t.Fatalf("create: %d %s", w.Code, w.Body.String())
 	}
 	policy := func(name, action string, tags []string, everyone bool) map[string]any {
-		return map[string]any{"name": name, "ip_tags": tags, "ip_ranges": []string{}, "enabled": true, "action": action, "hosts": []string{"app.example.com"}, "all_paths": true, "allow_everyone": everyone}
+		rows := []map[string]any{}
+		if len(tags) != 0 {
+			rows = append(rows, map[string]any{"field": "client_ip", "operator": "in", "not": false, "values": tags})
+		}
+		return map[string]any{"name": name, "enabled": true, "action": action, "hosts": []string{"app.example.com"}, "conditions": rows, "allow_everyone": everyone}
 	}
 	body := map[string]any{"policies": []any{policy("office", "bypass", []string{"사무실"}, false), policy("everyone else", "allow", []string{}, true)}}
 	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, body); w.Code != 200 {
@@ -195,11 +202,24 @@ func TestAddressBookAndPoliciesApplyThroughTheAPI(t *testing.T) {
 	if w := request(h, "GET", "/api/v1/audit?action=security.ip_address", f.admin, nil); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &events) != nil || len(events.Events) != 2 {
 		t.Fatalf("audit: %d %s", w.Code, w.Body.String())
 	}
-	// A console from before client IP conditions sends policies without
-	// them; saving that would widen the bypass to every address.
-	old := map[string]any{"name": "office", "enabled": true, "action": "bypass", "hosts": []string{"app.example.com"}, "all_paths": true}
-	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []any{old}}); w.Code != 400 || errorCode(t, w) != "access_policies_outdated" {
-		t.Fatalf("old console: %d %s", w.Code, w.Body.String())
+	// A console from before conditions (0.7 and earlier) sends policies in
+	// the fields they replaced, with or without client IPs; saving what
+	// this version reads of them would widen the bypass to every address.
+	for _, old := range []map[string]any{
+		{"name": "office", "enabled": true, "action": "bypass", "hosts": []string{"app.example.com"}, "all_paths": true},
+		{"name": "office", "enabled": true, "action": "bypass", "hosts": []string{"app.example.com"}, "all_paths": true, "conditions": []any{}, "methods": []string{},
+			"require_token": false, "tokens": []string{}, "ip_tags": []string{"사무실"}, "ip_ranges": []string{}, "allow_everyone": false, "allowed_users": []string{}, "allowed_groups": []string{}, "allow_admins": false},
+	} {
+		if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []any{old}}); w.Code != 400 || errorCode(t, w) != "access_policies_outdated" {
+			t.Fatalf("old console %v: %d %s", old, w.Code, w.Body.String())
+		}
+	}
+	// A condition row without "not" is refused, rather than read as one
+	// without Not.
+	partial := policy("office", "bypass", []string{"사무실"}, false)
+	partial["conditions"] = []any{map[string]any{"field": "client_ip", "operator": "in", "values": []string{"사무실"}}}
+	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []any{partial}}); w.Code != 400 {
+		t.Fatalf("condition without not: %d %s", w.Code, w.Body.String())
 	}
 	if w := request(h, "PUT", "/api/v1/security/admin-access", f.admin, map[string]any{"restricted": false, "allowed": []string{}}); w.Code != 400 {
 		t.Fatalf("admin limit without allowed_tags: %d", w.Code)
@@ -227,15 +247,22 @@ func TestAdminLimitRefusesUnknownTagsFirst(t *testing.T) {
 // naming tags covering every address.
 func TestClientIPPoliciesFailClosed(t *testing.T) {
 	closed := closedAccess(control.AccessPolicies{Policies: []control.AccessPolicy{
-		{ID: "a", Enabled: true, Action: control.AccessAllow, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}, IPTags: []string{"office"}},
+		{ID: "a", Enabled: true, Action: control.AccessAllow, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}, Conditions: conditions(fromIPs("office"))},
 	}})
 	if p := closed.rules[0].policy; p.AllowEveryone || len(p.AllowedUsers) != 0 || p.AllowAdmins {
 		t.Fatalf("an office-only allow policy let people in from anywhere: %+v", p)
 	}
-	block := control.AccessPolicy{Name: "attackers", Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true, IPTags: []string{"attackers"}}
-	bypass := control.AccessPolicy{Name: "office", Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, AllPaths: true, IPTags: []string{"office"}}
+	block := control.AccessPolicy{Name: "attackers", Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: conditions(fromIPs("attackers"))}
+	bypass := control.AccessPolicy{Name: "office", Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: conditions(fromIPs("office"))}
 	config := compileAccess(control.AccessPolicies{Policies: []control.AccessPolicy{block, bypass}}, control.IPAddresses{}, true)
-	if config.rules[0].ipLimited || !config.rules[1].ipLimited || len(config.rules[1].ips) != 0 {
-		t.Fatalf("with the address book unreadable: block limited %v, bypass limited %v to %v", config.rules[0].ipLimited, config.rules[1].ipLimited, config.rules[1].ips)
+	// The block's client IP condition holds for every client; the bypass
+	// covers no request, its condition naming no address.
+	blockIP, bypassIP := config.rules[0].conditions[0], config.rules[1].conditions[0]
+	if config.rules[0].never || !blockIP.everyone || !config.rules[1].never || len(bypassIP.ips) != 0 {
+		t.Fatalf("with the address book unreadable: block never %v, for everyone %v; bypass never %v, to %v", config.rules[0].never, blockIP.everyone, config.rules[1].never, bypassIP.ips)
+	}
+	u, _ := url.Parse("https://app.example.com/")
+	if rule := config.matching("app.example.com", "GET", u, "", "198.51.100.30"); rule != &config.rules[0] {
+		t.Fatalf("a client outside every tag met %+v, not the block", rule)
 	}
 }

@@ -93,7 +93,7 @@ func (s *Store) ipAddressesView(ctx context.Context) (ipAddressesView, error) {
 	}
 	if policies, err := s.control.AccessPolicies(ctx); err == nil || errors.Is(err, control.ErrStoredAccessPolicies) {
 		for _, policy := range policies.Policies {
-			for _, tag := range policy.IPTags {
+			for _, tag := range policy.IPTags() {
 				if i, ok := index[strings.ToLower(tag)]; ok && !slices.Contains(view.Tags[i].Policies, policy.Name) {
 					view.Tags[i].Policies = append(view.Tags[i].Policies, policy.Name)
 				}

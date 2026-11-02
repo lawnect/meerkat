@@ -1,5 +1,5 @@
-import type { AccessCounts, AccessLogEntry, AccessMetrics, AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ClientBan, ClientBanSettings, ClientBansView, ConnectionLimits, HstsSettings, IpAddressEntry, IpAddressesView, IpAddressInput, IpTagUse, AdminAccessSettings, AdminAccessView, RateLimitSettings, Connector, DomainMode, FailureCause, FailureLogEntry, LatencySeries, LatencyStats, LogSettings, LogView, Outlet, RequestLogEntry, RequestTopRow, RequestTopView, Route, Service, SsoSettings, Target, TunnelGuardSettings, TunnelGuardView, UsageBucket, UsageSeries, UsageUnit } from './types';
-import { isIpRange } from './ipScope.svelte';
+import type { AccessCondition, AccessCounts, AccessLogEntry, AccessMetrics, AccessPoliciesView, AccessPolicy, AccessProviderView, AccessToken, AccessTokenInput, AccessTokensView, CreatedAccessToken, AddressMode, AlertRules, AlertSettings, AuditEvent, BlockCondition, BlockOperator, BlockRule, BlockRulesView, ClientBan, ClientBanSettings, ClientBansView, ConnectionLimits, HstsSettings, IpAddressEntry, IpAddressesView, IpAddressInput, IpTagUse, AdminAccessSettings, AdminAccessView, RateLimitSettings, Connector, DomainMode, FailureCause, FailureLogEntry, LatencySeries, LatencyStats, LogSettings, LogView, Outlet, RequestLogEntry, RequestTopRow, RequestTopView, Route, Service, SsoSettings, Target, TunnelGuardSettings, TunnelGuardView, UsageBucket, UsageSeries, UsageUnit } from './types';
+import { isIpRange, splitScope } from './ipScope.svelte';
 import { accessDecisions, accessMethods, accessRequesters, failureCauseGroups, failureCauses, refusedCauses, requestClasses, requestTopPeriods, requestTopSorts, serviceCauses } from './types';
 
 const now = (): string => new Date().toISOString();
@@ -239,7 +239,7 @@ function ipAddressesView(): IpAddressesView {
       const use = tags.get(tag.toLowerCase()) ?? {
         name: tag,
         count: 0,
-        policies: accessPolicies.filter((policy) => policy.ip_tags.some((name) => sameTag(name, tag))).map((policy) => policy.name),
+        policies: accessPolicies.filter((policy) => policyTags(policy).some((name) => sameTag(name, tag))).map((policy) => policy.name),
         admin_access: adminAccess.allowed_tags.some((name) => sameTag(name, tag)),
       };
       use.count += 1;
@@ -268,7 +268,7 @@ function ipAddressInput(input: unknown): IpAddressInput {
 // 정책이나 관리 콘솔 접근 제한이 쓰는 태그에 항목이 하나도 남지 않으면 거부합니다.
 function ipAddressesKept(next: IpAddressEntry[]): void {
   if (adminAccess.restricted && adminAccess.allowed_tags.length && clientAllowed(adminAccess, ipAddresses) && !clientAllowed(adminAccess, next)) fail('admin_access_locks_out');
-  const used = [...accessPolicies.flatMap((policy) => policy.ip_tags), ...adminAccess.allowed_tags];
+  const used = [...accessPolicies.flatMap(policyTags), ...adminAccess.allowed_tags];
   if (used.some((name) => ipAddresses.some((entry) => entry.tags.some((tag) => sameTag(tag, name))) && !next.some((entry) => entry.tags.some((tag) => sameTag(tag, name))))) fail('ip_tag_in_use');
 }
 // 다른 항목에 이미 있는 태그는 그 표기를 따릅니다.
@@ -296,6 +296,8 @@ function rangeHolds(range: string, address: string): boolean {
 const clientAllowed = (settings: AdminAccessSettings, entries: IpAddressEntry[]): boolean =>
   settings.allowed.some((range) => rangeHolds(range, mockClient))
   || entries.some((entry) => entry.tags.some((tag) => settings.allowed_tags.some((name) => sameTag(name, tag))) && rangeHolds(entry.range, mockClient));
+// 정책의 접속 IP 조건이 가리키는 태그(IP·CIDR이 아닌 값).
+const policyTags = (policy: AccessPolicy): string[] => policy.conditions.filter((condition) => condition.field === 'client_ip').flatMap((condition) => splitScope(condition.values).tags);
 // 접근 정책과 관리 콘솔 접근 제한의 태그: 주소록에 있는 태그만 받아 주소록의 표기로 저장하고 최대 20개, 중복은 한 번만 둡니다.
 function resolveTags(value: unknown, code: string): string[] {
   if (value === undefined || value === null) return [];
@@ -367,9 +369,9 @@ let accessProvider: Omit<AccessProviderView, 'redirect_uri' | 'available'> = {
   session_hours: 24,
 };
 let accessPolicies: AccessPolicy[] = [
-  { id: 'office', name: 'Office network', enabled: true, action: 'bypass', hosts: ['vault.example.test'], all_paths: true, conditions: [], methods: [], require_token: false, tokens: [], ip_tags: ['사무실'], ip_ranges: [], allow_everyone: false, allowed_users: [], allowed_groups: [], allow_admins: false },
-  { id: 'vault-api', name: 'Vault API', enabled: true, action: 'bypass', hosts: ['vault.example.test'], all_paths: false, conditions: [{ operator: 'starts_with', value: '/v1/' }], methods: ['GET', 'POST'], require_token: true, tokens: ['deploybot'], ip_tags: [], ip_ranges: [], allow_everyone: false, allowed_users: [], allowed_groups: [], allow_admins: false },
-  { id: 'vault', name: 'Vault members', enabled: true, action: 'allow', hosts: ['vault.example.test'], all_paths: true, conditions: [], methods: [], require_token: false, tokens: [], ip_tags: [], ip_ranges: [], allow_everyone: false, allowed_users: ['@example.test'], allowed_groups: [], allow_admins: true },
+  { id: 'office', name: 'Office network', enabled: true, action: 'bypass', hosts: ['vault.example.test'], conditions: [{ field: 'client_ip', operator: 'in', not: false, values: ['사무실'] }], allow_everyone: false, allowed_users: [], allowed_groups: [], allow_admins: false },
+  { id: 'vault-api', name: 'Vault API', enabled: true, action: 'bypass', hosts: ['vault.example.test'], conditions: [{ field: 'path', operator: 'starts_with', not: false, values: ['/v1/'] }, { field: 'method', operator: 'in', not: false, values: ['GET', 'POST'] }, { field: 'token', operator: 'in', not: false, values: ['deploybot'] }], allow_everyone: false, allowed_users: [], allowed_groups: [], allow_admins: false },
+  { id: 'vault', name: 'Vault members', enabled: true, action: 'allow', hosts: ['vault.example.test'], conditions: [], allow_everyone: false, allowed_users: ['@example.test'], allowed_groups: [], allow_admins: true },
 ];
 const accessPoliciesResponse = (): AccessPoliciesView => structuredClone({ policies: accessPolicies, addresses: publicAddresses() });
 // 접근 토큰 데모 상태. 값은 만들 때만 돌려줍니다.
@@ -378,11 +380,12 @@ let accessTokens: Array<Omit<AccessToken, 'policies'>> = [
   { id: 'monitor', name: 'Uptime monitor', hosts: ['*.example.test'], ranges: [], created_at: '2026-10-22T09:30:00Z', expires_at: '2027-01-20T09:30:00Z', last_used_at: '' },
 ];
 // 서버처럼 토큰을 지정했거나, 모든 토큰을 받으면서 주소가 겹치는 정책을 보여 줍니다.
+const policyTokens = (policy: AccessPolicy): string[] => policy.conditions.filter((condition) => condition.field === 'token').flatMap((condition) => condition.values);
 const hostsMeet = (a: string, b: string): boolean => a === b || (a.startsWith('*.') && b.endsWith(a.slice(1))) || (b.startsWith('*.') && a.endsWith(b.slice(1)));
 const tokenView = (token: Omit<AccessToken, 'policies'>): AccessToken => structuredClone({
   ...token,
   policies: accessPolicies
-    .filter((policy) => policy.tokens.includes(token.id) || (policy.require_token && !policy.tokens.length && policy.hosts.some((host) => token.hosts.some((other) => hostsMeet(host, other)))))
+    .filter((policy) => policyTokens(policy).includes(token.id) || (policy.conditions.some((condition) => condition.field === 'token' && !condition.not && condition.operator === 'any') && policy.hosts.some((host) => token.hosts.some((other) => hostsMeet(host, other)))))
     .map((policy) => ({ id: policy.id, name: policy.name })),
 });
 // 서버처럼 IP 대역을 CIDR로 정리합니다: 단일 주소는 /32·/128, IPv4는 네트워크 주소로 맞추고, IPv6는 URL 파서로 확인해 표준 표기로 둡니다.
@@ -1598,7 +1601,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
   if (tokenMatch && method === 'DELETE') {
     const id = decodeURIComponent(tokenMatch[1]);
     if (!accessTokens.some((token) => token.id === id)) fail('access_token_not_found');
-    if (accessPolicies.some((policy) => policy.tokens.includes(id))) fail('access_token_in_use');
+    if (accessPolicies.some((policy) => policyTokens(policy).includes(id))) fail('access_token_in_use');
     accessTokens = accessTokens.filter((token) => token.id !== id);
     return undefined;
   }
@@ -1615,46 +1618,53 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     const policies = (body.policies as unknown[]).map((raw): AccessPolicy => {
       const policy = (raw ?? {}) as Partial<AccessPolicy>;
       const name = typeof policy.name === 'string' ? policy.name.trim() : '';
-      if (!name || name.length > 64 || /[\u0000-\u001f\u007f]/.test(name) || typeof policy.id !== 'string' || typeof policy.enabled !== 'boolean' || typeof policy.all_paths !== 'boolean' || typeof policy.allow_admins !== 'boolean' || typeof policy.allow_everyone !== 'boolean') fail('invalid_access_policies');
+      // 서버처럼 조건 이전의 콘솔이 보내는 키가 있으면 거부합니다(그 키를 버리고 저장하면 정책이 넓어집니다).
+      if (['all_paths', 'methods', 'require_token', 'tokens', 'ip_tags', 'ip_ranges'].some((key) => key in (policy as object))) fail('access_policies_outdated');
+      if (!name || name.length > 64 || /[\u0000-\u001f\u007f]/.test(name) || typeof policy.id !== 'string' || typeof policy.enabled !== 'boolean' || typeof policy.allow_admins !== 'boolean' || typeof policy.allow_everyone !== 'boolean') fail('invalid_access_policies');
       const action = policy.action ?? 'allow';
       if (action !== 'allow' && action !== 'bypass' && action !== 'block') fail('invalid_access_policies');
       if (!Array.isArray(policy.hosts) || policy.hosts.length < 1 || policy.hosts.length > 100) fail('invalid_access_policies');
       const hosts = [...new Set(policy.hosts.map((host) => (typeof host === 'string' ? host.trim().toLowerCase() : '')))];
       if (hosts.some((host) => !validBlockHost(host))) fail('invalid_access_policies');
-      // 모든 경로를 보호할 때는 조건을 버리고, 선택한 경로는 조건이 1개 이상 있어야 합니다.
-      let conditions: BlockCondition[] = [];
-      if (!policy.all_paths) {
-        if (!Array.isArray(policy.conditions) || policy.conditions.length < 1 || policy.conditions.length > 50) fail('invalid_access_policies');
-        const seen = new Set<string>();
-        // 요청 경로는 디코딩하고 ;매개변수를 뺀 형태로 비교하므로, 그런 값은 거부합니다.
-        conditions = policy.conditions.map((raw) => {
-          const entry = (raw ?? {}) as Partial<BlockCondition>;
-          if (entry.operator !== 'matches' && typeof entry.value === 'string' && /%[0-9a-f]{2}|;/i.test(entry.value)) fail('invalid_access_policies');
-          return (action === 'bypass' ? bypassCondition(raw) : normalizeCondition(raw)) ?? fail('invalid_access_policies');
-        }).filter((entry) => {
-          const key = `${entry.operator}\0${entry.value}`;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-      }
-      // 서버처럼 메서드는 대문자로 바꿔 accessMethods 순서로 정리하고, 그 밖의 메서드(HEAD 포함)는 거부합니다.
-      if (policy.methods !== undefined && policy.methods !== null && (!Array.isArray(policy.methods) || policy.methods.some((entry) => typeof entry !== 'string'))) fail('invalid_access_policies');
-      const named = (policy.methods ?? []).map((entry) => entry.trim().toUpperCase());
-      if (named.some((entry) => !(accessMethods as readonly string[]).includes(entry))) fail('invalid_access_policies');
-      const methods = accessMethods.filter((entry) => named.includes(entry));
+      if (!Array.isArray(policy.conditions) || policy.conditions.length > 20) fail(Array.isArray(policy.conditions) ? 'invalid_access_policies' : 'invalid_request');
+      const conditions = policy.conditions.map((raw): AccessCondition => {
+        const row = (raw ?? {}) as Partial<AccessCondition>;
+        if (typeof row.not !== 'boolean' || !Array.isArray(row.values) || typeof row.field !== 'string' || typeof row.operator !== 'string') fail('invalid_request');
+        const values = row.values.map((value) => (typeof value === 'string' ? value.trim() : fail('invalid_access_policies')));
+        switch (row.field) {
+          case 'path': {
+            if (!values.length || values.length > 50) fail('invalid_access_policies');
+            // 서버처럼 여는 쪽(우회, 보호 정책의 제외)은 앱이 받는 그대로, 막는 쪽은 넓게(소문자 등) 비교하는 형태로 저장합니다.
+            const strict = (action === 'bypass') !== row.not;
+            const normalized = values.map((value) => {
+              if (row.operator !== 'matches' && /%[0-9a-f]{2}|;/i.test(value)) fail('invalid_access_policies');
+              return ((strict ? bypassCondition : normalizeCondition)({ operator: row.operator, value }) ?? fail('invalid_access_policies')).value;
+            });
+            return { field: 'path', operator: row.operator as BlockOperator, not: row.not, values: [...new Set(normalized)] };
+          }
+          case 'method': {
+            const named = values.map((value) => value.toUpperCase());
+            if (row.operator !== 'in' || !named.length || named.some((entry) => !(accessMethods as readonly string[]).includes(entry))) fail('invalid_access_policies');
+            return { field: 'method', operator: 'in', not: row.not, values: accessMethods.filter((entry) => named.includes(entry)) };
+          }
+          case 'client_ip': {
+            if (row.operator !== 'in' || !values.length) fail('invalid_access_policies');
+            const scope = splitScope(values);
+            const tags = resolveTags(scope.tags, 'invalid_access_policies');
+            const ranges = normalizeAddresses(scope.ranges) ?? fail('invalid_access_policies');
+            if (ranges.length > 50) fail('invalid_access_policies');
+            return { field: 'client_ip', operator: 'in', not: row.not, values: [...tags, ...ranges] };
+          }
+          case 'token': {
+            if (row.operator === 'any' && !values.length) return { field: 'token', operator: 'any', not: row.not, values: [] };
+            if (row.operator !== 'in' || !values.length || values.length > 100 || values.some((id) => !/^[A-Za-z0-9_-]{1,32}$/.test(id) || !accessTokens.some((token) => token.id === id))) fail('invalid_access_policies');
+            return { field: 'token', operator: 'in', not: row.not, values: [...new Set(values)] };
+          }
+        }
+        return fail('invalid_access_policies');
+      });
       let allowedUsers = entries(policy.allowed_users, true, (entry) => /^[^\s@]+@[^\s@]+$/.test(entry) || /^@[^\s@]+$/.test(entry));
       let allowedGroups = entries(policy.allowed_groups, false, (entry) => !/[\u0000-\u001f\u007f]/.test(entry));
-      // 서버처럼 토큰 ID는 공백을 지우지 않고 형식부터 확인한 뒤, 토큰 조건이 없으면 비우고, 있으면 있는 토큰만 받습니다.
-      if (policy.require_token !== undefined && typeof policy.require_token !== 'boolean') fail('invalid_access_policies');
-      if (policy.tokens !== undefined && policy.tokens !== null && !Array.isArray(policy.tokens)) fail('invalid_access_policies');
-      const ids = [...new Set(policy.tokens ?? [])];
-      if (ids.length > 100 || ids.some((id) => typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,32}$/.test(id))) fail('invalid_access_policies');
-      const tokens = policy.require_token ? ids : [];
-      if (tokens.some((id) => !accessTokens.some((token) => token.id === id))) fail('invalid_access_policies');
-      // IP 범위: 태그는 주소록에 있는 것만 받아 주소록의 표기로 저장하고, IP·CIDR은 표준 표기로 정리합니다.
-      const ipTags = resolveTags(policy.ip_tags, 'invalid_access_policies');
-      const ipRanges = normalizeAddresses(policy.ip_ranges ?? []) ?? fail('invalid_access_policies');
       let everyone = policy.allow_everyone;
       let admins = policy.allow_admins;
       // 서버처럼 우회·차단 정책은 허용 대상을, 전체 허용은 사용자·그룹·관리자를 비웁니다.
@@ -1662,7 +1672,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
       if (action !== 'allow' || everyone) [allowedUsers, allowedGroups, admins] = [[], [], false];
       // 아무도 허용하지 않는 허용 정책은 주소를 모두에게 닫아 버립니다.
       if (action === 'allow' && !everyone && allowedUsers.length + allowedGroups.length === 0 && !admins) fail('invalid_access_policies');
-      return { id: policy.id, name, enabled: policy.enabled, action, hosts, all_paths: policy.all_paths, conditions, methods, require_token: policy.require_token === true, tokens, ip_tags: ipTags, ip_ranges: ipRanges, allow_everyone: everyone, allowed_users: allowedUsers, allowed_groups: allowedGroups, allow_admins: admins };
+      return { id: policy.id, name, enabled: policy.enabled, action, hosts, conditions, allow_everyone: everyone, allowed_users: allowedUsers, allowed_groups: allowedGroups, allow_admins: admins };
     });
     const ids = policies.map((policy) => policy.id).filter(Boolean);
     if (new Set(ids).size !== ids.length) fail('invalid_access_policies');

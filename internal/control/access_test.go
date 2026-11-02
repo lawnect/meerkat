@@ -12,26 +12,26 @@ import (
 
 // Policies need a name, addresses, paths unless all, and someone to let in.
 func TestAccessPoliciesNormalize(t *testing.T) {
-	ok := AccessPolicy{Name: "Staff", Enabled: true, Hosts: []string{" App.Example.com ", "*.example.org"}, Conditions: []BlockCondition{{Operator: BlockStartsWith, Value: "/Admin/"}}, AllowedUsers: []string{"Alice@Example.com", "@example.org"}}
+	ok := AccessPolicy{Name: "Staff", Enabled: true, Hosts: []string{" App.Example.com ", "*.example.org"}, Conditions: []AccessCondition{onPaths(BlockStartsWith, "/Admin/")}, AllowedUsers: []string{"Alice@Example.com", "@example.org"}}
 	normalized, valid := AccessPolicies{Policies: []AccessPolicy{ok}}.Normalize()
-	if !valid || normalized.Policies[0].ID == "" || normalized.Policies[0].Hosts[0] != "app.example.com" || normalized.Policies[0].Conditions[0].Value != "/admin/" || normalized.Policies[0].AllowedUsers[0] != "alice@example.com" {
+	if !valid || normalized.Policies[0].ID == "" || normalized.Policies[0].Hosts[0] != "app.example.com" || normalized.Policies[0].Conditions[0].Values[0] != "/admin/" || normalized.Policies[0].AllowedUsers[0] != "alice@example.com" {
 		t.Fatalf("normalized = %+v %v", normalized, valid)
 	}
 	for name, change := range map[string]func(*AccessPolicy){
 		"no name":             func(p *AccessPolicy) { p.Name = " " },
 		"no hosts":            func(p *AccessPolicy) { p.Hosts = nil },
 		"bad host":            func(p *AccessPolicy) { p.Hosts = []string{"https://app.example.com"} },
-		"no paths":            func(p *AccessPolicy) { p.Conditions = nil },
-		"bad pattern":         func(p *AccessPolicy) { p.Conditions = []BlockCondition{{Operator: BlockMatches, Value: "("}} },
+		"no path values":      func(p *AccessPolicy) { p.Conditions = []AccessCondition{onPaths(BlockStartsWith)} },
+		"bad pattern":         func(p *AccessPolicy) { p.Conditions = []AccessCondition{onPaths(BlockMatches, "(")} },
 		"nobody":              func(p *AccessPolicy) { p.AllowedUsers = nil },
 		"bad user":            func(p *AccessPolicy) { p.AllowedUsers = []string{"not an email"} },
 		"duplicate id":        func(p *AccessPolicy) { p.ID = "same" },
 		"control in the name": func(p *AccessPolicy) { p.Name = "a\nb" },
 		// Request paths are compared decoded and without ";parameters".
-		"encoded path":            func(p *AccessPolicy) { p.Conditions = []BlockCondition{{Operator: BlockEquals, Value: "/%61dmin"}} },
-		"encoded part":            func(p *AccessPolicy) { p.Conditions = []BlockCondition{{Operator: BlockContains, Value: "%2F"}} },
-		"parameter":               func(p *AccessPolicy) { p.Conditions = []BlockCondition{{Operator: BlockStartsWith, Value: "/a;b/"}} },
-		"equals with a parameter": func(p *AccessPolicy) { p.Conditions = []BlockCondition{{Operator: BlockEquals, Value: "/admin;foo"}} },
+		"encoded path":            func(p *AccessPolicy) { p.Conditions = []AccessCondition{onPaths(BlockEquals, "/%61dmin")} },
+		"encoded part":            func(p *AccessPolicy) { p.Conditions = []AccessCondition{onPaths(BlockContains, "%2F")} },
+		"parameter":               func(p *AccessPolicy) { p.Conditions = []AccessCondition{onPaths(BlockStartsWith, "/a;b/")} },
+		"equals with a parameter": func(p *AccessPolicy) { p.Conditions = []AccessCondition{onPaths(BlockEquals, "/admin;foo")} },
 	} {
 		policy := ok
 		change(&policy)
@@ -44,7 +44,7 @@ func TestAccessPoliciesNormalize(t *testing.T) {
 		}
 	}
 	pattern := ok
-	pattern.Conditions = []BlockCondition{{Operator: BlockMatches, Value: "^/files/100%$"}, {Operator: BlockEquals, Value: "/100%"}}
+	pattern.Conditions = []AccessCondition{onPaths(BlockMatches, "^/files/100%$"), onPaths(BlockEquals, "/100%")}
 	if _, valid := (AccessPolicies{Policies: []AccessPolicy{pattern}}).Normalize(); !valid {
 		t.Fatal("a percent sign that isn't an escape refused")
 	}
@@ -54,20 +54,21 @@ func TestAccessPoliciesNormalize(t *testing.T) {
 		policy AccessPolicy
 		action string
 	}{
-		{AccessPolicy{Name: "Open", Hosts: []string{"app.example.com"}, AllPaths: true, Action: AccessBypass, AllowedUsers: []string{"a@example.com"}, AllowEveryone: true}, AccessBypass},
-		{AccessPolicy{Name: "Shut", Hosts: []string{"app.example.com"}, AllPaths: true, Action: AccessBlock, AllowAdmins: true}, AccessBlock},
-		{AccessPolicy{Name: "Everyone", Hosts: []string{"app.example.com"}, AllPaths: true, AllowEveryone: true, AllowedGroups: []string{"x"}, AllowAdmins: true}, AccessAllow},
+		{AccessPolicy{Name: "Open", Hosts: []string{"app.example.com"}, Action: AccessBypass, AllowedUsers: []string{"a@example.com"}, AllowEveryone: true}, AccessBypass},
+		{AccessPolicy{Name: "Shut", Hosts: []string{"app.example.com"}, Action: AccessBlock, AllowAdmins: true}, AccessBlock},
+		{AccessPolicy{Name: "Everyone", Hosts: []string{"app.example.com"}, AllowEveryone: true, AllowedGroups: []string{"x"}, AllowAdmins: true}, AccessAllow},
 	} {
 		normalized, valid := (AccessPolicies{Policies: []AccessPolicy{c.policy}}).Normalize()
 		if got := normalized.Policies[0]; !valid || got.Action != c.action || len(got.AllowedUsers)+len(got.AllowedGroups) != 0 || got.AllowAdmins || got.AllowEveryone != (c.action == AccessAllow) {
 			t.Fatalf("%s = %+v %v", c.policy.Name, normalized, valid)
 		}
 	}
-	if _, valid := (AccessPolicies{Policies: []AccessPolicy{{Name: "x", Hosts: []string{"app.example.com"}, AllPaths: true, Action: "maybe", AllowEveryone: true}}}).Normalize(); valid {
+	if _, valid := (AccessPolicies{Policies: []AccessPolicy{{Name: "x", Hosts: []string{"app.example.com"}, Action: "maybe", AllowEveryone: true}}}).Normalize(); valid {
 		t.Fatal("unknown action accepted")
 	}
-	all := AccessPolicy{Name: "All", Hosts: []string{"app.example.com"}, AllPaths: true, Conditions: []BlockCondition{{Operator: BlockStartsWith, Value: "/x/"}}, AllowAdmins: true}
-	if normalized, valid := (AccessPolicies{Policies: []AccessPolicy{all}}).Normalize(); !valid || len(normalized.Policies[0].Conditions) != 0 {
+	// No conditions covers every request for the hosts.
+	all := AccessPolicy{Name: "All", Hosts: []string{"app.example.com"}, AllowAdmins: true}
+	if normalized, valid := (AccessPolicies{Policies: []AccessPolicy{all}}).Normalize(); !valid || normalized.Policies[0].Conditions == nil || len(normalized.Policies[0].Conditions) != 0 {
 		t.Fatalf("all paths = %+v %v", normalized, valid)
 	}
 }
@@ -119,7 +120,7 @@ func TestAccessProviderNormalizeAndStorage(t *testing.T) {
 func TestAccessPoliciesSavedInvalid(t *testing.T) {
 	ctx := context.Background()
 	db := openRouting(t)
-	if _, err := db.SetAccessPolicies(ctx, AccessPolicies{Policies: []AccessPolicy{{Name: "Staff", Enabled: true, Hosts: []string{"App.example.com"}, AllPaths: true, AllowAdmins: true}}}, time.Now()); err != nil {
+	if _, err := db.SetAccessPolicies(ctx, AccessPolicies{Policies: []AccessPolicy{{Name: "Staff", Enabled: true, Hosts: []string{"App.example.com"}, AllowAdmins: true}}}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if policies, err := db.AccessPolicies(ctx); err != nil || policies.Policies[0].Hosts[0] != "app.example.com" {
@@ -209,7 +210,7 @@ func TestAccessTokenStorage(t *testing.T) {
 	if used, err := db.AccessTokenUse(ctx); err != nil || len(used) != 1 || !used[token.ID].Equal(now.Truncate(time.Second)) {
 		t.Fatalf("used = %v %v", used, err)
 	}
-	ci := AccessPolicy{Name: "CI", Action: AccessBypass, Hosts: []string{"app.example.com"}, AllPaths: true, RequireToken: true, Tokens: []string{token.ID}}
+	ci := AccessPolicy{Name: "CI", Action: AccessBypass, Hosts: []string{"app.example.com"}, Conditions: []AccessCondition{withToken(token.ID)}}
 	if _, err := db.SetAccessPolicies(ctx, AccessPolicies{Policies: []AccessPolicy{ci}}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +218,7 @@ func TestAccessTokenStorage(t *testing.T) {
 		t.Fatalf("in use: %v", err)
 	}
 	// A policy that takes any token holds none back.
-	ci.Tokens = nil
+	ci.Conditions = []AccessCondition{withToken()}
 	if _, err := db.SetAccessPolicies(ctx, AccessPolicies{Policies: []AccessPolicy{ci}}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -270,34 +271,34 @@ func TestBypassConditions(t *testing.T) {
 			t.Errorf("%+v = %+v %v, want %v", c.in, got, ok, c.ok)
 		}
 	}
-	policy := AccessPolicy{Name: "API", Action: AccessBypass, Hosts: []string{"app.example.com"}, Conditions: []BlockCondition{{BlockStartsWith, "/API/"}}}
-	if normalized, ok := (AccessPolicies{Policies: []AccessPolicy{policy}}).Normalize(); !ok || normalized.Policies[0].Conditions[0].Value != "/API/" {
+	policy := AccessPolicy{Name: "API", Action: AccessBypass, Hosts: []string{"app.example.com"}, Conditions: []AccessCondition{onPaths(BlockStartsWith, "/API/")}}
+	if normalized, ok := (AccessPolicies{Policies: []AccessPolicy{policy}}).Normalize(); !ok || normalized.Policies[0].Conditions[0].Values[0] != "/API/" {
 		t.Fatalf("bypass policy = %+v %v", normalized, ok)
 	}
-	policy.Conditions = []BlockCondition{{BlockStartsWith, "/v1;x/"}}
+	policy.Conditions = []AccessCondition{onPaths(BlockStartsWith, "/v1;x/")}
 	if _, ok := (AccessPolicies{Policies: []AccessPolicy{policy}}).Normalize(); ok {
 		t.Fatal("bypass condition with a parameter accepted")
 	}
 }
 
-// A policy can be limited to some methods, kept in one order; GET takes
-// HEAD along, and none named means every method.
+// A method condition names some methods, kept in one order; GET takes HEAD
+// along. Without one, every method.
 func TestAccessPolicyMethods(t *testing.T) {
-	policy := AccessPolicy{Name: "API", Action: AccessBypass, Hosts: []string{"app.example.com"}, AllPaths: true}
+	policy := AccessPolicy{Name: "API", Action: AccessBypass, Hosts: []string{"app.example.com"}}
 	for _, c := range []struct {
 		in   []string
 		want []string
 	}{
-		{nil, []string{}},
+		{nil, nil},
 		{[]string{" post", "get", "GET"}, []string{"GET", "POST"}},
 		{[]string{"OPTIONS", "delete", "patch", "put"}, []string{"PUT", "PATCH", "DELETE", "OPTIONS"}},
 		{[]string{"HEAD"}, nil},
 		{[]string{"TRACE"}, nil},
 		{[]string{"GET", ""}, nil},
 	} {
-		policy.Methods = c.in
+		policy.Conditions = []AccessCondition{onMethods(c.in...)}
 		normalized, ok := (AccessPolicies{Policies: []AccessPolicy{policy}}).Normalize()
-		if ok != (c.want != nil) || ok && !slices.Equal(normalized.Policies[0].Methods, c.want) {
+		if ok != (c.want != nil) || ok && !slices.Equal(normalized.Policies[0].Conditions[0].Values, c.want) {
 			t.Errorf("%q = %+v %v, want %q", c.in, normalized.Policies, ok, c.want)
 		}
 	}
@@ -321,41 +322,28 @@ func TestAccessPolicyMethods(t *testing.T) {
 	}
 }
 
-// A policy can require an access token, one of some or any; the tokens it
-// names are kept only then, and don't count as whom an allow policy lets in.
+// A token condition asks for any valid access token or one of some, by
+// ID; it doesn't count as whom an allow policy lets in.
 func TestAccessPolicyTokens(t *testing.T) {
 	for _, c := range []struct {
-		name   string
-		policy AccessPolicy
-		tokens []string
+		name      string
+		policy    AccessPolicy
+		tokens    []string
+		takes     bool
+		malformed bool
 	}{
-		{"bypass with tokens", AccessPolicy{Action: AccessBypass, RequireToken: true, Tokens: []string{"tok1", "tok1", "tok2"}}, []string{"tok1", "tok2"}},
-		{"any token", AccessPolicy{Action: AccessBlock, RequireToken: true}, []string{}},
-		{"tokens without the condition", AccessPolicy{Action: AccessBypass, Tokens: []string{"tok1"}}, []string{}},
-		{"allow with a token and people", AccessPolicy{RequireToken: true, Tokens: []string{"tok1"}, AllowEveryone: true}, []string{"tok1"}},
-		{"allow with only a token", AccessPolicy{RequireToken: true, Tokens: []string{"tok1"}}, nil},
-		{"bad token ID", AccessPolicy{Action: AccessBypass, RequireToken: true, Tokens: []string{"no such/token"}}, nil},
+		{"bypass with tokens", AccessPolicy{Action: AccessBypass, Conditions: []AccessCondition{withToken("tok1", "tok1", "tok2")}}, []string{"tok1", "tok2"}, true, false},
+		{"any token", AccessPolicy{Action: AccessBlock, Conditions: []AccessCondition{withToken()}}, []string{}, true, false},
+		{"without a token", AccessPolicy{Action: AccessBlock, Conditions: []AccessCondition{not(withToken())}}, []string{}, false, false},
+		{"allow with a token and people", AccessPolicy{Conditions: []AccessCondition{withToken("tok1")}, AllowEveryone: true}, []string{"tok1"}, true, false},
+		{"allow with only a token", AccessPolicy{Conditions: []AccessCondition{withToken("tok1")}}, nil, false, true},
+		{"bad token ID", AccessPolicy{Action: AccessBypass, Conditions: []AccessCondition{withToken("no such/token")}}, nil, false, true},
+		{"any with IDs", AccessPolicy{Action: AccessBypass, Conditions: []AccessCondition{{Field: ConditionToken, Operator: AccessAnyToken, Values: []string{"tok1"}}}}, nil, false, true},
 	} {
-		c.policy.Name, c.policy.Hosts, c.policy.AllPaths = "x", []string{"app.example.com"}, true
+		c.policy.Name, c.policy.Hosts = "x", []string{"app.example.com"}
 		normalized, ok := (AccessPolicies{Policies: []AccessPolicy{c.policy}}).Normalize()
-		if ok != (c.tokens != nil) || ok && !slices.Equal(normalized.Policies[0].Tokens, c.tokens) {
+		if ok == c.malformed || ok && (!slices.Equal(normalized.Policies[0].Conditions[0].Values, c.tokens) || normalized.Policies[0].TakesToken() != c.takes) {
 			t.Errorf("%s = %+v %v, want %q", c.name, normalized.Policies, ok, c.tokens)
-		}
-	}
-	for _, c := range []struct {
-		policy AccessPolicy
-		id     string
-		takes  bool
-	}{
-		{AccessPolicy{}, "", true},
-		{AccessPolicy{}, "tok1", true},
-		{AccessPolicy{RequireToken: true}, "", false},
-		{AccessPolicy{RequireToken: true}, "tok1", true},
-		{AccessPolicy{RequireToken: true, Tokens: []string{"tok1"}}, "tok1", true},
-		{AccessPolicy{RequireToken: true, Tokens: []string{"tok1"}}, "tok2", false},
-	} {
-		if c.policy.TakesToken(c.id) != c.takes {
-			t.Errorf("%+v TakesToken(%q) != %v", c.policy, c.id, c.takes)
 		}
 	}
 }
@@ -364,7 +352,7 @@ func TestAccessPolicyTokens(t *testing.T) {
 func TestAccessPoliciesSavedWithoutID(t *testing.T) {
 	ctx := context.Background()
 	db := openRouting(t)
-	raw := `{"policies":[{"name":"Open","enabled":true,"action":"bypass","hosts":["app.example.com"],"all_paths":true,"tokens":[],"allowed_users":[],"allowed_groups":[]}]}`
+	raw := `{"policies":[{"name":"Open","enabled":true,"action":"bypass","hosts":["app.example.com"],"format":2,"conditions":[],"allowed_users":[],"allowed_groups":[]}]}`
 	if err := putSetting(ctx, db.db, settingAccessPolicies, raw, time.Now()); err != nil {
 		t.Fatal(err)
 	}

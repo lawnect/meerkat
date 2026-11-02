@@ -22,14 +22,15 @@
   import { api, errorMessage } from '../api';
   import { intlLocale, translations } from '../i18n.svelte';
   import { Add12, Dismiss, ReOrder, Shield20, Warning, Warning12 } from '../icons';
-  import { isIpRange, joinScope, splitScope, tagSuggestions, unknownTags } from '../ipScope.svelte';
-  import { accessMethods, type AccessAction, type AccessMethod, type AccessPoliciesView, type AccessPolicy, type AccessToken, type BlockCondition, type BlockOperator, type IpTagUse } from '../types';
+  import { isIpRange, splitScope, tagSuggestions, unknownTags } from '../ipScope.svelte';
+  import { accessMethods, type AccessAction, type AccessCondition, type AccessConditionField, type AccessPoliciesView, type AccessPolicy, type AccessToken, type BlockOperator, type IpTagUse } from '../types';
   import AddressSelect from './AddressSelect.svelte';
   import IconButton from './IconButton.svelte';
   import InfoTooltip from './InfoTooltip.svelte';
   import TagInput from './TagInput.svelte';
 
-  // 접근 보호 화면의 접근 정책 카드. 주소(또는 그 아래 일부 경로)마다 허용(로그인 후 허용 대상만)·우회(로그인 없이)·차단을 정합니다.
+  // 접근 보호 화면의 접근 정책 카드. 주소와 조건(경로, 메서드, 접속 IP, 접근 토큰을 필드·연산자·값으로 비교하는 줄, 모두 일치해야 적용)마다
+  // 허용(로그인 후 허용 대상만)·우회(로그인 없이)·차단을 정합니다.
   // 정책은 위에서부터 확인해 처음 일치하는 하나가 적용되며, 순서는 손잡이를 드래그하거나 화살표 키로 바꿉니다.
   // 스위치, 순서 변경, 대화상자의 저장·삭제는 모두 바로 서버에 저장하고, 응답으로 목록을 다시 채웁니다.
   // providerEnabled는 접근 보호 SSO가 켜져 있는지(알 수 없으면 null)로, 꺼져 있으면 정책이 적용되지 않는다고 안내합니다.
@@ -40,7 +41,7 @@
 
   const t = translations({
     title: 'Access policies',
-    tip: 'Policies are checked from the top; the first enabled one that matches a request applies. Drag a policy to change the order. Allow lets in, after a sign-in with access SSO, only who the policy allows, Bypass lets anyone in without one, and Block lets nobody in. A policy that requires an access token matches only requests that send one. The signed-in email reaches the app in the X-Meerkat-Access-Email header, and the token\'s name in X-Meerkat-Access-Service.',
+    tip: 'Policies are checked from the top; the first enabled one whose addresses and conditions match a request applies. Drag a policy to change the order. Allow lets in, after a sign-in with access SSO, only who the policy allows, Bypass lets anyone in without one, and Block lets nobody in. The signed-in email reaches the app in the X-Meerkat-Access-Email header, and the access token\'s name in X-Meerkat-Access-Service.',
     providerOff: 'Access SSO is off, so no one can sign in to protected addresses.',
     damaged: 'Saved policies are invalid, so their addresses are closed.',
     damagedEmpty: 'Saved policies can\'t be read, so every public address is closed.',
@@ -49,23 +50,24 @@
     enabled: 'Enabled',
     name: 'Name',
     addresses: 'Addresses',
-    paths: 'Paths',
-    pathsTip: 'Conditions apply to requests that reach the Outlet. A single-page app changes screens in the browser without one, so protect all of its paths and bypass only the paths its clients call.',
     action: 'Action',
     conditions: 'Conditions',
+    scope: 'Scope',
+    conditionRows: 'Conditions',
+    conditionsHint: 'Applies when all conditions match',
+    conditionsTip: 'Each condition compares one part of a request. The values of a condition are alternatives: it holds when any of them matches, or for a "not" operator, when none does. Requests that don\'t meet the conditions go on to the policies below. Path conditions apply to requests that reach the Outlet: a single-page app changes screens in the browser without one, so protect all of its paths and bypass only the paths its clients call. An access token is one sent in the X-Meerkat-Access-Token header, valid for the address and client.',
+    noConditions: 'No conditions: applies to every request to the addresses',
+    allRequests: 'All requests',
     actions: { allow: 'Allow', bypass: 'Bypass', block: 'Block' } as Record<AccessAction, string>,
     actionHints: { allow: 'Sign-in, then only who you allow', bypass: 'Anyone, without signing in', block: 'Nobody' } as Record<AccessAction, string>,
-    tokenActionHints: { allow: 'The token and a sign-in of who you allow; requests without it go to the policies below', bypass: 'The token alone, without signing in; requests without it go to the policies below', block: 'Nobody with the token; requests without it go to the policies below' } as Record<AccessAction, string>,
     order: 'Order',
     reorder: (name: string) => `Move ${name}`,
     reorderTip: 'Drag, or press ↑ ↓',
     orderSaved: 'Order saved',
     neverApplies: 'Never applies',
-    neverAppliesTip: 'An earlier policy covers every address, path, method, token and client IP of this one.',
-    openWithoutToken: 'Open without a token',
-    openWithoutTokenTip: 'No policy below covers every path and method of its addresses for requests that send no token, so those requests reach the app unprotected. Add an all-paths policy below it.',
-    openToOtherIps: 'Open to other IPs',
-    openToOtherIpsTip: 'Requests from other addresses go on to the policies below, and no policy below covers every path and method of its addresses for them, so they reach the app unprotected. Add an all-paths policy below it.',
+    neverAppliesTip: 'An earlier policy covers this one\'s addresses and every request its conditions match.',
+    unprotected: 'Other requests unprotected',
+    unprotectedTip: 'No other policy applies to requests that don\'t meet this policy\'s client IP or access token conditions. Those requests reach the service without access protection.',
     booksDamaged: 'The IP address book could not be read, so tags cannot be used. Register the addresses again on the IP address book tab.',
     noPolicies: 'No access policies',
     addTitle: 'Add policy',
@@ -74,41 +76,34 @@
     address: 'Address',
     addAddress: 'Add address',
     removeAddress: 'Remove address',
-    allPaths: 'All paths',
-    selectedPaths: 'Selected paths',
-    conditionsHint: 'Applies when any condition matches',
+    field: 'Field',
+    fields: { path: 'Path', method: 'Method', client_ip: 'Client IP', token: 'Access token' } as Record<AccessConditionField, string>,
     operator: 'Operator',
+    operators: {
+      path: { starts_with: 'starts with', '!starts_with': 'does not start with', equals: 'equals', '!equals': 'does not equal', ends_with: 'ends with', '!ends_with': 'does not end with', contains: 'contains', '!contains': 'does not contain', matches: 'matches regex', '!matches': 'does not match regex' },
+      method: { in: 'is one of', '!in': 'is not one of' },
+      client_ip: { in: 'is in', '!in': 'is not in' },
+      token: { any: 'is valid', '!any': 'is missing', in: 'is one of', '!in': 'is not one of' },
+    } as Record<AccessConditionField, Record<string, string>>,
     value: 'Value',
     addCondition: 'Add condition',
     removeCondition: 'Remove condition',
     regexNote: 'RE2 syntax, case-insensitive',
-    methods: 'Methods',
-    allMethods: 'All methods',
-    selectedMethods: 'Selected methods',
-    methodsHint: 'Applies only to requests with the selected methods; others go to the policies below. GET includes HEAD.',
-    needsMethod: 'Choose at least one method.',
-    clientIp: 'Client IP',
-    clientIpTip: 'Limits the policy to requests from these addresses; requests from other addresses go on to the policies below. A tag stands for every address in the IP address book that carries it.',
-    anyIp: 'All IPs',
-    selectedIps: 'Selected IPs',
+    strictNote: 'Compared with the path exactly as the app gets it, case included',
+    headNote: 'GET includes HEAD',
+    openPrefix: (value: string) => `Also matches paths like ${value}x. Enter ${value}/ for paths under it only.`,
+    placeholders: { equals: '/admin', starts_with: '/private/', ends_with: '.pdf', contains: '/internal', matches: '^/(admin|reports)/' } as Record<BlockOperator, string>,
     ipPlaceholder: 'Tag, IP or CIDR',
-    ipHint: 'Tags from the IP address book, or IPv4 or IPv6 addresses or CIDR',
     ipShort: 'IP',
+    tokenShort: 'Token',
+    needsValue: 'Enter at least one value for each condition.',
+    pathsTooMany: 'Enter up to 50 paths for a condition.',
     ipRequired: 'Choose at least one tag, IP or CIDR.',
     unknownTag: (tag: string) => `Not a tag in the IP address book: ${tag}`,
-    ipTooMany: 'Choose up to 20 tags and 50 IPs or CIDR ranges.',
-    token: 'Access token',
-    tokenHint: 'Applies only to requests whose X-Meerkat-Access-Token header carries a token valid for the address and client; others go to the policies below.',
-    noToken: 'Not required',
-    anyToken: 'Any token',
-    tokenShort: 'Token',
-    selectedTokens: 'Selected tokens',
+    ipTooMany: 'Choose up to 20 tags and 50 IPs or CIDR ranges for a condition.',
     needsToken: 'Choose at least one token.',
-    bypassNote: 'Compared with the path exactly as the app gets it, case included',
-    openPrefix: (value: string) => `Also matches paths like ${value}x. Enter ${value}/ for paths under it only.`,
-    bypassPaths: 'Enter bypass paths as the app gets them, without \\, //, or segments that are . or .. or end in a dot or space.',
-    operators: { equals: 'equals', starts_with: 'starts with', ends_with: 'ends with', contains: 'contains', matches: 'matches regex' } as Record<BlockOperator, string>,
-    placeholders: { equals: '/admin', starts_with: '/private/', ends_with: '.pdf', contains: '/internal', matches: '^/(admin|reports)/' } as Record<BlockOperator, string>,
+    noTokens: 'Create one under Access tokens first.',
+    strictPaths: 'Enter bypass paths, and paths a "not" condition leaves out, as the app gets them: without \\, //, or segments that are . or .. or end in a dot or space.',
     who: 'Who can access',
     everyone: 'Everyone with access SSO',
     everyoneTip: 'Lets in anyone the access SSO provider signs in. Check whether the provider also accepts accounts outside your organization.',
@@ -119,7 +114,6 @@
     allowAdmins: 'Allow administrators',
     allowAdminsTip: 'Anyone whose email, as verified by the access SSO provider, is a Meerkat administrator\'s is let in, whether or not they match the allowed users and groups.',
     administrators: 'Administrators',
-    noTokens: 'Create one under Access tokens first.',
     delete: 'Delete',
     deleteTitle: 'Delete this policy?',
     deleted: 'Deleted',
@@ -130,11 +124,12 @@
     invalid: 'Check the policy: addresses are hostnames or *.domain, equals and starts with need a leading /, regular expressions must use RE2 syntax, and an allow policy must let someone in.',
     needsWho: 'Choose who may pass: everyone, users, groups or administrators.',
     decodedPaths: 'Enter paths without %-escapes or ;parameters.',
+    outdated: 'The console is out of date. Reload the page and try again.',
     failed: (code: string) => `Couldn't save: ${code}`,
     loadFailed: (code: string) => `Couldn't load access policies: ${code}`,
   }, {
     title: '접근 정책',
-    tip: '정책은 위에서부터 순서대로 확인하며, 요청에 처음 일치하는 활성화된 정책 하나가 적용됩니다. 순서는 드래그하여 변경합니다. 허용은 접근 보호 SSO 로그인 후 허용 대상만, 우회는 로그인 없이 누구나 접근할 수 있으며, 차단은 모두 거부합니다. 접근 토큰이 필요한 정책은 토큰을 보낸 요청에만 적용됩니다. 로그인한 사용자의 이메일은 X-Meerkat-Access-Email 헤더로, 토큰 이름은 X-Meerkat-Access-Service 헤더로 앱에 전달됩니다.',
+    tip: '정책은 위에서부터 순서대로 확인하며, 주소와 조건이 요청에 처음 일치하는 활성화된 정책 하나가 적용됩니다. 순서는 드래그하여 변경합니다. 허용은 접근 보호 SSO 로그인 후 허용 대상만, 우회는 로그인 없이 누구나 접근할 수 있으며, 차단은 모두 거부합니다. 로그인한 사용자의 이메일은 X-Meerkat-Access-Email 헤더로, 접근 토큰 이름은 X-Meerkat-Access-Service 헤더로 앱에 전달됩니다.',
     providerOff: '접근 보호 SSO가 비활성화되어 보호 대상 주소에 로그인할 수 없습니다.',
     damaged: '저장된 정책이 올바르지 않아 해당 주소를 차단 중입니다.',
     damagedEmpty: '저장된 정책을 읽을 수 없어 모든 공개 주소를 차단 중입니다.',
@@ -143,23 +138,24 @@
     enabled: '활성화',
     name: '이름',
     addresses: '적용 주소',
-    paths: '경로',
-    pathsTip: '경로 조건은 Outlet에 도달한 요청에만 적용됩니다. 단일 페이지 앱(SPA)의 화면 이동은 서버로 요청되지 않으므로, 앱의 전체 경로를 보호하고 외부 클라이언트가 호출하는 경로만 우회로 지정하십시오.',
     action: '동작',
     conditions: '적용 조건',
+    scope: '적용 범위',
+    conditionRows: '조건',
+    conditionsHint: '모든 조건 일치 시 적용',
+    conditionsTip: '조건마다 요청의 한 항목을 비교합니다. 한 조건에 지정한 값은 그중 하나라도 일치하면 성립하며, 부정 연산자는 모두 일치하지 않을 때 성립합니다. 조건에 맞지 않는 요청은 아래 정책이 판단합니다. 경로 조건은 Outlet에 도달한 요청에만 적용되므로, 단일 페이지 앱(SPA)은 전체 경로를 보호하고 외부 클라이언트가 호출하는 경로만 우회로 지정하십시오. 접근 토큰은 X-Meerkat-Access-Token 헤더로 보낸, 주소와 클라이언트에 유효한 토큰입니다.',
+    noConditions: '조건 없음. 주소의 모든 요청에 적용',
+    allRequests: '모든 요청',
     actions: { allow: '허용', bypass: '우회', block: '차단' },
     actionHints: { allow: '로그인 후 허용 대상만 접근', bypass: '로그인 없이 누구나 접근', block: '모두 접근 거부' },
-    tokenActionHints: { allow: '토큰과 허용 대상 로그인 모두 필요. 토큰 없는 요청은 아래 정책이 판단', bypass: '토큰만으로 로그인 없이 접근. 토큰 없는 요청은 아래 정책이 판단', block: '토큰을 보낸 요청 거부. 토큰 없는 요청은 아래 정책이 판단' },
     order: '순서',
     reorder: (name: string) => `${name} 순서 변경`,
     reorderTip: '드래그 또는 ↑ ↓ 키로 이동',
     orderSaved: '순서가 저장되었습니다',
     neverApplies: '적용 안 됨',
-    neverAppliesTip: '앞선 정책이 이 정책의 주소, 경로, 메서드, 토큰, 접속 IP에 먼저 적용됩니다.',
-    openWithoutToken: '토큰 없는 요청 열림',
-    openWithoutTokenTip: '토큰을 보내지 않은 요청에 적용할 정책이 아래에 없어, 그런 요청은 보호 없이 앱으로 전달됩니다. 아래에 전체 경로 정책을 두십시오.',
-    openToOtherIps: '다른 IP 요청 열림',
-    openToOtherIpsTip: '다른 주소에서 온 요청은 아래 정책으로 넘어가는데, 그 요청에 적용할 정책이 아래에 없어 보호 없이 앱으로 전달됩니다. 아래에 전체 경로 정책을 두십시오.',
+    neverAppliesTip: '앞선 정책이 이 정책의 주소와 조건에 해당하는 모든 요청에 먼저 적용됩니다.',
+    unprotected: '조건 외 요청 미보호',
+    unprotectedTip: '이 정책의 접속 IP·접근 토큰 조건에 맞지 않는 요청에 적용되는 다른 정책이 없습니다. 해당 요청은 접근 보호 없이 서비스로 전달됩니다.',
     booksDamaged: 'IP 주소록을 읽을 수 없어 태그를 사용할 수 없습니다. IP 주소록 탭에서 주소를 다시 등록하십시오.',
     noPolicies: '접근 정책이 없습니다',
     addTitle: '정책 추가',
@@ -168,41 +164,34 @@
     address: '주소',
     addAddress: '주소 추가',
     removeAddress: '주소 삭제',
-    allPaths: '전체 경로',
-    selectedPaths: '선택한 경로',
-    conditionsHint: '조건 중 하나 이상 일치 시 적용',
+    field: '필드',
+    fields: { path: '경로', method: '메서드', client_ip: '접속 IP', token: '접근 토큰' },
     operator: '연산자',
+    operators: {
+      path: { starts_with: '다음으로 시작', '!starts_with': '다음으로 시작하지 않음', equals: '같음', '!equals': '같지 않음', ends_with: '다음으로 끝남', '!ends_with': '다음으로 끝나지 않음', contains: '포함', '!contains': '포함하지 않음', matches: '정규식과 일치', '!matches': '정규식과 일치하지 않음' },
+      method: { in: '다음 중 하나', '!in': '다음 중 하나가 아님' },
+      client_ip: { in: '다음에 포함', '!in': '다음에 포함되지 않음' },
+      token: { any: '유효한 토큰 있음', '!any': '유효한 토큰 없음', in: '다음 중 하나', '!in': '다음 중 하나가 아님' },
+    },
     value: '값',
     addCondition: '조건 추가',
     removeCondition: '조건 삭제',
     regexNote: 'RE2 구문, 대소문자 구분 없음',
-    methods: '메서드',
-    allMethods: '모든 메서드',
-    selectedMethods: '선택한 메서드',
-    methodsHint: '선택한 메서드의 요청에만 적용되며, 다른 요청은 아래 정책이 판단합니다. GET을 선택하면 HEAD도 포함됩니다.',
-    needsMethod: '메서드를 하나 이상 선택하십시오.',
-    clientIp: '접속 IP',
-    clientIpTip: '선택한 주소에서 온 요청에만 이 정책을 적용하며, 그 밖의 주소에서 온 요청에는 아래 정책이 적용됩니다. 태그는 IP 주소록에서 그 태그가 붙은 모든 주소를 의미합니다.',
-    anyIp: '모든 IP',
-    selectedIps: '선택한 IP',
+    strictNote: '앱이 받는 경로와 대소문자까지 그대로 비교',
+    headNote: 'GET 선택 시 HEAD 포함',
+    openPrefix: (value: string) => `${value}x 등 다른 경로도 포함됩니다. 하위 경로만 지정하려면 ${value}/로 입력하십시오.`,
+    placeholders: { equals: '/admin', starts_with: '/private/', ends_with: '.pdf', contains: '/internal', matches: '^/(admin|reports)/' },
     ipPlaceholder: '태그, IP 또는 CIDR',
-    ipHint: 'IP 주소록의 태그, IPv4·IPv6 주소 또는 CIDR',
     ipShort: 'IP',
+    tokenShort: '토큰',
+    needsValue: '조건마다 값을 하나 이상 지정하십시오.',
+    pathsTooMany: '조건마다 경로는 최대 50개까지 지정할 수 있습니다.',
     ipRequired: '태그, IP 또는 CIDR을 하나 이상 지정하십시오.',
     unknownTag: (tag: string) => `IP 주소록에 없는 태그입니다: ${tag}`,
-    ipTooMany: '태그는 최대 20개, IP·CIDR은 최대 50개까지 지정할 수 있습니다.',
-    token: '접근 토큰',
-    tokenHint: 'X-Meerkat-Access-Token 헤더의 토큰이 주소와 클라이언트에 유효한 요청에만 적용되며, 다른 요청은 아래 정책이 판단합니다.',
-    noToken: '조건 없음',
-    anyToken: '모든 토큰',
-    tokenShort: '토큰',
-    selectedTokens: '선택한 토큰',
+    ipTooMany: '조건마다 태그는 최대 20개, IP·CIDR은 최대 50개까지 지정할 수 있습니다.',
     needsToken: '토큰을 하나 이상 선택하십시오.',
-    bypassNote: '앱이 받는 경로와 대소문자까지 그대로 비교',
-    openPrefix: (value: string) => `${value}x 등 다른 경로도 포함됩니다. 하위 경로만 지정하려면 ${value}/로 입력하십시오.`,
-    bypassPaths: '우회 조건은 앱이 받는 경로 그대로 입력하십시오. \\, //, . 또는 .. 조각, 점이나 공백으로 끝나는 조각은 사용할 수 없습니다.',
-    operators: { equals: '같음', starts_with: '다음으로 시작', ends_with: '다음으로 끝남', contains: '포함', matches: '정규식과 일치' },
-    placeholders: { equals: '/admin', starts_with: '/private/', ends_with: '.pdf', contains: '/internal', matches: '^/(admin|reports)/' },
+    noTokens: '접근 토큰에서 먼저 생성하십시오.',
+    strictPaths: '우회 경로와 부정 조건의 제외 경로는 앱이 받는 경로 그대로 입력하십시오. \\, //, . 또는 .. 조각, 점이나 공백으로 끝나는 조각은 사용할 수 없습니다.',
     who: '접근 허용 대상',
     everyone: '접근 보호 SSO 사용자 전체',
     everyoneTip: '접근 보호 SSO 공급자가 인증한 모든 사용자를 허용합니다. 공급자가 조직 외부 계정도 허용하는지 확인하십시오.',
@@ -213,7 +202,6 @@
     allowAdmins: '관리자 허용',
     allowAdminsTip: '접근 보호 SSO에서 인증된 이메일이 Meerkat 관리자 이메일과 같은 사용자는 허용 사용자·그룹 조건과 무관하게 접근할 수 있습니다.',
     administrators: '관리자',
-    noTokens: '접근 토큰에서 먼저 생성하십시오.',
     delete: '삭제',
     deleteTitle: '이 정책을 삭제하시겠습니까?',
     deleted: '삭제되었습니다',
@@ -224,28 +212,51 @@
     invalid: '정책 입력값이 올바르지 않습니다. 주소는 도메인 이름 또는 *.도메인 형식이어야 하며, 같음 및 다음으로 시작 조건은 /로 시작해야 하고, 정규식은 RE2 구문만 지원합니다. 허용 정책에는 허용 대상이 필요합니다.',
     needsWho: '사용자 전체, 허용 사용자·그룹, 관리자 허용 중 하나 이상을 지정하십시오.',
     decodedPaths: '경로는 % 인코딩과 ;매개변수 없이 입력하십시오.',
+    outdated: '콘솔이 최신 버전이 아닙니다. 페이지를 새로고침한 후 다시 시도하십시오.',
     failed: (code: string) => `저장 중 오류가 발생했습니다: ${code}`,
     loadFailed: (code: string) => `접근 정책을 불러오는 중 오류가 발생했습니다: ${code}`,
   });
 
   const maxPolicies = 100;
-  const maxConditions = 50;
+  const maxRows = 20;
+  const maxPathValues = 50;
   const maxHosts = 100;
   const maxIpTags = 20;
   const maxIpRanges = 50;
-  const operators: BlockOperator[] = ['equals', 'starts_with', 'ends_with', 'contains', 'matches'];
   const actions: AccessAction[] = ['allow', 'bypass', 'block'];
-  const operatorLabel = (operator: BlockOperator): string => t().operators[operator] ?? operator;
-  const describe = (code: string): string => (code === 'invalid_access_policies' ? t().invalid : code === 'ip_addresses_damaged' ? t().booksDamaged : t().failed(code));
+  const fields: AccessConditionField[] = ['path', 'method', 'client_ip', 'token'];
+  // 연산자 선택지는 부정을 앞의 !로 함께 담습니다(예: '!starts_with'는 '다음으로 시작하지 않음').
+  const operatorChoices: Record<AccessConditionField, string[]> = {
+    path: ['starts_with', '!starts_with', 'equals', '!equals', 'ends_with', '!ends_with', 'contains', '!contains', 'matches', '!matches'],
+    method: ['in', '!in'],
+    client_ip: ['in', '!in'],
+    token: ['any', '!any', 'in', '!in'],
+  };
+  const choiceOf = (condition: AccessCondition): string => `${condition.not ? '!' : ''}${condition.operator}`;
+  const operatorText = (field: AccessConditionField, choice: string): string => t().operators[field]?.[choice] ?? choice;
+  const describe = (code: string): string =>
+    code === 'invalid_access_policies' ? t().invalid : code === 'ip_addresses_damaged' ? t().booksDamaged : code === 'access_policies_outdated' ? t().outdated : t().failed(code);
 
-  // 대화상자의 줄은 지워도 입력 칸이 섞이지 않도록 고유한 key를 가집니다.
-  type ConditionRow = BlockCondition & { key: number };
+  // 대화상자의 줄은 지워도 입력 칸이 섞이지 않도록 고유한 key를 가집니다. choice는 연산자와 부정을 함께 담은 선택지입니다.
+  type ConditionRow = { key: number; field: AccessConditionField; choice: string; values: string[] };
   type HostRow = { key: number; value: string };
   let nextKey = 0;
-  const newRow = (condition: BlockCondition = { operator: 'starts_with', value: '' }): ConditionRow => ({ ...condition, key: nextKey++ });
+  const newRow = (condition?: AccessCondition): ConditionRow =>
+    condition ? { key: nextKey++, field: condition.field, choice: choiceOf(condition), values: [...condition.values] } : { key: nextKey++, field: 'path', choice: 'starts_with', values: [] };
   const newHost = (value = ''): HostRow => ({ key: nextKey++, value });
+  // 필드를 바꾸면 그 필드의 첫 연산자와 빈 값으로 시작합니다.
+  function setField(row: ConditionRow, field: string): void {
+    if (!fields.includes(field as AccessConditionField)) return;
+    row.field = field as AccessConditionField;
+    row.choice = operatorChoices[row.field][0];
+    row.values = [];
+  }
+  const operatorOf = (row: ConditionRow): string => row.choice.replace(/^!/, '');
+  const negated = (row: ConditionRow): boolean => row.choice.startsWith('!');
+  // 우회의 경로, 보호 정책이 부정 조건으로 빼는 경로는 여는 쪽이라 앱이 받는 그대로 비교합니다(서버의 StrictPath).
+  const strictPath = (action: AccessAction, not: boolean): boolean => (action === 'bypass') !== not;
 
-  // 동작 열은 허용 정책의 허용 대상 중 첫 항목만 보여주고 나머지는 개수로 줄입니다. 토큰 열은 토큰을 이름으로 보여 줍니다.
+  // 동작 열은 허용 정책의 허용 대상 중 첫 항목만 보여주고 나머지는 개수로 줄입니다. 토큰은 이름으로 보여 줍니다.
   const tokenName = (id: string): string => tokens?.find((token) => token.id === id)?.name ?? id;
   const allowedEntries = (policy: AccessPolicy): Array<{ text: string; mono: boolean }> => [
     ...(policy.allow_everyone ? [{ text: t().everyone, mono: false }] : []),
@@ -253,58 +264,83 @@
     ...policy.allowed_groups.map((text) => ({ text, mono: true })),
     ...(policy.allow_admins ? [{ text: t().administrators, mono: false }] : []),
   ];
+  // 목록의 조건 요약: 필드와 연산자, 첫 값(토큰은 이름), 나머지 개수.
+  const conditionValue = (condition: AccessCondition): string => (condition.field === 'token' ? tokenName(condition.values[0] ?? '') : (condition.values[0] ?? ''));
+  const monoValue = (condition: AccessCondition): boolean => condition.field === 'path' || condition.field === 'method' || (condition.field === 'client_ip' && isIpRange(condition.values[0] ?? ''));
 
   // 서버의 bypassCondition과 같은 검사: \\, 빈 조각, ., .., 끝나는 곳이 확실한 조각 끝의 점·공백을 받지 않습니다.
-  const plainBypassValue = (condition: BlockCondition): boolean => {
-    const value = condition.value.trim();
-    if (condition.operator === 'matches') return true;
+  const plainPathValue = (operator: string, raw: string): boolean => {
+    const value = raw.trim();
+    if (operator === 'matches') return true;
     if (value.includes('\\')) return false;
     const parts = value.split('/');
-    const whole = condition.operator === 'equals' || condition.operator === 'ends_with';
+    const whole = operator === 'equals' || operator === 'ends_with';
     return parts.every((part, index) => ((index === 0 || index === parts.length - 1) && part === '') || (part !== '' && part !== '.' && part !== '..' && !((index < parts.length - 1 || whole) && /[. ]$/.test(part))));
   };
 
-  // 앞선 활성화된 정책이 이 정책의 주소, 경로, 메서드, 토큰, 접속 IP를 모두 덮으면, 이 정책은 적용될 일이 없습니다. 경로는 앞선 정책이 전체 경로이거나,
-  // 우회가 아닌 앞선 정책의 '다음으로 시작' 조건이 이 정책의 '같음'·'다음으로 시작' 조건을 모두 덮는 경우입니다(서버처럼 소문자로, 끝에 /를 붙여 비교).
+  // 서버의 shadows와 같은 판단(보수적으로, 확실할 때만): 앞선 활성화된 정책이 이 정책의 주소를 모두 덮고, 앞선 정책의 조건마다
+  // 항상 성립하거나 이 정책의 어떤 조건이 성립할 때 반드시 성립하면, 이 정책은 적용될 일이 없습니다.
   const hostCovers = (pattern: string, host: string): boolean => pattern === host || (pattern.startsWith('*.') && host.endsWith(pattern.slice(1)));
-  // 같음 조건은 서버가 요청을 비교하는 모양(소문자, 겹친 / 하나로, 끝에 / 하나)으로 바꿔 봅니다.
-  const slashedPath = (value: string): string => {
-    const path = value.toLowerCase().replace(/\/{2,}/g, '/').replace(/(.)\/$/, '$1');
-    return path === '/' ? path : `${path}/`;
+  const covers = (outer: string[], inner: string[], match: (inner: string, outer: string) => boolean = (a, b) => a === b): boolean =>
+    inner.every((value) => outer.some((other) => match(value, other)));
+  const methodCovers = (method: string, other: string): boolean => method === other;
+  // IP·CIDR이 다른 IP·CIDR 안에 있는지는 같은 값일 때만 확실하다고 봅니다(태그도 같은 이름일 때만).
+  const always = (condition: AccessCondition, action: AccessAction): boolean =>
+    condition.field === 'path' && !condition.not && !strictPath(action, false) && condition.operator === 'starts_with' && condition.values.includes('/');
+  const implies = (later: AccessCondition, laterAction: AccessAction, earlier: AccessCondition, earlierAction: AccessAction): boolean => {
+    if (later.field !== earlier.field || later.not !== earlier.not) return false;
+    if (later.field === 'path') {
+      if (strictPath(laterAction, later.not) !== strictPath(earlierAction, earlier.not)) return false;
+      if (earlier.not) return later.operator === earlier.operator && covers(later.values, earlier.values);
+      return covers(earlier.values, later.values, (value, other) =>
+        (later.operator === earlier.operator && value === other) || (earlier.operator === 'starts_with' && later.operator === 'starts_with' && value.startsWith(other)));
+    }
+    if (later.field === 'token') {
+      if (earlier.not) return later.operator === 'any' || (earlier.operator === 'in' && covers(later.values, earlier.values));
+      return earlier.operator === 'any' || (later.operator === 'in' && covers(earlier.values, later.values));
+    }
+    // 접속 주소를 알 수 없는 요청에는 우회가 아닌 정책의 부정 접속 IP만 성립하므로, 앞선 우회가 뒤의 다른 정책을 덮지 못합니다(서버와 같음).
+    // 우회의 부정 메서드도 콘솔이 아는 메서드에만 성립합니다.
+    if ((later.field === 'client_ip' || later.field === 'method') && earlier.not && earlierAction === 'bypass' && laterAction !== 'bypass') return false;
+    // 메서드·접속 IP: 부정이 아니면 이 정책의 값이 모두 앞선 정책의 값 안에, 부정이면 그 반대입니다.
+    return earlier.not ? covers(later.values, earlier.values, methodCovers) : covers(earlier.values, later.values, methodCovers);
   };
-  const startsWith = (policy: AccessPolicy) => policy.conditions.filter((condition) => condition.operator === 'starts_with').map((condition) => condition.value);
-  const pathsCover = (earlier: AccessPolicy, later: AccessPolicy): boolean => {
-    if (earlier.all_paths) return true;
-    if (earlier.action === 'bypass') return false;
-    const prefixes = startsWith(earlier);
-    if (prefixes.includes('/')) return true;
-    return !later.all_paths && later.conditions.length > 0 && later.conditions.every((condition) => {
-      if (condition.operator !== 'starts_with' && condition.operator !== 'equals') return false;
-      const path = condition.operator === 'equals' ? slashedPath(condition.value) : condition.value.toLowerCase();
-      return prefixes.some((prefix) => path.startsWith(prefix));
-    });
+  const neverApplies = (list: AccessPolicy[], index: number): boolean => {
+    const later = list[index];
+    return list.slice(0, index).some((earlier) =>
+      earlier.enabled
+      && later.hosts.every((host) => earlier.hosts.some((pattern) => hostCovers(pattern, host)))
+      && earlier.conditions.every((condition) => always(condition, earlier.action) || later.conditions.some((own) => implies(own, later.action, condition, earlier.action))));
   };
-  // 메서드는 앞선 정책이 모든 메서드이거나, 이 정책이 고른 메서드를 모두 고른 경우입니다.
-  const methodsCover = (earlier: AccessPolicy, later: AccessPolicy): boolean =>
-    !earlier.methods.length || (later.methods.length > 0 && later.methods.every((method) => earlier.methods.includes(method)));
-  // 접속 IP는 앞선 정책이 모든 IP에 적용될 때만 덮습니다. 특정 IP로 한정한 정책은 그 밖의 IP에서 온 요청을 아래 정책에 넘기므로(서버도 그렇게 봅니다)
-  // 아래 정책을 가리지 않고, 두 정책의 IP 범위가 겹치는지는 따지지 않습니다.
-  const ipsCover = (earlier: AccessPolicy): boolean => !earlier.ip_tags.length && !earlier.ip_ranges.length;
-  // 토큰은 앞선 정책이 토큰 조건이 없거나, 이 정책도 토큰이 필요하고 앞선 정책이 모든 토큰 또는 이 정책이 고른 토큰을 모두 받는 경우입니다.
-  const tokensCover = (earlier: AccessPolicy, later: AccessPolicy): boolean =>
-    !earlier.require_token || (later.require_token && (!earlier.tokens.length || (later.tokens.length > 0 && later.tokens.every((id) => earlier.tokens.includes(id)))));
-  // 토큰이 필요한 정책은 토큰 없는 요청을 아래 정책에 넘기므로, 아래에 그 주소의 모든 경로와 메서드, 모든 IP를 토큰 없이 받는 활성화된 정책이 없으면 그런 요청은 열려 있습니다.
-  // 특정 접속 IP로 한정한 정책은 다른 IP의 요청을 받지 않으므로 여기서 세지 않습니다.
-  // 아래에서 그 주소의 모든 경로, 메서드, IP의 요청을 토큰 없이 받는 활성화된 정책.
-  const catchesAll = (later: AccessPolicy, host: string): boolean =>
-    later.enabled && !later.require_token && !later.methods.length && ipsCover(later) && (later.all_paths || startsWith(later).includes('/')) && later.hosts.some((pattern) => hostCovers(pattern, host));
-  const openWithoutToken = (list: AccessPolicy[], index: number): boolean =>
-    list[index].enabled && list[index].require_token && list[index].hosts.some((host) => !list.slice(index + 1).some((later) => catchesAll(later, host)));
-  // 접속 IP로 한정한 정책도 다른 IP의 요청을 아래 정책에 넘기므로, 아래에 그런 정책이 없으면 다른 IP의 요청은 열려 있습니다.
-  const openToOtherIps = (list: AccessPolicy[], index: number): boolean =>
-    list[index].enabled && !ipsCover(list[index]) && list[index].hosts.some((host) => !list.slice(index + 1).some((later) => catchesAll(later, host)));
-  const neverApplies = (list: AccessPolicy[], index: number): boolean =>
-    list.slice(0, index).some((earlier) => earlier.enabled && methodsCover(earlier, list[index]) && ipsCover(earlier) && tokensCover(earlier, list[index]) && pathsCover(earlier, list[index]) && list[index].hosts.every((host) => earlier.hosts.some((pattern) => hostCovers(pattern, host))));
+  // 접속 IP·접근 토큰 조건 row가 성립하지 않는 요청에 condition이 반드시 성립하는지(보수적으로, 확실할 때만). 접속 주소를 알 수
+  // 없는 요청에는 "포함"이 성립하지 않고, "포함되지 않음"은 우회가 아닌 정책에서만 성립합니다(서버의 holds와 같음).
+  const holdsWhenFails = (condition: AccessCondition, conditionAction: AccessAction, row: AccessCondition, rowAction: AccessAction): boolean => {
+    if (condition.field !== row.field || condition.not === row.not) return false;
+    if (row.field === 'client_ip') {
+      return row.not ? rowAction !== 'bypass' && covers(condition.values, row.values) : conditionAction !== 'bypass' && covers(row.values, condition.values);
+    }
+    if (row.field === 'token') {
+      if (!row.not) return row.operator === 'any' || (condition.operator === 'in' && covers(row.values, condition.values));
+      return condition.operator === 'any' || (row.operator === 'in' && covers(condition.values, row.values));
+    }
+    return false;
+  };
+  // other가 그 주소에서 policy의 경로·메서드 조건에 맞고 row에 맞지 않는 요청 모두에 적용되는지. 조건마다 항상 성립하거나, row가
+  // 성립하지 않을 때 성립하거나, policy의 경로·메서드 조건이 성립할 때 반드시 성립해야 합니다.
+  const takesFailures = (other: AccessPolicy, host: string, policy: AccessPolicy, row: AccessCondition): boolean =>
+    other.enabled && other.hosts.some((pattern) => hostCovers(pattern, host))
+    && other.conditions.every((condition) => always(condition, other.action)
+      || holdsWhenFails(condition, other.action, row, policy.action)
+      || policy.conditions.some((own) => (own.field === 'path' || own.field === 'method') && implies(own, policy.action, condition, other.action)));
+  // 접속 IP·접근 토큰 조건이 있는 허용·우회 정책은 같은 경로라도 조건에 맞지 않는 요청을 다른 정책에 넘깁니다. 위아래 어디에도
+  // 그런 요청을 모두 받는 정책이 없으면(예: 위에 "접속 IP 다음에 포함되지 않음 → 차단", 아래에 그 주소의 모든 요청을 받는 정책)
+  // 그런 요청은 보호 없이 전달됩니다. 차단 정책은 일부만 막는 것이 의도일 수 있어 표시하지 않습니다.
+  const unprotected = (list: AccessPolicy[], index: number): boolean => {
+    const policy = list[index];
+    const rows = policy.conditions.filter((condition) => condition.field === 'client_ip' || condition.field === 'token');
+    return policy.enabled && policy.action !== 'block' && rows.length > 0
+      && policy.hosts.some((host) => rows.some((row) => !list.some((other, at) => at !== index && takesFailures(other, host, policy, row))));
+  };
 
   let policies = $state<AccessPolicy[] | null>(null);
   let addresses = $state<string[]>([]);
@@ -317,18 +353,16 @@
   let confirmOpen = $state(false);
   let deleteName = $state('');
   let editingId = $state('');
-  // 선택한 경로의 조건 줄은 항상 하나 이상 남겨 두어, "선택한 경로"를 고르면 바로 입력할 수 있게 합니다.
-  let form = $state<{ name: string; enabled: boolean; action: AccessAction; hosts: HostRow[]; paths: 'all' | 'selected'; conditions: ConditionRow[]; methods: 'all' | 'selected'; chosen: AccessMethod[]; ips: 'all' | 'selected'; ipValues: string[]; token: 'none' | 'any' | 'selected'; tokens: string[]; everyone: boolean; users: string[]; groups: string[]; admins: boolean }>({
-    name: '', enabled: true, action: 'allow', hosts: [], paths: 'all', conditions: [], methods: 'all', chosen: [], ips: 'all', ipValues: [], token: 'none', tokens: [], everyone: false, users: [], groups: [], admins: false,
+  let form = $state<{ name: string; enabled: boolean; action: AccessAction; hosts: HostRow[]; rows: ConditionRow[]; everyone: boolean; users: string[]; groups: string[]; admins: boolean }>({
+    name: '', enabled: true, action: 'allow', hosts: [], rows: [], everyone: false, users: [], groups: [], admins: false,
   });
   let formError = $state('');
 
   const editing = $derived(editingId ? policies?.find((policy) => policy.id === editingId) : undefined);
-  const hasRegex = $derived(form.paths === 'selected' && form.conditions.some((condition) => condition.operator === 'matches'));
-  // 우회의 '다음으로 시작' 값이 /로 끝나지 않으면 /v1이 /v1x, /v10까지 엽니다. 저장은 막지 않고 알리기만 합니다.
-  const openPrefix = (condition: { operator: BlockOperator; value: string }): string => {
-    const value = condition.value.trim();
-    return form.action === 'bypass' && condition.operator === 'starts_with' && value !== '' && !value.endsWith('/') ? value : '';
+  // 여는 쪽 '다음으로 시작' 값이 /로 끝나지 않으면 /v1이 /v1x, /v10까지 엽니다. 저장은 막지 않고 알리기만 합니다.
+  const openPrefix = (row: ConditionRow): string => {
+    if (row.field !== 'path' || operatorOf(row) !== 'starts_with' || !strictPath(form.action, negated(row))) return '';
+    return row.values.find((value) => value.trim() !== '' && !value.trim().endsWith('/'))?.trim() ?? '';
   };
 
   const adopt = (view: AccessPoliciesView) => {
@@ -418,14 +452,7 @@
       enabled: policy?.enabled ?? true,
       action: policy?.action ?? 'allow',
       hosts: policy ? policy.hosts.map((host) => newHost(host)) : [newHost()],
-      paths: policy && !policy.all_paths ? 'selected' : 'all',
-      conditions: policy?.conditions.length ? policy.conditions.map((condition) => newRow(condition)) : [newRow()],
-      methods: policy?.methods.length ? 'selected' : 'all',
-      chosen: policy ? [...policy.methods] : [],
-      ips: policy?.ip_tags.length || policy?.ip_ranges.length ? 'selected' : 'all',
-      ipValues: policy ? joinScope(policy.ip_tags, policy.ip_ranges) : [],
-      token: !policy?.require_token ? 'none' : policy.tokens.length ? 'selected' : 'any',
-      tokens: policy ? [...policy.tokens] : [],
+      rows: policy ? policy.conditions.map((condition) => newRow(condition)) : [],
       everyone: policy?.allow_everyone ?? false,
       users: policy ? [...policy.allowed_users] : [],
       groups: policy ? [...policy.allowed_groups] : [],
@@ -444,9 +471,34 @@
 
   async function addCondition(): Promise<void> {
     const row = newRow();
-    form.conditions.push(row);
+    form.rows.push(row);
     await tick();
-    document.getElementById(`access-policy-value-${row.key}`)?.focus();
+    document.getElementById(`access-policy-field-${row.key}`)?.focus();
+  }
+
+  // 줄마다 서버와 같은 검사를 먼저 하고, 걸리면 그 이유를 돌려줍니다.
+  function rowError(row: ConditionRow): string {
+    const operator = operatorOf(row);
+    if (row.field === 'token' && operator === 'any') return '';
+    if (row.field === 'token') {
+      const live = tokens ? row.values.filter((id) => tokens.some((token) => token.id === id)) : row.values;
+      return live.length ? '' : t().needsToken;
+    }
+    if (!row.values.length) return row.field === 'client_ip' ? t().ipRequired : t().needsValue;
+    if (row.field === 'path' && row.values.length > maxPathValues) return t().pathsTooMany;
+    if (row.field === 'path') {
+      // 요청 경로는 디코딩하고 ;매개변수를 뺀 형태로 비교하므로, 그런 값은 어떤 요청과도 일치하지 않습니다.
+      if (operator !== 'matches' && row.values.some((value) => /%[0-9a-f]{2}|;/i.test(value))) return t().decodedPaths;
+      if (strictPath(form.action, negated(row)) && row.values.some((value) => !plainPathValue(operator, value))) return t().strictPaths;
+    }
+    if (row.field === 'client_ip') {
+      // 주소록에 없는 태그는 서버가 거부하므로, 목록을 아는 때에만 미리 알립니다.
+      const scope = splitScope(row.values);
+      const unknown = ipTags ? unknownTags(scope.tags, ipTags) : [];
+      if (unknown.length) return t().unknownTag(unknown[0]);
+      if (scope.tags.length > maxIpTags || scope.ranges.length > maxIpRanges) return t().ipTooMany;
+    }
+    return '';
   }
 
   async function submit(event: SubmitEvent): Promise<void> {
@@ -459,43 +511,19 @@
       formError = t().needsWho;
       return;
     }
-    // 요청 경로는 디코딩하고 ;매개변수를 뺀 형태로 비교하므로, 그런 값은 어떤 요청과도 일치하지 않습니다.
-    if (form.paths === 'selected' && form.conditions.some((condition) => condition.operator !== 'matches' && /%[0-9a-f]{2}|;/i.test(condition.value))) {
-      formError = t().decodedPaths;
+    const problem = form.rows.map(rowError).find(Boolean);
+    if (problem) {
+      formError = problem;
       return;
     }
-    // 우회는 경로를 여는 만큼 앱이 받는 그대로 비교하므로, 앱마다 다르게 읽을 수 있는 값은 받지 않습니다(서버와 같은 검사).
-    if (form.action === 'bypass' && form.paths === 'selected' && form.conditions.some((condition) => !plainBypassValue(condition))) {
-      formError = t().bypassPaths;
-      return;
-    }
-    if (form.methods === 'selected' && !form.chosen.length) {
-      formError = t().needsMethod;
-      return;
-    }
-    // 접속 IP는 태그와 IP·CIDR을 한 칸에 받아 나눕니다. 주소록에 없는 태그는 서버가 거부하므로, 목록을 아는 때에만 미리 알립니다.
-    const scope = form.ips === 'selected' ? splitScope(form.ipValues) : { tags: [], ranges: [] };
-    if (form.ips === 'selected') {
-      if (!form.ipValues.length) {
-        formError = t().ipRequired;
-        return;
-      }
-      const unknown = ipTags ? unknownTags(scope.tags, ipTags) : [];
-      if (unknown.length) {
-        formError = t().unknownTag(unknown[0]);
-        return;
-      }
-      if (scope.tags.length > maxIpTags || scope.ranges.length > maxIpRanges) {
-        formError = t().ipTooMany;
-        return;
-      }
-    }
-    // 지워진 토큰은 빼고 보냅니다. 남은 토큰이 없으면 고르게 합니다.
-    const chosenTokens = tokens ? form.tokens.filter((id) => tokens.some((token) => token.id === id)) : [...form.tokens];
-    if (form.token === 'selected' && !chosenTokens.length) {
-      formError = t().needsToken;
-      return;
-    }
+    const conditions: AccessCondition[] = form.rows.map((row) => {
+      const operator = operatorOf(row) as AccessCondition['operator'];
+      // 지워진 토큰은 빼고 보냅니다. 메서드는 서버처럼 accessMethods 순서로 둡니다.
+      const values = row.field === 'token' ? (operator === 'any' ? [] : tokens ? row.values.filter((id) => tokens.some((token) => token.id === id)) : [...row.values])
+        : row.field === 'method' ? accessMethods.filter((method) => row.values.includes(method))
+        : row.values.map((value) => value.trim()).filter(Boolean);
+      return { field: row.field, operator, not: negated(row), values };
+    });
     const current = editing;
     const next: AccessPolicy = {
       id: current?.id ?? '',
@@ -503,13 +531,7 @@
       enabled: form.enabled,
       action: form.action,
       hosts: form.hosts.map((row) => row.value.trim().toLowerCase()).filter(Boolean),
-      all_paths: form.paths === 'all',
-      conditions: form.paths === 'selected' ? form.conditions.map((condition) => ({ operator: condition.operator, value: condition.value.trim() })) : [],
-      methods: form.methods === 'selected' ? accessMethods.filter((method) => form.chosen.includes(method)) : [],
-      ip_tags: scope.tags,
-      ip_ranges: scope.ranges,
-      require_token: form.token !== 'none',
-      tokens: form.token === 'selected' ? chosenTokens : [],
+      conditions,
       allow_everyone: allow && form.everyone,
       allowed_users: named ? [...form.users] : [],
       allowed_groups: named ? [...form.groups] : [],
@@ -635,24 +657,17 @@
                           </Tooltip.Trigger>
                           <Tooltip.Content>{t().neverAppliesTip}</Tooltip.Content>
                         </Tooltip.Root>
-                      {:else if openWithoutToken(policies, index)}
+                      {:else if unprotected(policies, index)}
                         <Tooltip.Root>
                           <Tooltip.Trigger class="relative z-10 outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
-                            <Badge variant="destructive" class="select-none">{t().openWithoutToken}</Badge>
+                            <Badge variant="destructive" class="select-none">{t().unprotected}</Badge>
                           </Tooltip.Trigger>
-                          <Tooltip.Content>{t().openWithoutTokenTip}</Tooltip.Content>
-                        </Tooltip.Root>
-                      {:else if openToOtherIps(policies, index)}
-                        <Tooltip.Root>
-                          <Tooltip.Trigger class="relative z-10 outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
-                            <Badge variant="destructive" class="select-none">{t().openToOtherIps}</Badge>
-                          </Tooltip.Trigger>
-                          <Tooltip.Content>{t().openToOtherIpsTip}</Tooltip.Content>
+                          <Tooltip.Content>{t().unprotectedTip}</Tooltip.Content>
                         </Tooltip.Root>
                       {/if}
                     </span>
                   </Table.Cell>
-                  <!-- 적용 조건은 주소를 위에, 경로와 기본값이 아닌 메서드·토큰을 아래에 흐리게 보여 줍니다. -->
+                  <!-- 적용 조건은 주소를 위에, 조건 줄을 아래에 필드·연산자는 흐리게, 첫 값과 나머지 개수로 보여 줍니다. -->
                   <Table.Cell>
                     <div class="grid gap-0.5">
                       <span class="flex items-center gap-1.5">
@@ -660,33 +675,17 @@
                         {#if policy.hosts.length > 1}<span class="text-muted-foreground tabular-nums">+{(policy.hosts.length - 1).toLocaleString(intlLocale())}</span>{/if}
                       </span>
                       <span class="flex flex-wrap items-center gap-x-3 text-muted-foreground">
-                        <span class="flex items-center gap-1.5">
-                          {#if policy.all_paths}
-                            {t().allPaths}
-                          {:else if policy.conditions.length}
-                            {operatorLabel(policy.conditions[0].operator)}
-                            <span class="max-w-40 truncate font-mono text-foreground">{policy.conditions[0].value}</span>
-                            {#if policy.conditions.length > 1}<span class="tabular-nums">+{(policy.conditions.length - 1).toLocaleString(intlLocale())}</span>{/if}
-                          {/if}
-                        </span>
-                        {#if policy.methods.length}<span class="font-mono">{policy.methods.join(', ')}</span>{/if}
-                        {#if policy.require_token}
+                        {#each policy.conditions as condition, row (row)}
                           <span class="flex items-center gap-1.5">
-                            {#if policy.tokens.length}
-                              <span class="max-w-40 truncate">{t().tokenShort} {tokenName(policy.tokens[0])}</span>
-                              {#if policy.tokens.length > 1}<span class="tabular-nums">+{(policy.tokens.length - 1).toLocaleString(intlLocale())}</span>{/if}
-                            {:else}
-                              {t().anyToken}
+                            {t().fields[condition.field]} {operatorText(condition.field, choiceOf(condition))}
+                            {#if condition.values.length}
+                              <span class={['max-w-40 truncate text-foreground', monoValue(condition) && 'font-mono']}>{conditionValue(condition)}</span>
+                              {#if condition.values.length > 1}<span class="tabular-nums">+{(condition.values.length - 1).toLocaleString(intlLocale())}</span>{/if}
                             {/if}
                           </span>
-                        {/if}
-                        {#if policy.ip_tags.length || policy.ip_ranges.length}
-                          {@const count = policy.ip_tags.length + policy.ip_ranges.length}
-                          <span class="flex items-center gap-1.5">
-                            <span class="max-w-40 truncate">{t().ipShort} <span class={[!policy.ip_tags.length && 'font-mono']}>{policy.ip_tags[0] ?? policy.ip_ranges[0]}</span></span>
-                            {#if count > 1}<span class="tabular-nums">+{(count - 1).toLocaleString(intlLocale())}</span>{/if}
-                          </span>
-                        {/if}
+                        {:else}
+                          {t().allRequests}
+                        {/each}
                       </span>
                     </div>
                   </Table.Cell>
@@ -736,7 +735,7 @@
       </Field.Group>
       <!-- 어떤 요청에 적용할지(주소, 경로, 메서드, 토큰)와 그 요청에 무엇을 할지(동작, 허용 대상)를 나누고, 항목마다 상자로 묶습니다. -->
       <Field.Set>
-        <Field.Legend>{t().conditions}</Field.Legend>
+        <Field.Legend>{t().scope}</Field.Legend>
         <Item.Group>
           <Item.Root variant="outline" size="sm" class="flex-col items-stretch bg-muted/50">
             <Field.Set>
@@ -754,138 +753,88 @@
               </div>
             </Field.Set>
           </Item.Root>
+          <!-- 조건 작성기: 줄마다 필드·연산자·값이고, 모든 줄이 성립해야 적용됩니다. 넓은 화면에서는 한 줄, 좁으면 값이 아래로 내려갑니다. -->
           <Item.Root variant="outline" size="sm" class="flex-col items-stretch bg-muted/50">
             <Field.Set>
-              <Field.Legend variant="label" class="flex items-center gap-1">{t().paths}<InfoTooltip id="access-policy-paths-tip" label={t().paths} description={t().pathsTip} /></Field.Legend>
-              <RadioGroup.Root value={form.paths} onValueChange={(value) => { form.paths = value === 'selected' ? 'selected' : 'all'; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
-                <Field.Field orientation="horizontal" class="w-auto">
-                  <RadioGroup.Item value="all" id="access-policy-paths-all" />
-                  <Field.Label for="access-policy-paths-all" class="font-normal">{t().allPaths}</Field.Label>
-                </Field.Field>
-                <Field.Field orientation="horizontal" class="w-auto">
-                  <RadioGroup.Item value="selected" id="access-policy-paths-selected" />
-                  <Field.Label for="access-policy-paths-selected" class="font-normal">{t().selectedPaths}</Field.Label>
-                </Field.Field>
-              </RadioGroup.Root>
-              {#if form.paths === 'selected'}
-                <Field.Description>{t().conditionsHint}</Field.Description>
-                <div class="grid gap-2">
-                  {#each form.conditions as condition, index (condition.key)}
-                    <div class="flex flex-wrap items-center gap-2">
-                      <NativeSelect.Root class="w-44" aria-label={`${t().operator} ${index + 1}`} bind:value={condition.operator}>
-                        {#each operators as operator (operator)}
-                          <NativeSelect.Option value={operator}>{operatorLabel(operator)}</NativeSelect.Option>
-                        {/each}
-                      </NativeSelect.Root>
-                      <Input
-                        id={`access-policy-value-${condition.key}`}
-                        class="min-w-40 flex-1 font-mono"
-                        bind:value={condition.value}
-                        placeholder={t().placeholders[condition.operator]}
-                        aria-label={`${t().value} ${index + 1}`}
-                        autocomplete="off"
-                        autocapitalize="none"
-                        spellcheck={false}
-                        pattern=".*\S.*"
-                        required
-                        aria-describedby={openPrefix(condition) ? `access-policy-value-${condition.key}-open` : undefined}
-                      />
-                      <IconButton label={t().removeCondition} icon={Dismiss} variant="outline" size="icon" disabled={form.conditions.length <= 1} onclick={() => form.conditions.splice(index, 1)} />
+              <Field.Legend variant="label" class="flex items-center gap-1">{t().conditionRows}<InfoTooltip id="access-policy-conditions-tip" label={t().conditionRows} description={t().conditionsTip} /></Field.Legend>
+              <Field.Description>{form.rows.length ? t().conditionsHint : t().noConditions}</Field.Description>
+              {#if form.rows.length}
+                <div class="grid gap-3">
+                  {#each form.rows as row, index (row.key)}
+                    {@const operator = operatorOf(row)}
+                    {@const strict = row.field === 'path' && strictPath(form.action, negated(row))}
+                    <div class="grid gap-1.5">
+                      <div class="flex items-start gap-2">
+                        <div class="flex min-w-0 flex-1 flex-wrap items-start gap-2">
+                          <NativeSelect.Root id={`access-policy-field-${row.key}`} class="w-28" aria-label={`${t().field} ${index + 1}`} value={row.field} onchange={(event: Event) => setField(row, (event.currentTarget as HTMLSelectElement).value)}>
+                            {#each fields as field (field)}
+                              <NativeSelect.Option value={field}>{t().fields[field]}</NativeSelect.Option>
+                            {/each}
+                          </NativeSelect.Root>
+                          <NativeSelect.Root class="w-48" aria-label={`${t().operator} ${index + 1}`} bind:value={row.choice}>
+                            {#each operatorChoices[row.field] as choice (choice)}
+                              <NativeSelect.Option value={choice}>{operatorText(row.field, choice)}</NativeSelect.Option>
+                            {/each}
+                          </NativeSelect.Root>
+                          <div class="min-w-56 flex-1">
+                            {#if row.field === 'path'}
+                              <TagInput id={`access-policy-value-${row.key}`} ariaLabel={`${t().value} ${index + 1}`} bind:values={row.values} mono commas={false} placeholder={t().placeholders[operator as BlockOperator]} />
+                            {:else if row.field === 'client_ip'}
+                              <TagInput id={`access-policy-value-${row.key}`} ariaLabel={`${t().value} ${index + 1}`} bind:values={row.values} suggestions={tagSuggestions(ipTags)} autoselect secondary={(value) => !isIpRange(value)} mono placeholder={t().ipPlaceholder} />
+                            {:else if row.field === 'method'}
+                              <div class="flex min-h-8 flex-wrap items-center gap-x-4 gap-y-2" role="group" aria-label={`${t().value} ${index + 1}`}>
+                                {#each accessMethods as method (method)}
+                                  <Field.Field orientation="horizontal" class="w-auto">
+                                    <Checkbox
+                                      id={`access-policy-method-${row.key}-${method}`}
+                                      checked={row.values.includes(method)}
+                                      onCheckedChange={(checked) => { row.values = checked ? [...row.values, method] : row.values.filter((entry) => entry !== method); }}
+                                    />
+                                    <Field.Label for={`access-policy-method-${row.key}-${method}`} class="font-mono font-normal">{method}</Field.Label>
+                                  </Field.Field>
+                                {/each}
+                              </div>
+                            {:else if operator === 'in'}
+                              {#if tokens?.length}
+                                <div class="flex min-h-8 flex-wrap items-center gap-x-6 gap-y-2" role="group" aria-label={`${t().value} ${index + 1}`}>
+                                  {#each tokens as token (token.id)}
+                                    <Field.Field orientation="horizontal" class="w-auto">
+                                      <Checkbox
+                                        id={`access-policy-token-${row.key}-${token.id}`}
+                                        checked={row.values.includes(token.id)}
+                                        onCheckedChange={(checked) => { row.values = checked ? [...row.values, token.id] : row.values.filter((id) => id !== token.id); }}
+                                      />
+                                      <Field.Label for={`access-policy-token-${row.key}-${token.id}`} class="min-w-0 font-normal">
+                                        <span class="truncate">{token.name}</span>
+                                        {#if token.hosts?.length}<span class="truncate font-mono text-muted-foreground">{token.hosts[0]}{token.hosts.length > 1 ? ` +${token.hosts.length - 1}` : ''}</span>{/if}
+                                      </Field.Label>
+                                    </Field.Field>
+                                  {/each}
+                                </div>
+                              {:else if tokens}
+                                <p class="flex min-h-8 items-center text-xs text-muted-foreground">{t().noTokens}</p>
+                              {/if}
+                            {/if}
+                          </div>
+                        </div>
+                        <IconButton label={t().removeCondition} icon={Dismiss} variant="outline" size="icon" onclick={() => form.rows.splice(index, 1)} />
+                      </div>
+                      {#if openPrefix(row)}
+                        <Field.Description class="flex items-start gap-1"><Warning12 class="mt-0.75 size-3 shrink-0" aria-hidden="true" />{t().openPrefix(openPrefix(row))}</Field.Description>
+                      {:else if strict}
+                        <Field.Description>{t().strictNote}</Field.Description>
+                      {:else if row.field === 'path' && operator === 'matches'}
+                        <Field.Description>{t().regexNote}</Field.Description>
+                      {:else if row.field === 'method'}
+                        <Field.Description>{t().headNote}</Field.Description>
+                      {/if}
                     </div>
-                    {#if openPrefix(condition)}
-                      <Field.Description id={`access-policy-value-${condition.key}-open`} class="flex items-start gap-1"><Warning12 class="mt-0.75 size-3 shrink-0" aria-hidden="true" />{t().openPrefix(openPrefix(condition))}</Field.Description>
-                    {/if}
-                  {/each}
-                </div>
-                {#if form.action === 'bypass'}<Field.Description>{t().bypassNote}</Field.Description>{:else if hasRegex}<Field.Description>{t().regexNote}</Field.Description>{/if}
-                <div class="flex justify-end">
-                  <Button variant="outline" size="sm" disabled={form.conditions.length >= maxConditions} onclick={addCondition}><Add12 aria-hidden="true" />{t().addCondition}</Button>
-                </div>
-              {/if}
-            </Field.Set>
-          </Item.Root>
-          <Item.Root variant="outline" size="sm" class="flex-col items-stretch bg-muted/50">
-            <Field.Set>
-              <Field.Legend variant="label" class="flex items-center gap-1">{t().methods}<InfoTooltip id="access-policy-methods-tip" label={t().methods} description={t().methodsHint} /></Field.Legend>
-              <RadioGroup.Root value={form.methods} onValueChange={(value) => { form.methods = value === 'selected' ? 'selected' : 'all'; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
-                <Field.Field orientation="horizontal" class="w-auto">
-                  <RadioGroup.Item value="all" id="access-policy-methods-all" />
-                  <Field.Label for="access-policy-methods-all" class="font-normal">{t().allMethods}</Field.Label>
-                </Field.Field>
-                <Field.Field orientation="horizontal" class="w-auto">
-                  <RadioGroup.Item value="selected" id="access-policy-methods-selected" />
-                  <Field.Label for="access-policy-methods-selected" class="font-normal">{t().selectedMethods}</Field.Label>
-                </Field.Field>
-              </RadioGroup.Root>
-              {#if form.methods === 'selected'}
-                <div class="flex flex-wrap gap-x-4 gap-y-2">
-                  {#each accessMethods as method (method)}
-                    <Field.Field orientation="horizontal" class="w-auto">
-                      <Checkbox
-                        id={`access-policy-method-${method}`}
-                        checked={form.chosen.includes(method)}
-                        onCheckedChange={(checked) => { form.chosen = checked ? [...form.chosen, method] : form.chosen.filter((entry) => entry !== method); }}
-                      />
-                      <Field.Label for={`access-policy-method-${method}`} class="font-mono font-normal">{method}</Field.Label>
-                    </Field.Field>
                   {/each}
                 </div>
               {/if}
-            </Field.Set>
-          </Item.Root>
-          <Item.Root variant="outline" size="sm" class="flex-col items-stretch bg-muted/50">
-            <Field.Set>
-              <Field.Legend variant="label" class="flex items-center gap-1">{t().clientIp}<InfoTooltip id="access-policy-ips-tip" label={t().clientIp} description={t().clientIpTip} /></Field.Legend>
-              <RadioGroup.Root value={form.ips} onValueChange={(value) => { form.ips = value === 'selected' ? 'selected' : 'all'; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
-                <Field.Field orientation="horizontal" class="w-auto">
-                  <RadioGroup.Item value="all" id="access-policy-ips-all" />
-                  <Field.Label for="access-policy-ips-all" class="font-normal">{t().anyIp}</Field.Label>
-                </Field.Field>
-                <Field.Field orientation="horizontal" class="w-auto">
-                  <RadioGroup.Item value="selected" id="access-policy-ips-selected" />
-                  <Field.Label for="access-policy-ips-selected" class="font-normal">{t().selectedIps}</Field.Label>
-                </Field.Field>
-              </RadioGroup.Root>
-              {#if form.ips === 'selected'}
-                <Field.Field>
-                  <TagInput id="access-policy-ips" ariaLabel={t().clientIp} bind:values={form.ipValues} suggestions={tagSuggestions(ipTags)} autoselect secondary={(value) => !isIpRange(value)} mono placeholder={t().ipPlaceholder} />
-                  <Field.Description>{t().ipHint}</Field.Description>
-                </Field.Field>
-              {/if}
-            </Field.Set>
-          </Item.Root>
-          <Item.Root variant="outline" size="sm" class="flex-col items-stretch bg-muted/50">
-            <Field.Set>
-              <Field.Legend variant="label" class="flex items-center gap-1">{t().token}<InfoTooltip id="access-policy-token-tip" label={t().token} description={t().tokenHint} /></Field.Legend>
-              <RadioGroup.Root value={form.token} onValueChange={(value) => { form.token = value === 'any' || value === 'selected' ? value : 'none'; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
-                {#each [['none', t().noToken], ['any', t().anyToken], ['selected', t().selectedTokens]] as [value, label] (value)}
-                  <Field.Field orientation="horizontal" class="w-auto">
-                    <RadioGroup.Item value={value} id={`access-policy-token-${value}`} />
-                    <Field.Label for={`access-policy-token-${value}`} class="font-normal">{label}</Field.Label>
-                  </Field.Field>
-                {/each}
-              </RadioGroup.Root>
-              {#if form.token === 'selected'}
-                {#if tokens?.length}
-                  <div class="flex flex-wrap gap-x-6 gap-y-2">
-                    {#each tokens as token (token.id)}
-                      <Field.Field orientation="horizontal" class="w-auto">
-                        <Checkbox
-                          id={`access-policy-token-id-${token.id}`}
-                          checked={form.tokens.includes(token.id)}
-                          onCheckedChange={(checked) => { form.tokens = checked ? [...form.tokens, token.id] : form.tokens.filter((id) => id !== token.id); }}
-                        />
-                        <Field.Label for={`access-policy-token-id-${token.id}`} class="min-w-0 font-normal">
-                          <span class="truncate">{token.name}</span>
-                          {#if token.hosts?.length}<span class="truncate font-mono text-muted-foreground">{token.hosts[0]}{token.hosts.length > 1 ? ` +${token.hosts.length - 1}` : ''}</span>{/if}
-                        </Field.Label>
-                      </Field.Field>
-                    {/each}
-                  </div>
-                {:else if tokens}
-                  <Field.Description>{t().noTokens}</Field.Description>
-                {/if}
-              {/if}
+              <div class="flex justify-end">
+                <Button variant="outline" size="sm" disabled={form.rows.length >= maxRows} onclick={addCondition}><Add12 aria-hidden="true" />{t().addCondition}</Button>
+              </div>
             </Field.Set>
           </Item.Root>
         </Item.Group>
@@ -897,7 +846,7 @@
             <!-- 선택지는 한 줄로 두고, 각 동작의 뜻은 마우스를 올리면 툴팁으로, 화면 낭독기에는 설명으로 알립니다. -->
             <RadioGroup.Root aria-labelledby="access-policy-action-title" value={form.action} onValueChange={(value) => { if (actions.includes(value as AccessAction)) form.action = value as AccessAction; }} orientation="horizontal" class="flex flex-wrap gap-x-6 gap-y-2">
               {#each actions as action (action)}
-                {@const hint = form.token === 'none' ? t().actionHints[action] : t().tokenActionHints[action]}
+                {@const hint = t().actionHints[action]}
                 <Tooltip.Root>
                   <Tooltip.Trigger>
                     {#snippet child({ props })}

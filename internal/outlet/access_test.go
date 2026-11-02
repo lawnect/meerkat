@@ -185,7 +185,7 @@ var verified = func(email string, extra ...any) map[string]any {
 // Only covered paths need a sign-in; navigations are sent to sign in,
 // other requests get 401; nothing is cached.
 func TestAccessChallengesOnlyProtectedPaths(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/admin/"}}, AllowedUsers: []string{"@corp.example.com"}})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockStartsWith, "/admin/")), AllowedUsers: []string{"@corp.example.com"}})
 	if w := f.visit("app.example.com", "/public"); w.Code != 200 {
 		t.Fatalf("unprotected path: %d", w.Code)
 	}
@@ -223,7 +223,7 @@ func TestAccessChallengesOnlyProtectedPaths(t *testing.T) {
 
 // Path tricks that an app might still read as a protected path are caught.
 func TestAccessCatchesPathVariants(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/admin/"}}, AllowedUsers: []string{"@corp.example.com"}})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockStartsWith, "/admin/")), AllowedUsers: []string{"@corp.example.com"}})
 	for _, path := range []string{"/admin", "/admin/", "/Admin/x", "//admin/x", "/x/../admin/y", "/%61dmin/y", "/admin;jsessionid=1/x", "/admin./x", "/./admin/x",
 		// Read as /admin/x by servers that drop parameters first, as /x/admin/x by others.
 		"/x/.;/../admin/x", "/admin/.;/../x"} {
@@ -236,7 +236,7 @@ func TestAccessCatchesPathVariants(t *testing.T) {
 // A person the policy allows signs in, reaches the app with the email in a
 // header, and the app never sees the session cookie.
 func TestAccessSignInLetsAllowedPeopleThrough(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}})
 	session, back := f.finish(t, f.signIn(t, "app.example.com", "/reports?q=1", verified("Alice@Corp.example.com")))
 	if back != "/reports?q=1" {
 		t.Fatalf("back to: %s", back)
@@ -263,7 +263,7 @@ func (f accessFixture) lastAuditAction(t *testing.T) string {
 // A client can't hand the app an identity of its own, not even under a
 // name some app servers read as the Outlet's header.
 func TestAccessEmailHeaderCantBeForged(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}})
 	r := httptest.NewRequest("GET", "/x", nil)
 	r.Host = "other.example.com"
 	r.Header.Set(accessEmailHeader, "boss@corp.example.com")
@@ -281,7 +281,7 @@ func TestAccessEmailHeaderCantBeForged(t *testing.T) {
 // A path longer than apps take is refused before any rule reads it; a long
 // query string is not.
 func TestPublicPathLimit(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, AllPaths: true})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}})
 	for _, c := range []struct {
 		target string
 		code   int
@@ -320,7 +320,7 @@ func TestAccessWhoMayPass(t *testing.T) {
 		{"unverified", control.AccessPolicy{AllowedUsers: []string{"@corp.example.com"}}, map[string]any{"email": "bob@corp.example.com"}, false, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			c.policy.Enabled, c.policy.Hosts, c.policy.AllPaths = true, []string{"app.example.com"}, true
+			c.policy.Enabled, c.policy.Hosts = true, []string{"app.example.com"}
 			f := newAccessFixture(t, c.policy)
 			if c.admin {
 				if _, err := f.db.SSOAdmin(context.Background(), "https://idp.example.com", "admin-subject", "admin@example.com"); err != nil {
@@ -348,7 +348,7 @@ func TestAccessWhoMayPass(t *testing.T) {
 // A session is good on its own address only, can't be altered, ends when it
 // expires, when the key is replaced, and when a policy no longer allows it.
 func TestAccessSessionLimits(t *testing.T) {
-	policy := control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com", "other.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}}
+	policy := control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com", "other.example.com"}, AllowedUsers: []string{"@corp.example.com"}}
 	f := newAccessFixture(t, policy)
 	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
 	if w := f.visit("other.example.com", "/", session); w.Code != http.StatusFound {
@@ -387,8 +387,8 @@ func TestAccessSessionLimits(t *testing.T) {
 // Policies apply in order: the first enabled one that covers a request
 // decides it, so a narrower policy goes above a broader one.
 func TestAccessPoliciesApplyInOrder(t *testing.T) {
-	finance := control.AccessPolicy{Enabled: true, Hosts: []string{"*.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/finance/"}}, AllowedGroups: []string{"finance"}}
-	staff := control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}}
+	finance := control.AccessPolicy{Enabled: true, Hosts: []string{"*.example.com"}, Conditions: conditions(onPaths(control.BlockStartsWith, "/finance/")), AllowedGroups: []string{"finance"}}
+	staff := control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}}
 	f := newAccessFixture(t, finance, staff)
 	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
 	if w := f.visit("app.example.com", "/", session); w.Code != 200 {
@@ -423,9 +423,10 @@ func TestAccessPoliciesApplyInOrder(t *testing.T) {
 // differently is never opened.
 func TestAccessBypassAndBlock(t *testing.T) {
 	f := newAccessFixture(t,
-		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/v1/"}, {Operator: control.BlockEquals, Value: "/health"}}},
-		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/internal/"}}},
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockStartsWith, "/v1/"))},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockEquals, "/health"))},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockStartsWith, "/internal/"))},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}},
 	)
 	for _, path := range []string{"/v1/chat/completions", "/v1/", "/health", "/v1/%EA%B2%8C%EC%8B%9C%ED%8C%90", "/v1/items(1)", "/v1/files/*", "/v1/a,b:c@d", "/v1/x%20y", "/v1/게시판"} {
 		if w := f.visit("app.example.com", path); w.Code != 200 || !strings.Contains(w.Body.String(), "email= ") {
@@ -457,7 +458,7 @@ func TestAccessBypassAndBlock(t *testing.T) {
 		t.Fatalf("signed in: %d", w.Code)
 	}
 	// A sign-in starts only for addresses an allow policy covers.
-	f.setPolicies(t, control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true})
+	f.setPolicies(t, control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}})
 	if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash("browser")); w.Code != http.StatusNotFound {
 		t.Fatalf("start for a blocked address: %d", w.Code)
 	}
@@ -468,9 +469,9 @@ func TestAccessBypassAndBlock(t *testing.T) {
 // names none.
 func TestAccessPoliciesByMethod(t *testing.T) {
 	f := newAccessFixture(t,
-		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/v1/"}}, Methods: []string{"GET"}},
-		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true, Methods: []string{"DELETE", "PUT"}},
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockStartsWith, "/v1/"), onMethods("GET"))},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: conditions(onMethods("DELETE", "PUT"))},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}},
 	)
 	send := func(method, path string) int {
 		r := httptest.NewRequest(method, "https://app.example.com"+path, nil)
@@ -502,32 +503,35 @@ func TestAccessPoliciesByMethod(t *testing.T) {
 	}
 	// A policy limited to some methods hides none below it from a sign-in.
 	f.setPolicies(t,
-		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true, Methods: []string{"GET", "POST"}},
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowEveryone: true},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: conditions(onMethods("GET", "POST"))},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowEveryone: true},
 	)
 	if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash("browser")); w.Code != http.StatusFound {
 		t.Fatalf("start behind a block for some methods: %d", w.Code)
 	}
 	// One for every method a later policy names does.
 	f.setPolicies(t,
-		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true, Methods: []string{"GET", "POST"}},
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowEveryone: true, Methods: []string{"POST"}},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: conditions(onMethods("GET", "POST"))},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: conditions(onMethods("POST")), AllowEveryone: true},
 	)
 	if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash("browser")); w.Code != http.StatusNotFound {
 		t.Fatalf("start behind a block for its methods: %d", w.Code)
 	}
 	// Saved through the API, methods come back in one order and are audited.
 	h := f.store.Handler()
-	policy := map[string]any{"name": "API", "ip_tags": []string{}, "ip_ranges": []string{}, "enabled": true, "action": "bypass", "hosts": []string{"app.example.com"}, "all_paths": true, "methods": []string{"post", "GET"}}
-	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []any{policy}}); w.Code != 200 || !strings.Contains(w.Body.String(), `"methods":["GET","POST"]`) {
+	methods := func(values ...string) []any {
+		return []any{map[string]any{"field": "method", "operator": "in", "not": false, "values": values}}
+	}
+	policy := map[string]any{"name": "API", "enabled": true, "action": "bypass", "hosts": []string{"app.example.com"}, "conditions": methods("post", "GET")}
+	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []any{policy}}); w.Code != 200 || !strings.Contains(w.Body.String(), `"conditions":[{"field":"method","operator":"in","not":false,"values":["GET","POST"]}]`) {
 		t.Fatalf("save methods: %d %s", w.Code, w.Body.String())
 	}
-	if event := f.lastAudit(t); event.Action != "security.access_policies" || !strings.Contains(string(event.Detail), `"methods":["GET","POST"]`) {
+	if event := f.lastAudit(t); event.Action != "security.access_policies" || !strings.Contains(string(event.Detail), `"conditions":[{"field":"method","operator":"in","values":["GET","POST"]}]`) {
 		t.Fatalf("audit: %s %s", event.Action, event.Detail)
 	}
-	policy["methods"] = []string{"HEAD"}
-	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []any{policy}}); w.Code != 400 {
-		t.Fatalf("save HEAD: %d", w.Code)
+	policy["conditions"] = methods("HEAD")
+	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []any{policy}}); w.Code != 400 || errorCode(t, w) != "invalid_access_policies" {
+		t.Fatalf("save HEAD: %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -535,9 +539,9 @@ func TestAccessPoliciesByMethod(t *testing.T) {
 // reads it, requests just made included.
 func TestAccessMetrics(t *testing.T) {
 	f := newAccessFixture(t,
-		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/v1/"}}},
-		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/internal/"}}},
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockStartsWith, "/v1/"))},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockStartsWith, "/internal/"))},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}},
 	)
 	policies, err := f.db.AccessPolicies(context.Background())
 	if err != nil {
@@ -589,7 +593,7 @@ func TestAccessMetrics(t *testing.T) {
 
 // An allow policy can let in everyone the access provider signs in.
 func TestAccessAllowEveryone(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowEveryone: true})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowEveryone: true})
 	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("anyone@elsewhere.example.org")))
 	if w := f.visit("app.example.com", "/", session); w.Code != 200 || !strings.Contains(w.Body.String(), "email=anyone@elsewhere.example.org") {
 		t.Fatalf("everyone: %d %s", w.Code, w.Body.String())
@@ -601,7 +605,7 @@ func TestAccessAllowEveryone(t *testing.T) {
 
 // A ticket works once, on the address it was issued for.
 func TestAccessTicketsAreSingleUse(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com", "other.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com", "other.example.com"}, AllowedUsers: []string{"@corp.example.com"}})
 	callback := f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com"))
 	next, _ := url.Parse(callback.Header().Get("Location"))
 	if w := f.visit("other.example.com", next.RequestURI()); w.Code != http.StatusBadRequest || cookieNamed(w, accessCookie) != nil {
@@ -624,7 +628,7 @@ func TestAccessTicketsAreSingleUse(t *testing.T) {
 // A ticket from an attacker's own sign-in can't sign a victim's browser in:
 // it only works in the browser the address sent to sign in.
 func TestAccessTicketsBelongToTheirBrowser(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}})
 	callback := f.signIn(t, "app.example.com", "/", verified("mallory@corp.example.com"))
 	next, _ := url.Parse(callback.Header().Get("Location"))
 	victim := f.visit("app.example.com", "/")
@@ -642,7 +646,7 @@ func TestAccessTicketsBelongToTheirBrowser(t *testing.T) {
 // The sign-in start only serves protected addresses, on public addresses,
 // and can't send anyone off the address.
 func TestAccessStartStaysOnProtectedAddresses(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}})
 	for _, host := range []string{"other.example.com", "evil.example.org", "", f.adminHost} {
 		if w := f.visit(f.adminHost, accessStartPath+"?host="+url.QueryEscape(host)+"&return=/&bind="+Hash("browser")); w.Code != http.StatusNotFound {
 			t.Fatalf("start for %q: %d", host, w.Code)
@@ -682,7 +686,7 @@ func (f accessFixture) provider(t *testing.T, enabled bool) {
 
 // The callback needs the state of the browser that started.
 func TestAccessCallbackNeedsItsState(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}})
 	challenge := f.visit("app.example.com", "/")
 	start, _ := url.Parse(challenge.Header().Get("Location"))
 	begin := f.visit(f.adminHost, start.RequestURI())
@@ -705,7 +709,7 @@ func TestAccessCallbackNeedsItsState(t *testing.T) {
 // Logging out drops the session; the Outlet's own paths pass the default
 // block rules, which refuse other paths starting with "/.".
 func TestAccessLogoutAndOwnPaths(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}})
 	w := f.visit("app.example.com", accessPathPrefix+"logout")
 	if w.Code != 200 || cookieNamed(w, accessCookie) != nil || !strings.Contains(w.Body.String(), `<form method="post" action="/.meerkat/access/logout">`) {
 		t.Fatalf("logout: %d %s", w.Code, w.Body.String())
@@ -720,7 +724,7 @@ func TestAccessLogoutAndOwnPaths(t *testing.T) {
 
 // Many requests with a session at once; run with -race.
 func TestAccessConcurrentRequests(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}, AllowAdmins: true})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}, AllowAdmins: true})
 	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
 	var wg sync.WaitGroup
 	failures := make(chan int, 100)
@@ -735,7 +739,7 @@ func TestAccessConcurrentRequests(t *testing.T) {
 	// it must not come after the test ends.
 	saved := make(chan error, 1)
 	go func() {
-		policy := control.AccessPolicy{Name: "staff", Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}}
+		policy := control.AccessPolicy{Name: "staff", Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}}
 		_, err := f.db.SetAccessPolicies(context.Background(), control.AccessPolicies{Policies: []control.AccessPolicy{policy}}, time.Now())
 		if err == nil {
 			err = f.store.reloadAccess(context.Background())
@@ -755,7 +759,7 @@ func TestAccessConcurrentRequests(t *testing.T) {
 // The settings API is for administrators, never shows the secret, and
 // audits changes.
 func TestAccessSettingsAPI(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}})
 	h := f.store.Handler()
 	for _, path := range []string{"/api/v1/security/access-provider", "/api/v1/security/access-policies"} {
 		if w := request(h, "GET", path, "", nil); w.Code != 401 {
@@ -769,10 +773,10 @@ func TestAccessSettingsAPI(t *testing.T) {
 	if w := request(h, "PUT", "/api/v1/security/access-provider", f.admin, map[string]any{"enabled": true, "issuer": "http://x", "client_id": "a", "scopes": []string{}, "groups_claim": "", "session_hours": 8}); w.Code != 400 {
 		t.Fatalf("bad provider: %d", w.Code)
 	}
-	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []map[string]any{{"name": "x", "ip_tags": []string{}, "ip_ranges": []string{}, "enabled": true, "hosts": []string{"app.example.com"}, "all_paths": true}}}); w.Code != 400 {
-		t.Fatalf("policy without anyone allowed: %d", w.Code)
+	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []map[string]any{{"name": "x", "enabled": true, "hosts": []string{"app.example.com"}, "conditions": []any{}}}}); w.Code != 400 || errorCode(t, w) != "invalid_access_policies" {
+		t.Fatalf("policy without anyone allowed: %d %s", w.Code, w.Body.String())
 	}
-	w = request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []map[string]any{{"name": "Staff", "ip_tags": []string{}, "ip_ranges": []string{}, "enabled": true, "hosts": []string{"other.example.com"}, "all_paths": true, "allowed_users": []string{"@corp.example.com"}}}})
+	w = request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []map[string]any{{"name": "Staff", "enabled": true, "hosts": []string{"other.example.com"}, "conditions": []any{}, "allowed_users": []string{"@corp.example.com"}}}})
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"addresses":["app.example.com","other.example.com"]`) {
 		t.Fatalf("policies: %d %s", w.Code, w.Body.String())
 	}
@@ -791,7 +795,7 @@ func TestAccessSettingsAPI(t *testing.T) {
 // With access SSO off, protected addresses let nobody in, sessions from
 // before included, and a ticket issued before can't start one.
 func TestAccessClosedWhileProviderOff(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}})
 	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
 	callback := f.signIn(t, "app.example.com", "/", verified("bob@corp.example.com"))
 	f.provider(t, false)
@@ -818,7 +822,7 @@ func TestAccessPolicySavesLeaveTheSavedOneInForce(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range 20 {
 		wg.Go(func() {
-			body := map[string]any{"policies": []map[string]any{{"name": fmt.Sprint("policy ", i), "ip_tags": []string{}, "ip_ranges": []string{}, "enabled": true, "hosts": []string{"app.example.com"}, "all_paths": true, "allowed_users": []string{"@corp.example.com"}}}}
+			body := map[string]any{"policies": []map[string]any{{"name": fmt.Sprint("policy ", i), "enabled": true, "hosts": []string{"app.example.com"}, "conditions": []any{}, "allowed_users": []string{"@corp.example.com"}}}}
 			if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, body); w.Code != 200 {
 				t.Errorf("save %d: %d %s", i, w.Code, w.Body.String())
 			}
@@ -838,11 +842,11 @@ func TestAccessPolicySavesLeaveTheSavedOneInForce(t *testing.T) {
 // pattern holds with or without the trailing slash, and a path an app may
 // read differently counts as every path.
 func TestAccessPathsAppsMayReadDifferently(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{
-		{Operator: control.BlockEquals, Value: "/secret."},
-		{Operator: control.BlockStartsWith, Value: "/private./"},
-		{Operator: control.BlockMatches, Value: "^/(admin|reports)/"},
-	}, AllowedUsers: []string{"@corp.example.com"}})
+	f := newAccessFixture(t,
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockEquals, "/secret.")), AllowedUsers: []string{"@corp.example.com"}},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockStartsWith, "/private./")), AllowedUsers: []string{"@corp.example.com"}},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockMatches, "^/(admin|reports)/")), AllowedUsers: []string{"@corp.example.com"}},
+	)
 	for _, path := range []string{
 		"/secret", "/secret.", "/private/x", "/private./x", "/admin", "/admin/", "/ADMIN", "/admin.", "/reports", "/admin/users",
 		// Decoded again, overlong, or dots and spaces servers read their own ways.
@@ -869,7 +873,7 @@ func TestAccessPathsAppsMayReadDifferently(t *testing.T) {
 // The Outlet's cookies never reach the app, however the name is spaced or
 // cased.
 func TestAccessCookiesNeverReachTheApp(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}})
 	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
 	for _, name := range []string{accessCookie + " ", accessCookie + "\t", " " + accessCookie} {
 		r := httptest.NewRequest("GET", "https://app.example.com/", nil)
@@ -897,9 +901,9 @@ func TestAccessSessionGroupsFitTheAddress(t *testing.T) {
 		many = append(many, fmt.Sprintf("team-%02d-%s", i, strings.Repeat("x", 150)))
 	}
 	f := newAccessFixture(t,
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedGroups: many},
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/finance/"}}, AllowedGroups: []string{"finance"}},
-		control.AccessPolicy{Enabled: true, Hosts: []string{"other.example.com"}, AllPaths: true, AllowedGroups: []string{"elsewhere"}},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedGroups: many},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockStartsWith, "/finance/")), AllowedGroups: []string{"finance"}},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"other.example.com"}, AllowedGroups: []string{"elsewhere"}},
 	)
 	groups := append(append([]string{}, many...), "finance", "elsewhere")
 	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("carol@corp.example.com", "groups", groups)))
@@ -923,7 +927,7 @@ func TestAccessSessionGroupsFitTheAddress(t *testing.T) {
 
 // One client address can begin only so many sign-ins a minute.
 func TestAccessStartsAreLimited(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}})
 	for i := range accessStarts + 1 {
 		w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash(fmt.Sprint("browser ", i)))
 		if want := http.StatusFound; i == accessStarts {
@@ -940,7 +944,7 @@ func TestAccessStartsAreLimited(t *testing.T) {
 // other, whichever comes back first. The browser keeps the newest cookie of
 // each name, per host.
 func TestAccessSignInsInFlightTogether(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com", "other.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com", "other.example.com"}, AllowedUsers: []string{"@corp.example.com"}})
 	jar := map[string]map[string]*http.Cookie{}
 	keep := func(host string, cookies ...*http.Cookie) {
 		if jar[host] == nil {
@@ -1013,7 +1017,9 @@ func TestAccessSavedPoliciesThatFailTheChecksStayClosed(t *testing.T) {
 			t.Fatalf("reload: %v", err)
 		}
 	}
-	store(`{"policies":[{"id":"old","name":"Old","enabled":true,"hosts":["App.Example.com"],"conditions":[{"operator":"matches","value":"("}],"allowed_users":["@Corp.example.com"]}]}`)
+	// A disabled policy that fails the checks damages the saved policies.
+	broken := `{"id":"bad","name":"Bad","enabled":false,"hosts":["other.example.com"],"conditions":[{"operator":"matches","value":"("}],"allowed_users":["@corp.example.com"]}`
+	store(`{"policies":[{"id":"old","name":"Old","enabled":true,"hosts":["App.Example.com"],"all_paths":true,"allowed_users":["@Corp.example.com"]},` + broken + `]}`)
 	if w := f.visit("app.example.com", "/anything"); w.Code != http.StatusFound {
 		t.Fatalf("named address: %d", w.Code)
 	}
@@ -1031,13 +1037,19 @@ func TestAccessSavedPoliciesThatFailTheChecksStayClosed(t *testing.T) {
 	// A damaged bypass policy saved above a damaged allow policy lets nobody
 	// in, but doesn't shut out whom the allow policy names.
 	store(`{"policies":[{"id":"open","name":"Open","enabled":true,"action":"bypass","hosts":["app.example.com"],"all_paths":true},` +
-		`{"id":"old","name":"Old","enabled":true,"hosts":["app.example.com"],"conditions":[{"operator":"matches","value":"("}],"allowed_users":["@Corp.example.com"]}]}`)
+		`{"id":"old","name":"Old","enabled":true,"hosts":["app.example.com"],"all_paths":true,"allowed_users":["@Corp.example.com"]},` + broken + `]}`)
 	if w := f.visit("app.example.com", "/"); w.Code != http.StatusFound {
 		t.Fatalf("damaged bypass: %d", w.Code)
 	}
 	session, _ = f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
 	if w := f.visit("app.example.com", "/", session); w.Code != 200 {
 		t.Fatalf("named person behind a damaged bypass: %d", w.Code)
+	}
+	// Damaged, an allow policy limited to some paths lets nobody in: it
+	// didn't let them in everywhere.
+	store(`{"policies":[{"id":"old","name":"Old","enabled":true,"hosts":["app.example.com"],"conditions":[{"operator":"matches","value":"("}],"allowed_users":["@Corp.example.com"]}]}`)
+	if w := f.visit("app.example.com", "/", session); w.Code != http.StatusForbidden {
+		t.Fatalf("damaged allow policy for some paths: %d", w.Code)
 	}
 	// Damage elsewhere keeps the saved order: a block above an allow policy
 	// still shuts those it names out.
@@ -1111,7 +1123,7 @@ func TestAccessDamagedPoliciesSaveBack(t *testing.T) {
 // its share with 429 and a link back, and its sign-ins in flight are never
 // replaced by newer ones; its failures fill the audit log only so fast.
 func TestAccessOfficeBehindOneAddress(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}})
 	codes := map[int]int{}
 	for i := range accessStarts + 5 {
 		w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=%2Fdocs&bind="+Hash(fmt.Sprint("browser ", i)))
@@ -1142,7 +1154,7 @@ func TestAccessOfficeBehindOneAddress(t *testing.T) {
 // One client address gets only so many failed sign-ins a minute into the
 // audit log.
 func TestAccessFailuresAuditedOnlySoFast(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}})
 	for range loginAttempts + 5 {
 		fl := f.depart(t, "app.example.com", "/")
 		if w := f.visit(f.adminHost, accessCallbackPath+"?error=access_denied&state="+url.QueryEscape(fl.query.Get("state")), fl.state); w.Code != http.StatusForbidden {
@@ -1336,11 +1348,11 @@ func (w *stalledWriter) Write(b []byte) (int, error) {
 // the address itself signs out, and a denied person can sign in again, as
 // someone with groups a policy named after they signed in must.
 func TestAccessPagesAndSignOut(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}})
 	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("carol@corp.example.com", "groups", []string{"finance"})))
 	f.setPolicies(t,
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/finance/"}}, AllowedGroups: []string{"finance"}},
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockStartsWith, "/finance/")), AllowedGroups: []string{"finance"}},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}},
 	)
 	denied := f.visit("app.example.com", "/finance/q3?y=1", session)
 	again := `<form method="post" action="/.meerkat/access/logout?return=%2Ffinance%2Fq3%3Fy%3D1">`
@@ -1391,7 +1403,7 @@ func TestAccessPagesAndSignOut(t *testing.T) {
 // Administrators pass a policy that lets them in, by their email; the
 // database is asked only when the session alone doesn't settle it.
 func TestAccessAdminsByEmail(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}, AllowAdmins: true})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}, AllowAdmins: true})
 	if _, err := f.db.SSOAdmin(context.Background(), "https://idp.example.com", "admin-subject", "Boss@Example.com"); err != nil {
 		t.Fatal(err)
 	}
@@ -1415,13 +1427,13 @@ func TestAccessAdminsByEmail(t *testing.T) {
 // The audit log says who could get in after a change, and as whom a
 // person signed in.
 func TestAccessAuditDetail(t *testing.T) {
-	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}, AllowedGroups: []string{"staff"}, AllowAdmins: true})
+	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}, AllowedGroups: []string{"staff"}, AllowAdmins: true})
 	f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com", "groups", []string{"staff"})))
 	var login map[string]any
 	if event := f.lastAudit(t); event.Action != "access.login" || json.Unmarshal(event.Detail, &login) != nil || login["subject"] != "subject-alice@corp.example.com" || login["issuer"] != f.idp.server.URL {
 		t.Fatalf("login: %s %s", event.Action, event.Detail)
 	}
-	body := map[string]any{"policies": []map[string]any{{"name": "Staff", "ip_tags": []string{}, "ip_ranges": []string{}, "enabled": true, "hosts": []string{"app.example.com"}, "all_paths": true, "allowed_users": []string{"@corp.example.com"}, "allowed_groups": []string{"staff"}, "allow_admins": true}}}
+	body := map[string]any{"policies": []map[string]any{{"name": "Staff", "enabled": true, "hosts": []string{"app.example.com"}, "conditions": []any{}, "allowed_users": []string{"@corp.example.com"}, "allowed_groups": []string{"staff"}, "allow_admins": true}}}
 	if w := request(f.store.Handler(), "PUT", "/api/v1/security/access-policies", f.admin, body); w.Code != 200 {
 		t.Fatalf("save: %d", w.Code)
 	}
@@ -1479,15 +1491,16 @@ func TestAccessTokens(t *testing.T) {
 			t.Fatalf("create %v: %d", body, w.Code)
 		}
 	}
-	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []map[string]any{{"name": "x", "ip_tags": []string{}, "ip_ranges": []string{}, "enabled": true, "hosts": []string{"app.example.com"}, "all_paths": true, "action": "bypass", "require_token": true, "tokens": []string{"nosuchtoken"}}}}); w.Code != 400 {
-		t.Fatalf("policy naming an unknown token: %d", w.Code)
+	unknown := []any{map[string]any{"field": "token", "operator": "in", "not": false, "values": []string{"nosuchtoken"}}}
+	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, map[string]any{"policies": []map[string]any{{"name": "x", "enabled": true, "hosts": []string{"app.example.com"}, "conditions": unknown, "action": "bypass"}}}); w.Code != 400 || errorCode(t, w) != "invalid_access_policies" {
+		t.Fatalf("policy naming an unknown token: %d %s", w.Code, w.Body.String())
 	}
-	deployPath := []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/deploy/"}}
+	deployPath := onPaths(control.BlockStartsWith, "/deploy/")
 	f.setPolicies(t,
-		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: deployPath, RequireToken: true, Tokens: []string{deploy.ID}},
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: deployPath, AllowedUsers: []string{"@corp.example.com"}},
-		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, AllPaths: true, RequireToken: true, Tokens: []string{monitor.ID}},
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: conditions(deployPath, withToken(deploy.ID))},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: conditions(deployPath), AllowedUsers: []string{"@corp.example.com"}},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: conditions(withToken(monitor.ID))},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}},
 	)
 	send := func(host, path string, headers map[string]string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest("GET", "https://"+host+path, nil)
@@ -1627,8 +1640,8 @@ func TestAccessTokens(t *testing.T) {
 		t.Fatalf("delete a token in use: %d", w.Code)
 	}
 	f.setPolicies(t,
-		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, AllPaths: true, RequireToken: true, Tokens: []string{monitor.ID}},
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: conditions(withToken(monitor.ID))},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}},
 	)
 	if w := request(h, "DELETE", "/api/v1/security/access-tokens/"+deploy.ID, f.admin, nil); w.Code != http.StatusNoContent {
 		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
@@ -1675,8 +1688,8 @@ func TestAccessTokenScope(t *testing.T) {
 		t.Fatalf("create: %d %s", w.Code, w.Body.String())
 	}
 	f.setPolicies(t,
-		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"*.example.com"}, AllPaths: true, RequireToken: true, Tokens: []string{created.Token.ID}},
-		control.AccessPolicy{Enabled: true, Hosts: []string{"*.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"*.example.com"}, Conditions: conditions(withToken(created.Token.ID))},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"*.example.com"}, AllowedUsers: []string{"@corp.example.com"}},
 	)
 	send := func(host, client string) int {
 		r := httptest.NewRequest("GET", "https://"+host+"/", nil)
@@ -1733,18 +1746,19 @@ func TestAccessTokenScope(t *testing.T) {
 	if event := f.lastAuditAction(t); event != "security.access_token_update" {
 		t.Fatalf("audit: %s", event)
 	}
-	body := map[string]any{"policies": []map[string]any{{"name": "CI", "ip_tags": []string{}, "ip_ranges": []string{}, "enabled": true, "action": "bypass", "hosts": []string{"app.example.com"}, "all_paths": true, "require_token": true, "tokens": []string{created.Token.ID}}}}
+	tokenRow := map[string]any{"field": "token", "operator": "in", "not": false, "values": []string{created.Token.ID}}
+	body := map[string]any{"policies": []map[string]any{{"name": "CI", "enabled": true, "action": "bypass", "hosts": []string{"app.example.com"}, "conditions": []any{tokenRow}}}}
 	if w := request(h, "PUT", "/api/v1/security/access-policies", f.admin, body); w.Code != 200 {
 		t.Fatalf("policies: %d %s", w.Code, w.Body.String())
 	}
-	if event := f.lastAudit(t); !strings.Contains(string(event.Detail), `"require_token":true,"tokens":["`+created.Token.ID+`"]`) {
+	if event := f.lastAudit(t); !strings.Contains(string(event.Detail), `"conditions":[{"field":"token","operator":"in","values":["`+created.Token.ID+`"]}]`) {
 		t.Fatalf("policy audit: %s", event.Detail)
 	}
 	// A policy taking any token on an address the token shares lists it too;
 	// one on other addresses doesn't.
 	f.setPolicies(t,
-		control.AccessPolicy{Name: "Any", Enabled: true, Action: control.AccessBypass, Hosts: []string{"api.example.com"}, AllPaths: true, RequireToken: true},
-		control.AccessPolicy{Name: "Elsewhere", Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.org"}, AllPaths: true, RequireToken: true},
+		control.AccessPolicy{Name: "Any", Enabled: true, Action: control.AccessBypass, Hosts: []string{"api.example.com"}, Conditions: conditions(withToken())},
+		control.AccessPolicy{Name: "Elsewhere", Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.org"}, Conditions: conditions(withToken())},
 	)
 	if w := request(h, "GET", "/api/v1/security/access-tokens", f.admin, nil); json.Unmarshal(w.Body.Bytes(), &list) != nil || len(list.Tokens[0].Policies) != 1 || list.Tokens[0].Policies[0].Name != "Any" {
 		t.Fatalf("policies taking any token: %s", w.Body.String())
@@ -1771,14 +1785,14 @@ func TestAccessTokenCondition(t *testing.T) {
 	}
 	ci, ciValue := create("CI")
 	_, otherValue := create("Other")
-	on := func(prefix string) []control.BlockCondition {
-		return []control.BlockCondition{{Operator: control.BlockStartsWith, Value: prefix}}
+	on := func(prefix string) control.AccessCondition {
+		return onPaths(control.BlockStartsWith, prefix)
 	}
 	f.setPolicies(t,
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: on("/both/"), RequireToken: true, Tokens: []string{ci}, AllowedUsers: []string{"@corp.example.com"}},
-		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: on("/any/"), RequireToken: true},
-		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: on("/shut/"), RequireToken: true, Tokens: []string{ci}},
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: conditions(on("/both/"), withToken(ci)), AllowedUsers: []string{"@corp.example.com"}},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: conditions(on("/any/"), withToken())},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: conditions(on("/shut/"), withToken(ci))},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}},
 	)
 	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@corp.example.com")))
 	send := func(path, token string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
@@ -1822,8 +1836,8 @@ func TestAccessTokenCondition(t *testing.T) {
 	}
 	// A policy requiring a token hides from a sign-in none that don't.
 	f.setPolicies(t,
-		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true, RequireToken: true},
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowEveryone: true},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: conditions(withToken())},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowEveryone: true},
 	)
 	if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash("browser")); w.Code != http.StatusFound {
 		t.Fatalf("start behind a block for tokens: %d", w.Code)
@@ -1838,8 +1852,8 @@ func TestAccessTokenCondition(t *testing.T) {
 		{nil, []string{ci}, http.StatusNotFound},
 	} {
 		f.setPolicies(t,
-			control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true, RequireToken: true, Tokens: c.first},
-			control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, RequireToken: true, Tokens: c.then, AllowEveryone: true},
+			control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: conditions(withToken(c.first...))},
+			control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: conditions(withToken(c.then...)), AllowEveryone: true},
 		)
 		if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash("browser")); w.Code != c.code {
 			t.Fatalf("start behind a block for tokens %q, allowing %q: %d", c.first, c.then, w.Code)
@@ -1852,13 +1866,13 @@ func TestAccessTokenCondition(t *testing.T) {
 // session.
 func TestAccessShadowedPoliciesSignNobodyIn(t *testing.T) {
 	var shadowed []control.AccessPolicy
-	everyone := control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowEveryone: true}
+	everyone := control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowEveryone: true}
 	shadowed = append(shadowed, everyone)
 	var groups []string
 	for i := range 30 {
 		group := fmt.Sprintf("team-%02d-%s", i, strings.Repeat("x", 200))
 		groups = append(groups, group)
-		shadowed = append(shadowed, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: fmt.Sprintf("/team-%02d/", i)}}, AllowedGroups: []string{group}})
+		shadowed = append(shadowed, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockStartsWith, fmt.Sprintf("/team-%02d/", i))), AllowedGroups: []string{group}})
 	}
 	f := newAccessFixture(t, shadowed...)
 	session, _ := f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@else.example.org", "groups", groups)))
@@ -1868,9 +1882,11 @@ func TestAccessShadowedPoliciesSignNobodyIn(t *testing.T) {
 	}
 	// Nor does a policy whose paths an earlier one starts with: its groups
 	// stay out too, so the session fits.
-	shadowed = []control.AccessPolicy{{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/team/"}}, AllowEveryone: true}}
+	shadowed = []control.AccessPolicy{{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockStartsWith, "/team/")), AllowEveryone: true}}
 	for i, group := range groups {
-		shadowed = append(shadowed, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: fmt.Sprintf("/team/x-%02d/", i)}, {Operator: control.BlockEquals, Value: fmt.Sprintf("/Team/y-%02d", i)}}, AllowedGroups: []string{group}})
+		shadowed = append(shadowed,
+			control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockStartsWith, fmt.Sprintf("/team/x-%02d/", i))), AllowedGroups: []string{group}},
+			control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockEquals, fmt.Sprintf("/Team/y-%02d", i))), AllowedGroups: []string{group}})
 	}
 	f.setPolicies(t, append(shadowed, everyone)...)
 	session, _ = f.finish(t, f.signIn(t, "app.example.com", "/", verified("alice@else.example.org", "groups", groups)))
@@ -1881,10 +1897,10 @@ func TestAccessShadowedPoliciesSignNobodyIn(t *testing.T) {
 	// A shadowed allow policy alone doesn't let a sign-in start, behind a
 	// block for every path or for every path under "/".
 	for _, block := range []control.AccessPolicy{
-		{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true},
-		{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/"}}},
+		{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}},
+		{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockStartsWith, "/"))},
 	} {
-		f.setPolicies(t, block, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowEveryone: true})
+		f.setPolicies(t, block, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowEveryone: true})
 		if w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash("browser")); w.Code != http.StatusNotFound {
 			t.Fatalf("start behind %+v: %d", block.Conditions, w.Code)
 		}
@@ -1904,8 +1920,8 @@ func TestForgottenAccessTokenLetsNothingIn(t *testing.T) {
 		t.Fatalf("create: %d %s", w.Code, w.Body.String())
 	}
 	f.setPolicies(t,
-		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, AllPaths: true, RequireToken: true, Tokens: []string{created.Token.ID}},
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: conditions(withToken(created.Token.ID))},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}},
 	)
 	send := func() int {
 		r := httptest.NewRequest("GET", "https://app.example.com/x", nil)

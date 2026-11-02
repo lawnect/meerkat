@@ -13,7 +13,8 @@
   // 넣습니다(있는 값만 받는 칸). 새 값을 만드는 칸은 autoselect 없이 쓰므로 Enter가 입력한 글을 그대로 넣습니다.
   // secondary(value)가 참인 칩은 secondary 배지로, 나머지는 outline 배지로 그립니다(예: 태그와 IP를 구분).
   type Suggestion = { value: string; hint?: string };
-  let { values = $bindable([]), placeholder, id, ariaLabel, lowercase = false, mono = false, disabled = false, suggestions = [], secondary, autoselect = false }: {
+  // commas가 false이면 쉼표도 값의 일부로 받습니다(정규식 경로처럼 쉼표를 담는 값). Enter와 줄바꿈으로만 나눕니다.
+  let { values = $bindable([]), placeholder, id, ariaLabel, lowercase = false, mono = false, disabled = false, suggestions = [], secondary, autoselect = false, commas = true }: {
     values?: string[];
     placeholder?: string;
     id?: string;
@@ -24,6 +25,7 @@
     suggestions?: Suggestion[];
     secondary?: (value: string) => boolean;
     autoselect?: boolean;
+    commas?: boolean;
   } = $props();
 
   const t = translations(
@@ -69,7 +71,7 @@
   }
 
   function commit(): void {
-    add(draft.split(','));
+    add(commas ? draft.split(',') : [draft]);
     draft = '';
     active = -1;
     open = false;
@@ -103,7 +105,7 @@
       event.stopPropagation();
       open = false;
       active = -1;
-    } else if (event.key === 'Enter' || event.key === ',') {
+    } else if (event.key === 'Enter' || (commas && event.key === ',')) {
       // 폼이 제출되지 않도록 Enter도 여기서 막습니다.
       event.preventDefault();
       if (event.key === 'Enter' && expanded && active >= 0) pick(matches[active]);
@@ -116,7 +118,7 @@
   // 제안이 있는 칸의 값(태그)은 공백을 담을 수 있으므로 쉼표와 줄바꿈으로만 나눕니다.
   function onpaste(event: ClipboardEvent): void {
     const text = event.clipboardData?.getData('text') ?? '';
-    const separator = suggestions.length ? /[,\n]+/ : /[\s,]+/;
+    const separator = !commas ? /\n+/ : suggestions.length ? /[,\n]+/ : /[\s,]+/;
     if (!separator.test(text.trim())) return;
     event.preventDefault();
     add(text.split(separator));

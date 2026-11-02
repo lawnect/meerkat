@@ -197,11 +197,11 @@ func usedTags(ctx context.Context, q conn) (map[string]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	var policies AccessPolicies
-	if raw != "" && json.Unmarshal([]byte(raw), &policies) == nil {
-		for _, policy := range policies.Policies {
-			for _, tag := range policy.IPTags {
-				used[strings.ToLower(tag)] = true
+	var saved storedPolicies
+	if raw != "" && json.Unmarshal([]byte(raw), &saved) == nil {
+		for _, policy := range readPolicies(saved).Policies {
+			for _, tag := range policy.IPTags() {
+				used[strings.ToLower(strings.TrimSpace(tag))] = true
 			}
 		}
 	}

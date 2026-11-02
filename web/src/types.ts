@@ -288,7 +288,7 @@ export interface AdminAccessView extends AdminAccessSettings {
 }
 
 // IP 주소록(GET/POST /api/v1/security/ip-addresses, PUT·DELETE …/{id}). IP·CIDR마다 메모와 태그를 달고,
-// 접근 정책(ip_tags)과 관리 콘솔 접근 제한(allowed_tags)이 태그로 그 태그가 붙은 모든 항목을 가리킵니다.
+// 접근 정책의 접속 IP 조건과 관리 콘솔 접근 제한(allowed_tags)이 태그로 그 태그가 붙은 모든 항목을 가리킵니다.
 export interface IpAddressEntry {
   id: string;
   range: string; // 서버가 정리한 형태: 단일 주소는 접두어 없이, 범위는 호스트 비트를 지운 CIDR
@@ -421,19 +421,24 @@ export type AccessAction = 'allow' | 'bypass' | 'block'; // 로그인 후 허용
 export const accessMethods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] as const; // 정책을 한정할 수 있는 메서드. GET은 HEAD 포함
 export type AccessMethod = (typeof accessMethods)[number];
 
+// 정책의 조건 한 줄. 요청의 field를 operator로 values와 비교해 값 중 하나라도 맞으면(not이면 하나도 맞지 않으면) 성립합니다.
+// path: equals·starts_with·ends_with·contains·matches, 값 1–50개. method: in, accessMethods 중 하나 이상(GET은 HEAD 포함).
+// client_ip: in, IP 주소록 태그(최대 20개)와 IP·CIDR(최대 50개). token: any(유효한 토큰, 값 없음) 또는 in(토큰 ID).
+export type AccessConditionField = 'path' | 'method' | 'client_ip' | 'token';
+export interface AccessCondition {
+  field: AccessConditionField;
+  operator: BlockOperator | 'in' | 'any';
+  not: boolean;
+  values: string[];
+}
+
 export interface AccessPolicy {
   id: string; // 새 정책은 '', 서버가 부여합니다
   name: string; // 1–64자
   enabled: boolean;
   action: AccessAction;
   hosts: string[]; // 호스트 이름 또는 '*.도메인', 1개 이상
-  all_paths: boolean; // true이면 호스트의 모든 경로, false이면 conditions가 일치하는 경로만
-  conditions: BlockCondition[]; // all_paths가 false일 때 1–50개. 하나라도 맞으면 일치합니다
-  methods: AccessMethod[]; // 이 메서드의 요청에만 적용. 비어 있으면 모든 메서드, 서버가 accessMethods 순서로 정리합니다
-  require_token: boolean; // true이면 그 주소와 클라이언트에 유효한 접근 토큰을 보낸 요청에만 적용
-  tokens: string[]; // require_token일 때 받는 토큰 ID. 비어 있으면 모든 토큰, 있는 토큰만
-  ip_tags: string[]; // 이 태그가 붙은 IP 주소록 항목에서 온 요청에만 적용(최대 20개, 있는 태그만, 서버가 주소록의 표기로 저장)
-  ip_ranges: string[]; // 이 IP·CIDR에서 온 요청에만 적용(최대 50개). ip_tags와 함께 비어 있으면 모든 IP
+  conditions: AccessCondition[]; // 최대 20줄. 모두 성립하는 요청에 적용하며, 없으면 호스트의 모든 요청에 적용합니다
   // 아래는 allow일 때만 의미가 있고, 서버는 bypass·block이면 비웁니다.
   allow_everyone: boolean; // 접근 보호 SSO로 로그인한 모든 사용자. 켜면 사용자·그룹·관리자 허용은 비웁니다
   allowed_users: string[]; // 이메일 또는 '@도메인', 소문자

@@ -74,23 +74,97 @@ const (
 // leftEscape finds a percent escape still in a decoded path.
 var leftEscape = regexp.MustCompile(`%[0-9a-fA-F]{2}`)
 
-// accessRule is one enabled access policy, compiled for matching. A
-// bypass policy's conditions are in exact instead: what opens a path is
-// compared with it exactly as the app gets it.
+// accessRule is one enabled access policy, compiled for matching: match
+// holds its hosts, conditions the rest.
 type accessRule struct {
-	match  blockRule
-	exact  exactMatch
-	all    bool
-	policy control.AccessPolicy
-	// ips are the client addresses the policy is limited to, when
-	// ipLimited: its ranges and the address book entries with its tags.
-	ipLimited bool
-	ips       []netip.Prefix
+	match      blockRule
+	conditions []accessCondition
+	policy     control.AccessPolicy
+	// takesToken says one of its conditions asks for an access token.
+	takesToken bool
+	// never says it covers no request: a bypass policy naming tags while
+	// the address book can't be read.
+	never bool
 }
 
-// coversClient reports whether the rule applies to a request from ip.
-func (rule *accessRule) coversClient(ip string) bool {
-	return !rule.ipLimited || prefixesContain(rule.ips, ip)
+// accessCondition is one condition of a policy, compiled. A path condition
+// compares strictly (exact) or broadly (broad), see control.StrictPath.
+type accessCondition struct {
+	field    string
+	operator string
+	not      bool
+	values   []string // as saved: paths, methods or token IDs
+	strict   bool
+	broad    blockRule
+	exact    exactMatch
+	ips      []netip.Prefix
+	// everyone says a client IP condition holds for every client: one
+	// naming tags in a policy that protects, while the address book can't
+	// be read.
+	everyone bool
+	// bypass says the condition is a bypass policy's: a client IP one with
+	// Not doesn't hold for a client whose address isn't known.
+	bypass bool
+}
+
+// request is what conditions compare of a request. The path is read only
+// once a condition needs it.
+type accessRequest struct {
+	method, token, ip string
+	u                 *url.URL
+	path              *requestPath
+	bypass            bool
+}
+
+func (r *accessRequest) readPath() *requestPath {
+	if r.path == nil {
+		path := readPath(r.u)
+		r.path = &path
+	}
+	return r.path
+}
+
+// holds reports whether the request meets the condition. A broad path
+// condition matches any form of the path and every unclear one, so a path
+// an app may read differently can't slip past it; a strict one matches
+// only a plain path, exactly. Without Not, a strict condition holds only
+// where it matches; with Not, a broad one holds only for a plain path it
+// doesn't match: either way what opens is what is certain. A request
+// whose client address is unknown is in no range: a client IP condition
+// with Not holds for it, except in a bypass policy.
+func (c *accessCondition) holds(r *accessRequest) bool {
+	switch c.field {
+	case control.ConditionPath:
+		path := r.readPath()
+		if c.strict {
+			return (path.plain && c.exact.matches(r.u.Path)) != c.not
+		}
+		matched := path.unclear || slices.ContainsFunc(path.forms, c.broad.matches)
+		if c.not {
+			return path.plain && !matched
+		}
+		return matched
+	case control.ConditionMethod:
+		covered := control.CoversMethod(c.values, r.method)
+		if c.not && c.bypass {
+			// A bypass leaving out some methods opens only the others the
+			// console lists, never one it doesn't know.
+			return !covered && control.KnownMethod(r.method)
+		}
+		return covered != c.not
+	case control.ConditionClientIP:
+		if c.everyone {
+			return true
+		}
+		if r.ip == "" {
+			return c.not && !r.bypass
+		}
+		return prefixesContain(c.ips, r.ip) != c.not
+	case control.ConditionToken:
+		sent := r.token != "" && (c.operator == control.AccessAnyToken || slices.Contains(c.values, r.token))
+		return sent != c.not
+	}
+	return false
 }
 
 // exactMatch is a bypass policy's conditions, compared with a request path
@@ -159,34 +233,19 @@ type accessConfig struct{ rules []accessRule }
 
 // matching returns the first rule that covers a request from client
 // address ip for host and u's path, with method, that sent the access token
-// with ID token, valid for it, or none when token is empty; or nil. Allow and block conditions compare the path broadly, in the
-// form rules take: a path an app may read differently matches them all, so
-// it can't slip past one, and one with an escape still in it after decoding
-// is also compared decoded once more, as an app decoding again reads it. A
-// bypass condition, which opens paths, matches only a plain path, exactly.
+// with ID token, valid for it, or none when token is empty; or nil.
 func (c *accessConfig) matching(host, method string, u *url.URL, token, ip string) *accessRule {
 	if c == nil {
 		return nil
 	}
-	// The path is read only once a rule that covers the request needs it.
-	var path requestPath
+	r := &accessRequest{method: method, token: token, ip: ip, u: u}
 	for i := range c.rules {
 		rule := &c.rules[i]
-		switch {
-		case !rule.match.covers(host) || !control.CoversMethod(rule.policy.Methods, method) || !rule.policy.TakesToken(token) || !rule.coversClient(ip):
+		if rule.never || !rule.match.covers(host) {
 			continue
-		case rule.all:
-			return rule
 		}
-		if path.forms == nil {
-			path = readPath(u)
-		}
-		switch {
-		case rule.policy.Action == control.AccessBypass:
-			if path.plain && rule.exact.matches(u.Path) {
-				return rule
-			}
-		case path.unclear || slices.ContainsFunc(path.forms, rule.match.matches):
+		r.bypass = rule.policy.Action == control.AccessBypass
+		if !slices.ContainsFunc(rule.conditions, func(c accessCondition) bool { return !c.holds(r) }) {
 			return rule
 		}
 	}
@@ -290,41 +349,101 @@ func (c *accessConfig) signingIn(host string) []*accessRule {
 	return out
 }
 
-// shadows reports whether rule, applying first on an address, takes every
-// request later's conditions would: it covers every method later does and
-// every token later requires, if it requires one, and it takes every path,
-// or it isn't a bypass (which matches narrowly) and starts with a path that
-// each of later's equals and starts-with conditions does, compared as
-// requests are. The console marks the same as never applying.
+// shadows reports whether rule, applying first on an address, covers every
+// request later does: each of its conditions always holds, or holds
+// whenever one of later's does (see implies). It errs towards no: the
+// console marks the same as never applying.
 func (rule *accessRule) shadows(later *accessRule) bool {
-	// Limited to some client addresses, it leaves the others to later.
-	if rule.ipLimited {
+	if rule.never {
 		return false
 	}
-	if len(rule.policy.Methods) != 0 && (len(later.policy.Methods) == 0 || slices.ContainsFunc(later.policy.Methods, func(method string) bool { return !control.CoversMethod(rule.policy.Methods, method) })) {
-		return false
-	}
-	if tokens := rule.policy.Tokens; rule.policy.RequireToken && (!later.policy.RequireToken || len(tokens) != 0 && (len(later.policy.Tokens) == 0 || slices.ContainsFunc(later.policy.Tokens, func(id string) bool { return !slices.Contains(tokens, id) }))) {
-		return false
-	}
-	if rule.all || slices.Contains(rule.match.prefixes, "/") {
-		return true
-	}
-	if rule.policy.Action == control.AccessBypass || later.all || len(later.policy.Conditions) == 0 {
-		return false
-	}
-	return !slices.ContainsFunc(later.policy.Conditions, func(c control.BlockCondition) bool {
-		var path string
-		switch c.Operator {
-		case control.BlockStartsWith:
-			path = strings.ToLower(c.Value)
-		case control.BlockEquals:
-			path = newRulePath(c.Value).slashed
-		default:
-			return true
-		}
-		return !slices.ContainsFunc(rule.match.prefixes, func(prefix string) bool { return strings.HasPrefix(path, prefix) })
+	return !slices.ContainsFunc(rule.conditions, func(c accessCondition) bool {
+		return !c.always() && !slices.ContainsFunc(later.conditions, func(l accessCondition) bool { return l.implies(&c) })
 	})
+}
+
+// always reports whether the condition holds for every request: a broad
+// path condition starting with "/", or a client IP condition that covers
+// every client.
+func (c *accessCondition) always() bool {
+	return c.everyone || c.field == control.ConditionPath && !c.not && !c.strict && c.operator == control.BlockStartsWith && slices.Contains(c.values, "/")
+}
+
+// implies reports whether c holds for every request l holds for.
+func (l *accessCondition) implies(c *accessCondition) bool {
+	if l.field != c.field || l.everyone || c.everyone {
+		return c.everyone
+	}
+	// Values of l all among c's: without Not, l matching means c does; with
+	// Not, c's all among l's.
+	within := func(inner, outer []string, covers func(in, out string) bool) bool {
+		return !slices.ContainsFunc(inner, func(in string) bool {
+			return !slices.ContainsFunc(outer, func(out string) bool { return covers(in, out) })
+		})
+	}
+	equal := func(a, b string) bool { return a == b }
+	switch c.field {
+	case control.ConditionPath:
+		if l.not != c.not || l.strict != c.strict {
+			return false
+		}
+		if c.not {
+			return l.operator == c.operator && within(c.values, l.values, equal)
+		}
+		return within(l.values, c.values, func(in, out string) bool {
+			switch {
+			case l.operator == c.operator && in == out:
+				return true
+			case c.operator == control.BlockStartsWith && l.operator == control.BlockStartsWith:
+				return strings.HasPrefix(in, out)
+			case c.operator == control.BlockStartsWith && l.operator == control.BlockEquals && l.strict:
+				return strings.HasPrefix(in, out)
+			case c.operator == control.BlockStartsWith && l.operator == control.BlockEquals:
+				// Compared broadly, an equals value also matches with a
+				// trailing slash.
+				return strings.HasPrefix(newRulePath(in).slashed, out)
+			}
+			return false
+		})
+	case control.ConditionMethod:
+		switch {
+		case !l.not && !c.not:
+			return within(l.values, c.values, func(in, out string) bool { return control.CoversMethod([]string{out}, in) })
+		case l.not && c.not:
+			// For a method a bypass doesn't know, l holds unless it is a
+			// bypass's; c must too.
+			return (l.bypass || !c.bypass) && within(c.values, l.values, func(in, out string) bool { return control.CoversMethod([]string{out}, in) })
+		case !l.not && c.not:
+			// None of l's methods is one of c's.
+			return !slices.ContainsFunc(l.values, func(m string) bool { return control.CoversMethod(c.values, m) })
+		}
+		return false
+	case control.ConditionClientIP:
+		inside := func(inner, outer []netip.Prefix) bool {
+			return !slices.ContainsFunc(inner, func(in netip.Prefix) bool {
+				return !slices.ContainsFunc(outer, func(out netip.Prefix) bool { return out.Bits() <= in.Bits() && out.Contains(in.Addr()) })
+			})
+		}
+		switch {
+		case l.not != c.not:
+			return false
+		case c.not:
+			// For a client whose address isn't known, l holds unless it is a
+			// bypass's; c must too.
+			return (l.bypass || !c.bypass) && inside(c.ips, l.ips)
+		}
+		return len(l.ips) != 0 && inside(l.ips, c.ips)
+	case control.ConditionToken:
+		switch {
+		case l.not != c.not:
+			return false
+		case c.not:
+			// l: no valid token at all, or none of its; c: none of its.
+			return l.operator == control.AccessAnyToken || c.operator == control.AccessIn && within(c.values, l.values, equal)
+		}
+		return c.operator == control.AccessAnyToken || l.operator == control.AccessIn && within(l.values, c.values, equal)
+	}
+	return false
 }
 
 // policyGroups are the group names rules allow: the only ones a session for
@@ -532,22 +651,46 @@ type accessIdentityKey struct{}
 type accessServiceKey struct{}
 
 // compileAccess compiles saved policies. While the address book can't be
-// read (bookDamaged), tags match no address, and a block policy naming tags
-// covers every address so that it doesn't open what it blocked.
+// read (bookDamaged), its tags match no address, and a condition naming
+// tags fails closed: a bypass policy with one covers no request, a block
+// policy's holds for every client, and so does an allow policy's, which
+// then lets nobody in.
 func compileAccess(policies control.AccessPolicies, book control.IPAddresses, bookDamaged bool) *accessConfig {
 	config := &accessConfig{}
 	for _, policy := range policies.Policies {
 		if !policy.Enabled || len(policy.Hosts) == 0 {
 			continue
 		}
-		rule := accessRule{match: compileBlockRule(policy.Hosts, policy.Conditions), all: policy.AllPaths, policy: policy}
-		if len(policy.IPTags)+len(policy.IPRanges) != 0 && !(bookDamaged && policy.Action == control.AccessBlock && len(policy.IPTags) != 0) {
-			// A tag no address carries any more adds none: the policy then
-			// applies to the ranges alone, or to no request.
-			rule.ipLimited, rule.ips = true, scopePrefixes(book, policy.IPTags, policy.IPRanges)
-		}
-		if policy.Action == control.AccessBypass {
-			rule.match, rule.exact = compileBlockRule(policy.Hosts, nil), compileExact(policy.Conditions)
+		rule := accessRule{match: compileBlockRule(policy.Hosts, nil), policy: policy, takesToken: policy.TakesToken()}
+		for _, c := range policy.Conditions {
+			compiled := accessCondition{field: c.Field, operator: c.Operator, not: c.Not, values: c.Values, bypass: policy.Action == control.AccessBypass}
+			switch c.Field {
+			case control.ConditionPath:
+				compiled.strict = control.StrictPath(policy.Action, c.Not)
+				conditions := make([]control.BlockCondition, len(c.Values))
+				for i, value := range c.Values {
+					conditions[i] = control.BlockCondition{Operator: c.Operator, Value: value}
+				}
+				if compiled.strict {
+					compiled.exact = compileExact(conditions)
+				} else {
+					compiled.broad = compileBlockRule(nil, conditions)
+				}
+			case control.ConditionClientIP:
+				tags, ranges := control.SplitScope(c.Values)
+				// A tag no address carries any more adds none: the condition
+				// then names the ranges alone, or no address.
+				compiled.ips = scopePrefixes(book, tags, ranges)
+				if bookDamaged && len(tags) != 0 {
+					if policy.Action == control.AccessBypass {
+						rule.never = true
+					}
+					compiled.everyone = true
+					rule.policy.AllowEveryone, rule.policy.AllowAdmins = false, false
+					rule.policy.AllowedUsers, rule.policy.AllowedGroups = []string{}, []string{}
+				}
+			}
+			rule.conditions = append(rule.conditions, compiled)
 		}
 		config.rules = append(config.rules, rule)
 	}
@@ -556,15 +699,15 @@ func compileAccess(policies control.AccessPolicies, book control.IPAddresses, bo
 
 // closedAccess compiles saved policies that no longer pass the checks so
 // that they keep closed what they may have protected, in their saved
-// order. Each enabled allow or block policy covers every path and method of
-// the addresses it names, or of every address when it names no valid one: an
-// allow policy lets in, after a sign-in, only whom it names as saved, and a
-// block policy, or an allow policy that also required an access token,
-// nobody. A bypass policy, which only opened paths, is left out, so what it
-// opened falls to the policies below. With nothing readable, or a policy
-// that isn't, every address is closed.
+// order. Each enabled allow or block policy covers every request for the
+// addresses it names, or for every address when it names no valid one: an
+// allow policy without conditions lets in, after a sign-in, only whom it
+// names as saved, and a block policy, or an allow policy with conditions,
+// nobody: where they didn't hold, whom it names may not have been let in. A bypass policy, which only opened
+// paths, is left out, so what it opened falls to the policies below. With
+// nothing readable, or a policy that isn't, every address is closed.
 func closedAccess(policies control.AccessPolicies) *accessConfig {
-	nobody := accessRule{match: compileBlockRule(nil, nil), all: true, policy: control.AccessPolicy{Action: control.AccessAllow}}
+	nobody := accessRule{match: compileBlockRule(nil, nil), policy: control.AccessPolicy{Action: control.AccessAllow}}
 	// Every saved policy has an ID: one without was never readable.
 	if len(policies.Policies) == 0 || slices.ContainsFunc(policies.Policies, func(policy control.AccessPolicy) bool { return policy.ID == "" }) {
 		return &accessConfig{rules: []accessRule{nobody}}
@@ -582,9 +725,8 @@ func closedAccess(policies control.AccessPolicies) *accessConfig {
 		}
 		rule := nobody
 		rule.match = compileBlockRule(hosts, nil)
-		// An allow policy limited to client IPs, like one requiring a token,
-		// lets nobody in: whom it names may only come from those addresses.
-		if (policy.Action == control.AccessAllow || policy.Action == "") && !policy.RequireToken && len(policy.IPTags)+len(policy.IPRanges) == 0 {
+		// One with conditions let whom it names in only where they hold.
+		if (policy.Action == control.AccessAllow || policy.Action == "") && !policy.Limited() {
 			// Whom it names, in the form sessions carry, as saving would put it.
 			rule.policy.AllowEveryone, rule.policy.AllowAdmins = policy.AllowEveryone, policy.AllowAdmins
 			for _, user := range policy.AllowedUsers {
@@ -747,7 +889,7 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 	}
 	// The request doesn't simply pass, so a token sent with it that the
 	// policy doesn't require is audited, saying why it didn't count.
-	if value != "" && !rule.policy.RequireToken {
+	if value != "" && !rule.takesToken {
 		refused = cmp.Or(refused, "not_allowed")
 		s.accessTokenFailed(r, host, token.ID, refused)
 	}
@@ -875,7 +1017,7 @@ func (s *Store) flushAccessCounts(ctx context.Context) {
 // tokenTaken notes, for a request rule lets through, the access token rule
 // required: when it was last used, and its name for the app.
 func (s *Store) tokenTaken(r *http.Request, rule *accessRule, token accessTokenRule) *http.Request {
-	if !rule.policy.RequireToken {
+	if !rule.takesToken {
 		return r
 	}
 	s.noteTokenUse(token.ID)

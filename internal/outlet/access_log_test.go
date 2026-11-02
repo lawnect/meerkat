@@ -27,10 +27,10 @@ func TestAccessLog(t *testing.T) {
 	}
 	policies := func(users ...string) {
 		f.setPolicies(t,
-			control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/ci/"}}, RequireToken: true, Tokens: []string{created.Token.ID}},
-			control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/v1/"}}},
-			control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/internal/"}}},
-			control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: users},
+			control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockStartsWith, "/ci/"), withToken(created.Token.ID))},
+			control.AccessPolicy{Enabled: true, Action: control.AccessBypass, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockStartsWith, "/v1/"))},
+			control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockStartsWith, "/internal/"))},
+			control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: users},
 		)
 	}
 	// Both sign in; then only alice may pass.
@@ -172,8 +172,8 @@ func TestAccessLogSuppressesAFlood(t *testing.T) {
 	f := newAccessFixture(t)
 	policies := func(users ...string) {
 		f.setPolicies(t,
-			control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/internal/"}}},
-			control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: users},
+			control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: conditions(onPaths(control.BlockStartsWith, "/internal/"))},
+			control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: users},
 		)
 	}
 	// Alice signs in, and then is no longer allowed.
@@ -215,8 +215,8 @@ func TestAccessLogNamesATokenOnlyForItsSecret(t *testing.T) {
 		t.Fatalf("token: %d %s", w.Code, w.Body.String())
 	}
 	f.setPolicies(t,
-		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, AllPaths: true, RequireToken: true},
-		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllPaths: true, AllowedUsers: []string{"@corp.example.com"}},
+		control.AccessPolicy{Enabled: true, Action: control.AccessBlock, Hosts: []string{"app.example.com"}, Conditions: conditions(withToken())},
+		control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}},
 	)
 	if w := request(h, "PUT", "/api/v1/observe/access-log", f.admin, map[string]any{"enabled": true, "max_mib": 64, "retention_days": 7}); w.Code != 200 {
 		t.Fatalf("turn on: %d", w.Code)

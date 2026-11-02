@@ -165,25 +165,57 @@ func (s *Store) getAccessPolicies(w http.ResponseWriter, r *http.Request) {
 	reply(w, 200, view)
 }
 
-// policyBody is a policy as PUT sends it, noting whether it names its
-// client IP condition (ip_tags and ip_ranges), as the console does since
-// 0.7.0. Unknown fields are refused, as for the rest of the body.
+// policyBody is a policy as PUT sends it. A console from before conditions
+// (0.7 and earlier), left open across the upgrade, sends the fields they
+// replaced: outdated says so, and the policies are refused rather than
+// saved without what those fields said. Unknown fields are refused, as for
+// the rest of the body.
 type policyBody struct {
 	control.AccessPolicy
-	namesClientIPs bool
+	outdated bool
 }
+
+var outdatedPolicyKeys = []string{"all_paths", "methods", "require_token", "tokens", "ip_tags", "ip_ranges"}
 
 func (p *policyBody) UnmarshalJSON(raw []byte) error {
 	var keys map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &keys); err != nil {
 		return err
 	}
-	_, tags := keys["ip_tags"]
-	_, ranges := keys["ip_ranges"]
-	p.namesClientIPs = tags && ranges
+	if slices.ContainsFunc(outdatedPolicyKeys, func(key string) bool { _, ok := keys[key]; return ok }) {
+		p.outdated = true
+		return nil
+	}
+	var body struct {
+		control.AccessPolicy
+		Conditions []conditionBody `json:"conditions"`
+	}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
-	return d.Decode(&p.AccessPolicy)
+	if err := d.Decode(&body); err != nil {
+		return err
+	}
+	if body.Conditions == nil {
+		return errMissingConditions
+	}
+	p.AccessPolicy = body.AccessPolicy
+	p.Conditions = make([]control.AccessCondition, len(body.Conditions))
+	for i, c := range body.Conditions {
+		p.Conditions[i] = control.AccessCondition(c)
+	}
+	return nil
+}
+
+var errMissingConditions = errors.New("policy without conditions")
+
+// conditionBody is a condition as PUT sends it, with every key: a missing
+// "not" would turn the condition around, missing values would leave it
+// matching nothing.
+type conditionBody control.AccessCondition
+
+func (c *conditionBody) UnmarshalJSON(raw []byte) error {
+	type plain control.AccessCondition
+	return decodeEntry(raw, (*plain)(c), "field", "operator", "not", "values")
 }
 
 func (s *Store) putAccessPolicies(w http.ResponseWriter, r *http.Request) {
@@ -198,10 +230,7 @@ func (s *Store) putAccessPolicies(w http.ResponseWriter, r *http.Request) {
 	}
 	req := control.AccessPolicies{Policies: make([]control.AccessPolicy, 0, len(body.Policies))}
 	for _, policy := range body.Policies {
-		// Every policy must name its client IP condition, even empty: a
-		// console from before client IPs, left open across the upgrade, would
-		// drop it and widen the policy to every address.
-		if !policy.namesClientIPs {
+		if policy.outdated {
 			fail(w, r, 400, "access_policies_outdated")
 			return
 		}
@@ -229,26 +258,36 @@ func (s *Store) putAccessPolicies(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	// What each policy does, to which methods and tokens and for whom, in
-	// order; the path conditions can be long and say only where.
+	// What each policy does, under which conditions and for whom, in
+	// order; path values can be long and say only where.
+	type loggedCondition struct {
+		Field    string   `json:"field"`
+		Operator string   `json:"operator"`
+		Not      bool     `json:"not,omitempty"`
+		Values   []string `json:"values,omitempty"`
+	}
 	type logged struct {
-		Name     string   `json:"name"`
-		Enabled  bool     `json:"enabled"`
-		Action   string   `json:"action"`
-		Hosts    []string `json:"hosts"`
-		Methods  []string `json:"methods,omitempty"`
-		Token    bool     `json:"require_token,omitempty"`
-		Tokens   []string `json:"tokens,omitempty"`
-		IPTags   []string `json:"ip_tags,omitempty"`
-		IPRanges []string `json:"ip_ranges,omitempty"`
-		Everyone bool     `json:"allow_everyone,omitempty"`
-		Users    []string `json:"allowed_users,omitempty"`
-		Groups   []string `json:"allowed_groups,omitempty"`
-		Admins   bool     `json:"allow_admins,omitempty"`
+		Name       string            `json:"name"`
+		Enabled    bool              `json:"enabled"`
+		Action     string            `json:"action"`
+		Hosts      []string          `json:"hosts"`
+		Conditions []loggedCondition `json:"conditions,omitempty"`
+		Everyone   bool              `json:"allow_everyone,omitempty"`
+		Users      []string          `json:"allowed_users,omitempty"`
+		Groups     []string          `json:"allowed_groups,omitempty"`
+		Admins     bool              `json:"allow_admins,omitempty"`
 	}
 	policies := make([]logged, 0, len(saved.Policies))
 	for _, p := range saved.Policies {
-		policies = append(policies, logged{p.Name, p.Enabled, p.Action, p.Hosts, p.Methods, p.RequireToken, p.Tokens, p.IPTags, p.IPRanges, p.AllowEveryone, p.AllowedUsers, p.AllowedGroups, p.AllowAdmins})
+		var conditions []loggedCondition
+		for _, c := range p.Conditions {
+			entry := loggedCondition{Field: c.Field, Operator: c.Operator, Not: c.Not}
+			if c.Field != control.ConditionPath {
+				entry.Values = c.Values
+			}
+			conditions = append(conditions, entry)
+		}
+		policies = append(policies, logged{p.Name, p.Enabled, p.Action, p.Hosts, conditions, p.AllowEveryone, p.AllowedUsers, p.AllowedGroups, p.AllowAdmins})
 	}
 	s.audited(r, "security.access_policies", "security", "access_policies", map[string]any{"policies": policies})
 	view, err := s.accessPoliciesView(r.Context(), saved)
@@ -305,7 +344,14 @@ func (s *Store) accessTokenViews(ctx context.Context, tokens []control.AccessTok
 			view.LastUsedAt = last.UTC().Format(time.RFC3339)
 		}
 		for _, policy := range policies.Policies {
-			if slices.Contains(policy.Tokens, token.ID) || policy.RequireToken && len(policy.Tokens) == 0 && slices.ContainsFunc(policy.Hosts, func(host string) bool {
+			anyToken := slices.ContainsFunc(policy.Conditions, func(c control.AccessCondition) bool {
+				return c.Field == control.ConditionToken && !c.Not && c.Operator == control.AccessAnyToken
+			})
+			// A policy that takes the token, not one that turns it away.
+			names := slices.ContainsFunc(policy.Conditions, func(c control.AccessCondition) bool {
+				return c.Field == control.ConditionToken && !c.Not && slices.Contains(c.Values, token.ID)
+			})
+			if names || anyToken && slices.ContainsFunc(policy.Hosts, func(host string) bool {
 				return slices.ContainsFunc(token.Hosts, func(other string) bool { return hostsMeet(host, other) })
 			}) {
 				view.Policies = append(view.Policies, accessPolicyRef{policy.ID, policy.Name})
