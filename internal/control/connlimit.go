@@ -29,6 +29,14 @@ const (
 	minResponseTimeout            = 5
 	// maxResponseTimeout is an hour, like the idle limits of Caddy in front.
 	maxResponseTimeout = 3600
+
+	// DefaultRequestTimeoutMinutes is how long a proxied request may take
+	// from when it comes to the end of its response: an hour, past any
+	// answer a person waits for, LLM streams included.
+	DefaultRequestTimeoutMinutes = 60
+	minRequestTimeout            = 1
+	// maxRequestTimeout is a day; longer transfers lift the limit.
+	maxRequestTimeout = 1440
 )
 
 // HostUpload sets the upload size for one public hostname, overriding
@@ -46,10 +54,18 @@ type HostResponseTimeout struct {
 	Seconds int    `json:"response_timeout_seconds"`
 }
 
+// HostRequestTimeout sets how long a request to one public hostname may
+// take, overriding ConnectionLimits.RequestTimeoutMinutes. Zero lifts the
+// limit for that host.
+type HostRequestTimeout struct {
+	Host    string `json:"host"`
+	Minutes int    `json:"request_timeout_minutes"`
+}
+
 // ConnectionLimits bound what one request or one client can hold on the
 // public listener: request body size, requests in flight, how long an upload
-// or download may stall, and how long a service may take to answer. Zero
-// turns a limit off.
+// or download may stall, how long a service may take to answer, and how long
+// a request may take in all. Zero turns a limit off.
 type ConnectionLimits struct {
 	// MaxUploadMB caps a proxied request body, in MiB.
 	MaxUploadMB int `json:"max_upload_mb"`
@@ -68,6 +84,11 @@ type ConnectionLimits struct {
 	// headers once the request is sent. The body may stream for longer.
 	ResponseTimeoutSeconds int                   `json:"response_timeout_seconds"`
 	ResponseTimeouts       []HostResponseTimeout `json:"response_timeouts"`
+	// RequestTimeoutMinutes is how long a proxied request may take, from
+	// when it comes to the end of its response; a request still going then
+	// is ended. A connection upgraded off HTTP (WebSocket) isn't limited.
+	RequestTimeoutMinutes int                  `json:"request_timeout_minutes"`
+	RequestTimeouts       []HostRequestTimeout `json:"request_timeouts"`
 }
 
 // DefaultConnectionLimits allows large uploads and busy offices behind one
@@ -84,6 +105,8 @@ func DefaultConnectionLimits() ConnectionLimits {
 		Hosts:                  []HostUpload{},
 		ResponseTimeoutSeconds: DefaultResponseTimeoutSeconds,
 		ResponseTimeouts:       []HostResponseTimeout{},
+		RequestTimeoutMinutes:  DefaultRequestTimeoutMinutes,
+		RequestTimeouts:        []HostRequestTimeout{},
 	}
 }
 
@@ -94,7 +117,8 @@ func (c ConnectionLimits) Normalize() (ConnectionLimits, bool) {
 	if !inRange(c.MaxUploadMB, maxUploadMB) || !inRange(c.PerIPConcurrent, maxConcurrent) || !inRange(c.TotalConcurrent, maxConcurrent) ||
 		!inRange(c.MinUploadKBPerSecond, maxMinUploadPerSecK) || len(c.Hosts) > MaxUploadHosts ||
 		!offOrWithin(c.IdleTimeoutSeconds, minIdleTimeout, maxIdleTimeout) ||
-		!offOrWithin(c.ResponseTimeoutSeconds, minResponseTimeout, maxResponseTimeout) || len(c.ResponseTimeouts) > MaxTimeoutHosts {
+		!offOrWithin(c.ResponseTimeoutSeconds, minResponseTimeout, maxResponseTimeout) || len(c.ResponseTimeouts) > MaxTimeoutHosts ||
+		!offOrWithin(c.RequestTimeoutMinutes, minRequestTimeout, maxRequestTimeout) || len(c.RequestTimeouts) > MaxTimeoutHosts {
 		return c, false
 	}
 	hosts := make([]HostUpload, 0, len(c.Hosts))
@@ -117,8 +141,19 @@ func (c ConnectionLimits) Normalize() (ConnectionLimits, bool) {
 		seen[h.Host] = true
 		timeouts = append(timeouts, h)
 	}
+	durations := make([]HostRequestTimeout, 0, len(c.RequestTimeouts))
+	seen = map[string]bool{}
+	for _, h := range c.RequestTimeouts {
+		h.Host = strings.ToLower(strings.TrimSpace(h.Host))
+		if !validation.Hostname(h.Host) || !offOrWithin(h.Minutes, minRequestTimeout, maxRequestTimeout) || seen[h.Host] {
+			return c, false
+		}
+		seen[h.Host] = true
+		durations = append(durations, h)
+	}
 	c.Hosts = hosts
 	c.ResponseTimeouts = timeouts
+	c.RequestTimeouts = durations
 	return c, true
 }
 

@@ -260,6 +260,12 @@ export interface HostResponseTimeout {
   response_timeout_seconds: number;
 }
 
+// 호스트별 최대 요청 시간(분). 0이면 그 호스트는 요청 시간을 제한하지 않습니다.
+export interface HostRequestTimeout {
+  host: string;
+  request_timeout_minutes: number;
+}
+
 export interface ConnectionLimits {
   max_upload_mb: number;
   per_ip_concurrent: number;
@@ -269,6 +275,8 @@ export interface ConnectionLimits {
   hosts: HostUpload[];
   response_timeout_seconds: number; // 서비스가 응답 헤더를 보낼 때까지 기다리는 시간. 0 또는 5–3600, 기본 60
   response_timeouts: HostResponseTimeout[];
+  request_timeout_minutes: number; // 요청을 받은 때부터 응답이 끝날 때까지의 상한. 0 또는 1–1440, 기본 60. 업그레이드(WebSocket) 이후의 연결은 제외
+  request_timeouts: HostRequestTimeout[];
 }
 
 // 관리 콘솔 접근 제한(GET/PUT /api/v1/security/admin-access). 켜져 있으면 공개 관리 주소의 콘솔은 허용 대역에서만 열립니다.
@@ -531,13 +539,13 @@ export interface AccessLogEntry {
   routine: boolean; // 이메일도 토큰도 없는 익명 요청. 누구나 마음대로 만들 수 있어 한도와 삭제 순서에서 뒤로 밀립니다
 }
 
-// 공개 주소로 온 요청 중 실패했거나 앱에 닿기 전에 Outlet이 거절한 것.
-// 서비스 쪽 문제(눈여겨볼 기록)와 Outlet이 규칙에 따라 거부한 요청(누구나 만들 수 있는 반복 기록)으로 나뉩니다.
+// 공개 주소로 온 요청 중 실패했거나, 앱에 닿기 전에 Outlet이 거절했거나, 최대 요청 시간에 Outlet이 끊은 것.
+// 서비스 쪽 문제(눈여겨볼 기록)와 Outlet이 규칙에 따라 거부하거나 끊은 요청(누구나 만들 수 있는 반복 기록)으로 나뉩니다.
 export const serviceCauses = ['app_error', 'unreachable', 'timeout', 'no_service'] as const;
-export const refusedCauses = ['rate_limited', 'blocked', 'trapped', 'banned', 'too_long', 'too_large', 'busy'] as const;
+export const refusedCauses = ['rate_limited', 'blocked', 'trapped', 'banned', 'too_long', 'too_large', 'busy', 'time_limit'] as const;
 export const failureCauses = [...serviceCauses, ...refusedCauses] as const;
 export type FailureCause = (typeof failureCauses)[number];
-// cause 필터는 원인 하나 외에 묶음 service(서비스 오류 전체), refused(Outlet 거부 전체)도 받습니다.
+// cause 필터는 원인 하나 외에 묶음 service(서비스 오류 전체), refused(Outlet 제한 전체: 거부와 최대 요청 시간 종료)도 받습니다.
 export const failureCauseGroups = ['service', 'refused'] as const;
 export interface FailureLogEntry {
   id: number;

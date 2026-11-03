@@ -18,10 +18,10 @@
   import IconButton from './IconButton.svelte';
   import InfoTooltip from './InfoTooltip.svelte';
 
-  // 설정 > 보안의 연결 제한 카드. 고친 값은 되돌리기·저장으로만 반영하며, 0이면 그 제한은 꺼집니다. 도메인별 업로드 크기와 응답 대기 시간은 같은 구성의 표 두 개입니다.
+  // 설정 > 연결의 연결 제한 카드. 고친 값은 되돌리기·저장으로만 반영하며, 0이면 그 제한은 꺼집니다. 도메인별 업로드 크기, 응답 대기 시간, 최대 요청 시간은 같은 구성의 표 세 개입니다.
   const t = translations({
     title: 'Connection limits',
-    tip: 'Limits on request size, requests in progress, stalled transfers and the wait for services. Requests over a limit get 413, 429 or 503 before they reach a tunnel; stalled transfers are cut, and a service that takes too long to answer gets its request ended with 504. 0 turns a limit off.',
+    tip: 'Limits on request size, requests in progress, stalled transfers, the wait for services and the time a request takes. Requests over a limit get 413, 429 or 503 before they reach a tunnel; stalled transfers are cut, a service that takes too long to answer gets its request ended with 504, and a request still going at the max request duration is ended. 0 turns a limit off.',
     maxUpload: 'Max upload size',
     maxUploadHint: 'Request body size. Larger uploads get 413.',
     perIp: 'Concurrent requests per IP',
@@ -30,6 +30,8 @@
     totalHint: 'Requests being passed to services. Excess requests get 503.',
     respond: 'Response timeout',
     respondHint: 'Wait for a service to start answering. Longer waits get 504.',
+    duration: 'Max request duration',
+    durationHint: 'From the request to the end of its response. Requests still going are ended. WebSocket connections excluded.',
     idle: 'Idle timeout',
     idleHint: 'Closes uploads and downloads that stop making progress.',
     minUpload: 'Minimum upload speed',
@@ -37,6 +39,7 @@
     unitMb: 'MB',
     unitRequests: 'req',
     unitSeconds: 's',
+    unitMinutes: 'min',
     unitKbps: 'KB/s',
     hosts: 'Upload size by domain',
     hostsTip: 'Overrides the max upload size for one hostname. 0 for no limit.',
@@ -48,16 +51,19 @@
     timeoutHosts: 'Response timeout by domain',
     timeoutHostsTip: 'Overrides the response timeout for one hostname. For a service slow to start answering, such as an LLM gateway, set a little more than its own limit. 0 for no limit, which also stops trying the next service.',
     noTimeoutHosts: 'No per-domain timeouts',
+    durationHosts: 'Max request duration by domain',
+    durationHostsTip: 'Overrides the max request duration for one hostname, such as one serving large downloads or event streams kept open for hours. 0 for no limit.',
+    noDurationHosts: 'No per-domain durations',
     revert: 'Revert',
     save: 'Save',
     saving: 'Saving…',
     saved: 'Saved',
-    invalid: 'Check the values: upload size 0–102,400 MB, concurrent requests 0–1,000,000, idle and response timeouts 0 or 5–3,600 seconds, minimum speed 0–100,000 KB/s, host is a hostname listed once.',
+    invalid: 'Check the values: upload size 0–102,400 MB, concurrent requests 0–1,000,000, idle and response timeouts 0 or 5–3,600 seconds, max request duration 0–1,440 minutes, minimum speed 0–100,000 KB/s, host is a hostname listed once.',
     failed: (code: string) => `Couldn't save: ${code}`,
     loadFailed: (code: string) => `Couldn't load connection limits: ${code}`,
   }, {
     title: '연결 제한',
-    tip: '요청 크기, 동시 요청 수, 정체된 전송, 서비스 응답 대기 시간을 제한합니다. 기준을 초과한 요청은 터널로 전달되기 전에 413, 429, 503으로 차단되며, 정체된 전송은 연결이 종료되고, 응답이 늦은 서비스의 요청은 504로 종료됩니다. 0 입력 시 해당 제한이 비활성화됩니다.',
+    tip: '요청 크기, 동시 요청 수, 정체된 전송, 서비스 응답 대기 시간, 요청 처리 시간을 제한합니다. 기준을 초과한 요청은 터널로 전달되기 전에 413, 429, 503으로 차단되며, 정체된 전송은 연결이 종료되고, 응답이 늦은 서비스의 요청은 504로 종료되며, 최대 요청 시간을 초과한 요청은 종료됩니다. 0 입력 시 해당 제한이 비활성화됩니다.',
     maxUpload: '최대 업로드 크기',
     maxUploadHint: '요청 본문 기준. 초과 시 413으로 차단',
     perIp: 'IP별 동시 요청',
@@ -66,6 +72,8 @@
     totalHint: '서비스로 전달 중인 요청 수 기준. 초과 시 503으로 차단',
     respond: '응답 대기 시간',
     respondHint: '서비스 응답 시작까지의 대기 시간. 초과 시 504로 종료',
+    duration: '최대 요청 시간',
+    durationHint: '요청 수신부터 응답 완료까지의 시간. 초과 시 요청 종료. WebSocket 연결 제외',
     idle: '유휴 제한 시간',
     idleHint: '업로드 또는 다운로드 정체 시 연결 종료',
     minUpload: '최소 업로드 속도',
@@ -73,6 +81,7 @@
     unitMb: 'MB',
     unitRequests: '건',
     unitSeconds: '초',
+    unitMinutes: '분',
     unitKbps: 'KB/s',
     hosts: '도메인별 업로드 크기',
     hostsTip: '호스트별 최대 업로드 크기를 개별 지정합니다. 0 입력 시 제한하지 않습니다.',
@@ -84,32 +93,37 @@
     timeoutHosts: '도메인별 응답 대기 시간',
     timeoutHostsTip: '호스트별 응답 대기 시간을 개별 지정합니다. LLM 게이트웨이처럼 응답 시작이 늦은 서비스는 서비스 자체 시한보다 약간 길게 지정합니다. 0 입력 시 제한하지 않으며, 다음 서비스로의 재시도도 이루어지지 않습니다.',
     noTimeoutHosts: '도메인별 설정이 없습니다',
+    durationHosts: '도메인별 최대 요청 시간',
+    durationHostsTip: '호스트별 최대 요청 시간을 개별 지정합니다. 대용량 다운로드나 장시간 유지되는 이벤트 스트림처럼 요청이 오래 이어지는 호스트에 지정합니다. 0 입력 시 제한하지 않습니다.',
+    noDurationHosts: '도메인별 설정이 없습니다',
     revert: '변경 취소',
     save: '저장',
     saving: '저장 중…',
     saved: '저장되었습니다',
-    invalid: '입력값이 올바르지 않습니다. 업로드 크기는 0–102,400MB, 동시 요청은 0–1,000,000, 유휴 제한 시간과 응답 대기 시간은 0 또는 5–3,600초, 최소 업로드 속도는 0–100,000KB/s, 호스트는 목록마다 한 번씩 쓴 도메인 이름이어야 합니다.',
+    invalid: '입력값이 올바르지 않습니다. 업로드 크기는 0–102,400MB, 동시 요청은 0–1,000,000, 유휴 제한 시간과 응답 대기 시간은 0 또는 5–3,600초, 최대 요청 시간은 0–1,440분, 최소 업로드 속도는 0–100,000KB/s, 호스트는 목록마다 한 번씩 쓴 도메인 이름이어야 합니다.',
     failed: (code: string) => `저장 중 오류가 발생했습니다: ${code}`,
     loadFailed: (code: string) => `연결 제한 설정을 불러오는 중 오류가 발생했습니다: ${code}`,
   });
 
-  type LimitKey = 'max_upload_mb' | 'per_ip_concurrent' | 'total_concurrent' | 'response_timeout_seconds' | 'idle_timeout_seconds' | 'min_upload_kb_per_second';
+  type LimitKey = 'max_upload_mb' | 'per_ip_concurrent' | 'total_concurrent' | 'response_timeout_seconds' | 'request_timeout_minutes' | 'idle_timeout_seconds' | 'min_upload_kb_per_second';
   const limits: Array<{ key: LimitKey; label: () => string; hint: () => string; unit: () => string; max: number }> = [
     { key: 'max_upload_mb', label: () => t().maxUpload, hint: () => t().maxUploadHint, unit: () => t().unitMb, max: 102400 },
     { key: 'per_ip_concurrent', label: () => t().perIp, hint: () => t().perIpHint, unit: () => t().unitRequests, max: 1000000 },
     { key: 'total_concurrent', label: () => t().total, hint: () => t().totalHint, unit: () => t().unitRequests, max: 1000000 },
     { key: 'response_timeout_seconds', label: () => t().respond, hint: () => t().respondHint, unit: () => t().unitSeconds, max: 3600 },
+    { key: 'request_timeout_minutes', label: () => t().duration, hint: () => t().durationHint, unit: () => t().unitMinutes, max: 1440 },
     { key: 'idle_timeout_seconds', label: () => t().idle, hint: () => t().idleHint, unit: () => t().unitSeconds, max: 3600 },
     { key: 'min_upload_kb_per_second', label: () => t().minUpload, hint: () => t().minUploadHint, unit: () => t().unitKbps, max: 100000 },
   ];
   const maxHosts = 50;
 
-  // 도메인별 표 두 개(업로드 크기, 응답 대기 시간)는 같은 구성이고 값 칸의 키만 다릅니다.
-  type HostListKey = 'hosts' | 'response_timeouts';
+  // 도메인별 표 세 개(업로드 크기, 응답 대기 시간, 최대 요청 시간)는 같은 구성이고 값 칸의 키만 다릅니다.
+  type HostListKey = 'hosts' | 'response_timeouts' | 'request_timeouts';
   type HostRow = { host: string } & Record<string, string | number>;
   const hostLists: Array<{ key: HostListKey; field: string; title: () => string; tip: () => string; column: () => string; unit: () => string; max: number; fresh: number; empty: () => string }> = [
     { key: 'hosts', field: 'max_upload_mb', title: () => t().hosts, tip: () => t().hostsTip, column: () => t().size, unit: () => t().unitMb, max: 102400, fresh: 1024, empty: () => t().noHosts },
     { key: 'response_timeouts', field: 'response_timeout_seconds', title: () => t().timeoutHosts, tip: () => t().timeoutHostsTip, column: () => t().respond, unit: () => t().unitSeconds, max: 3600, fresh: 600, empty: () => t().noTimeoutHosts },
+    { key: 'request_timeouts', field: 'request_timeout_minutes', title: () => t().durationHosts, tip: () => t().durationHostsTip, column: () => t().duration, unit: () => t().unitMinutes, max: 1440, fresh: 240, empty: () => t().noDurationHosts },
   ];
   const rowsOf = (current: ConnectionLimits, key: HostListKey) => current[key] as unknown as HostRow[];
 
@@ -119,10 +133,12 @@
   let error = $state('');
   let busy = $state(false);
 
-  // 0.7.0 서버(되돌린 뒤 열려 있던 탭)는 응답 대기 시간 키를 보내지 않으므로 기본값으로 채웁니다. 저장은 그 서버가 거부합니다.
+  // 되돌린 서버(그 뒤에도 열려 있던 탭)는 나중에 생긴 키를 보내지 않으므로 기본값으로 채웁니다(응답 대기 시간은 0.7.0, 최대 요청 시간은 0.8.1). 저장은 그 서버가 거부합니다.
   const adopt = (next: ConnectionLimits) => {
     next.response_timeout_seconds ??= 60;
     next.response_timeouts ??= [];
+    next.request_timeout_minutes ??= 60;
+    next.request_timeouts ??= [];
     saved = next;
     draft = structuredClone(next);
   };

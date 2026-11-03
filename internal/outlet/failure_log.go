@@ -51,15 +51,16 @@ const (
 	failBusy        = "busy"         // a connection limit refused it
 	failTrapped     = "trapped"      // a block rule that bans refused it, and banned the client
 	failBanned      = "banned"       // the client was banned earlier
+	failTimeLimit   = "time_limit"   // the request ran past the request time limit and was ended
 )
 
-var failureCauses = []string{failAppError, failUnreachable, failTimeout, failNoService, failRateLimited, failBlocked, failTooLong, failTooLarge, failBusy, failTrapped, failBanned}
+var failureCauses = []string{failAppError, failUnreachable, failTimeout, failNoService, failRateLimited, failBlocked, failTooLong, failTooLarge, failBusy, failTrapped, failBanned, failTimeLimit}
 
 // refused says whether the Outlet turned the request away, which anyone can
 // make it do at will, rather than something being wrong with a service.
 func refused(cause string) bool {
 	switch cause {
-	case failRateLimited, failBlocked, failTooLong, failTooLarge, failBusy, failTrapped, failBanned:
+	case failRateLimited, failBlocked, failTooLong, failTooLarge, failBusy, failTrapped, failBanned, failTimeLimit:
 		return true
 	}
 	return false

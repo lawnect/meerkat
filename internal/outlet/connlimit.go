@@ -43,6 +43,8 @@ type connLimits struct {
 	minRate   float64                  // upload bytes per second
 	respond   time.Duration            // 0 is no limit
 	responds  map[string]time.Duration // per host, overriding respond
+	request   time.Duration            // 0 is no limit
+	requests  map[string]time.Duration // per host, overriding request
 }
 
 func compileConnectionLimits(c control.ConnectionLimits) *connLimits {
@@ -54,12 +56,17 @@ func compileConnectionLimits(c control.ConnectionLimits) *connLimits {
 		minRate:          float64(c.MinUploadKBPerSecond) * 1024,
 		respond:          time.Duration(c.ResponseTimeoutSeconds) * responseTimeoutUnit,
 		responds:         make(map[string]time.Duration, len(c.ResponseTimeouts)),
+		request:          time.Duration(c.RequestTimeoutMinutes) * requestTimeoutUnit,
+		requests:         make(map[string]time.Duration, len(c.RequestTimeouts)),
 	}
 	for _, h := range c.Hosts {
 		l.uploads[h.Host] = int64(h.MaxUploadMB) << 20
 	}
 	for _, h := range c.ResponseTimeouts {
 		l.responds[h.Host] = time.Duration(h.Seconds) * responseTimeoutUnit
+	}
+	for _, h := range c.RequestTimeouts {
+		l.requests[h.Host] = time.Duration(h.Minutes) * requestTimeoutUnit
 	}
 	return l
 }
@@ -74,6 +81,19 @@ func (l *connLimits) responseTimeout(host string) time.Duration {
 		return d
 	}
 	return l.respond
+}
+
+// requestTimeoutUnit is a minute of the request time limits. Tests shorten
+// it.
+var requestTimeoutUnit = time.Minute
+
+// requestTimeout is how long a request to host may take in all; 0 is no
+// limit.
+func (l *connLimits) requestTimeout(host string) time.Duration {
+	if d, ok := l.requests[host]; ok {
+		return d
+	}
+	return l.request
 }
 
 func (l *connLimits) uploadLimit(host string) int64 {
@@ -149,14 +169,14 @@ func (s *Store) reloadConnectionLimits(ctx context.Context) error {
 
 // connectionLimits never returns nil, so callers need no checks; without
 // stored settings nothing is limited, but services still get the default
-// time to answer.
+// time to answer and requests the default time in all.
 func (s *Store) connectionLimits() *connLimits {
 	if s.connections != nil {
 		if limits := s.connections.config.Load(); limits != nil {
 			return limits
 		}
 	}
-	return &connLimits{respond: control.DefaultResponseTimeoutSeconds * responseTimeoutUnit}
+	return &connLimits{respond: control.DefaultResponseTimeoutSeconds * responseTimeoutUnit, request: control.DefaultRequestTimeoutMinutes * requestTimeoutUnit}
 }
 
 // refuse answers a request turned away before any work, like limitRequest.
@@ -225,6 +245,7 @@ type clientBody struct {
 	done    bool
 
 	complete atomic.Bool // read to the end
+	cutOff   atomic.Bool // cut: no read may wait for the client again
 	failed   atomic.Bool
 	timedOut atomic.Bool
 	tooLarge atomic.Bool
@@ -265,6 +286,10 @@ func (b *clientBody) Read(p []byte) (int, error) {
 	began := time.Now()
 	if !b.done && (b.idle > 0 || b.minRate > 0) {
 		_ = b.rc.SetReadDeadline(b.deadline(began))
+		// A cut made while the deadline was set must not be undone by it.
+		if b.cutOff.Load() {
+			_ = b.rc.SetReadDeadline(time.Unix(1, 0))
+		}
 	}
 	n, err := b.ReadCloser.Read(p)
 	b.waited += time.Since(began)
@@ -297,9 +322,12 @@ func (b *clientBody) Close() error {
 	return b.ReadCloser.Close()
 }
 
-// cut makes any read of the rest of an unfinished body fail at once.
+// cut makes any read of the rest of an unfinished body fail at once, the
+// next ones too: Read sets the deadline again before each read. It may run
+// on another goroutine than the reads.
 func (b *clientBody) cut() {
 	if !b.complete.Load() {
+		b.cutOff.Store(true)
 		_ = b.rc.SetReadDeadline(time.Unix(1, 0))
 	}
 }
@@ -362,6 +390,114 @@ func finishTransfer(w http.ResponseWriter, body *clientBody) {
 	}
 }
 
+// errTimeLimit ends a proxied request that ran past the request time limit
+// of its hostname.
+var errTimeLimit = errors.New("request time limit reached")
+
+// timeLimit ends a proxied request at the request time limit of its
+// hostname, counted from when the request came: the request to the service
+// is cancelled, before the service answers or as the response streams, and
+// the transfers with the client end with it. A nil timeLimit is no limit.
+//
+// The limit expires on a timer's goroutine. mu orders that with the request:
+// once the request is done with the limit (finish, stop, an upgrade) it no
+// longer expires, so it never touches the connection of a response that went
+// out whole, or of the next request on it.
+type timeLimit struct {
+	ctx    context.Context
+	cancel context.CancelCauseFunc
+	timer  *time.Timer
+	rc     *http.ResponseController
+	body   *clientBody
+
+	mu        sync.Mutex
+	over      bool // the request is done with the limit
+	streaming bool // the response is under way
+	cutWrite  bool // expire cut the write of the response
+}
+
+// limitTime starts the time limit of r, which the returned request carries.
+func limitTime(w http.ResponseWriter, r *http.Request, body *clientBody, limit time.Duration, began time.Time) (*http.Request, *timeLimit) {
+	if limit <= 0 {
+		return r, nil
+	}
+	ctx, cancel := context.WithCancelCause(r.Context())
+	l := &timeLimit{ctx: ctx, cancel: cancel, rc: http.NewResponseController(w), body: body}
+	l.timer = time.AfterFunc(limit-time.Since(began), l.expire)
+	return r.WithContext(ctx), l
+}
+
+// expire ends the request. An unfinished upload is cut, since the transport
+// waits for its read before giving up the request, and so is a write of the
+// response under way: without the idle timeout, a stalled client would hold
+// either for good.
+func (l *timeLimit) expire() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.over {
+		return
+	}
+	l.cancel(errTimeLimit)
+	if l.body != nil {
+		l.body.cut()
+	}
+	if l.streaming {
+		_ = l.rc.SetWriteDeadline(time.Unix(1, 0))
+		l.cutWrite = true
+	}
+}
+
+// answered notes the service's answer: a response that streams until the
+// limit is cut, and a connection upgraded off HTTP (WebSocket) is let be,
+// as it is no longer a request and the idle timeout doesn't count it either.
+func (l *timeLimit) answered(status int) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if status == http.StatusSwitchingProtocols {
+		l.over = true
+		l.timer.Stop()
+	} else {
+		l.streaming = true
+	}
+}
+
+// finish ends the limit of a response that went out whole: one that expired
+// as its last bytes left gets the rest of its write. The idle timeout, when
+// on, sets the deadline again as the handler returns.
+func (l *timeLimit) finish() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.over = true
+	l.timer.Stop()
+	if l.cutWrite {
+		_ = l.rc.SetWriteDeadline(time.Time{})
+	}
+}
+
+// reached reports whether the limit has ended the request.
+func (l *timeLimit) reached() bool { return l != nil && context.Cause(l.ctx) == errTimeLimit }
+
+// stop ends the limit with the request, reporting whether it ended the
+// request.
+func (l *timeLimit) stop() bool {
+	if l == nil {
+		return false
+	}
+	l.mu.Lock()
+	l.over = true
+	l.mu.Unlock()
+	l.timer.Stop()
+	reached := l.reached()
+	l.cancel(nil)
+	return reached
+}
+
 // connectionLimitsRequest is the body of PUT connection-limits. Its per-host
 // entries need every key: a missing or null value would read as zero, which
 // lifts the limit. The request's strict decoding doesn't reach into a
@@ -369,8 +505,9 @@ func finishTransfer(w http.ResponseWriter, body *clientBody) {
 // limits read them leniently, as control.ConnectionLimits.
 type connectionLimitsRequest struct {
 	control.ConnectionLimits
-	Hosts            []uploadEntry  `json:"hosts"`
-	ResponseTimeouts []timeoutEntry `json:"response_timeouts"`
+	Hosts            []uploadEntry   `json:"hosts"`
+	ResponseTimeouts []timeoutEntry  `json:"response_timeouts"`
+	RequestTimeouts  []durationEntry `json:"request_timeouts"`
 }
 
 type uploadEntry control.HostUpload
@@ -385,6 +522,13 @@ type timeoutEntry control.HostResponseTimeout
 func (e *timeoutEntry) UnmarshalJSON(data []byte) error {
 	type plain control.HostResponseTimeout
 	return decodeEntry(data, (*plain)(e), "host", "response_timeout_seconds")
+}
+
+type durationEntry control.HostRequestTimeout
+
+func (e *durationEntry) UnmarshalJSON(data []byte) error {
+	type plain control.HostRequestTimeout
+	return decodeEntry(data, (*plain)(e), "host", "request_timeout_minutes")
 }
 
 var errIncompleteEntry = errors.New("entry is missing a key")
@@ -421,9 +565,9 @@ func (s *Store) putConnectionLimits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body connectionLimitsRequest
-	// Two lists of up to 50 hostnames of up to 253 characters.
+	// Three lists of up to 50 hostnames of up to 253 characters.
 	if !decodeLimited(w, r, &body, 64<<10, "max_upload_mb", "per_ip_concurrent", "total_concurrent", "idle_timeout_seconds", "min_upload_kb_per_second", "hosts",
-		"response_timeout_seconds", "response_timeouts") {
+		"response_timeout_seconds", "response_timeouts", "request_timeout_minutes", "request_timeouts") {
 		return
 	}
 	req := body.ConnectionLimits
@@ -434,6 +578,10 @@ func (s *Store) putConnectionLimits(w http.ResponseWriter, r *http.Request) {
 	req.ResponseTimeouts = make([]control.HostResponseTimeout, len(body.ResponseTimeouts))
 	for i, h := range body.ResponseTimeouts {
 		req.ResponseTimeouts[i] = control.HostResponseTimeout(h)
+	}
+	req.RequestTimeouts = make([]control.HostRequestTimeout, len(body.RequestTimeouts))
+	for i, h := range body.RequestTimeouts {
+		req.RequestTimeouts[i] = control.HostRequestTimeout(h)
 	}
 	s.saving.Lock()
 	saved, err := s.control.SetConnectionLimits(r.Context(), req, s.now())

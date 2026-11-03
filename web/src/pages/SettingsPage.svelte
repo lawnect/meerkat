@@ -16,7 +16,7 @@
   import { toast } from 'svelte-sonner';
   import { api, errorMessage } from '../api';
   import { intlLocale, translations } from '../i18n.svelte';
-  import { Alert12, Alert20, ArrowUndo, Delete, Key, NumberSymbol, Save, Send, Shield12, Warning } from '../icons';
+  import { Alert12, Alert20, ArrowBidirectionalUpDown12, ArrowUndo, Delete, Key, NumberSymbol, Save, Send, Shield12, Warning } from '../icons';
   import type { AlertRules, AlertSettings } from '../types';
   import BannedClients from '../components/BannedClients.svelte';
   import BlockRuleSettings from '../components/BlockRuleSettings.svelte';
@@ -37,6 +37,7 @@
     tabsAria: 'Settings sections',
     tabAlerts: 'Alerts',
     tabSecurity: 'Security',
+    tabConnection: 'Connections',
     loadFailed: (code: string) => `Couldn't load settings: ${code}`,
     telegram: 'Telegram',
     verified: 'Verified',
@@ -126,6 +127,7 @@
     tabsAria: '설정 항목',
     tabAlerts: '알림',
     tabSecurity: '보안',
+    tabConnection: '연결',
     loadFailed: (code: string) => `설정을 불러오는 중 오류가 발생했습니다: ${code}`,
     telegram: 'Telegram',
     verified: '인증됨',
@@ -213,8 +215,8 @@
   });
 
   type RuleKey = keyof AlertRules;
-  // 탭은 주소(?tab=security)가 단일 출처입니다. 감사 로그는 관찰 화면에 있습니다.
-  const tabs = ['alerts', 'security'] as const;
+  // 탭은 주소(?tab=security)가 단일 출처입니다. 감사 로그는 관찰 화면에 있습니다. 요청 제한과 연결 제한은 찾기 쉽도록 보안과 나눈 연결 탭에 둡니다.
+  const tabs = ['alerts', 'security', 'connection'] as const;
   const tab = $derived(oneOf('tab', tabs, 'alerts'));
 
   const ruleKeys: RuleKey[] = ['tunnel_down', 'service_down', 'tunnel_unstable', 'route_error', 'dns_failure', 'error_spike', 'latency', 'rate_limit', 'disk_low', 'memory_low', 'outlet_restart', 'login'];
@@ -345,6 +347,7 @@
     <Tabs.List aria-label={t().tabsAria}>
       <Tabs.Trigger value="alerts"><Alert12 class="size-3" aria-hidden="true" />{t().tabAlerts}</Tabs.Trigger>
       <Tabs.Trigger value="security"><Shield12 class="size-3" aria-hidden="true" />{t().tabSecurity}</Tabs.Trigger>
+      <Tabs.Trigger value="connection"><ArrowBidirectionalUpDown12 class="size-3" aria-hidden="true" />{t().tabConnection}</Tabs.Trigger>
     </Tabs.List>
     <Tabs.Content value="alerts" class="grid min-w-0 gap-4">
         <Card.Root size="sm" role="region" aria-labelledby="telegram-title">
@@ -560,13 +563,15 @@
 
       <AdminAccessSettings />
       <SsoSettings />
-      <RateLimitSettings />
-      <ConnectionLimitSettings />
       <HstsSettings />
       <TunnelGuardSettings />
       <BlockRuleSettings />
       <!-- 차단된 클라이언트 표는 검색어·페이지를 주소 query(bans_q, bans_page)에 담으므로 고른 탭에서만 그립니다. -->
       {#if tab === 'security'}<BannedClients />{/if}
+    </Tabs.Content>
+    <Tabs.Content value="connection" class="grid min-w-0 gap-4">
+      <RateLimitSettings />
+      <ConnectionLimitSettings />
     </Tabs.Content>
   </Tabs.Root>
 {/if}

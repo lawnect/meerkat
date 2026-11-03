@@ -20,7 +20,7 @@
   import IconButton from './IconButton.svelte';
   import InfoTooltip from './InfoTooltip.svelte';
 
-  // 설정 > 보안의 요청 제한 카드. 고친 값은 되돌리기·저장으로만 반영합니다.
+  // 설정 > 연결의 요청 제한 카드. 고친 값은 되돌리기·저장으로만 반영합니다.
   const t = translations({
     title: 'Rate limiting',
     tip: 'Requests over the limit get 429 Too Many Requests before they reach a tunnel. This blocks request floods and password guessing; volumetric DDoS needs network-level protection such as the Cloudflare proxy.',

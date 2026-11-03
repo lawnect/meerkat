@@ -1,8 +1,10 @@
 package outlet
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -113,6 +115,20 @@ func (t headerDeadline) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	// The context ends with the client's request, after the body is read.
 	return res, err
+}
+
+// proxyLog is the proxies' error log, without the streams cut at their time
+// limit: the failure log has them, and a client can make them at will.
+// The rest goes to the standard logger, as without it.
+var proxyLog = log.New(withoutTimeLimits{}, "", 0)
+
+type withoutTimeLimits struct{}
+
+func (withoutTimeLimits) Write(p []byte) (int, error) {
+	if !bytes.Contains(p, []byte(errTimeLimit.Error())) {
+		log.Print(string(p))
+	}
+	return len(p), nil
 }
 
 type bufferPool struct{ pool sync.Pool }
@@ -330,6 +346,21 @@ func (s *Store) PublicHandler() http.Handler {
 		if logged != nil {
 			defer logged()
 		}
+		// The request ends at its time limit, counted from when it came. A
+		// response cut off as it streams aborts the handler and is logged
+		// here as the client got it, with the service's status (the request
+		// log keeps the bytes so far); one that never began is answered and
+		// logged where the proxy fails. This runs before the request log
+		// takes its entry.
+		r, limit := limitTime(w, r, body, limits.requestTimeout(host), began)
+		var streamed int
+		var streamedBy string
+		defer func() {
+			// A 5xx was logged as the app's error when it came.
+			if limit.stop() && streamed != 0 && streamed < 500 {
+				s.logFailure(r, host, began, failTimeLimit, streamed, streamedBy)
+			}
+		}()
 		// Rules compare the whole path, so one longer than apps take (see
 		// maxPublicPath) would only make them slow.
 		if len(r.URL.EscapedPath()) > maxPublicPath {
@@ -417,6 +448,7 @@ func (s *Store) PublicHandler() http.Handler {
 			proxy := &httputil.ReverseProxy{
 				Transport:  transport,
 				BufferPool: proxyBuffers,
+				ErrorLog:   proxyLog,
 				Rewrite: func(pr *httputil.ProxyRequest) {
 					pr.SetURL(upstream)
 					pr.Out.Host = pr.In.Host
@@ -468,6 +500,10 @@ func (s *Store) PublicHandler() http.Handler {
 				},
 				ModifyResponse: func(res *http.Response) error {
 					responded.Store(true)
+					limit.answered(res.StatusCode)
+					if res.StatusCode != http.StatusSwitchingProtocols {
+						streamed, streamedBy = res.StatusCode, target.service
+					}
 					if outlet, upstream, ok := timed.latencies(time.Now()); ok {
 						s.countLatencies(outlet, upstream)
 						if record != nil {
@@ -513,6 +549,17 @@ func (s *Store) PublicHandler() http.Handler {
 						http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 						s.logFailure(r, host, began, failTooLarge, http.StatusRequestEntityTooLarge, target.service)
 						return
+					case limit.reached() && !responded.Load():
+						// Still uploading, the client took the time; otherwise the
+						// service did.
+						status := http.StatusGatewayTimeout
+						if body != nil && !body.complete.Load() {
+							w.Header().Set("Connection", "close")
+							status = http.StatusRequestTimeout
+						}
+						http.Error(w, "request time limit reached", status)
+						s.logFailure(r, host, began, failTimeLimit, status, target.service)
+						return
 					case body != nil && (body.timedOut.Load() || clientGone && !body.complete.Load()):
 						w.Header().Set("Connection", "close")
 						http.Error(w, "request body timed out", http.StatusRequestTimeout)
@@ -538,5 +585,9 @@ func (s *Store) PublicHandler() http.Handler {
 			proxy.ServeHTTP(w, r)
 		}
 		serve(backends[0])
+		// The response went out whole: a cut one aborts the handler before
+		// this, so the limit firing as the last bytes left isn't a cut.
+		streamed = 0
+		limit.finish()
 	})
 }

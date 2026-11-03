@@ -215,6 +215,8 @@ let connectionLimits: ConnectionLimits = {
   hosts: [{ host: 'photos.example.test', max_upload_mb: 2048 }],
   response_timeout_seconds: 60,
   response_timeouts: [{ host: 'paper.example.test', response_timeout_seconds: 600 }],
+  request_timeout_minutes: 60,
+  request_timeouts: [{ host: 'files.example.test', request_timeout_minutes: 0 }],
 };
 let hsts: HstsSettings = { enabled: true };
 // 데모는 공개 주소에서 203.0.113.24로 접속한 것으로 둡니다.
@@ -940,6 +942,7 @@ const FAILURE_SHAPES: Record<FailureCause, { statuses: number[]; weight: number;
   too_long: { statuses: [414], weight: 2, duration: () => 0 },
   too_large: { statuses: [413], weight: 3, duration: (roll) => 100 + Math.round(roll * 2400) },
   busy: { statuses: [503, 429], weight: 3, duration: () => 1 },
+  time_limit: { statuses: [200, 504], weight: 1, duration: () => 3600000 },
 };
 const failureLog: MockLog<FailureLogEntry> = {
   settings: { enabled: true, max_mib: 256, retention_days: 30 },
@@ -1026,7 +1029,8 @@ function mockRequestEntry(index: number): RequestLogEntry {
     return { ...entry, status: 504, cause, duration_ms: 30000, bytes: 150 };
   }
   if (kind < 0.96) return { ...entry, status: 499, duration_ms: 2000 + Math.round(roll(10) * 8000), bytes: 0, routine: true };
-  const refused = pick(['too_large', 'too_long', 'busy'] as const, roll(10));
+  const refused = pick(['too_large', 'too_long', 'busy', 'time_limit'] as const, roll(10));
+  if (refused === 'time_limit') return { ...entry, status: 200, cause: refused, duration_ms: 3600000, bytes: 48_000_000 };
   if (refused === 'too_large') return { ...entry, method: 'POST', status: 413, cause: refused, duration_ms: 100 + Math.round(roll(11) * 2400), bytes: 0, routine: true };
   if (refused === 'too_long') return { ...entry, path: `/search/${'a'.repeat(20)}…`, status: 414, cause: refused, service: '', duration_ms: 0, bytes: 0, routine: true };
   return { ...entry, status: 503, cause: refused, service: '', duration_ms: 1, bytes: 0 };
@@ -1505,11 +1509,13 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     const offOrWithin = (value: unknown) => value === 0 || (within(value, 3600) && (value as number) >= 5);
     const timeouts = Array.isArray(next.response_timeouts) ? next.response_timeouts.map((entry) => ({ host: typeof entry?.host === 'string' ? entry.host.trim().toLowerCase() : '', response_timeout_seconds: entry?.response_timeout_seconds })) : null;
     const timeoutsOk = timeouts !== null && timeouts.length <= 50 && new Set(timeouts.map((entry) => entry.host)).size === timeouts.length && timeouts.every((entry) => hostnameOk(entry.host) && offOrWithin(entry.response_timeout_seconds));
+    const durations = Array.isArray(next.request_timeouts) ? next.request_timeouts.map((entry) => ({ host: typeof entry?.host === 'string' ? entry.host.trim().toLowerCase() : '', request_timeout_minutes: entry?.request_timeout_minutes })) : null;
+    const durationsOk = durations !== null && durations.length <= 50 && new Set(durations.map((entry) => entry.host)).size === durations.length && durations.every((entry) => hostnameOk(entry.host) && within(entry.request_timeout_minutes, 1440));
     // 실제 서버처럼 모든 키가 있어야 합니다(응답 대기 시간 이전의 콘솔이 저장해 값을 지우지 않도록).
-    if (next.response_timeout_seconds === undefined || next.response_timeouts === undefined) fail('invalid_request');
+    if (next.response_timeout_seconds === undefined || next.response_timeouts === undefined || next.request_timeout_minutes === undefined || next.request_timeouts === undefined) fail('invalid_request');
     if (!within(next.max_upload_mb, 102400) || !within(next.per_ip_concurrent, 1000000) || !within(next.total_concurrent, 1000000) || !offOrWithin(next.idle_timeout_seconds) || !within(next.min_upload_kb_per_second, 100000) || !hostsOk ||
-      !offOrWithin(next.response_timeout_seconds) || !timeoutsOk) fail('invalid_connection_limits');
-    connectionLimits = { ...next, hosts: hosts!, response_timeouts: timeouts! };
+      !offOrWithin(next.response_timeout_seconds) || !timeoutsOk || !within(next.request_timeout_minutes, 1440) || !durationsOk) fail('invalid_connection_limits');
+    connectionLimits = { ...next, hosts: hosts!, response_timeouts: timeouts!, request_timeouts: durations! };
     return structuredClone(connectionLimits);
   }
   if (path === '/api/v1/security/tunnel-guard') return tunnelGuardApi(method, input);

@@ -5,7 +5,7 @@ import type { FailureCause } from './types';
 export const causeText = translations({
   causes: {
     app_error: 'App error', unreachable: 'Unreachable', timeout: 'Timeout', no_service: 'No service', rate_limited: 'Rate limited',
-    blocked: 'Blocked', trapped: 'Honeypot hit', banned: 'Banned client', too_long: 'Path too long', too_large: 'Body too large', busy: 'Connection limit',
+    blocked: 'Blocked', trapped: 'Honeypot hit', banned: 'Banned client', too_long: 'Path too long', too_large: 'Body too large', busy: 'Connection limit', time_limit: 'Time limit',
   } as Record<FailureCause, string>,
   meanings: {
     app_error: 'The app answered with a 5xx.',
@@ -19,11 +19,12 @@ export const causeText = translations({
     too_long: 'The path was over 8,192 bytes.',
     too_large: 'The request body was over the upload limit.',
     busy: 'Refused by a connection limit.',
+    time_limit: 'Ended at the max request duration.',
   } as Record<FailureCause, string>,
 }, {
   causes: {
     app_error: '앱 오류', unreachable: '연결 실패', timeout: '응답 시간 초과', no_service: '서비스 없음', rate_limited: '요청 제한',
-    blocked: '차단', trapped: '허니팟 감지', banned: '차단된 클라이언트', too_long: '경로 길이 초과', too_large: '본문 크기 초과', busy: '동시 연결 제한',
+    blocked: '차단', trapped: '허니팟 감지', banned: '차단된 클라이언트', too_long: '경로 길이 초과', too_large: '본문 크기 초과', busy: '동시 연결 제한', time_limit: '요청 시간 초과',
   },
   meanings: {
     app_error: '앱이 5xx로 응답했습니다.',
@@ -37,5 +38,6 @@ export const causeText = translations({
     too_long: '경로가 8,192바이트를 초과했습니다.',
     too_large: '요청 본문이 업로드 제한을 초과했습니다.',
     busy: '연결 제한으로 거부되었습니다.',
+    time_limit: '최대 요청 시간을 초과하여 요청을 종료했습니다.',
   },
 });

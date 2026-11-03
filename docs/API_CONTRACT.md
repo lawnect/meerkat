@@ -255,7 +255,7 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 - 접속 주소는 Caddy가 붙인 `X-Forwarded-For`의 마지막 항목이다. 없으면 IP·서브넷·IP별 엔드포인트 제한은 건너뛴다(모든 클라이언트가 한 버킷을 나누는 일을 피한다). Caddy가 내부 주소(Host `outlet:8080`, `X-Forwarded-For` 없음)로 보내는 `/.well-known/meerkat/cert-ask` 확인은 제한하지 않는다. 클라이언트가 Caddy를 거쳐 같은 Host를 보내면 `X-Forwarded-For`가 붙으므로 인증서 확인으로 취급하지 않는다. ACME HTTP-01 응답(`/.well-known/acme-challenge/`)은 Caddy가 직접 처리하므로 Outlet에 도달한 같은 경로는 일반 요청이다. 80번 포트 요청은 본문을 읽지 않고 HTTPS로 리디렉션만 하므로 제한하지 않는다. 로컬 관리 포트는 이 제한을 거치지 않는다.
 - 버킷은 10분 동안 쓰지 않으면 지우고 전체 약 10만 개를 넘으면 가장 오래 쓰지 않은 것부터 지운다.
 
-**연결 제한(connection limits).** 요청 하나나 클라이언트 하나가 붙잡을 수 있는 자원을 제한한다. `GET`과 `PUT /api/v1/security/connection-limits`는 같은 객체를 주고받으며 `PUT`은 모든 키를 담아야 하고(`hosts`·`response_timeouts` 항목의 두 키도. 없거나 `null`이면 0, 곧 제한 없음으로 읽히지 않도록 `400 invalid_request`), 범위를 벗어나면 `400 invalid_connection_limits`이다. 설정은 재시작 없이 바로 적용하고, 값이 0이면 그 제한은 꺼진다. 아래가 기본값이다.
+**연결 제한(connection limits).** 요청 하나나 클라이언트 하나가 붙잡을 수 있는 자원을 제한한다. `GET`과 `PUT /api/v1/security/connection-limits`는 같은 객체를 주고받으며 `PUT`은 모든 키를 담아야 하고(`hosts`·`response_timeouts`·`request_timeouts` 항목의 두 키도. 없거나 `null`이면 0, 곧 제한 없음으로 읽히지 않도록 `400 invalid_request`), 범위를 벗어나면 `400 invalid_connection_limits`이다. 설정은 재시작 없이 바로 적용하고, 값이 0이면 그 제한은 꺼진다. 아래가 기본값이다.
 
 ~~~
 {
@@ -266,7 +266,9 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
   "min_upload_kb_per_second": 1,
   "hosts": [{"host": "files.example.com", "max_upload_mb": 4096}],
   "response_timeout_seconds": 60,
-  "response_timeouts": [{"host": "ai.example.com", "response_timeout_seconds": 600}]
+  "response_timeouts": [{"host": "ai.example.com", "response_timeout_seconds": 600}],
+  "request_timeout_minutes": 60,
+  "request_timeouts": [{"host": "files.example.com", "request_timeout_minutes": 0}]
 }
 ~~~
 
@@ -274,7 +276,8 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 - `per_ip_concurrent`(0–1000000)는 클라이언트 주소(IPv6는 /56 단위)당 처리 중인 공개 요청 수다. 관리 호스트와 커넥터 API를 포함한 모든 공개 요청에 적용하며, 넘으면 `429`, `Retry-After: 1`, 본문 `Too many requests in progress from this address`다.
 - `total_concurrent`(0–1000000)는 모든 클라이언트를 합쳐 서비스로 전달 중인 요청 수다. 처리 중인 요청 하나에 Outlet 메모리 약 170KB가 들므로 기본값 4096이면 최대 약 700MB다. 넘으면 `503`, `Retry-After: 5`다. 관리 호스트와 커넥터 API 요청은 세지 않으므로 프록시가 가득 차도 관리 화면과 터널 상태 보고는 계속 동작한다.
 - `idle_timeout_seconds`(0 또는 5–3600)는 클라이언트가 보내는 본문 읽기와 클라이언트로의 응답 쓰기 각각에 주는 시간이다. 그동안 진행이 없으면 연결을 끊고, 업로드 중이었다면 `408`을 반환한다. 서비스의 응답을 기다리는 시간, 스트림 응답 중간의 쉼, keep-alive 연결의 다음 요청 대기, 업그레이드(WebSocket) 이후의 연결은 포함하지 않는다.
-- `response_timeout_seconds`(0 또는 5–3600)는 요청을 본문까지 서비스로 보낸 뒤 응답 헤더를 기다리는 시간이다(nginx의 `proxy_read_timeout`과 같은 기본 60초). 넘으면 `504`, 본문 `upstream timed out`이고 실패 요청에 `timeout`으로 남는다. 헤더가 온 뒤 본문(스트림)은 이 시간과 관계없이 이어진다. `response_timeouts`(최대 50개, 호스트 이름 하나와 그 시간, 0이면 제한 없음)에 있는 호스트는 그 값을 따른다. 첫 조각이 올 때까지 헤더를 보내지 않는 LLM 게이트웨이처럼 응답 시작이 늦은 서비스에 쓴다. 서비스 자체의 시한이 있으면 그보다 조금 길게 두어 서비스의 오류 응답이 클라이언트에 닿게 한다. 이 키가 없던 때 저장한 설정은 60초로 읽고, 이 키가 없는 `PUT`은 `400 invalid_request`다(이전 콘솔이 저장해 값을 지우지 않도록). 0이면 연결된 채 응답하지 않는 서비스를 클라이언트가 떠날 때까지 기다리고, 다음 서비스로 재시도하지도 않는다. `PUT` 본문은 64KB까지다.
+- `response_timeout_seconds`(0 또는 5–3600)는 요청을 본문까지 서비스로 보낸 뒤 응답 헤더를 기다리는 시간이다(nginx의 `proxy_read_timeout`과 같은 기본 60초). 넘으면 `504`, 본문 `upstream timed out`이고 실패 요청에 `timeout`으로 남는다. 헤더가 온 뒤 본문(스트림)은 이 시간과 관계없이 이어진다. `response_timeouts`(최대 50개, 호스트 이름 하나와 그 시간, 0이면 제한 없음)에 있는 호스트는 그 값을 따른다. 첫 조각이 올 때까지 헤더를 보내지 않는 LLM 게이트웨이처럼 응답 시작이 늦은 서비스에 쓴다. 서비스 자체의 시한이 있으면 그보다 조금 길게 두어 서비스의 오류 응답이 클라이언트에 닿게 한다. 이 키가 없던 때 저장한 설정은 60초로 읽고, 이 키가 없는 `PUT`은 `400 invalid_request`다(이전 콘솔이 저장해 값을 지우지 않도록). 0이면 연결된 채 응답하지 않는 서비스를 클라이언트가 떠날 때까지(아래 최대 요청 시간이 있으면 그때까지) 기다리고, 다음 서비스로 재시도하지도 않는다. `PUT` 본문은 64KB까지다.
+- `request_timeout_minutes`(0 또는 1–1440)는 서비스로 전달하는 요청 하나가 Outlet에 온 때부터 응답이 끝날 때까지 걸릴 수 있는 시간이다(기본 60분). 넘으면 서비스로 보낸 요청을 취소하고, 서비스가 아직 응답하지 않았으면 `504`(업로드가 끝나지 않았으면 `408`과 `Connection: close`), 본문 `request time limit reached`로 답한다. 응답이 이미 스트림 중이면 연결을 끊어(청크 응답은 끝 표시 없이) 클라이언트가 잘린 응답을 완성된 것으로 받지 않게 한다. 어느 쪽이든 실패 요청에 `time_limit`과 클라이언트가 받은 상태 코드(스트림 중이면 앱의 상태 코드)로 남긴다. 단, 앱이 5xx로 응답한 스트림은 응답 헤더가 올 때 남긴 `app_error` 하나로 둔다. 끊은 스트림은 Outlet의 표준 로그에 남기지 않는다. 그때 진행 중인 클라이언트의 업로드 읽기와 응답 쓰기도 끊으므로 유휴 제한이 꺼져 있어도 멈춘 클라이언트가 요청을 붙잡지 못한다. 업그레이드(`101`, WebSocket) 이후의 연결은 요청이 아니므로 세지 않는다. 관리 호스트와 커넥터 API에는 적용하지 않는다. `request_timeouts`(최대 50개, 호스트 이름 하나와 그 시간, 0이면 제한 없음)에 있는 호스트는 그 값을 따른다. 대용량 다운로드·업로드, 오래 열어 두는 이벤트 스트림(SSE), 카메라의 MJPEG 스트림, 요청 하나로 재생하는 긴 동영상이 있는 호스트에 쓴다. 이 키가 없던 때 저장한 설정은 60분으로 읽고(업그레이드하면 이런 요청도 한 시간에 끊긴다), 이 키가 없는 `PUT`은 `400 invalid_request`다.
 - `min_upload_kb_per_second`(0–100000)는 요청이 시작된 뒤 평균 업로드 속도의 하한이다. 처음 유휴 시간(유휴 제한이 꺼져 있으면 30초)을 유예한 뒤 이보다 느리면 `408`로 끊는다. 응답(다운로드)에는 적용하지 않는다.
 - 본문을 끝까지 받지 않고 답한 요청(404, 429, 413, 서비스의 조기 응답 등)은 남은 본문을 기다려 비우지 않고, 응답 뒤 연결을 닫는다. 본문 일부만 보내고 멈춘 클라이언트가 제한에 잡히지 않은 채 연결을 붙잡지 못하게 하기 위해서다.
 - 동시 요청 제한으로 거부한 요청은 요청 제한 거부와 함께 `rate_limited`로 집계하며 `rate_limit` 알림에는 `concurrent`(IP별)와 `capacity`(전체)로 나타난다.
@@ -516,7 +519,7 @@ GET    /api/v1/observe/failure-log/export?cause=&host=&q=&utc_offset=
 
 **실패 요청**
 - 경로가 있는 공개 주소로 온 요청 중 실패했거나 Outlet이 앱에 보내기 전에 막은 요청을 기록한다. 경로가 없는 주소와 접근 보호가 막은 요청(접근 기록)은 남기지 않는다. 다른 서비스로 다시 보낸 요청은 마지막 결과로 한 번만 남긴다.
-- 항목은 `{"id", "at", "host", "method", "path", "client", "cause", "status", "service", "duration_ms", "routine"}`이며 `cause`와 `host`로 거르고, `q`는 `host`, `path`, `client`, `service`에서 찾는다. `cause`는 `app_error`(앱이 5xx로 응답), `unreachable`(서비스에 닿지 못함, `502`), `timeout`(연결이나 응답 헤더 시간 초과, `504`), `no_service`(살아 있는 서비스 없음, `404`), `rate_limited`(요청 제한, `429`), `blocked`(차단 규칙, `403`), `too_long`(경로 길이, `414`), `too_large`(업로드 크기, `413`), `busy`(연결 제한, 클라이언트별 `429`·전체 `503`), `trapped`(`ban` 규칙이 거부하고 클라이언트를 차단, `403`), `banned`(이미 차단된 클라이언트, `403`)이고, `status`는 클라이언트가 받은 상태 코드, `duration_ms`는 요청을 받은 때부터 실패까지(앱의 5xx는 응답 헤더까지)다. `rate_limited`·`blocked`·`too_long`·`too_large`·`busy`·`trapped`·`banned`(Outlet이 막은 요청)는 일상(`routine: true`), 나머지(서비스에 문제가 있는 요청)는 주목할 만한 항목이다. `cause`는 두 묶음도 받는다. `refused`는 일상 항목 일곱 가지 전체이고 `service`는 `app_error`·`unreachable`·`timeout`·`no_service` 전체다. 클라이언트 쪽 오류(`400`, `408`, `499`)는 남기지 않는다. 요청 제한과 클라이언트별 연결 제한은 주소를 보기 전에 거부하므로, 경로가 있는 주소로 온 요청일 때만 남긴다.
+- 항목은 `{"id", "at", "host", "method", "path", "client", "cause", "status", "service", "duration_ms", "routine"}`이며 `cause`와 `host`로 거르고, `q`는 `host`, `path`, `client`, `service`에서 찾는다. `cause`는 `app_error`(앱이 5xx로 응답), `unreachable`(서비스에 닿지 못함, `502`), `timeout`(연결이나 응답 헤더 시간 초과, `504`), `no_service`(살아 있는 서비스 없음, `404`), `rate_limited`(요청 제한, `429`), `blocked`(차단 규칙, `403`), `too_long`(경로 길이, `414`), `too_large`(업로드 크기, `413`), `busy`(연결 제한, 클라이언트별 `429`·전체 `503`), `trapped`(`ban` 규칙이 거부하고 클라이언트를 차단, `403`), `banned`(이미 차단된 클라이언트, `403`), `time_limit`(최대 요청 시간을 넘겨 종료, 응답 전 `504`·업로드 중 `408`·스트림 중이면 앱의 상태 코드)이고, `status`는 클라이언트가 받은 상태 코드, `duration_ms`는 요청을 받은 때부터 실패까지(앱의 5xx는 응답 헤더까지)다. `rate_limited`·`blocked`·`too_long`·`too_large`·`busy`·`trapped`·`banned`·`time_limit`(Outlet이 막거나 끊은 요청)는 일상(`routine: true`), 나머지(서비스에 문제가 있는 요청)는 주목할 만한 항목이다. `cause`는 두 묶음도 받는다. `refused`는 일상 항목 여덟 가지 전체이고 `service`는 `app_error`·`unreachable`·`timeout`·`no_service` 전체다. 클라이언트 쪽 오류(`400`, `408`, `499`)는 남기지 않는다(최대 요청 시간에 걸린 업로드의 `408`은 `time_limit`으로 남긴다). 요청 제한과 클라이언트별 연결 제한은 주소를 보기 전에 거부하므로, 경로가 있는 주소로 온 요청일 때만 남긴다.
 
 **요청 기록**
 - 경로가 있는 공개 주소로 온 요청을 결과와 관계없이 모두 기록한다. 공격 지점을 찾고 요청을 세는 데 쓴다. Outlet이 막은 요청, 접근 보호가 막은 요청도 남기며, 경로가 없는 주소, 관리 주소, Outlet 도메인의 Connector API는 남기지 않는다. 응답이 끝난 뒤(업그레이드한 연결은 연결이 끝난 뒤) 한 번 남긴다.
