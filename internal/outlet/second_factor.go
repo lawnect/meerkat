@@ -336,7 +336,11 @@ func (s *Store) startSecondFactor(w http.ResponseWriter, r *http.Request, admin 
 	}
 	if err := s.telegramSend(r.Context(), telegram.BotToken, telegram.ChatID, loginCodeNotice(secret, challengeTTL).HTML("")); err != nil {
 		s.challenges.drop(id)
-		fail(w, r, 502, "telegram_unreachable")
+		if telegramRetryHeader(w, err) {
+			fail(w, r, http.StatusTooManyRequests, "telegram_rate_limited")
+		} else {
+			fail(w, r, 502, "telegram_unreachable")
+		}
 		return
 	}
 	reply(w, http.StatusAccepted, map[string]string{"second_factor": "telegram", "challenge": id})

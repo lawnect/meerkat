@@ -5,12 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -746,5 +749,127 @@ func TestSlowOrBrokenTelegramNeverBlocksLogin(t *testing.T) {
 	logins := loginEvents(t, a)
 	if len(logins) != 1 || logins[0].Sent || logins[0].Error == nil || *logins[0].Error != "telegram_unreachable" {
 		t.Fatalf("login events = %+v", logins)
+	}
+}
+
+func TestTelegramTestRejectsUnconfirmedDeliveryWithSafeDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     int
+		body       string
+		want       string
+		wantStatus int
+	}{
+		{"wrong chat", 400, `{"ok":false,"error_code":400,"description":"chat not found TOKEN-SECRET-OTP-987654"}`, "telegram_chat_not_found", 502},
+		{"blocked", 403, `{"ok":false,"error_code":403,"description":"bot was blocked TOKEN-SECRET-OTP-987654"}`, "telegram_chat_forbidden", 502},
+		{"malformed success", 200, `{"ok":true`, "telegram_invalid_response", 502},
+		{"missing ok", 200, `{}`, "telegram_invalid_response", 502},
+		{"rejected success", 200, `{"ok":false,"error_code":400,"description":"chat not found TOKEN-SECRET-OTP-987654"}`, "telegram_chat_not_found", 502},
+		{"limited", 429, `{"ok":false,"error_code":429,"description":"TOKEN-SECRET-OTP-987654","parameters":{"retry_after":31}}`, "telegram_rate_limited", 429},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newAlertFixture(t)
+			cookie := a.adminSession(t)
+			a.configureTelegram(t, false)
+			server, _ := telegramServer(t, tc.status, tc.body)
+			client := newTelegramClient(server.URL)
+			a.store.sendTelegram = client.send
+			w := cookieRequest(a.store.Handler(), "POST", "/api/v1/alerts/telegram/test", cookie, nil)
+			if w.Code != tc.wantStatus || errorCode(t, w) != tc.want {
+				t.Fatalf("response: %d %s", w.Code, w.Body.String())
+			}
+			var response map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || response["http_status"] != float64(tc.status) {
+				t.Fatalf("diagnostics: %s", w.Body.String())
+			}
+			if tc.wantStatus == 429 && (w.Header().Get("Retry-After") != "31" || response["retry_after"] != float64(31)) {
+				t.Fatalf("retry diagnostic: %v %s", w.Header(), w.Body.String())
+			}
+			settings, err := a.db.Telegram(context.Background())
+			if err != nil || settings.VerifiedAt != "" {
+				t.Fatalf("failed test verified settings: %+v, %v", settings, err)
+			}
+			audit := a.lastAudit(t)
+			if audit.Action != "telegram.test" || !strings.Contains(string(audit.Detail), `"http_status":`+strconv.Itoa(tc.status)) || !strings.Contains(string(audit.Detail), `"error":"`+tc.want+`"`) {
+				t.Fatalf("audit diagnostic: %+v", audit)
+			}
+			for _, output := range []string{w.Body.String(), string(audit.Detail)} {
+				for _, secret := range []string{"TOKEN-SECRET", "987654", testBotToken, server.URL} {
+					if strings.Contains(output, secret) {
+						t.Fatalf("secret escaped in %s", output)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestTelegramBotCooldownSharedByAlertsTestsAndLoginCodes(t *testing.T) {
+	a, cookie := secondFactorFixture(t)
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		hits.Add(1)
+		w.WriteHeader(429)
+		_, _ = io.WriteString(w, `{"ok":false,"error_code":429,"parameters":{"retry_after":60}}`)
+	}))
+	defer server.Close()
+	client := newTelegramClient(server.URL)
+	client.now = a.clock.now
+	a.store.sendTelegram = client.send
+	env, ok, err := a.store.loadAlertEnv(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("alert env: %v", err)
+	}
+	event, _, err := a.db.OpenAlert(context.Background(), control.AlertEvent{Key: "test:cooldown", Kind: "service_down", Subject: "test"}, 0, a.clock.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.store.deliver(context.Background(), env, event.ID, testNotice(a.host, a.clock.now()))
+	if events := a.events(t, "service_down"); len(events) != 1 || events[0].Sent || events[0].Error == nil || *events[0].Error != "telegram_rate_limited" {
+		t.Fatalf("alert result: %+v", events)
+	}
+	a.clock.advance(1100 * time.Millisecond)
+	w := cookieRequest(a.store.Handler(), "POST", "/api/v1/alerts/telegram/test", cookie, nil)
+	if w.Code != 429 || errorCode(t, w) != "telegram_rate_limited" || w.Header().Get("Retry-After") != "59" {
+		t.Fatalf("test cooldown: %d %v %s", w.Code, w.Header(), w.Body.String())
+	}
+	w = a.publicRequest("POST", "/api/v1/session", clientIP, chromeOnMac, adminLogin)
+	if w.Code != 429 || errorCode(t, w) != "telegram_rate_limited" || w.Header().Get("Retry-After") != "59" {
+		t.Fatalf("login cooldown: %d %v %s", w.Code, w.Header(), w.Body.String())
+	}
+	if len(w.Result().Cookies()) != 0 || len(a.store.challenges.items) != 0 {
+		t.Fatal("failed code delivery left a challenge or session")
+	}
+	for _, private := range []string{"http_status", "error_code", "chat_id", "bot_token"} {
+		if strings.Contains(w.Body.String(), private) {
+			t.Fatalf("public login exposes private diagnostics: %s", w.Body.String())
+		}
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("shared cooldown made %d HTTP calls", hits.Load())
+	}
+}
+
+func TestSecondFactorHTTPFailureLeavesNoChallengeOrSession(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"wrong chat", 400, `{"ok":false,"error_code":400,"description":"chat not found"}`},
+		{"forbidden", 403, `{"ok":false,"error_code":403,"description":"bot was blocked"}`},
+		{"malformed success", 200, `{"ok":true`},
+		{"rejected success", 200, `{"ok":false,"error_code":401}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _ := secondFactorFixture(t)
+			server, _ := telegramServer(t, tc.status, tc.body)
+			a.store.sendTelegram = newTelegramClient(server.URL).send
+			w := a.publicRequest("POST", "/api/v1/session", clientIP, chromeOnMac, adminLogin)
+			if w.Code != 502 || errorCode(t, w) != "telegram_unreachable" || len(w.Result().Cookies()) != 0 || len(a.store.challenges.items) != 0 {
+				t.Fatalf("failed delivery: %d %s", w.Code, w.Body.String())
+			}
+		})
 	}
 }

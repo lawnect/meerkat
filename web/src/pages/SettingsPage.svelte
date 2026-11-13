@@ -47,7 +47,8 @@
     botTokenTip: 'Create a bot with @BotFather and paste the token it gives you. The token is stored on the Outlet and never shown again.',
     botTokenKeep: (hint: string) => `Saved (…${hint}). Enter a new token to replace it.`,
     chatId: 'Chat ID',
-    chatIdTip: 'Send any message to the bot, then open api.telegram.org/bot<token>/getUpdates and copy chat.id. Group IDs start with -100. A public channel can use @name.',
+    chatIdTip: 'Send /start to the bot, then open api.telegram.org/bot<token>/getUpdates and copy message.chat.id for the destination chat. Use the chat ID, not the bot ID or your Telegram username. Invite the bot to groups and give it permission to post in channels.',
+    chatIdHint: 'Personal chat: numeric ID. Group: negative ID (supergroups start with -100). Public channel: @name. Start or invite the bot first.',
     sendAlerts: 'Send alerts',
     sendAlertsHint: 'Turn off to keep the connection without sending alerts.',
     testMessage: 'Send test message',
@@ -115,8 +116,16 @@
       invalid_telegram_token: 'Check the bot token format (123456:ABC…).',
       invalid_telegram_chat: 'Check the chat ID (a number, or @channel).',
       telegram_unauthorized: 'Telegram rejected the bot token.',
-      telegram_chat_not_found: 'Telegram couldn\'t find that chat. Send the bot a message first.',
+      telegram_chat_not_found: 'Telegram couldn\'t find the destination chat. Check the chat ID (not the bot ID or your username), then start the bot or invite it to the group.',
+      telegram_chat_forbidden: 'The bot cannot post to this chat. Check the chat ID, unblock or add the bot, and check its posting permissions.',
       telegram_unreachable: 'Couldn\'t reach Telegram from the Outlet.',
+      telegram_rate_limited: 'Telegram is limiting this bot. Wait before trying again.',
+      telegram_chat_migrated: 'This group moved to a new chat ID. Check the group ID and save it before testing again.',
+      telegram_invalid_message: 'Telegram rejected the message formatting. Report the telegram_invalid_message error to the administrator.',
+      telegram_invalid_request: 'Telegram rejected the message request. Check the bot and chat settings.',
+      telegram_unavailable: 'Telegram is temporarily unavailable. Try again later.',
+      telegram_invalid_response: 'Telegram returned an invalid response. The test was not verified.',
+      telegram_failed: 'Telegram rejected the test message. Check the audit log for its error category.',
       telegram_not_verified: 'Send a test message first to verify Telegram.',
       telegram_changed: 'The Telegram settings changed during the test. Send a test message again.',
       invalid_alert_rules: 'Check the alert values.',
@@ -137,7 +146,8 @@
     botTokenTip: '@BotFather에서 봇을 생성한 후 발급된 토큰을 입력하십시오. 토큰은 Outlet에 저장되며 다시 표시되지 않습니다.',
     botTokenKeep: (hint: string) => `저장됨(…${hint}). 변경하려면 새 토큰을 입력하십시오.`,
     chatId: '채팅 ID',
-    chatIdTip: '봇에 메시지를 전송한 후 api.telegram.org/bot<토큰>/getUpdates에서 chat.id 값을 복사하십시오. 그룹 ID는 -100으로 시작하며, 공개 채널은 @채널명을 사용할 수 있습니다.',
+    chatIdTip: '봇에 /start를 보낸 후 api.telegram.org/bot<토큰>/getUpdates에서 수신할 대화의 message.chat.id를 복사하십시오. 봇 ID나 Telegram 사용자명이 아닌 채팅방 ID를 입력해야 합니다. 그룹에는 봇을 초대하고 채널에는 게시 권한을 부여하십시오.',
+    chatIdHint: '개인 채팅: 숫자 ID · 그룹: 음수 ID(슈퍼그룹은 -100으로 시작) · 공개 채널: @채널명. 먼저 봇을 시작하거나 초대하십시오.',
     sendAlerts: '알림 전송',
     sendAlertsHint: '비활성화 시 연결은 유지되며 알림 전송만 중지됩니다.',
     testMessage: '테스트 메시지 전송',
@@ -205,8 +215,16 @@
       invalid_telegram_token: '봇 토큰 형식이 올바르지 않습니다(예: 123456:ABC…).',
       invalid_telegram_chat: '채팅 ID 형식이 올바르지 않습니다(숫자 또는 @채널명).',
       telegram_unauthorized: 'Telegram에서 봇 토큰이 거부되었습니다.',
-      telegram_chat_not_found: 'Telegram에서 채팅을 찾을 수 없습니다. 먼저 봇에 메시지를 전송하십시오.',
+      telegram_chat_not_found: 'Telegram에서 수신할 채팅방을 찾을 수 없습니다. 봇 ID나 사용자명이 아닌 채팅방 ID인지 확인하고, 봇을 시작하거나 그룹에 초대하십시오.',
+      telegram_chat_forbidden: '봇이 이 채팅방에 메시지를 보낼 수 없습니다. 채팅방 ID, 봇 차단·참여 여부와 게시 권한을 확인하십시오.',
       telegram_unreachable: 'Outlet에서 Telegram에 연결할 수 없습니다.',
+      telegram_rate_limited: 'Telegram에서 이 봇의 전송을 제한하고 있습니다. 잠시 기다린 후 다시 시도하십시오.',
+      telegram_chat_migrated: '이 그룹의 채팅 ID가 변경되었습니다. 그룹 ID를 확인하고 저장한 후 다시 테스트하십시오.',
+      telegram_invalid_message: 'Telegram에서 메시지 형식을 거부했습니다. 관리자에게 telegram_invalid_message 오류를 전달하십시오.',
+      telegram_invalid_request: 'Telegram에서 메시지 요청을 거부했습니다. 봇과 채팅 설정을 확인하십시오.',
+      telegram_unavailable: 'Telegram을 일시적으로 사용할 수 없습니다. 나중에 다시 시도하십시오.',
+      telegram_invalid_response: 'Telegram 응답이 올바르지 않아 테스트를 확인하지 못했습니다.',
+      telegram_failed: 'Telegram에서 테스트 메시지를 거부했습니다. 감사 로그에서 오류 유형을 확인하십시오.',
       telegram_not_verified: '먼저 테스트 메시지를 전송하여 Telegram 연결을 확인하십시오.',
       telegram_changed: '테스트 중 Telegram 설정이 변경되었습니다. 테스트 메시지를 다시 전송하십시오.',
       invalid_alert_rules: '알림 규칙 입력값이 올바르지 않습니다.',
@@ -392,8 +410,9 @@
                   <div class="flex items-center gap-1"><Field.Label for="telegram-chat">{t().chatId}</Field.Label><InfoTooltip id="telegram-chat-tip" label={t().chatId} description={t().chatIdTip} /></div>
                   <InputGroup.Root>
                     <InputGroup.Addon><NumberSymbol aria-hidden="true" /></InputGroup.Addon>
-                    <InputGroup.Input id="telegram-chat" bind:value={chatId} autocomplete="off" spellcheck={false} placeholder="-1001234567890" class="font-mono" />
+                    <InputGroup.Input id="telegram-chat" aria-describedby="telegram-chat-hint" bind:value={chatId} autocomplete="off" spellcheck={false} placeholder="-1001234567890" class="font-mono" />
                   </InputGroup.Root>
+                  <Field.Description id="telegram-chat-hint">{t().chatIdHint}</Field.Description>
                 </Field.Field>
               </Field.Group>
               <Field.Field orientation="horizontal">

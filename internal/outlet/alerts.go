@@ -124,7 +124,6 @@ func (s *Store) deliver(ctx context.Context, env alertEnv, id int64, n notice) {
 	failure := ""
 	if err != nil {
 		failure = telegramCode(err)
-		slog.Warn("telegram alert not delivered", "error", failure)
 	}
 	if err := s.control.MarkAlertSent(ctx, id, failure == "", failure); err != nil {
 		slog.Warn("alert delivery not recorded", "error", err)
@@ -168,9 +167,7 @@ func (s *Store) syncAlerts(ctx context.Context, env alertEnv, kind string, activ
 			return err
 		}
 		if n, ok := recoveryNotice(e, now); ok && e.Sent && healthy[e.Key] {
-			if err := s.telegramSend(ctx, env.telegram.BotToken, env.telegram.ChatID, n.HTML(env.outlet.AdminHostname)); err != nil {
-				slog.Warn("telegram recovery not delivered", "error", telegramCode(err))
-			}
+			_ = s.telegramSend(ctx, env.telegram.BotToken, env.telegram.ChatID, n.HTML(env.outlet.AdminHostname))
 		}
 	}
 	return nil

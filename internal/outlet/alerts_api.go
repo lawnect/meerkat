@@ -123,8 +123,18 @@ func (s *Store) testTelegram(w http.ResponseWriter, r *http.Request) {
 	}
 	now := s.now()
 	if err := s.telegramSend(r.Context(), telegram.BotToken, telegram.ChatID, testNotice(outlet.AdminHostname, now).HTML(outlet.AdminHostname)); err != nil {
-		s.audit(r, "telegram.test", control.AuditEntry{ResourceType: "telegram", ResourceID: "settings", Detail: map[string]any{"ok": false, "error": telegramCode(err)}})
-		fail(w, r, 502, telegramCode(err))
+		detail := telegramDiagnostics(err)
+		detail["ok"] = false
+		s.audit(r, "telegram.test", control.AuditEntry{ResourceType: "telegram", ResourceID: "settings", Detail: detail})
+		status := http.StatusBadGateway
+		if telegramRetryHeader(w, err) {
+			status = http.StatusTooManyRequests
+		}
+		response := telegramDiagnostics(err)
+		delete(response, "error")
+		response["code"] = telegramCode(err)
+		response["request_id"] = w.Header().Get("X-Request-ID")
+		reply(w, status, response)
 		return
 	}
 	verified, err := s.control.MarkTelegramVerified(r.Context(), telegram.BotToken, telegram.ChatID, now)
