@@ -252,6 +252,8 @@ func blocked(w http.ResponseWriter) {
 type blockRulesView struct {
 	Rules []control.BlockRule `json:"rules"`
 	Hits  map[string]int64    `json:"hits"`
+	// Defaults are the current server presets, independent of saved rules.
+	Defaults []control.BlockRule `json:"defaults"`
 	// Addresses are the public addresses a rule can be limited to.
 	Addresses []string `json:"addresses"`
 }
@@ -261,7 +263,7 @@ func (s *Store) blockRulesView(ctx context.Context, rules control.BlockRules) (b
 	if err != nil {
 		return blockRulesView{}, err
 	}
-	view := blockRulesView{Rules: rules.Rules, Hits: map[string]int64{}, Addresses: routing.Hostnames()}
+	view := blockRulesView{Rules: rules.Rules, Hits: map[string]int64{}, Defaults: control.DefaultBlockRules().Rules, Addresses: routing.Hostnames()}
 	for _, rule := range rules.Rules {
 		if hits, ok := s.blocks.hits.Load(rule.ID); ok {
 			view.Hits[rule.ID] = hits.(*atomic.Int64).Load()

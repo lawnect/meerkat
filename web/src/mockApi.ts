@@ -307,7 +307,7 @@ function resolveTags(value: unknown, code: string): string[] {
   const tags = value.map((name) => (typeof name === 'string' ? bookTag(name.trim()) : undefined) ?? fail(code));
   return tags.filter((tag, index) => tags.findIndex((other) => sameTag(other, tag)) === index);
 }
-let blockRules: BlockRule[] = [
+const defaultBlockRules: BlockRule[] = [
   {
     id: 'honeypot',
     name: 'Honeypot',
@@ -319,6 +319,8 @@ let blockRules: BlockRule[] = [
       { operator: 'matches', value: '/\\.env(\\.[a-z0-9_-]+)?$' },
       { operator: 'matches', value: '/\\.git/(config|head)$' },
       { operator: 'contains', value: '/wp-config.php' },
+      { operator: 'matches', value: '/\\.(git|aws|ssh|svn|hg|docker|kube)(/|$)' },
+      { operator: 'matches', value: '/\\.(env(\\.[a-z0-9_-]+)*|envrc|htpasswd(\\.[a-z0-9_-]+)*|ds_store)(/|$)' },
     ],
   },
   { id: 'hidden-files', name: 'Hidden files', enabled: true, ban: false, hosts: [], conditions: [{ operator: 'starts_with', value: '/.' }] },
@@ -351,11 +353,13 @@ let blockRules: BlockRule[] = [
     ],
   },
 ];
+let blockRules = structuredClone(defaultBlockRules);
 let blockHits: Record<string, number> = { honeypot: 212, 'hidden-files': 1284 };
 // 규칙·정책을 한정할 수 있는 공개 주소: 지금 있는 경로의 호스트 이름입니다.
 const publicAddresses = (): string[] => [...new Set(state.routes.map((route) => route.hostname))].sort();
 const blockRulesResponse = (): BlockRulesView => structuredClone({
   rules: blockRules,
+  defaults: defaultBlockRules,
   hits: blockHits,
   addresses: publicAddresses(),
 });

@@ -344,6 +344,7 @@ export interface BlockRule {
 
 export interface BlockRulesView {
   rules: BlockRule[];
+  defaults?: BlockRule[]; // 현재 서버의 기본 규칙. 이전 서버는 이 필드가 없습니다. PUT 본문에는 보내지 않습니다.
   hits: Record<string, number>; // 규칙 id별로 Outlet 시작 이후 차단한 요청 수. 없는 id도 있습니다
   addresses: string[]; // 규칙을 한정할 수 있는 공개 주소(호스트 이름), 정렬됨
 }

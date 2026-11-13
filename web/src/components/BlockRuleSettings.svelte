@@ -19,6 +19,7 @@
   import { toast } from 'svelte-sonner';
   import { api, errorMessage } from '../api';
   import { displayName, shareRules } from '../blockRules.svelte';
+  import { hasPresetConditions, withPresetConditions } from '../blockRulePresets';
   import { intlLocale, translations } from '../i18n.svelte';
   import { Add12, Dismiss, Shield20, Warning } from '../icons';
   import type { BlockCondition, BlockOperator, BlockRule, BlockRulesView } from '../types';
@@ -31,7 +32,32 @@
   // 규칙이 클라이언트 차단(ban)이면 해당 요청을 보낸 클라이언트를 한동안 모든 요청에서 거부하며, 그 목록은 이어지는 차단된 클라이언트 카드에 있습니다.
   const t = translations({
     title: 'Block rules',
-    tip: 'Requests for public addresses whose path matches a rule get 403 before they reach a tunnel. Paths are decoded, normalized and lowercased before matching, and /.well-known/ is never blocked. The admin host and Connector API are not affected. Blocked counts are since the Outlet started.',
+    tip: 'Matching public requests get 403 before reaching a tunnel. Paths are decoded, normalized and lowercased. Only the unchanged built-in hidden-files condition exempts /.well-known/; honeypots, custom rules and client bans still apply there. Caddy handles actual ACME challenges. The admin host and Connector API are unaffected. Counts are since the Outlet started.',
+    presets: 'Built-in protection',
+    recommended: 'Recommended',
+    optIn: 'Opt-in',
+    active: 'Enabled',
+    off: 'Off',
+    missing: 'Not added',
+    customized: 'Customized conditions',
+    review: 'Review preset',
+    reviewTitle: 'Review default protection',
+    reviewHint: 'Review the server’s current conditions before saving. Any existing conditions for this rule will be replaced.',
+    preserve: 'The existing name, enabled state, client-ban setting and address scope will be kept. Other rules will stay as configured.',
+    addHint: 'This adds the missing preset with the settings shown below. Other rules will stay as configured.',
+    addPreset: 'Add preset',
+    replaceConditions: 'Replace conditions',
+    unchanged: 'These conditions already match the current preset. Use the rule editor to change its settings.',
+    limit: 'The 50-rule limit has been reached. Delete a rule before adding a preset.',
+    requestOnly: 'Refuse matching requests only',
+    previousConditions: 'Existing conditions to replace',
+    presetConditions: 'Default conditions to apply',
+    coverage: {
+      honeypot: 'Secret files and repositories at any depth, such as /backup/.git/config and /api/.env.production. Bans scanner clients by default; browser requests are refused without a ban.',
+      'hidden-files': 'Hidden files at the root, such as /.htaccess. The unchanged default condition permits /.well-known/ discovery; honeypots and client bans still apply.',
+      scanners: 'Common scanner paths, such as .php, /wp- and /phpmyadmin. Can block WordPress, Nextcloud and downloads. Enable only for addresses that do not use them.',
+      'unused-paths': 'Example paths such as /assets/, /static/ and /login. Many apps need them. Customize the conditions and address scope before enabling.',
+    } as Record<string, string>,
     add: 'Add rule',
     enabled: 'Enabled',
     name: 'Name',
@@ -54,7 +80,7 @@
     removeCondition: 'Remove condition',
     regexNote: 'RE2 syntax, case-insensitive',
     ban: 'Ban the client',
-    banTip: 'Refuses every request from a client that sends a request matching this rule, for the ban period set in the Banned clients settings. The admin host, Connector API and /.well-known/ paths are excluded, and requests a browser sends are refused without a ban.',
+    banTip: 'Refuses every public-service request from a matching client, including /.well-known/, for the period in Banned clients settings. The admin host and Connector API are excluded. Browser requests (Sec-Fetch-Site or Referer) are refused without a ban. Exempt clients are also refused without a ban.',
     operators: { equals: 'equals', starts_with: 'starts with', ends_with: 'ends with', contains: 'contains', matches: 'matches regex' } as Record<BlockOperator, string>,
     placeholders: { equals: '/phpmyadmin', starts_with: '/cgi-bin/', ends_with: '.php', contains: '/wp-', matches: '\\.(php|asp)$' } as Record<BlockOperator, string>,
     delete: 'Delete',
@@ -69,7 +95,32 @@
     loadFailed: (code: string) => `Couldn't load block rules: ${code}`,
   }, {
     title: '차단 규칙',
-    tip: '경로가 조건과 일치하는 공개 주소 요청은 터널로 전달되기 전에 403으로 차단됩니다. 경로는 디코딩 및 정규화 후 소문자로 변환하여 비교하며, /.well-known/ 경로는 차단하지 않습니다. 관리 호스트 및 커넥터 API에는 적용되지 않습니다. 차단 수는 Outlet 시작 이후 기준입니다.',
+    tip: '조건에 맞는 공개 주소 요청은 터널로 전달되기 전에 403으로 거부합니다. 경로는 디코딩·정규화 후 소문자로 비교합니다. /.well-known/ 예외는 조건을 바꾸지 않은 기본 숨김 파일 규칙에만 적용하며, 허니팟·사용자 규칙·클라이언트 차단은 그대로 적용합니다. 실제 ACME 응답은 Caddy가 처리합니다. 관리 호스트·커넥터 API에는 적용하지 않습니다. 차단 수는 Outlet 시작 이후 기준입니다.',
+    presets: '기본 보호 규칙',
+    recommended: '권장',
+    optIn: '선택 사용',
+    active: '활성화',
+    off: '꺼짐',
+    missing: '추가되지 않음',
+    customized: '수정한 조건',
+    review: '기본 규칙 검토',
+    reviewTitle: '기본 보호 규칙 검토',
+    reviewHint: '서버의 최신 기본 조건을 확인한 뒤 저장하십시오. 이 규칙의 기존 조건은 교체됩니다.',
+    preserve: '기존 이름·활성 여부·클라이언트 차단 여부·주소 범위는 유지합니다. 다른 규칙도 그대로 둡니다.',
+    addHint: '아래 설정으로 누락된 기본 규칙을 추가합니다. 다른 규칙은 그대로 둡니다.',
+    addPreset: '기본 규칙 추가',
+    replaceConditions: '조건 교체',
+    unchanged: '이미 최신 기본 조건과 같습니다. 설정을 바꾸려면 규칙 편집을 사용하십시오.',
+    limit: '규칙은 최대 50개입니다. 기존 규칙을 삭제한 뒤 기본 규칙을 추가하십시오.',
+    requestOnly: '일치하는 요청만 거부',
+    previousConditions: '교체할 기존 조건',
+    presetConditions: '적용할 기본 조건',
+    coverage: {
+      honeypot: '/backup/.git/config, /api/.env.production 등 모든 깊이의 비밀 파일과 저장소를 보호합니다. 기본으로 스캐너 클라이언트를 차단하며, 브라우저 요청은 거부만 합니다.',
+      'hidden-files': '/.htaccess 등 루트의 숨김 파일을 보호합니다. 기본 조건은 /.well-known/ 탐색을 허용하지만, 허니팟·클라이언트 차단은 그대로 적용합니다.',
+      scanners: '.php, /wp-, /phpmyadmin 등 흔한 스캐너 경로를 거부합니다. WordPress·Nextcloud·다운로드를 막을 수 있어 해당 경로를 쓰지 않는 주소에만 켜십시오.',
+      'unused-paths': '/assets/, /static/, /login 등 미사용 경로의 예시입니다. 많은 앱이 사용하는 경로이므로 조건과 주소 범위를 먼저 수정한 뒤 켜십시오.',
+    },
     add: '규칙 추가',
     enabled: '활성화',
     name: '이름',
@@ -92,7 +143,7 @@
     removeCondition: '조건 삭제',
     regexNote: 'RE2 구문, 대소문자 구분 없음',
     ban: '클라이언트 차단',
-    banTip: '이 규칙에 해당하는 요청을 보낸 클라이언트의 모든 요청을 차단 시간 동안 거부합니다. 관리 호스트, 커넥터 API, /.well-known/ 경로는 제외되며, 브라우저가 보낸 요청은 거부만 하고 차단하지 않습니다. 차단 시간은 차단된 클라이언트의 설정에서 지정합니다.',
+    banTip: '일치한 클라이언트의 공개 서비스 요청을 /.well-known/를 포함해 모두 거부합니다. 관리 호스트·커넥터 API는 제외합니다. 브라우저 요청(Sec-Fetch-Site 또는 Referer)과 제외 대상은 요청만 거부하고 클라이언트를 차단하지 않습니다. 차단 시간은 차단된 클라이언트 설정에서 지정합니다.',
     operators: { equals: '같음', starts_with: '다음으로 시작', ends_with: '다음으로 끝남', contains: '포함', matches: '정규식과 일치' },
     placeholders: { equals: '/phpmyadmin', starts_with: '/cgi-bin/', ends_with: '.php', contains: '/wp-', matches: '\\.(php|asp)$' },
     delete: '삭제',
@@ -122,6 +173,13 @@
   const maxHosts = 200;
 
   let rules = $state<BlockRule[] | null>(null);
+  let defaults = $state<BlockRule[]>([]);
+  let presetId = $state('');
+  let presetError = $state('');
+  const selectedPreset = $derived(defaults.find((preset) => preset.id === presetId));
+  const presetCurrent = $derived(rules?.find((rule) => rule.id === presetId));
+  const presetEffective = $derived(presetCurrent ?? selectedPreset);
+  const presetUnchanged = $derived(!!selectedPreset && !!presetCurrent && hasPresetConditions(presetCurrent, selectedPreset));
   let hits = $state<Record<string, number>>({});
   let addresses = $state<string[]>([]);
   let loadError = $state('');
@@ -141,6 +199,7 @@
 
   const adopt = (view: BlockRulesView) => {
     rules = view.rules;
+    defaults = view.defaults ?? [];
     hits = view.hits ?? {};
     addresses = view.addresses ?? [];
     shareRules(view.rules);
@@ -148,6 +207,21 @@
 
   async function put(next: BlockRule[]): Promise<void> {
     adopt(await api<BlockRulesView>('/api/v1/security/block-rules', { method: 'PUT', body: JSON.stringify({ rules: next }) }));
+  }
+
+  async function applyPreset(): Promise<void> {
+    if (!rules || !selectedPreset || busy || presetUnchanged || (!presetCurrent && rules.length >= maxRules)) return;
+    busy = true;
+    presetError = '';
+    try {
+      await put(withPresetConditions($state.snapshot(rules), $state.snapshot(selectedPreset)));
+      presetId = '';
+      toast.success(t().saved);
+    } catch (cause) {
+      presetError = describe(errorMessage(cause));
+    } finally {
+      busy = false;
+    }
   }
 
   onMount(() => {
@@ -254,7 +328,7 @@
     <Card.Title id="block-rules-title" class="flex items-center gap-1">{t().title}<InfoTooltip id="block-rules-tip" label={t().title} description={t().tip} /></Card.Title>
     {#if rules}
       <Card.Action>
-        <Button variant="outline" size="sm" disabled={rules.length >= maxRules} onclick={() => openRule()}><Add12 aria-hidden="true" />{t().add}</Button>
+        <Button variant="outline" size="sm" disabled={busy || rules.length >= maxRules} onclick={() => openRule()}><Add12 aria-hidden="true" />{t().add}</Button>
       </Card.Action>
     {/if}
   </Card.Header>
@@ -265,6 +339,28 @@
       <Skeleton class="h-48 w-full" />
     {:else}
       {#if error}<Alert.Root variant="destructive"><Warning aria-hidden="true" /><Alert.Description>{error}</Alert.Description></Alert.Root>{/if}
+      {#if defaults.length}
+        <Field.Set>
+          <Field.Legend variant="label">{t().presets}</Field.Legend>
+          <Item.Group class="gap-2">
+            {#each defaults as preset (preset.id)}
+              {@const current = rules.find((rule) => rule.id === preset.id)}
+              <Item.Root variant="outline" size="sm">
+                <Item.Content>
+                  <Item.Title class="flex-wrap">
+                    {displayName(preset)}
+                    <Badge variant="outline">{preset.enabled ? t().recommended : t().optIn}</Badge>
+                    <Badge variant={current?.enabled ? 'secondary' : 'outline'}>{current ? (current.enabled ? t().active : t().off) : t().missing}</Badge>
+                    {#if current && !hasPresetConditions(current, preset)}<Badge variant="outline">{t().customized}</Badge>{/if}
+                  </Item.Title>
+                  {#if t().coverage[preset.id]}<Item.Description class="line-clamp-none">{t().coverage[preset.id]}</Item.Description>{/if}
+                </Item.Content>
+                <Item.Actions><Button variant="outline" size="sm" disabled={busy} aria-label={`${t().review}: ${displayName(preset)}`} onclick={() => { presetError = ''; presetId = preset.id; }}>{t().review}</Button></Item.Actions>
+              </Item.Root>
+            {/each}
+          </Item.Group>
+        </Field.Set>
+      {/if}
       {#if rules.length}
         <div class="overflow-x-auto border">
           <Table.Root>
@@ -325,6 +421,50 @@
     {/if}
   </Card.Content>
 </Card.Root>
+
+<Dialog.Root bind:open={() => !!selectedPreset, (open) => { if (!open && !busy) presetId = ''; }}>
+  <Dialog.Content class="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl">
+    <Dialog.Header>
+      <Dialog.Title>{t().reviewTitle}{selectedPreset ? `: ${displayName(selectedPreset)}` : ''}</Dialog.Title>
+      <Dialog.Description>{presetCurrent ? t().reviewHint : t().addHint}</Dialog.Description>
+    </Dialog.Header>
+    {#if selectedPreset && presetEffective}
+      {#if t().coverage[selectedPreset.id]}<p class="text-sm text-muted-foreground">{t().coverage[selectedPreset.id]}</p>{/if}
+      <Item.Root variant="outline" size="sm">
+        <Item.Content>
+          <Item.Title>{displayName(presetEffective)}</Item.Title>
+          <Item.Description class="line-clamp-none">{presetCurrent ? t().preserve : t().addHint}</Item.Description>
+          <dl class="grid gap-2 text-sm">
+            <div class="flex flex-wrap gap-2"><dt class="text-muted-foreground">{t().enabled}</dt><dd>{presetEffective.enabled ? t().active : t().off}</dd></div>
+            <div class="flex flex-wrap gap-2"><dt class="text-muted-foreground">{t().ban}</dt><dd>{presetEffective.ban ? t().active : t().requestOnly}</dd></div>
+            <div class="grid gap-1"><dt class="text-muted-foreground">{t().appliesTo}</dt><dd class="break-all">{presetEffective.hosts.length ? presetEffective.hosts.join(', ') : t().allAddresses}</dd></div>
+          </dl>
+        </Item.Content>
+      </Item.Root>
+      {#if presetCurrent && !presetUnchanged}
+        <Field.Set>
+          <Field.Legend variant="label">{t().previousConditions}</Field.Legend>
+          <ul class="grid gap-1 text-sm text-muted-foreground">
+            {#each presetCurrent.conditions as condition}<li class="break-all"><span>{operatorLabel(condition.operator)}</span> <code>{condition.value}</code></li>{/each}
+          </ul>
+        </Field.Set>
+      {/if}
+      <Field.Set>
+        <Field.Legend variant="label">{t().presetConditions}</Field.Legend>
+        <ul class="grid gap-1 text-sm">
+          {#each selectedPreset.conditions as condition}<li class="break-all"><span class="text-muted-foreground">{operatorLabel(condition.operator)}</span> <code>{condition.value}</code></li>{/each}
+        </ul>
+      </Field.Set>
+      {#if presetUnchanged}<p class="text-sm text-muted-foreground">{t().unchanged}</p>{/if}
+      {#if !presetCurrent && rules && rules.length >= maxRules}<Alert.Root><Warning aria-hidden="true" /><Alert.Description>{t().limit}</Alert.Description></Alert.Root>{/if}
+      {#if presetError}<Alert.Root variant="destructive"><Warning aria-hidden="true" /><Alert.Description>{presetError}</Alert.Description></Alert.Root>{/if}
+      <Dialog.Footer>
+        <Button variant="outline" disabled={busy} onclick={() => { presetId = ''; }}>{t().cancel}</Button>
+        <Button disabled={busy || presetUnchanged || (!presetCurrent && !!rules && rules.length >= maxRules)} onclick={applyPreset}>{#if busy}<Spinner aria-hidden="true" />{t().saving}{:else}{presetCurrent ? t().replaceConditions : t().addPreset}{/if}</Button>
+      </Dialog.Footer>
+    {/if}
+  </Dialog.Content>
+</Dialog.Root>
 
 <Dialog.Root bind:open={() => dialogOpen, (open) => { if (!busy) dialogOpen = open; }}>
   <Dialog.Content class="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl">

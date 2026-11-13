@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync/atomic"
 	"testing"
 
@@ -228,6 +229,43 @@ func TestBlockRulesGuardPublicAddressesOnly(t *testing.T) {
 	bad := request(f.store.Handler(), "PUT", "/api/v1/security/block-rules", f.admin, map[string]any{"rules": []map[string]any{{"id": "", "name": "x", "enabled": true, "hosts": []string{}, "conditions": []map[string]string{{"operator": "matches", "value": "(?!x)"}}}}})
 	if bad.Code != 400 || errorCode(t, bad) != "invalid_block_rules" {
 		t.Fatalf("invalid rules: %d %s", bad.Code, bad.Body.String())
+	}
+}
+
+func TestBlockRulesViewDefaultsStayCurrentAfterEdits(t *testing.T) {
+	f := newProxyFixture(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	path := "/api/v1/security/block-rules"
+	w := request(f.store.Handler(), "GET", path, f.admin, nil)
+	var view blockRulesView
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &view) != nil {
+		t.Fatalf("get rules: %d %s", w.Code, w.Body.String())
+	}
+	want := control.DefaultBlockRules().Rules
+	if !reflect.DeepEqual(view.Defaults, want) {
+		t.Fatalf("defaults differ from current server rules: %+v", view.Defaults)
+	}
+	// A custom, disabled honeypot and a deleted scanner must not alter the
+	// defaults offered for review, or silently restore a deleted rule.
+	view.Rules = view.Rules[:2]
+	view.Rules[0].Name = "My trap"
+	view.Rules[0].Enabled = false
+	view.Rules[0].Ban = false
+	view.Rules[0].Hosts = []string{"app.example.com"}
+	view.Rules[0].Conditions = []control.BlockCondition{{Operator: control.BlockEquals, Value: "/trap"}}
+	saved := view.Rules
+	w = request(f.store.Handler(), "PUT", path, f.admin, map[string]any{"rules": saved})
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &view) != nil || !reflect.DeepEqual(view.Defaults, want) || !reflect.DeepEqual(view.Rules, saved) {
+		t.Fatalf("put changed defaults or custom choices: %d %s", w.Code, w.Body.String())
+	}
+	for _, body := range []map[string]any{{}, {"rules": nil}, {"rules": saved, "defaults": want}} {
+		w = request(f.store.Handler(), "PUT", path, f.admin, body)
+		if w.Code != 400 || errorCode(t, w) != "invalid_request" {
+			t.Fatalf("accepted missing rules or read-only defaults: %d %s", w.Code, w.Body.String())
+		}
+	}
+	w = request(f.store.Handler(), "GET", path, f.admin, nil)
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &view) != nil || !reflect.DeepEqual(view.Defaults, want) || !reflect.DeepEqual(view.Rules, saved) {
+		t.Fatalf("get changed saved choices or defaults: %d %s", w.Code, w.Body.String())
 	}
 }
 
