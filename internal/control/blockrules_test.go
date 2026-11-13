@@ -313,3 +313,86 @@ func TestNormalizeBlockPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestUpgradeHoneypotConditionsMigration(t *testing.T) {
+	ctx := context.Background()
+	legacy := honeypotRule()
+	legacy.Conditions = originalHoneypotConditions()
+	legacy.Name, legacy.Enabled, legacy.Ban = "My disabled trap", false, false
+	legacy.Hosts = []string{"app.example.com"}
+	custom := BlockRule{ID: "mine", Name: "Mine", Enabled: true, Hosts: []string{}, Conditions: []BlockCondition{{BlockEquals, "/secret"}}}
+	changed := legacy
+	changed.Conditions = append(slices.Clone(legacy.Conditions), BlockCondition{BlockEquals, "/extra"})
+	reordered := legacy
+	reordered.Conditions = slices.Clone(legacy.Conditions)
+	slices.Reverse(reordered.Conditions)
+	copyID := legacy
+	copyID.ID = "copied"
+	marshal := func(rules ...BlockRule) string {
+		t.Helper()
+		raw, err := json.Marshal(BlockRules{Rules: rules})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	for _, tc := range []struct {
+		name, raw string
+		changed   bool
+	}{
+		{"untouched conditions with custom options", marshal(custom, legacy), true},
+		{"custom conditions", marshal(changed, custom), false},
+		{"reordered conditions", marshal(reordered), false},
+		{"different ID", marshal(copyID), false},
+		{"deleted", marshal(custom), false},
+		{"empty list", `{"rules":[]}`, false},
+		{"no saved rules", "", false},
+		{"already current", marshal(honeypotRule()), false},
+		{"unreadable", `{"rules":`, false},
+		{"invalid rules", `{"rules":[{"id":"honeypot","name":"","conditions":[]}]}`, false},
+		{"duplicate IDs", marshal(legacy, legacy), false},
+		{"too many rules", marshal(append(make([]BlockRule, MaxBlockRules), legacy)...), false},
+		{"oversized", strings.Repeat(" ", 256<<10) + marshal(legacy), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "control.db")
+			db, err := Open(ctx, file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.SQL().ExecContext(ctx, "DELETE FROM schema_migrations WHERE version = 18"); err != nil {
+				t.Fatal(err)
+			}
+			if tc.raw != "" {
+				if err := putSetting(ctx, db.db, settingBlockRules, tc.raw, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			db.Close()
+			db, err = Open(ctx, file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			raw, err := getSetting(ctx, db.db, settingBlockRules)
+			if err != nil || (raw != tc.raw) != tc.changed {
+				t.Fatalf("changed = %v, want %v; error %v", raw != tc.raw, tc.changed, err)
+			}
+			if tc.changed {
+				want := legacy
+				want.Conditions = honeypotRule().Conditions
+				got, err := db.BlockRules(ctx)
+				if err != nil || !reflect.DeepEqual(got.Rules, []BlockRule{custom, want}) {
+					t.Fatalf("migrated rules %+v, error %v", got, err)
+				}
+			}
+			if err := upgradeHoneypotConditions(ctx, db.db); err != nil {
+				t.Fatal(err)
+			}
+			again, err := getSetting(ctx, db.db, settingBlockRules)
+			if err != nil || again != raw {
+				t.Fatalf("migration was not idempotent: %v", err)
+			}
+		})
+	}
+}

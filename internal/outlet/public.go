@@ -20,8 +20,8 @@ import (
 
 const certificateAskPath = "/.well-known/meerkat/cert-ask"
 
-// maxPublicPath is the longest path a public request may have, escaped as
-// the app gets it:
+// maxPublicPath is the longest path on the public listener, including
+// management and Connector API hosts, escaped as the recipient gets it:
 // what nginx, Apache and Tomcat take in a whole request line by default.
 // Block rules and access policies compare the path in full, each regular
 // expression in time proportional to its length.
@@ -300,6 +300,13 @@ func (s *Store) PublicHandler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
+		// Bound path normalization before rate rules and every routed handler.
+		// Check the decoded size first so an oversized path need not be escaped.
+		if len(r.URL.Path) > maxPublicPath || len(r.URL.EscapedPath()) > maxPublicPath {
+			http.Error(w, "request path too long", http.StatusRequestURITooLong)
+			s.logTurnedAway(r, host, began, failTooLong, http.StatusRequestURITooLong)
+			return
+		}
 		if s.limitRequest(w, r, host) {
 			s.logTurnedAway(r, host, began, failRateLimited, http.StatusTooManyRequests)
 			return
@@ -361,13 +368,6 @@ func (s *Store) PublicHandler() http.Handler {
 				s.logFailure(r, host, began, failTimeLimit, streamed, streamedBy)
 			}
 		}()
-		// Rules compare the whole path, so one longer than apps take (see
-		// maxPublicPath) would only make them slow.
-		if len(r.URL.EscapedPath()) > maxPublicPath {
-			http.Error(w, "request path too long", http.StatusRequestURITooLong)
-			s.logFailure(r, host, began, failTooLong, http.StatusRequestURITooLong, "")
-			return
-		}
 		// A banned client gets nothing from a routed address, not even the
 		// sign-in of access protection. The management host and the Outlet
 		// domain's connector API answered above and are never affected.
@@ -383,6 +383,9 @@ func (s *Store) PublicHandler() http.Handler {
 		}
 		r = next
 		if rule := s.blockedBy(host, r.URL.Path); rule != nil {
+			if record := recordOf(r); record != nil {
+				record.blockRule = rule.id
+			}
 			rule.hits.Add(1)
 			cause := failBlocked
 			if rule.ban && !fromABrowser(r) {
@@ -395,8 +398,10 @@ func (s *Store) PublicHandler() http.Handler {
 		}
 		backends := s.orderBackends(host, origin, s.liveBackends(plans), policy)
 		if len(backends) == 0 {
-			http.NotFound(w, r)
-			s.logFailure(r, host, began, failNoService, http.StatusNotFound, "")
+			w.Header().Set("Retry-After", "5")
+			w.Header().Set("Cache-Control", "no-store")
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			s.logFailure(r, host, began, failNoService, http.StatusServiceUnavailable, "")
 			return
 		}
 		// A tunnel is not an HTTP proxy for other destinations.

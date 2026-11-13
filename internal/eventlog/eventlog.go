@@ -84,13 +84,17 @@ type Limits struct {
 // such as one of every request, sheds strictly oldest first: OldestFirst.
 // Otherwise a flood of those would push out the routine entries first.
 //
-// Version numbers the columns: change them and change it, and files kept
-// in the old ones start over empty rather than failing to open. Log entries
-// are worth less than a log that works.
+// Version numbers incompatible column layouts: changing it starts the file
+// over. Backward-compatible evidence additions instead opt into AddColumns
+// without changing Version, preserving history and older writers.
 type Kind[E any] struct {
-	Table       string
-	Version     int
-	Columns     []string
+	Table   string
+	Version int
+	Columns []string
+	// AddColumns opts specific columns into an additive upgrade without
+	// changing Version. Each must occur verbatim in Columns and have a
+	// DEFAULT, so older explicit-column writers can keep appending on rollback.
+	AddColumns  []string
 	Filters     []string
 	Search      []string
 	Fields      func(*E) []any
@@ -180,10 +184,16 @@ func Open[E any](ctx context.Context, path string, kind Kind[E], limits Limits) 
 	for _, column := range kind.Filters {
 		statements = append(statements, fmt.Sprintf("CREATE INDEX IF NOT EXISTS %[1]s_%[2]s ON %[1]s(%[2]s, id)", kind.Table, column))
 	}
-	for _, statement := range statements {
+	for i, statement := range statements {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
 			db.Close()
 			return nil, err
+		}
+		if i == 0 && len(kind.AddColumns) != 0 {
+			if err := addColumns(ctx, db, kind.Table, kind.Columns, kind.AddColumns); err != nil {
+				db.Close()
+				return nil, err
+			}
 		}
 	}
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", version)); err != nil {
@@ -199,6 +209,49 @@ func Open[E any](ctx context.Context, path string, kind Kind[E], limits Limits) 
 	log := &Log[E]{db: db, read: read, tallies: make(chan struct{}, 1), path: path, kind: kind, names: strings.Join(kind.Names(), ", ")}
 	log.SetLimits(limits)
 	return log, nil
+}
+
+// addColumns adds only explicitly opted-in text/integer evidence columns.
+// It never rewrites old rows or changes user_version, and either all missing
+// columns are installed or none are. A failed upgrade leaves history intact.
+func addColumns(ctx context.Context, db *sql.DB, table string, columns, additions []string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return err
+	}
+	present := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, primary int
+		var name, kind string
+		var fallback sql.NullString
+		if err := rows.Scan(&cid, &name, &kind, &notNull, &fallback, &primary); err != nil {
+			rows.Close()
+			return err
+		}
+		present[name] = true
+	}
+	err = errors.Join(rows.Err(), rows.Close())
+	if err != nil {
+		return err
+	}
+	for _, column := range additions {
+		name, definition, _ := strings.Cut(column, " ")
+		if !slices.Contains(columns, column) || (definition != "TEXT DEFAULT ''" && definition != "INTEGER DEFAULT 0") {
+			return fmt.Errorf("invalid additive event log column %q", column)
+		}
+		if !present[name] {
+			if _, err := tx.ExecContext(ctx, "ALTER TABLE "+table+" ADD COLUMN "+column+" NOT NULL"); err != nil {
+				return err
+			}
+			present[name] = true
+		}
+	}
+	return tx.Commit()
 }
 
 func (l *Log[E]) Close() error { return errors.Join(l.read.Close(), l.db.Close()) }

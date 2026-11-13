@@ -867,6 +867,9 @@ func (s *Store) guardAccess(w http.ResponseWriter, r *http.Request, host, adminH
 	client, _ := requestOrigin(r)
 	rule := s.access.config.Load().matching(host, r.Method, r.URL, valid, client)
 	if rule == nil {
+		if record := recordOf(r); record != nil {
+			record.accessDecision, record.accessReason = decisions[accessPassed], "no_policy"
+		}
 		return r, true
 	}
 	// What the policy decides is counted, and logged, for the console:

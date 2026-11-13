@@ -101,7 +101,7 @@ func TestRequestLogKeepsEveryRequest(t *testing.T) {
 	expect("the app's 500", f.visit("GET", "app.example.com", "/500", "203.0.113.5", "Mozilla/5.0"), 500, "500 5xx [app_error] [svc-0] app.example.com GET /500 0")
 	expect("a block rule", f.visit("GET", "app.example.com", "/.env", "198.51.100.7", "scanner"), 403, "403 4xx [trapped] [] app.example.com GET /.env 10")
 	expect("a banned client", f.visit("GET", "app.example.com", "/", "198.51.100.7", "scanner"), 403, "403 4xx [banned] [] app.example.com GET / 10")
-	expect("no live service", f.visit("GET", "idle.example.com", "/", "203.0.113.5", "Mozilla/5.0"), 404, "404 4xx [no_service] [] idle.example.com GET / 19")
+	expect("no live service", f.visit("GET", "idle.example.com", "/", "203.0.113.5", "Mozilla/5.0"), 503, "503 5xx [no_service] [] idle.example.com GET / 20")
 	expect("within the rate limit", f.visit("GET", "limited.example.com", "/", "203.0.113.5", "Mozilla/5.0"), 200, "200 2xx [] [svc-0] limited.example.com GET / 5")
 	expect("over the rate limit", f.visit("GET", "limited.example.com", "/", "203.0.113.5", "Mozilla/5.0"), 429, "429 4xx [rate_limited] [] limited.example.com GET / 0")
 	expect("an unknown host", f.visit("GET", "nowhere.example.com", "/", "203.0.113.5", "Mozilla/5.0"), 404, "")
@@ -120,8 +120,8 @@ func TestRequestLogKeepsEveryRequest(t *testing.T) {
 		query string
 		total int
 	}{
-		{"?class=4xx", 5},
-		{"?class=5xx", 1},
+		{"?class=4xx", 4},
+		{"?class=5xx", 2},
 		{"?class=2xx", 3},
 		{"?host=idle.example.com", 1},
 		{"?path=/missing", 1},
@@ -377,7 +377,7 @@ func TestLogExports(t *testing.T) {
 	f.fillRequestLog(t, entries...)
 
 	rows, header := download(t, f, "/api/v1/observe/request-log/export?source=203.0.113.1&utc_offset=540")
-	if want := []string{"id", "at (UTC+09:00)", "host", "method", "path", "client", "source", "status", "class", "cause", "service", "duration_ms", "outlet_us", "upstream_us", "bytes", "agent"}; !slices.Equal(header, want) {
+	if want := []string{"id", "at (UTC+09:00)", "host", "method", "path", "client", "source", "status", "class", "cause", "service", "duration_ms", "outlet_us", "upstream_us", "bytes", "agent", "request_id", "escaped_path", "path_truncated", "escaped_path_truncated", "access_decision", "access_reason", "access_policy", "block_rule"}; !slices.Equal(header, want) {
 		t.Fatalf("header %q", header)
 	}
 	if len(rows) != n || rows[0][4] != fmt.Sprintf("/%d", n-1) || rows[n-1][4] != "/0" || rows[n-1][1] != "2026-10-27 20:30:00.000" {

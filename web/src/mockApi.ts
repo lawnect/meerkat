@@ -934,7 +934,7 @@ const FAILURE_SHAPES: Record<FailureCause, { statuses: number[]; weight: number;
   app_error: { statuses: [500, 500, 503], weight: 30, duration: (roll) => 20 + Math.round(roll * 900) },
   unreachable: { statuses: [502], weight: 18, duration: (roll) => 2 + Math.round(roll * 40) },
   timeout: { statuses: [504], weight: 8, duration: () => 30000 },
-  no_service: { statuses: [404], weight: 10, duration: (roll) => Math.round(roll * 3) },
+  no_service: { statuses: [503], weight: 10, duration: (roll) => Math.round(roll * 3) },
   rate_limited: { statuses: [429], weight: 12, duration: () => 0 },
   blocked: { statuses: [403], weight: 14, duration: () => 0 },
   trapped: { statuses: [403], weight: 6, duration: () => 0 },
@@ -1058,6 +1058,30 @@ const requestLog: MockLog<RequestLogEntry> = {
   suppressed: 18204,
   entries: Array.from({ length: REQUEST_COUNT }, (_, index) => mockRequestEntry(index)).map((entry) => withLatency({ ...entry, source: sourceOf(entry.client) })),
 };
+
+// The preview keeps the additive fields optional, as older servers do,
+// while current sample rows expose evidence and request-ID searches.
+function withEvidence<Entry extends { id: number; path: string }>(entry: Entry) {
+	if (entry.id % 13 === 0) return entry; // Rows kept before the additive upgrade.
+  return { ...entry, request_id: entry.id.toString(16).padStart(32, '0'), escaped_path: encodeURI(entry.path), path_truncated: false, escaped_path_truncated: false };
+}
+accessLog.entries = accessLog.entries.map(withEvidence);
+failureLog.entries = failureLog.entries.map((entry) => ({ ...withEvidence(entry), block_rule: entry.cause === 'blocked' ? 'scanners' : entry.cause === 'trapped' || entry.cause === 'banned' ? 'honeypot' : '' }));
+requestLog.entries = requestLog.entries.map((entry) => ({
+  ...withEvidence(entry),
+  access_decision: entry.cause === 'banned' || entry.cause === 'too_long' || entry.cause === 'rate_limited' || entry.cause === 'busy' ? '' : 'passed',
+  access_reason: entry.cause === 'banned' || entry.cause === 'too_long' || entry.cause === 'rate_limited' || entry.cause === 'busy' ? '' : 'no_policy',
+  access_policy: '',
+  block_rule: entry.cause === 'blocked' ? 'scanners' : entry.cause === 'trapped' || entry.cause === 'banned' ? 'honeypot' : '',
+}));
+
+// One request appears in all three logs, as a named bypass followed by a
+// honeypot refusal. Copy its ID to follow the decision and refusal across tabs.
+const correlated = { request_id: 'ab735a268af04c88b64141b6950f329c', escaped_path: '/backup/%2egit/objects/info/packs', path_truncated: false, escaped_path_truncated: false,
+  at: new Date(Date.now() - 5000).toISOString(), host: 'vault.example.test', method: 'GET', path: '/backup/.git/objects/info/packs', client: '198.51.100.90' };
+accessLog.entries.unshift({ ...correlated, id: 5001, policy: 'vault-api', decision: 'passed', reason: 'bypass', email: '', token: 'deploybot', routine: false });
+failureLog.entries.unshift({ ...correlated, id: 9001, cause: 'trapped', status: 403, service: '', duration_ms: 1, block_rule: 'honeypot', routine: true });
+requestLog.entries.unshift({ ...correlated, id: 20001, source: correlated.client, status: 403, cause: 'trapped', service: '', duration_ms: 1, outlet_us: 0, upstream_us: 0, bytes: 10, agent: 'curl/8', access_decision: 'passed', access_reason: 'bypass', access_policy: 'vault-api', block_rule: 'honeypot', routine: true });
 
 function logPageParam(params: URLSearchParams, name: string, fallback: number, max: number): number {
   const value = params.get(name);
@@ -1224,7 +1248,7 @@ function requestTop(params: URLSearchParams): RequestTopView {
 
   const groups = new Map<string, { row: RequestTopRow; others: Set<string> }>();
   for (const entry of requestLog.entries) {
-    if ((from && Date.parse(entry.at) < from.getTime()) || (host && entry.host !== host) || !includesText(q, entry.host, entry.path, entry.client, entry.service, entry.agent)) continue;
+    if ((from && Date.parse(entry.at) < from.getTime()) || (host && entry.host !== host) || !includesText(q, entry.host, entry.path, entry.client, entry.service, entry.agent, entry.request_id ?? '')) continue;
     const endpoint = `${entry.host}\u0000${entry.path}`;
     const key = by === 'client' ? entry.source : endpoint;
     let group = groups.get(key);
@@ -1271,7 +1295,7 @@ function observe(path: string, method: string, params: URLSearchParams, input: u
       if (decision && !(accessDecisions as readonly string[]).includes(decision)) fail('invalid_log_filter');
       if (who && !(accessRequesters as readonly string[]).includes(who)) fail('invalid_log_filter');
       return logView(accessLog, params, (entry) => (!decision || entry.decision === decision) && (!policy || entry.policy === policy)
-        && (!who || entry.routine === (who === 'anonymous')) && includesText(q, entry.host, entry.path, entry.client, entry.email, entry.token));
+        && (!who || entry.routine === (who === 'anonymous')) && includesText(q, entry.host, entry.path, entry.client, entry.email, entry.token, entry.request_id ?? ''));
     }
   }
   if (path === '/api/v1/observe/failure-log') {
@@ -1286,7 +1310,7 @@ function observe(path: string, method: string, params: URLSearchParams, input: u
       if (cause && !(failureCauses as readonly string[]).includes(cause) && !(failureCauseGroups as readonly string[]).includes(cause)) fail('invalid_log_filter');
       // `service` and `refused` stand for the four and the five causes of each group.
       const causes: readonly string[] = cause === 'service' ? serviceCauses : cause === 'refused' ? refusedCauses : cause ? [cause] : [];
-      return logView(failureLog, params, (entry) => (!causes.length || causes.includes(entry.cause)) && (!host || entry.host === host) && includesText(q, entry.host, entry.path, entry.client, entry.service));
+      return logView(failureLog, params, (entry) => (!causes.length || causes.includes(entry.cause)) && (!host || entry.host === host) && includesText(q, entry.host, entry.path, entry.client, entry.service, entry.request_id ?? ''));
     }
   }
   if (path === '/api/v1/observe/request-log/top' && method === 'GET') return requestTop(params);
@@ -1305,7 +1329,7 @@ function observe(path: string, method: string, params: URLSearchParams, input: u
       if (new TextEncoder().encode(exactPath).length > 512) fail('invalid_log_filter');
       const hundreds = cls ? Number(cls[0]) * 100 : 0;
       return logView(requestLog, params, (entry) => (!cls || (entry.status >= hundreds && entry.status < hundreds + 100)) && (!host || entry.host === host)
-        && (!exactPath || entry.path === exactPath) && (!source || entry.source === source) && includesText(q, entry.host, entry.path, entry.client, entry.service, entry.agent));
+        && (!exactPath || entry.path === exactPath) && (!source || entry.source === source) && includesText(q, entry.host, entry.path, entry.client, entry.service, entry.agent, entry.request_id ?? ''));
     }
   }
   return fail('not_found');

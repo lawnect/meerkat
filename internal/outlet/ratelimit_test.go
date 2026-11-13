@@ -173,8 +173,8 @@ func TestEndpointRulesPreferLongestPrefixThenNamedHost(t *testing.T) {
 		{"other.example.com", "/home", ""},
 	} {
 		got := ""
-		if rule := config.match(tc.host, tc.path); rule != nil {
-			got = rule.label
+		if rules := config.matches(tc.host, tc.path); len(rules) > 0 {
+			got = rules[0].label
 		}
 		if got != tc.want {
 			t.Errorf("%s %s matched %q, want %q", tc.host, tc.path, got, tc.want)
@@ -713,5 +713,162 @@ func TestIdleBucketsStayUntilFull(t *testing.T) {
 	store.sweep(now)
 	if store.size() != 0 {
 		t.Fatalf("%d buckets kept", store.size())
+	}
+}
+
+// Endpoint limits cover the path interpretations used by protected-path
+// rules, while retaining ordinary prefix matching for literal paths.
+func TestEndpointRulesNormalizeProtectedPaths(t *testing.T) {
+	config := compileRateLimit(control.RateLimitSettings{Endpoints: []control.EndpointLimit{
+		{Host: "*", PathPrefix: "/login", RPS: 1, Burst: 1, Per: "ip"},
+	}})
+	for _, requestPath := range []string{
+		"/login", "//LOGIN/", "/safe/..;/login", `/safe\..\login`, "/.;/login",
+		"/login;session=1", "/login. /child", "/login-anything", "/login\x00/other",
+	} {
+		t.Run(requestPath, func(t *testing.T) {
+			rules := config.matches("app.example.com", requestPath)
+			if len(rules) != 1 || rules[0].label != "*/login" {
+				t.Fatalf("%q matched %+v, want the login rule exactly once", requestPath, rules)
+			}
+		})
+	}
+	if rules := config.matches("app.example.com", "/other"); len(rules) != 0 {
+		t.Fatalf("unrelated path matched %+v", rules)
+	}
+}
+
+// All three possible forms can choose different rules. Each form still uses
+// longest-prefix/named-host priority; repeated winners are charged only once.
+func TestEndpointRulesKeepEachAmbiguousFormPriority(t *testing.T) {
+	config := compileRateLimit(control.RateLimitSettings{Endpoints: []control.EndpointLimit{
+		{Host: "*", PathPrefix: `/a\b`, RPS: 100, Burst: 100, Per: "total"},
+		{Host: "*", PathPrefix: "/a/b", RPS: 100, Burst: 100, Per: "total"},
+		{Host: "app.example.com", PathPrefix: "/a/b", RPS: 1, Burst: 1, Per: "ip"},
+		{Host: "*", PathPrefix: "/a/login", RPS: 1, Burst: 1, Per: "total"},
+		{Host: "*", PathPrefix: "/a", RPS: 100, Burst: 100, Per: "total"},
+	}})
+	var labels []string
+	for _, rule := range config.matches("app.example.com", `/a\b/.;x/../LOGIN.`) {
+		labels = append(labels, rule.label)
+	}
+	if want := []string{`*/a\b`, "app.example.com/a/b", "*/a/login"}; !slices.Equal(labels, want) || len(labels) != maxEndpointPathForms {
+		t.Fatalf("selected %q, want %q (the maximum path-form count)", labels, want)
+	}
+	// Normalization is bounded even when the matcher is called directly.
+	if rules := config.matches("app.example.com", "/a/"+strings.Repeat("x", maxPublicPath)); len(rules) != 0 {
+		t.Fatalf("oversized path was normalized: %+v", rules)
+	}
+}
+
+func TestEndpointLimitChargesProtectedBucketForPathFormsAndMethods(t *testing.T) {
+	a := limitedFixture(t)
+	a.setLimits(t, map[string]any{"endpoints": []any{
+		map[string]any{"host": "*", "path_prefix": "/login", "rps": 1, "burst": 1, "per": "ip"},
+	}})
+	for i, tc := range []struct{ method, target string }{
+		{"GET", "/safe/..;/login"},
+		{"POST", `/safe%5c..%5clogin`},
+		{"HEAD", "/.;/LOGIN"},
+		{"OPTIONS", "/login;session=1"},
+		{"PATCH", "/login.%20/child"},
+		{"DELETE", "/login%00/other"},
+		{"PUT", "/safe/%2e%2e%3b/login"},
+		{"GET", "/login-anything"},
+	} {
+		t.Run(tc.method+tc.target, func(t *testing.T) {
+			ip := fmt.Sprintf("192.0.2.%d", i+1)
+			r := httptest.NewRequest(tc.method, tc.target, nil)
+			r.Host = a.host
+			r.Header.Set("X-Forwarded-For", ip)
+			w := httptest.NewRecorder()
+			a.store.PublicHandler().ServeHTTP(w, r)
+			if w.Code == http.StatusTooManyRequests {
+				t.Fatalf("first request was limited: %s", w.Body.String())
+			}
+			if got := a.get(a.host, "/login", ip); got.Code != http.StatusTooManyRequests || got.Header().Get("Retry-After") != "1" || got.Body.String() != "Too many requests (endpoint limit)\n" {
+				t.Fatalf("canonical path did not share the protected bucket: %d %s", got.Code, got.Body.String())
+			}
+		})
+	}
+}
+
+func TestEndpointLimitAmbiguousPathsChargeDistinctBucketsAtomically(t *testing.T) {
+	a := limitedFixture(t)
+	a.setLimits(t, map[string]any{"endpoints": []any{
+		map[string]any{"host": "*", "path_prefix": "/a/b", "rps": 1, "burst": 2, "per": "total"},
+		map[string]any{"host": "*", "path_prefix": "/b", "rps": 1, "burst": 1, "per": "total"},
+		map[string]any{"host": "*", "path_prefix": "/safe", "rps": 1, "burst": 2, "per": "total"},
+		map[string]any{"host": "*", "path_prefix": "/login", "rps": 1, "burst": 1, "per": "total"},
+	}})
+	check := func(target string, limited bool) {
+		t.Helper()
+		w := a.get(a.host, target, "192.0.2.1")
+		if got := w.Code == http.StatusTooManyRequests; got != limited {
+			t.Fatalf("%s: %d %s, want limited=%v", target, w.Code, w.Body.String(), limited)
+		}
+	}
+	check("/a/.;x/../b", false) // /a/b and /b each lose one token.
+	check("/b", true)
+	check("/a/.;x/../b", true) // Denial by /b must not drain /a/b.
+	check("/a/b", false)       // All equal forms charge /a/b only once.
+	check("/a/b", true)
+	check("/login", false)
+	check("/safe/..;/login", true) // The permissive literal rule cannot win.
+	check("/safe", false)          // Rejected ambiguity did not drain /safe.
+	check("/safe", false)
+	check("/safe", true)
+}
+
+func TestBucketStoreMaximumRequestLimitsAreAtomic(t *testing.T) {
+	store := newBucketStore(4, 100, time.Minute)
+	var limits [maxRequestLimits]limit
+	for i := range limits {
+		limits[i] = limit{key: fmt.Sprintf("bucket-%d", i), rps: 1, burst: 2}
+	}
+	limits[len(limits)-1].burst = 1
+	if got := store.take(t0, limits[:]); got != -1 {
+		t.Fatalf("first request denied by %d", got)
+	}
+	if got := store.take(t0, limits[:]); got != len(limits)-1 {
+		t.Fatalf("second request denied by %d, want the final bucket", got)
+	}
+	if got := store.take(t0, limits[:len(limits)-1]); got != -1 {
+		t.Fatalf("rejected request drained bucket %d", got)
+	}
+	if got := store.take(t0, limits[:len(limits)-1]); got != 0 {
+		t.Fatalf("accepted requests did not consume the first bucket: %d", got)
+	}
+}
+
+// Path normalization must be bounded before rate rules even when the public
+// request is handled by the management or Connector API host.
+func TestPublicPathLimitPrecedesSpecialHostsAndRateRules(t *testing.T) {
+	a := limitedFixture(t)
+	a.setLimits(t, map[string]any{"per_ip": capacity(1, 1)})
+	for i, tc := range []struct{ host, prefix string }{
+		{a.host, "/api/v1/"},
+		{"example.com", "/connector/v1/"},
+	} {
+		t.Run(tc.host, func(t *testing.T) {
+			ip := fmt.Sprintf("192.0.2.%d", i+1)
+			for _, target := range []string{
+				tc.prefix + strings.Repeat("a", maxPublicPath),
+				tc.prefix + strings.Repeat("%41", maxPublicPath/3),
+			} {
+				if w := a.get(tc.host, target, ip); w.Code != http.StatusRequestURITooLong {
+					t.Fatalf("oversized special-host path: %d %s", w.Code, w.Body.String())
+				}
+			}
+			// Exactly 8192 escaped bytes still reach the handler, with the IP's
+			// token intact after the oversized requests.
+			boundary := "/" + strings.Repeat("%41", (maxPublicPath-2)/3) + "a"
+			if len(boundary) != maxPublicPath {
+				t.Fatalf("bad boundary fixture: %d", len(boundary))
+			}
+			if w := a.get(tc.host, boundary, ip); w.Code == http.StatusRequestURITooLong || w.Code == http.StatusTooManyRequests {
+				t.Fatalf("boundary path rejected: %d %s", w.Code, w.Body.String())
+			}
+		})
 	}
 }

@@ -58,8 +58,9 @@ func startRathole(t *testing.T, binary, mode, config string) {
 // that send one byte and go quiet can't hold rathole's accept loop (which does
 // the handshake of one connection at a time, up to 5 s each), a handshake
 // that rathole answers by hanging up doesn't hold a place for long, and a
-// flood of junk from another address doesn't take the tunnel down. The
-// attackers need addresses other than 127.0.0.1, which only Linux has.
+// partial handshakes from the Connector's own address do not delay new data
+// channels, and a flood of junk from another address does not take the tunnel
+// down. The separate-address flood scenarios require Linux loopback aliases.
 func TestTunnelGuardWithRealRathole(t *testing.T) {
 	binary := os.Getenv("MEERKAT_RATHOLE")
 	if binary == "" {
@@ -120,6 +121,37 @@ func TestTunnelGuardWithRealRathole(t *testing.T) {
 	// other addresses, which only Linux has on loopback.
 	g.config.Store(compileTunnelGuard(control.DefaultTunnelGuard()))
 	g.learn("127.0.0.1")
+	// Consume the data channels made ahead of time, then create partial
+	// handshakes from the same NAT address as the real Noise client. Every
+	// following visit needs another data channel through the serial accept
+	// loop, which must remain available to the authenticated Connector.
+	for range 20 {
+		if got := visit(); got != "app-ok" {
+			t.Fatalf("priming the known-address tunnel: %q", got)
+		}
+	}
+	var sharedAddress []*net.TCPConn
+	frame := handshakeFrame(make([]byte, 48))
+	for _, n := range []int{1, 2, 12, len(frame) - 1} {
+		conn := connectGuard(t, g)
+		sharedAddress = append(sharedAddress, conn)
+		if _, err := conn.Write(frame[:n]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+	for range 20 {
+		began := time.Now()
+		if got := visit(); got != "app-ok" {
+			t.Fatalf("a request during the same-address stall attack: %q after %v", got, time.Since(began))
+		}
+		if took := time.Since(began); took > time.Second {
+			t.Fatalf("a request during the same-address stall attack took %v", took)
+		}
+	}
+	for _, conn := range sharedAddress {
+		conn.Close()
+	}
 	attacker := func(last byte) *net.Dialer {
 		return &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, last)}, Timeout: 2 * time.Second}
 	}

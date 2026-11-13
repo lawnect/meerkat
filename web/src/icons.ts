@@ -78,6 +78,7 @@ export { default as Pulse20 } from '~icons/fluent/pulse-20-regular';
 export { default as Pulse32 } from '~icons/fluent/pulse-32-regular';
 export { default as Rocket20 } from '~icons/fluent/rocket-20-regular';
 export { default as Search } from '~icons/fluent/search-16-regular';
+export { default as Search12 } from '~icons/fluent/search-12-regular';
 export { default as Search32 } from '~icons/fluent/search-32-regular';
 export { default as Server } from '~icons/fluent/server-16-regular';
 export { default as Server20 } from '~icons/fluent/server-20-regular';

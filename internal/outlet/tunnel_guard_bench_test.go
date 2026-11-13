@@ -40,6 +40,7 @@ func BenchmarkTunnelGuardThroughput(b *testing.B) {
 	g := startGuard(b, sink.Addr().String())
 	g.learn("127.0.0.1")
 	chunk := make([]byte, 256<<10)
+	copy(chunk, handshakeFrame(make([]byte, 48)))
 	for name, address := range map[string]string{"direct": sink.Addr().String(), "guard": g.address().String()} {
 		b.Run(name, func(b *testing.B) {
 			b.SetBytes(benchmarkBytes)
@@ -70,6 +71,7 @@ func BenchmarkTunnelGuardEcho(b *testing.B) {
 	g := startGuard(b, rathole.address())
 	g.learn("127.0.0.1")
 	chunk := make([]byte, 256<<10)
+	copy(chunk, handshakeFrame(make([]byte, 48)))
 	for name, address := range map[string]string{"direct": rathole.address(), "guard": g.address().String()} {
 		b.Run(name, func(b *testing.B) {
 			b.SetBytes(2 * benchmarkBytes)
@@ -98,9 +100,8 @@ func BenchmarkTunnelGuardEcho(b *testing.B) {
 // BenchmarkTunnelGuardSetup is a new connection's time to its first answer:
 // connect, send a handshake-sized frame, read it back from the echo. Direct
 // is the floor; a known client adds the admission and the second connection;
-// an unknown one also waits for its whole first frame before rathole is
-// dialled. The known client's guard is a second one in front of the same
-// rathole.
+// every client waits for its whole first frame before rathole is dialled.
+// The known client's guard is a second one in front of the same rathole.
 func BenchmarkTunnelGuardSetup(b *testing.B) {
 	rathole := newEchoRathole(b)
 	// Each connection finds every bucket full, so limits don't get in the way.

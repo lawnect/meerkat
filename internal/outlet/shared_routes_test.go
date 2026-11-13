@@ -78,7 +78,7 @@ func TestSharedAddressFailover(t *testing.T) {
 		t.Fatalf("after the primary went down: %d %q", code, body)
 	}
 	f.setStatus(1, "error")
-	if code, _ := f.get("app.example.com"); code != 404 {
+	if code, _ := f.get("app.example.com"); code != 503 {
 		t.Fatalf("with nothing up: %d", code)
 	}
 	f.setStatus(0, "connected")

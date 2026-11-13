@@ -328,7 +328,7 @@ CREATE TABLE usage_total_minutely (
   error_responses INTEGER NOT NULL DEFAULT 0,
   rate_limited INTEGER NOT NULL DEFAULT 0
 );
-`}}
+`}, {version: 18, apply: upgradeHoneypotConditions}}
 
 func migrate(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {

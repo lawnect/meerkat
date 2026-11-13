@@ -46,7 +46,7 @@ const (
 	guardTotalConcurrent  = 256
 	guardTotalPerSecond   = 50
 	guardTotalBurst       = 100
-	// guardFirstBytes is how long an unknown client has to send the whole
+	// guardFirstBytes is how long every client has to send the whole
 	// first message of its handshake, from the moment it is admitted. A client
 	// that doesn't is closed without rathole having been dialled: rathole does
 	// the Noise handshake inside its accept loop, one connection at a time,
@@ -393,7 +393,7 @@ func (g *tunnelGuard) handle(conn *net.TCPConn) {
 		_ = conn.Close()
 		return
 	}
-	release, unknown, why := g.admit(remote.AddrPort().Addr())
+	release, _, why := g.admit(remote.AddrPort().Addr())
 	switch why {
 	case refusedRate:
 		g.refusedRate.Add(1)
@@ -412,7 +412,7 @@ func (g *tunnelGuard) handle(conn *net.TCPConn) {
 		_ = conn.Close()
 		return
 	}
-	go g.serve(conn, release, unknown)
+	go g.serve(conn, release)
 }
 
 // start registers a connection and a goroutine for it, unless the guard is
@@ -450,21 +450,18 @@ func isTimeout(err error) bool {
 	return errors.As(err, &timeout) && timeout.Timeout()
 }
 
-// serve proxies one admitted connection to rathole. An unknown client's
+// serve proxies one admitted connection to rathole. Every client's
 // whole first message is read before rathole is dialled, so a client that
 // connects and says nothing, or stops halfway, never holds rathole's accept
 // loop; the message is then passed on as it came.
-func (g *tunnelGuard) serve(client *net.TCPConn, release func(), unknown bool) {
+func (g *tunnelGuard) serve(client *net.TCPConn, release func()) {
 	defer g.wg.Done()
 	defer g.forget(client)
 	defer release()
 	defer client.Close()
-	var first []byte
-	if unknown {
-		var ok bool
-		if first, ok = g.readFirstFrame(client); !ok {
-			return
-		}
+	first, ok := g.readFirstFrame(client)
+	if !ok {
+		return
 	}
 	g.accepted.Add(1)
 	g.active.Add(1)
@@ -489,7 +486,7 @@ func (g *tunnelGuard) serve(client *net.TCPConn, release func(), unknown bool) {
 	pipe(client, upstream, g.afterHangup)
 }
 
-// readFirstFrame reads the first message of a handshake from an unknown
+// readFirstFrame reads the first message of a handshake from every
 // client: a 2-byte little-endian length of 1 to guardMaxFrame, then that many
 // bytes, all within guardFirstBytes. It returns the header and the body as
 // they were sent, and nothing past them, so the rest of the stream stays

@@ -9,6 +9,7 @@
   import CauseBadge from './CauseBadge.svelte';
   import type { DataTableFeatures } from './data-table/features';
   import LogCard from './LogCard.svelte';
+  import LogRequest from './LogRequest.svelte';
   import type { LogFilter } from './logFilter';
   import TruncateText from './TruncateText.svelte';
 
@@ -25,7 +26,7 @@
     offTitle: 'Logging is disabled',
     offHint: 'Enable it to keep failed requests.',
     suppressedTip: 'Each client\'s failed requests are logged up to 60 per minute for Outlet limits and 600 for service errors. Anything over that is only counted, and the count is since the Outlet started.',
-    search: 'Search by address, path, client or service',
+    search: 'Search by request ID, address, path, client or service',
     cause: 'Cause',
     host: 'Address',
     allCauses: 'All causes',
@@ -45,7 +46,7 @@
     offTitle: '기록이 비활성화되어 있습니다',
     offHint: '활성화하면 실패한 요청을 기록합니다.',
     suppressedTip: '클라이언트별로 Outlet 제한은 분당 60건, 서비스 오류는 분당 600건까지만 기록합니다. 초과분은 건수만 집계하며, Outlet 시작 이후의 누계입니다.',
-    search: '주소, 경로, 클라이언트, 서비스 검색',
+    search: '요청 ID, 주소, 경로, 클라이언트, 서비스 검색',
     cause: '원인',
     host: '주소',
     allCauses: '모든 원인',
@@ -94,7 +95,7 @@
 {#snippet requestCell(entry: FailureLogEntry)}
   <div class="grid gap-0.5">
     <TruncateText text={entry.host} class="font-mono" />
-    <span class="flex min-w-0 items-center gap-1.5 font-mono text-muted-foreground"><span>{entry.method}</span><TruncateText text={entry.path} /></span>
+    <LogRequest {entry} />
   </div>
 {/snippet}
 

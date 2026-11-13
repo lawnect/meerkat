@@ -27,6 +27,11 @@ const (
 	// An untouched bucket is dropped after this, once it is full again.
 	limiterIdle = 10 * time.Minute
 
+	// The literal cleaned path and at most two conservative forms can each
+	// select one endpoint rule, in addition to the three global buckets.
+	maxEndpointPathForms = 3
+	maxRequestLimits     = 3 + maxEndpointPathForms
+
 	rejectionWindow = 10 * time.Minute
 	rejectionSlots  = 10
 	// rejectionKeys bounds the clients remembered per minute for the alert.
@@ -130,8 +135,8 @@ type limit struct {
 // bucket rejects must not drain the others. It returns the index of the first
 // empty bucket, or -1. Shards lock in ascending order, so callers never deadlock.
 func (s *bucketStore) take(now time.Time, limits []limit) int {
-	var owner [4]int
-	var locked [4]int
+	var owner [maxRequestLimits]int
+	var locked [maxRequestLimits]int
 	held := locked[:0]
 	for i, l := range limits {
 		owner[i] = int(maphash.String(s.seed, l.key) % uint64(len(s.shards)))
@@ -151,7 +156,7 @@ func (s *bucketStore) take(now time.Time, limits []limit) int {
 			s.shards[index].mu.Unlock()
 		}
 	}()
-	var fetched [4]*bucket
+	var fetched [maxRequestLimits]*bucket
 	denied := -1
 	for i, l := range limits {
 		fetched[i] = s.shards[owner[i]].get(l.key, now, l.burst, s)
@@ -217,16 +222,41 @@ func compileRateLimit(settings control.RateLimitSettings) *rateConfig {
 	return config
 }
 
-// match finds the endpoint rule for a request. Paths are cleaned and
-// lowercased first, so "//Login/" cannot slip past a "/login" rule.
-func (c *rateConfig) match(host, requestPath string) *endpointRule {
-	requestPath = strings.ToLower(path.Clean("/" + requestPath))
-	for i := range c.rules {
-		if (c.rules[i].Host == "*" || c.rules[i].Host == host) && strings.HasPrefix(requestPath, c.rules[i].PathPrefix) {
-			return &c.rules[i]
+// matches selects the highest-priority rule for each interpretation of a
+// request path. Retain the original cleaned form for literal prefix rules,
+// and include the conservative forms used by the block/access rules for
+// backslashes, segment parameters and trailing dots/spaces. An ambiguous
+// path must satisfy every distinct selected rule: picking only one winner
+// across forms could let a permissive literal rule override a protected path.
+func (c *rateConfig) matches(host, requestPath string) []*endpointRule {
+	// PublicHandler rejects these before routing, including on admin and
+	// Connector hosts. Bound normalization work even for direct callers.
+	if len(requestPath) > maxPublicPath {
+		return nil
+	}
+	var selected [maxEndpointPathForms]*endpointRule
+	rules := selected[:0]
+	forms := append([]string{strings.ToLower(path.Clean("/" + requestPath))}, control.NormalizeBlockPaths(requestPath)...)
+	for _, form := range forms {
+		for i := range c.rules {
+			rule := &c.rules[i]
+			if (rule.Host != "*" && rule.Host != host) || !strings.HasPrefix(form, rule.PathPrefix) {
+				continue
+			}
+			duplicate := false
+			for _, previous := range rules {
+				if previous == rule {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate {
+				rules = append(rules, rule)
+			}
+			break
 		}
 	}
-	return nil
+	return rules
 }
 
 type counted struct {
@@ -407,8 +437,9 @@ func (s *Store) limitRequest(w http.ResponseWriter, r *http.Request, host string
 	}
 	ip, _ := requestOrigin(r)
 	subnet := ""
-	var limits [4]limit
-	var kinds [4]string
+	var limits [maxRequestLimits]limit
+	var kinds [maxRequestLimits]string
+	var endpoints [maxRequestLimits]string
 	count := 0
 	add := func(kind, key string, l control.Limit) {
 		limits[count], kinds[count] = limit{key: key, rps: float64(l.RPS), burst: float64(l.Burst)}, kind
@@ -425,15 +456,14 @@ func (s *Store) limitRequest(w http.ResponseWriter, r *http.Request, host string
 	if config.PerAddress.On() {
 		add("address", "host|"+host, config.PerAddress)
 	}
-	endpoint := ""
-	if rule := config.match(host, r.URL.Path); rule != nil {
+	for _, rule := range config.matches(host, r.URL.Path) {
 		key := "ep|" + rule.label
 		if rule.Per == control.RateEndpointIP {
 			key = "epi|" + rule.label + "|" + ip
 		}
 		if rule.Per == control.RateEndpointTotal || ip != "" {
 			add("endpoint", key, control.Limit{RPS: rule.RPS, Burst: rule.Burst})
-			endpoint = rule.label
+			endpoints[count-1] = rule.label
 		}
 	}
 	now := s.now()
@@ -443,7 +473,7 @@ func (s *Store) limitRequest(w http.ResponseWriter, r *http.Request, host string
 	}
 	hit := rejection{limit: kinds[denied], ip: ip, subnet: subnet}
 	if kinds[denied] == "endpoint" {
-		hit.endpoint = endpoint
+		hit.endpoint = endpoints[denied]
 	}
 	limiter.stats.record(now, hit)
 	w.Header().Set("Retry-After", "1")

@@ -129,7 +129,7 @@ func TestHoneypotRuleMatchesScannerPaths(t *testing.T) {
 		{"/.gitignore", "hidden-files"},
 		{"/.hidden/x", "hidden-files"},
 		{"/.well-known/security.txt", ""},
-		{"/.well-known/.env", ""},
+		{"/.well-known/.env", "honeypot"},
 		{"/environment", ""},
 		{"/env", ""},
 		{"/app/environment.js", ""},
@@ -146,11 +146,48 @@ func TestHoneypotRuleMatchesScannerPaths(t *testing.T) {
 			t.Errorf("%s: blocked by %q (ban %v), want %q", c.path, got, ban, c.want)
 		}
 	}
+	for _, dir := range []string{"git", "aws", "ssh", "svn", "hg", "docker", "kube"} {
+		for _, prefix := range []string{"/", "/backup/", "/.well-known/", "/deep/site/"} {
+			for _, suffix := range []string{"", "/", "/config", "/packed-refs", "/objects/info/packs"} {
+				path := prefix + "." + dir + suffix
+				if rule := s.blockedBy("app.example.com", path); rule == nil || rule.id != control.HoneypotRuleID || !rule.ban {
+					t.Errorf("scanner path %q: %+v", path, rule)
+				}
+			}
+		}
+	}
+	for _, path := range []string{
+		"/backup/.github/config", "/backup/.gitignore", "/backup/.gitlab", "/backup/.awsome",
+		"/backup/.ssh-key-guide", "/backup/.svnbook", "/backup/.hgignore", "/backup/.dockerignore",
+		"/backup/.kubernetes", "/backup/.environment", "/backup/my.git/config", "/backup/file.env",
+		"/.well-known/security.txt", "/.well-known/openid-configuration", "/.well-known/webfinger",
+		"/.well-known/matrix/server", "/.well-known/assetlinks.json", "/.well-known/acme-challenge/token",
+	} {
+		if rule := s.blockedBy("app.example.com", path); rule != nil {
+			t.Errorf("legitimate path %q: blocked by %s", path, rule.id)
+		}
+	}
+	for _, path := range []string{
+		"/backup/.GIT./packed-refs", `/backup\.ssh\id_rsa`, "/backup/.aws;ignored/credentials",
+		"/.well-known/x/../.kube/config", "/backup/.git/config\x00.jpg", "/backup/.env.production.local",
+	} {
+		if rule := s.blockedBy("app.example.com", path); rule == nil || rule.id != control.HoneypotRuleID {
+			t.Errorf("disguised scanner path %q: %+v", path, rule)
+		}
+	}
+	// Upgrades retain every original root trap, including backup suffixes,
+	// even when the administrator has disabled the broader hidden-file rule.
+	s.applyBlockRules(control.BlockRules{Rules: control.DefaultBlockRules().Rules[:1]})
+	for _, path := range []string{"/.env~", "/.env_backup", "/.htpasswd.bak~", "/.ds_store.old"} {
+		if rule := s.blockedBy("app.example.com", path); rule == nil || rule.id != control.HoneypotRuleID {
+			t.Errorf("original trap %q lost: %+v", path, rule)
+		}
+	}
 }
 
 // A request for a trap path is refused and bans its client on every routed
 // address, but never on the management host, the Outlet domain's connector
-// API or under /.well-known/. The failure log tells the trap from what
+// API. Forwarded /.well-known/ requests also obey bans. The failure log tells the trap from what
 // follows.
 func TestTrapBansTheClientEverywhereRouted(t *testing.T) {
 	f := newBanFixture(t)
@@ -164,10 +201,10 @@ func TestTrapBansTheClientEverywhereRouted(t *testing.T) {
 	}{
 		{"app.example.com", "/", 403},
 		{"other.example.com", "/index.html", 403},
-		{"app.example.com", "/.well-known/acme-challenge/x", 200},
-		{"app.example.com", "/.well-known", 200},
+		{"app.example.com", "/.well-known/acme-challenge/x", 403},
+		{"app.example.com", "/.well-known", 403},
 		{"app.example.com", "/.well-known/../index.html", 403},
-		{"app.example.com", "/.WELL-KNOWN/x", 200},
+		{"app.example.com", "/.WELL-KNOWN/x", 403},
 		{f.adminHost, "/healthz", 200},
 		{f.adminHost, "/.env", 0},
 		{"example.com", "/connector/v1/config", 0},
@@ -190,7 +227,7 @@ func TestTrapBansTheClientEverywhereRouted(t *testing.T) {
 		t.Fatalf("bans: %+v", view)
 	}
 	b := view.Bans[0]
-	if b.Client != scanner || b.Rule != "honeypot" || b.Host != "app.example.com" || b.Path != "/.env" || b.Hits != 3 ||
+	if b.Client != scanner || b.Rule != "honeypot" || b.Host != "app.example.com" || b.Path != "/.env" || b.Hits != 6 ||
 		b.Until.Sub(b.Since) != time.Hour || b.Since.IsZero() {
 		t.Fatalf("ban: %+v", b)
 	}
@@ -204,7 +241,10 @@ func TestTrapBansTheClientEverywhereRouted(t *testing.T) {
 		"trapped 403 [] app.example.com /.env",
 		"banned 403 [] app.example.com /",
 		"banned 403 [] other.example.com /index.html",
+		"banned 403 [] app.example.com /.well-known/acme-challenge/x",
+		"banned 403 [] app.example.com /.well-known",
 		"banned 403 [] app.example.com /.well-known/../index.html",
+		"banned 403 [] app.example.com /.WELL-KNOWN/x",
 	}
 	log := f.failureLog(t, "")
 	if got := failureLines(log.Entries); !slices.Equal(got, want) {
@@ -216,7 +256,7 @@ func TestTrapBansTheClientEverywhereRouted(t *testing.T) {
 			t.Fatalf("entry: %+v", e)
 		}
 	}
-	for query, total := range map[string]int{"?cause=trapped": 1, "?cause=banned": 3, "?cause=refused": 4, "?cause=service": 0} {
+	for query, total := range map[string]int{"?cause=trapped": 1, "?cause=banned": 6, "?cause=refused": 7, "?cause=service": 0} {
 		if got := f.failureLog(t, query); got.Total != total {
 			t.Fatalf("%s: %d, want %d", query, got.Total, total)
 		}

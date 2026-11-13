@@ -106,7 +106,7 @@ func TestFailureLogCauses(t *testing.T) {
 	expect("a 503", f.hit("POST", "app.example.com", "/503", strings.NewReader("{}")), 503, "app_error 503 [svc-0] app.example.com /503")
 	expect("a service that never answers", f.hit("GET", "slow.example.com", "/", nil), 504, "timeout 504 [svc-1] slow.example.com /")
 	expect("a service that is gone", f.hit("GET", "gone.example.com", "/", nil), 502, "unreachable 502 [svc-2] gone.example.com /")
-	expect("an address without a live service", f.hit("GET", "idle.example.com", "/", nil), 404, "no_service 404 [] idle.example.com /")
+	expect("an address without a live service", f.hit("GET", "idle.example.com", "/", nil), 503, "no_service 503 [] idle.example.com /")
 	expect("an unknown host", f.hit("GET", "nowhere.example.com", "/", nil), 404, "")
 	expect("the management host", f.hit("GET", f.adminHost, "/no-such-page", nil), 404, "")
 	expect("a block rule", f.hit("GET", "app.example.com", "/.hidden", nil), 403, "blocked 403 [] app.example.com /.hidden")
@@ -186,6 +186,7 @@ func TestFailureLogTurnedAway(t *testing.T) {
 	f.route(t, 0, "app.example.com")
 	f.setConnectionLimits(t, control.ConnectionLimits{PerIPConcurrent: 1, TotalConcurrent: 1})
 	f.failureLogging(t, true)
+	f.requestLogging(t, true)
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		if code, _ := f.from("GET", "app.example.com", "203.0.113.1", ""); code != 200 {
@@ -210,6 +211,13 @@ func TestFailureLogTurnedAway(t *testing.T) {
 	want := []string{"busy 429 [] app.example.com /", "busy 503 [] app.example.com /"}
 	if got := failureLines(f.failureLog(t, "").Entries); !slices.Equal(got, want) {
 		t.Fatalf("log:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	for _, entry := range f.failureLog(t, "").Entries {
+		assertRequestID(t, entry.RequestID)
+		requests := f.requestLog(t, "?q="+entry.RequestID)
+		if requests.Total != 1 || requests.Entries[0].Status != entry.Status || requests.Entries[0].Cause != failBusy {
+			t.Fatalf("concurrency refusal correlation: %+v %+v", entry, requests)
+		}
 	}
 	// The rate limit turns requests away the same way.
 	f.setConnectionLimits(t, control.ConnectionLimits{})

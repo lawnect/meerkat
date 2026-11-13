@@ -12,6 +12,7 @@ import (
 // failureEntry is a public request that failed, or that the Outlet refused
 // before it reached an app, as its log keeps it.
 type failureEntry struct {
+	requestEvidence
 	ID         int64     `json:"id"`
 	At         time.Time `json:"at"`
 	Host       string    `json:"host"`
@@ -22,17 +23,21 @@ type failureEntry struct {
 	Status     int       `json:"status"`
 	Service    string    `json:"service"`
 	DurationMS int64     `json:"duration_ms"`
+	BlockRule  string    `json:"block_rule"`
 	// Routine entries are refusals: anyone can make them.
 	Routine bool `json:"routine"`
 }
 
+var failureAddedColumns = append(append([]string{}, evidenceColumns...), "block_rule TEXT DEFAULT ''")
+
 var failureEntries = eventlog.Kind[failureEntry]{
-	Table:   "failure_log",
-	Columns: []string{"host TEXT", "method TEXT", "path TEXT", "client TEXT", "cause TEXT", "status INTEGER", "service TEXT", "duration_ms INTEGER"},
-	Filters: []string{"cause", "host"},
-	Search:  []string{"host", "path", "client", "service"},
+	Table:      "failure_log",
+	Columns:    append([]string{"host TEXT", "method TEXT", "path TEXT", "client TEXT", "cause TEXT", "status INTEGER", "service TEXT", "duration_ms INTEGER"}, failureAddedColumns...),
+	AddColumns: failureAddedColumns,
+	Filters:    []string{"cause", "host"},
+	Search:     []string{"host", "path", "client", "service", "request_id"},
 	Fields: func(e *failureEntry) []any {
-		return []any{&e.Host, &e.Method, &e.Path, &e.Client, &e.Cause, &e.Status, &e.Service, &e.DurationMS}
+		return append(append([]any{&e.Host, &e.Method, &e.Path, &e.Client, &e.Cause, &e.Status, &e.Service, &e.DurationMS}, e.requestEvidence.fields()...), &e.BlockRule)
 	},
 	Stamp:   func(e *failureEntry) (*int64, *time.Time) { return &e.ID, &e.At },
 	Routine: func(e *failureEntry) *bool { return &e.Routine },
@@ -77,9 +82,14 @@ func (s *Store) logFailure(r *http.Request, host string, began time.Time, cause 
 		return
 	}
 	defer keepResponse()
-	if record := recordOf(r); record != nil {
-		record.cause = cause
+	record := recordOf(r)
+	if record == nil {
+		// A request that started with every log off has no shared evidence.
+		// Enabling logging midway through it applies to the next request.
+		return
 	}
+	record.cause = cause
+	blockRule := record.blockRule
 	if !l.on() {
 		return
 	}
@@ -93,7 +103,7 @@ func (s *Store) logFailure(r *http.Request, host string, began time.Time, cause 
 	if !began.IsZero() {
 		took = time.Since(began)
 	}
-	l.add(failureEntry{At: now, Host: host, Method: eventlog.Clip(r.Method, 16), Path: eventlog.Clip(r.URL.Path, 512), Client: ip, Cause: cause, Status: status, Service: service, DurationMS: took.Milliseconds(), Routine: routine})
+	l.add(failureEntry{requestEvidence: evidenceOf(r), At: now, Host: host, Method: eventlog.Clip(r.Method, 16), Path: eventlog.Clip(r.URL.Path, 512), Client: ip, Cause: cause, Status: status, Service: service, DurationMS: took.Milliseconds(), Routine: routine, BlockRule: blockRule})
 }
 
 // logTurnedAway records a refusal made before the address is looked up, the
@@ -111,8 +121,14 @@ func (s *Store) logTurnedAway(r *http.Request, host string, began time.Time, cau
 		return
 	}
 	if plans, _ := routing.Routes(host); len(plans) != 0 {
+		r = s.evidenceRequest(r)
+		record := recordOf(r)
+		if record == nil {
+			return
+		}
 		s.logFailure(r, host, began, cause, status, "")
-		s.logRequest(r, host, began, &requestRecord{status: status, cause: cause})
+		record.status, record.cause = status, cause
+		s.logRequest(r, host, began, record)
 	}
 }
 

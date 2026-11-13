@@ -200,12 +200,12 @@ func TestKnownConnectorsPassWhereUnknownClientsAreRefused(t *testing.T) {
 	}
 	known := open(3 * guardClientConcurrent)
 	for _, conn := range known {
-		echoes(t, conn, "x")
+		echoes(t, conn, string(handshakeFrame(make([]byte, 48))))
 	}
 	// Nor does a known client's rate count.
 	for range 2 * guardTotalBurst {
 		conn := open(1)[0]
-		echoes(t, conn, "x")
+		echoes(t, conn, string(handshakeFrame(make([]byte, 48))))
 		conn.Close()
 	}
 	if stats := f.store.guard.stats(); stats.Refused.Busy != 1 || stats.Refused.Rate != 0 {

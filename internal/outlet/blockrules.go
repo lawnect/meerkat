@@ -20,16 +20,19 @@ const maxBlockRulesBody = 256 << 10
 
 // blockRule is one enabled control.BlockRule, compiled for matching.
 type blockRule struct {
-	id       string
-	ban      bool            // a match bans the client
-	hosts    map[string]bool // nil with no wildcards: every public address
-	wildcard []string        // ".example.com" for "*.example.com"
-	equals   map[string]bool
-	prefixes []string
-	suffixes []string
-	contains []string
-	patterns []*regexp.Regexp
-	hits     *atomic.Int64
+	id string
+	// The built-in hidden-files condition permits standard discovery under
+	// /.well-known/. Custom rules and honeypots have no such exception.
+	allowWellKnown bool
+	ban            bool            // a match bans the client
+	hosts          map[string]bool // nil with no wildcards: every public address
+	wildcard       []string        // ".example.com" for "*.example.com"
+	equals         map[string]bool
+	prefixes       []string
+	suffixes       []string
+	contains       []string
+	patterns       []*regexp.Regexp
+	hits           *atomic.Int64
 }
 
 // blockRules holds the enabled rules in order, immutable once stored.
@@ -57,6 +60,8 @@ func (s *Store) applyBlockRules(rules control.BlockRules) {
 		hits, _ := s.blocks.hits.LoadOrStore(rule.ID, new(atomic.Int64))
 		b := compileBlockRule(rule.Hosts, rule.Conditions)
 		b.id, b.ban, b.hits = rule.ID, rule.Ban, hits.(*atomic.Int64)
+		b.allowWellKnown = rule.ID == "hidden-files" && len(rule.Conditions) == 1 &&
+			rule.Conditions[0] == (control.BlockCondition{Operator: control.BlockStartsWith, Value: "/."})
 		if b.ban {
 			compiled.rules = append(compiled.rules, b)
 		} else {
@@ -159,15 +164,14 @@ func (s *Store) reloadBlockRules(ctx context.Context) error {
 }
 
 // wellKnownPath says whether a path in the form rules compare is under
-// /.well-known/, where certificate checks and service discovery live: block
-// rules and bans never apply there.
+// /.well-known/, where certificate checks and service discovery live.
 func wellKnownPath(p string) bool {
 	return p == "/.well-known" || strings.HasPrefix(p, "/.well-known/")
 }
 
 // blockedBy returns the first enabled rule that blocks a request for host
 // and path, or nil. The path is compared in the form rules are stored in,
-// and paths under /.well-known/ are never blocked.
+// and only the built-in hidden-files condition exempts /.well-known/.
 func (s *Store) blockedBy(host, requestPath string) *blockRule {
 	config := s.blocks.config.Load()
 	if config == nil || len(config.rules) == 0 {
@@ -176,22 +180,18 @@ func (s *Store) blockedBy(host, requestPath string) *blockRule {
 	// A path without parameters has one reading; most paths have none.
 	if !strings.Contains(requestPath, ";") {
 		path := newRulePath(requestPath)
-		if wellKnownPath(path.p) {
-			return nil
-		}
 		for i := range config.rules {
-			if rule := &config.rules[i]; rule.covers(host) && rule.matches(path) {
+			if rule := &config.rules[i]; rule.covers(host) &&
+				!(rule.allowWellKnown && wellKnownPath(path.p)) && rule.matches(path) {
 				return rule
 			}
 		}
 		return nil
 	}
 	paths := rulePaths(requestPath)
-	if wellKnown(paths) {
-		return nil
-	}
+	discovery := wellKnown(paths)
 	for i := range config.rules {
-		if rule := &config.rules[i]; rule.covers(host) && slices.ContainsFunc(paths, rule.matches) {
+		if rule := &config.rules[i]; rule.covers(host) && !(rule.allowWellKnown && discovery) && slices.ContainsFunc(paths, rule.matches) {
 			return rule
 		}
 	}

@@ -2,7 +2,6 @@ package outlet
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -18,6 +17,7 @@ import (
 // keeps it: every one, whatever became of it, so that what was asked for,
 // and by whom, can be counted and looked into later.
 type requestEntry struct {
+	requestEvidence
 	ID         int64     `json:"id"`
 	At         time.Time `json:"at"`
 	Host       string    `json:"host"`
@@ -32,10 +32,14 @@ type requestEntry struct {
 	DurationMS int64     `json:"duration_ms"`
 	// The Outlet's time and the service's for a forwarded request (see
 	// timing), 0 for one that wasn't.
-	OutletUS   int64  `json:"outlet_us"`
-	UpstreamUS int64  `json:"upstream_us"`
-	Bytes      int64  `json:"bytes"`
-	Agent      string `json:"agent"`
+	OutletUS       int64  `json:"outlet_us"`
+	UpstreamUS     int64  `json:"upstream_us"`
+	Bytes          int64  `json:"bytes"`
+	Agent          string `json:"agent"`
+	AccessDecision string `json:"access_decision"`
+	AccessReason   string `json:"access_reason"`
+	AccessPolicy   string `json:"access_policy"`
+	BlockRule      string `json:"block_rule"`
 	// Routine entries are 4xx: anyone can make them at will.
 	Routine bool `json:"routine"`
 }
@@ -45,14 +49,18 @@ type requestEntry struct {
 // out a scanner's first. Clients are filtered and tallied by source, as
 // their budgets count them, so one rotating through its IPv6 addresses is
 // still one.
+var requestAddedColumns = append(append([]string{}, evidenceColumns...), "access_decision TEXT DEFAULT ''", "access_reason TEXT DEFAULT ''", "access_policy TEXT DEFAULT ''", "block_rule TEXT DEFAULT ''")
+
 var requestEntries = eventlog.Kind[requestEntry]{
-	Table:   "request_log",
-	Version: 1,
-	Columns: []string{"host TEXT", "method TEXT", "path TEXT", "client TEXT", "source TEXT", "status INTEGER", "class TEXT", "cause TEXT", "service TEXT", "duration_ms INTEGER", "outlet_us INTEGER", "upstream_us INTEGER", "bytes INTEGER", "agent TEXT"},
-	Filters: []string{"class", "host", "path", "source"},
-	Search:  []string{"host", "path", "client", "service", "agent"},
+	Table:      "request_log",
+	Version:    1,
+	Columns:    append([]string{"host TEXT", "method TEXT", "path TEXT", "client TEXT", "source TEXT", "status INTEGER", "class TEXT", "cause TEXT", "service TEXT", "duration_ms INTEGER", "outlet_us INTEGER", "upstream_us INTEGER", "bytes INTEGER", "agent TEXT"}, requestAddedColumns...),
+	AddColumns: requestAddedColumns,
+	Filters:    []string{"class", "host", "path", "source"},
+	Search:     []string{"host", "path", "client", "service", "agent", "request_id"},
 	Fields: func(e *requestEntry) []any {
-		return []any{&e.Host, &e.Method, &e.Path, &e.Client, &e.Source, &e.Status, &e.Class, &e.Cause, &e.Service, &e.DurationMS, &e.OutletUS, &e.UpstreamUS, &e.Bytes, &e.Agent}
+		fields := append([]any{&e.Host, &e.Method, &e.Path, &e.Client, &e.Source, &e.Status, &e.Class, &e.Cause, &e.Service, &e.DurationMS, &e.OutletUS, &e.UpstreamUS, &e.Bytes, &e.Agent}, e.requestEvidence.fields()...)
+		return append(fields, &e.AccessDecision, &e.AccessReason, &e.AccessPolicy, &e.BlockRule)
 	},
 	Stamp:       func(e *requestEntry) (*int64, *time.Time) { return &e.ID, &e.At },
 	Routine:     func(e *requestEntry) *bool { return &e.Routine },
@@ -73,17 +81,19 @@ func statusClass(status int) string {
 // Outlet refused it or the service failed, and the service tried last. Only
 // the request's own goroutine touches it.
 type requestRecord struct {
-	status               int
-	bytes                int64
-	cause                string
-	service              string
-	outletUS, upstreamUS int64
+	evidence                                   requestEvidence
+	accessDecision, accessReason, accessPolicy string
+	blockRule                                  string
+	status                                     int
+	bytes                                      int64
+	cause                                      string
+	service                                    string
+	outletUS, upstreamUS                       int64
 }
 
 type requestRecordKey struct{}
 
-// recordOf returns the record a request carries, if the request log keeps
-// it.
+// recordOf returns the evidence and outcome record shared by enabled logs.
 func recordOf(r *http.Request) *requestRecord {
 	record, _ := r.Context().Value(requestRecordKey{}).(*requestRecord)
 	return record
@@ -127,13 +137,19 @@ func (w *recordWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 // recordRequest has the request log keep r, a request to host, a routed
 // address, when the log is on: it returns the writer and request the
 // handler goes on with, and a func to defer, which logs the request once
-// answered. With the log off it returns them as they are and nil.
+// answered. With the request log off it still attaches shared evidence for
+// other enabled logs, but leaves the writer alone and returns no deferred entry.
 func (s *Store) recordRequest(w http.ResponseWriter, r *http.Request, host string, began time.Time) (http.ResponseWriter, *http.Request, func()) {
+	r = s.evidenceRequest(r)
 	if !s.logs.requests.on() {
 		return w, r, nil
 	}
-	record := &requestRecord{}
-	return &recordWriter{ResponseWriter: w, record: record}, r.WithContext(context.WithValue(r.Context(), requestRecordKey{}, record)), func() { s.logRequest(r, host, began, record) }
+	record := recordOf(r)
+	if record == nil {
+		// A concurrent settings change can enable logging after evidenceRequest.
+		return w, r, nil
+	}
+	return &recordWriter{ResponseWriter: w, record: record}, r, func() { s.logRequest(r, host, began, record) }
 }
 
 // logRequest adds a request to the request log, when it is on. Each client
@@ -161,8 +177,9 @@ func (s *Store) logRequest(r *http.Request, host string, began time.Time, record
 	if !began.IsZero() {
 		took = time.Since(began)
 	}
-	l.add(requestEntry{At: now, Host: host, Method: eventlog.Clip(r.Method, 16), Path: eventlog.Clip(r.URL.Path, 512), Client: ip, Source: source, Status: status, Class: statusClass(status), Cause: record.cause,
-		Service: record.service, DurationMS: took.Milliseconds(), OutletUS: record.outletUS, UpstreamUS: record.upstreamUS, Bytes: record.bytes, Agent: eventlog.Clip(r.UserAgent(), 256), Routine: routine})
+	l.add(requestEntry{requestEvidence: record.evidence, At: now, Host: host, Method: eventlog.Clip(r.Method, 16), Path: eventlog.Clip(r.URL.Path, 512), Client: ip, Source: source, Status: status, Class: statusClass(status), Cause: record.cause,
+		Service: record.service, DurationMS: took.Milliseconds(), OutletUS: record.outletUS, UpstreamUS: record.upstreamUS, Bytes: record.bytes, Agent: eventlog.Clip(r.UserAgent(), 256), Routine: routine,
+		AccessDecision: record.accessDecision, AccessReason: record.accessReason, AccessPolicy: record.accessPolicy, BlockRule: record.blockRule})
 }
 
 func (s *Store) getRequestLog(w http.ResponseWriter, r *http.Request) {

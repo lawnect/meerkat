@@ -109,7 +109,7 @@ func TestRoutineBudget(t *testing.T) {
 				t.Helper()
 				logged, given := l.read()
 				for range n {
-					add(fromClient(client))
+					add(f.store.evidenceRequest(fromClient(client)))
 				}
 				logged2, given2 := l.read()
 				if logged2-logged != kept || given2-given != suppressed {
@@ -164,7 +164,7 @@ func TestRoutineFloodNeverReachesTheQueue(t *testing.T) {
 	f.store.logs.failures = l
 	defer func() { f.store.logs.failures = logs }()
 	const flood = 3 * 8192
-	r := fromClient("203.0.113.9")
+	r := f.store.evidenceRequest(fromClient("203.0.113.9"))
 	for range flood {
 		f.store.logFailure(r, "app.example.com", time.Time{}, failBlocked, 403, "")
 	}

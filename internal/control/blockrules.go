@@ -8,6 +8,7 @@ import (
 	"errors"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -69,7 +70,17 @@ const HoneypotRuleID = "honeypot"
 // application serves, which only scanners look for, wherever they look
 // (/.env, /api/.env.production, /.git/config, a copy of wp-config.php).
 func honeypotRule() BlockRule {
-	return BlockRule{ID: HoneypotRuleID, Name: "Honeypot", Enabled: true, Ban: true, Hosts: []string{}, Conditions: []BlockCondition{
+	conditions := append(originalHoneypotConditions(),
+		BlockCondition{BlockMatches, `/\.(git|aws|ssh|svn|hg|docker|kube)(/|$)`},
+		BlockCondition{BlockMatches, `/\.(env(\.[a-z0-9_-]+)*|envrc|htpasswd(\.[a-z0-9_-]+)*|ds_store)(/|$)`},
+	)
+	return BlockRule{ID: HoneypotRuleID, Name: "Honeypot", Enabled: true, Ban: true, Hosts: []string{}, Conditions: conditions}
+}
+
+// originalHoneypotConditions freezes migration 15's original defaults so a
+// later migration can distinguish untouched conditions from custom rules.
+func originalHoneypotConditions() []BlockCondition {
+	return []BlockCondition{
 		{BlockStartsWith, "/.env"},
 		{BlockStartsWith, "/.git/"},
 		{BlockStartsWith, "/.aws/"},
@@ -83,7 +94,7 @@ func honeypotRule() BlockRule {
 		{BlockMatches, `/\.env(\.[a-z0-9_-]+)?$`},
 		{BlockMatches, `/\.git/(config|head)$`},
 		{BlockContains, "/wp-config.php"},
-	}}
+	}
 }
 
 // DefaultBlockRules starts with the honeypot, which bans the clients that ask
@@ -348,6 +359,37 @@ func addHoneypotRule(ctx context.Context, q conn) error {
 		return err
 	}
 	return putSetting(ctx, q, settingBlockRules, string(updated), time.Now())
+}
+
+// upgradeHoneypotConditions is migration 18. Only the known original built-in
+// conditions change: administrator choices about scope, bans and activation,
+// custom conditions, and deletion of the rule all survive. Damaged settings
+// stay untouched and BlockRules continues to fall back to safe defaults.
+func upgradeHoneypotConditions(ctx context.Context, q conn) error {
+	raw, err := getSetting(ctx, q, settingBlockRules)
+	if err != nil || raw == "" || len(raw) > 256<<10 {
+		return err
+	}
+	var saved BlockRules
+	if json.Unmarshal([]byte(raw), &saved) != nil {
+		return nil
+	}
+	if _, ok := saved.Normalize(); !ok {
+		return nil
+	}
+	for i := range saved.Rules {
+		rule := &saved.Rules[i]
+		if rule.ID != HoneypotRuleID || !slices.Equal(rule.Conditions, originalHoneypotConditions()) {
+			continue
+		}
+		rule.Conditions = honeypotRule().Conditions
+		updated, err := json.Marshal(saved)
+		if err != nil {
+			return err
+		}
+		return putSetting(ctx, q, settingBlockRules, string(updated), time.Now())
+	}
+	return nil
 }
 
 // BlockRules returns the stored rules, or the defaults.

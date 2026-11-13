@@ -10,6 +10,7 @@ import (
 
 // accessEntry is a request access protection decided, as its log keeps it.
 type accessEntry struct {
+	requestEvidence
 	ID       int64     `json:"id"`
 	At       time.Time `json:"at"`
 	Host     string    `json:"host"`
@@ -26,12 +27,13 @@ type accessEntry struct {
 }
 
 var accessEntries = eventlog.Kind[accessEntry]{
-	Table:   "access_log",
-	Columns: []string{"host TEXT", "method TEXT", "path TEXT", "client TEXT", "policy TEXT", "decision TEXT", "reason TEXT", "email TEXT", "token TEXT"},
-	Filters: []string{"decision", "policy"},
-	Search:  []string{"host", "path", "client", "email", "token"},
+	Table:      "access_log",
+	Columns:    append([]string{"host TEXT", "method TEXT", "path TEXT", "client TEXT", "policy TEXT", "decision TEXT", "reason TEXT", "email TEXT", "token TEXT"}, evidenceColumns...),
+	AddColumns: evidenceColumns,
+	Filters:    []string{"decision", "policy"},
+	Search:     []string{"host", "path", "client", "email", "token", "request_id"},
 	Fields: func(e *accessEntry) []any {
-		return []any{&e.Host, &e.Method, &e.Path, &e.Client, &e.Policy, &e.Decision, &e.Reason, &e.Email, &e.Token}
+		return append([]any{&e.Host, &e.Method, &e.Path, &e.Client, &e.Policy, &e.Decision, &e.Reason, &e.Email, &e.Token}, e.requestEvidence.fields()...)
 	},
 	Stamp:   func(e *accessEntry) (*int64, *time.Time) { return &e.ID, &e.At },
 	Routine: func(e *accessEntry) *bool { return &e.Routine },
@@ -47,6 +49,13 @@ var decisions = [...]string{accessPassed: "passed", accessChallenged: "challenge
 // without a token, are only counted. Entries that name no one are routine,
 // so each client gets a budget of them.
 func (s *Store) logAccess(r *http.Request, host, policy string, outcome int, reason, email, token string) {
+	record := recordOf(r)
+	if record == nil {
+		// Logging enabled after this request started applies to the next
+		// request; every emitted entry must have shared request evidence.
+		return
+	}
+	record.accessDecision, record.accessReason, record.accessPolicy = decisions[outcome], reason, policy
 	l := s.logs.access
 	routine := email == "" && token == ""
 	if !l.on() || outcome == accessPassed && routine {
@@ -57,7 +66,7 @@ func (s *Store) logAccess(r *http.Request, host, policy string, outcome int, rea
 	if !l.admit(clientKey(ip), now, routine) {
 		return
 	}
-	l.add(accessEntry{At: now, Host: host, Method: eventlog.Clip(r.Method, 16), Path: eventlog.Clip(r.URL.Path, 512), Client: ip, Policy: policy, Decision: decisions[outcome], Reason: reason, Email: email, Token: token, Routine: routine})
+	l.add(accessEntry{requestEvidence: evidenceOf(r), At: now, Host: host, Method: eventlog.Clip(r.Method, 16), Path: eventlog.Clip(r.URL.Path, 512), Client: ip, Policy: policy, Decision: decisions[outcome], Reason: reason, Email: email, Token: token, Routine: routine})
 }
 
 var accessFilters = []logFilter{{name: "decision", values: decisions[:]}, {name: "policy"}, {name: "who", groups: map[string]bool{"named": false, "anonymous": true}}}

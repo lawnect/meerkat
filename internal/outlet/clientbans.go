@@ -302,15 +302,18 @@ func fromABrowser(r *http.Request) bool {
 }
 
 // refuseBanned turns a request away with 403 when its client is banned, and
-// reports whether it did. Paths under /.well-known/ are exempt, as they are
-// from block rules: certificate checks and service discovery live there.
+// reports whether it did. Caddy handles actual ACME HTTP-01 challenges before
+// the Outlet; paths forwarded here, including /.well-known/, obey the ban.
 func (s *Store) refuseBanned(w http.ResponseWriter, r *http.Request, host string, began time.Time, ip string) bool {
 	if s.bans.held.Load() == 0 {
 		return false
 	}
 	found := s.bans.find(ip, s.now())
-	if found == nil || wellKnown(rulePaths(r.URL.Path)) {
+	if found == nil {
 		return false
+	}
+	if record := recordOf(r); record != nil {
+		record.blockRule = found.rule
 	}
 	found.hits.Add(1)
 	blocked(w)

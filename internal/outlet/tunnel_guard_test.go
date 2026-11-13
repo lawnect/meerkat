@@ -549,20 +549,107 @@ func TestTunnelGuardForwardsTheFirstFrameByteForByte(t *testing.T) {
 	})
 }
 
-// A known client isn't held back: rathole is dialled when it connects, before
-// it has said anything, and one byte is enough.
-func TestTunnelGuardDialsKnownClientsAtOnce(t *testing.T) {
-	rathole := newEchoRathole(t)
-	g := startGuard(t, rathole.address())
-	g.learn("127.0.0.1")
-	conn := connectGuard(t, g)
-	eventually(t, "rathole to be dialled for a silent known client", func() bool { return rathole.accepted.Load() == 1 })
-	echoes(t, conn, "x")
-	if first := rathole.firstBytes(); len(first) != 1 || first[0] != "x" {
-		t.Fatalf("rathole saw %q first", first)
+// Known and allowed addresses keep their admission privileges, but each new
+// connection must complete its first frame before it can reach rathole.
+func TestTunnelGuardWaitsForKnownAndAllowedFirstFrames(t *testing.T) {
+	for _, mode := range []string{"known", "allowed"} {
+		t.Run(mode, func(t *testing.T) {
+			rathole := newEchoRathole(t)
+			g := startGuard(t, rathole.address(), func(g *tunnelGuard) { g.firstBytes = 500 * time.Millisecond })
+			if mode == "known" {
+				g.learn("127.0.0.1")
+			} else {
+				g.config.Store(compileTunnelGuard(control.TunnelGuardSettings{Mode: control.TunnelGuardStrict, Allowed: []string{"127.0.0.0/8"}}))
+			}
+			conn := connectGuard(t, g)
+			frame := handshakeFrame(make([]byte, 48))
+			if _, err := conn.Write(frame[:len(frame)-1]); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(100 * time.Millisecond)
+			if n := rathole.accepted.Load(); n != 0 {
+				t.Fatalf("rathole was dialled %d times before the frame was complete", n)
+			}
+			if _, err := conn.Write(frame[len(frame)-1:]); err != nil {
+				t.Fatal(err)
+			}
+			got := make([]byte, len(frame))
+			_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			if _, err := io.ReadFull(conn, got); err != nil || !bytes.Equal(got, frame) {
+				t.Fatalf("the complete first frame was not forwarded intact: %x, %v", got, err)
+			}
+			if stats := g.stats(); stats.Refused.Idle != 0 || stats.Accepted != 1 {
+				t.Fatalf("stats = %+v", stats)
+			}
+			// A second, silent connection receives the same initial deadline.
+			silent := connectGuard(t, g)
+			if !closedByGuard(silent, 3*time.Second) {
+				t.Fatal("a silent privileged client wasn't closed")
+			}
+			eventually(t, "the refusal to count", func() bool { return g.stats().Refused.Idle == 1 })
+			if n := rathole.accepted.Load(); n != 1 {
+				t.Fatalf("rathole accepted %d connections, want only the complete frame", n)
+			}
+		})
 	}
-	if stats := g.stats(); stats.Refused.Idle != 0 || stats.Accepted != 1 {
-		t.Fatalf("stats = %+v", stats)
+}
+
+// Sharing a Connector's NAT address or an allowed range does not authenticate
+// a connection. Partial handshakes from those peers must stay at the guard,
+// while a complete handshake from the same address gets an immediate answer.
+func TestTunnelGuardKeepsSharedAddressStallersAwayFromRathole(t *testing.T) {
+	for _, mode := range []string{"known", "allowed"} {
+		t.Run(mode, func(t *testing.T) {
+			const patience, stallers = 150 * time.Millisecond, 4
+			var gaveUp atomic.Int64
+			rathole := newScriptedRathole(t, true, func(conn *net.TCPConn) {
+				if _, err := readFrame(conn, patience); err != nil {
+					gaveUp.Add(1)
+					conn.Close()
+					return
+				}
+				_, _ = conn.Write(handshakeFrame([]byte("welcome")))
+				go func() { defer conn.Close(); _, _ = io.Copy(conn, conn) }()
+			})
+			g := startGuard(t, rathole.address(), func(g *tunnelGuard) { g.firstBytes = time.Second })
+			if mode == "known" {
+				g.learn("127.0.0.1")
+			} else {
+				g.config.Store(compileTunnelGuard(control.TunnelGuardSettings{Mode: control.TunnelGuardStrict, Allowed: []string{"127.0.0.0/8"}}))
+			}
+			frame := handshakeFrame(make([]byte, 48))
+			for _, n := range []int{1, 2, 12, len(frame) - 1} {
+				conn := connectGuard(t, g)
+				if _, err := conn.Write(frame[:n]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			eventually(t, "the partial connections to be admitted", func() bool {
+				key := "127.0.0.1/32"
+				shard := &g.knownConns.shards[shardOf(key, inflightShards)]
+				shard.mu.Lock()
+				defer shard.mu.Unlock()
+				return shard.counts[key] == stallers
+			})
+			// Give the guard time to forward partial handshakes if it regresses.
+			time.Sleep(50 * time.Millisecond)
+			began := time.Now()
+			conn := connectGuard(t, g)
+			if _, err := conn.Write(frame); err != nil {
+				t.Fatal(err)
+			}
+			reply, err := readFrame(conn, 2*time.Second)
+			if err != nil || string(reply) != "welcome" {
+				t.Fatalf("the valid same-address handshake got %q, %v", reply, err)
+			}
+			if took := time.Since(began); took > 2*patience {
+				t.Fatalf("the valid same-address handshake took %v behind partial handshakes", took)
+			}
+			if n := rathole.accepted.Load(); n != 1 || gaveUp.Load() != 0 {
+				t.Fatalf("rathole accepted %d connections and timed out %d, want only the complete handshake", n, gaveUp.Load())
+			}
+			eventually(t, "the partial handshakes to time out at the guard", func() bool { return g.stats().Refused.Idle == stallers })
+		})
 	}
 }
 
@@ -749,13 +836,14 @@ func TestTunnelGuardClosesClientsAfterRatholeHangsUp(t *testing.T) {
 	})
 }
 
-// A known client's silence is its own business: rathole's slots are the
-// reason for the time limit, and Connectors keep tunnels open quietly.
+// A known client that completed its first frame may keep a tunnel quiet
+// indefinitely; the initial read deadline must be cleared.
 func TestTunnelGuardDoesNotTimeKnownClientsOut(t *testing.T) {
 	rathole := newEchoRathole(t)
 	g := startGuard(t, rathole.address(), func(g *tunnelGuard) { g.firstBytes = 100 * time.Millisecond })
 	g.learn("127.0.0.1")
 	conn := connectGuard(t, g)
+	echoes(t, conn, string(handshakeFrame(make([]byte, 48))))
 	time.Sleep(300 * time.Millisecond)
 	echoes(t, conn, "still here")
 	if g.stats().Refused.Idle != 0 {
@@ -1209,7 +1297,7 @@ func TestTunnelGuardShutdownCutsConnectionsAndLeaksNothing(t *testing.T) {
 	eventually(t, "both to be admitted as unknown", func() bool { return g.unknownConns.total.Load() == 2 })
 	g.learn("127.0.0.1")
 	known := connectGuard(t, g)
-	echoes(t, known, "known")
+	echoes(t, known, string(handshakeFrame(make([]byte, 48))))
 	eventually(t, "connections to be admitted", func() bool { return g.stats().Active == 2 })
 
 	within(t, "closing the guard", g.close)

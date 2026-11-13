@@ -524,7 +524,14 @@ export const accessDecisions = ['passed', 'challenged', 'denied'] as const satis
 // who 필터: 사용자·토큰을 밝힌 요청(named, 눈여겨볼 기록)과 익명 요청(anonymous, 반복 기록).
 export const accessRequesters = ['named', 'anonymous'] as const;
 export type AccessRequester = (typeof accessRequesters)[number];
-export interface AccessLogEntry {
+// Additive request evidence is optional for older logs and older backends.
+export interface LogEvidence {
+  request_id?: string;
+  escaped_path?: string;
+  path_truncated?: boolean;
+  escaped_path_truncated?: boolean;
+}
+export interface AccessLogEntry extends LogEvidence {
   id: number;
   at: string; // RFC 3339
   host: string;
@@ -547,7 +554,7 @@ export const failureCauses = [...serviceCauses, ...refusedCauses] as const;
 export type FailureCause = (typeof failureCauses)[number];
 // cause 필터는 원인 하나 외에 묶음 service(서비스 오류 전체), refused(Outlet 제한 전체: 거부와 최대 요청 시간 종료)도 받습니다.
 export const failureCauseGroups = ['service', 'refused'] as const;
-export interface FailureLogEntry {
+export interface FailureLogEntry extends LogEvidence {
   id: number;
   at: string;
   host: string;
@@ -558,6 +565,7 @@ export interface FailureLogEntry {
   status: number; // 클라이언트가 받은 상태 코드
   service: string; // 서비스 이름, 없으면 ''
   duration_ms: number;
+  block_rule?: string;
   routine: boolean; // Outlet이 거부한 원인(rate_limited·blocked·trapped·banned·too_long·too_large·busy)이면 true
 }
 
@@ -565,7 +573,7 @@ export interface FailureLogEntry {
 // class 필터는 상태 코드의 종류입니다.
 export const requestClasses = ['1xx', '2xx', '3xx', '4xx', '5xx'] as const;
 export type RequestClass = (typeof requestClasses)[number];
-export interface RequestLogEntry {
+export interface RequestLogEntry extends LogEvidence {
   id: number;
   at: string;
   host: string;
@@ -581,6 +589,10 @@ export interface RequestLogEntry {
   upstream_us: number; // 업스트림 응답 시간(마이크로초). 전달하지 않은 요청은 0
   bytes: number; // 클라이언트에 보낸 응답 본문 바이트
   agent: string; // User-Agent, 256바이트까지
+  access_decision?: AccessDecision | '';
+  access_reason?: string;
+  access_policy?: string;
+  block_rule?: string;
   routine: boolean; // 4xx이면 true(누구나 마음대로 만들 수 있어 한도와 삭제 순서에서 뒤로 밀립니다)
 }
 

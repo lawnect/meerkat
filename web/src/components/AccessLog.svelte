@@ -9,6 +9,7 @@
   import { param } from '../urlState.svelte';
   import type { DataTableFeatures } from './data-table/features';
   import LogCard from './LogCard.svelte';
+  import LogRequest from './LogRequest.svelte';
   import type { LogFilter } from './logFilter';
   import TruncateText from './TruncateText.svelte';
 
@@ -21,7 +22,7 @@
     offTitle: 'Logging is disabled',
     offHint: 'Enable it to keep the requests access policies decide.',
     suppressedTip: 'Each client\'s entries are logged up to 60 per minute for anonymous requests and 600 for the rest. Anything over that is only counted, and the count is since the Outlet started.',
-    search: 'Search by address, path, client or requester',
+    search: 'Search by request ID, address, path, client or requester',
     decision: 'Decision',
     policy: 'Policy',
     allDecisions: 'All decisions',
@@ -45,7 +46,7 @@
     offTitle: '기록이 비활성화되어 있습니다',
     offHint: '활성화하면 접근 정책이 판정한 요청을 기록합니다.',
     suppressedTip: '클라이언트별로 익명 요청은 분당 60건, 그 밖의 요청은 분당 600건까지만 기록합니다. 초과분은 건수만 집계하며, Outlet 시작 이후의 누계입니다.',
-    search: '주소, 경로, 클라이언트, 요청자 검색',
+    search: '요청 ID, 주소, 경로, 클라이언트, 요청자 검색',
     decision: '판정',
     policy: '정책',
     allDecisions: '모든 판정',
@@ -102,7 +103,7 @@
 {#snippet requestCell(entry: AccessLogEntry)}
   <div class="grid gap-0.5">
     <TruncateText text={entry.host} class="font-mono" />
-    <span class="flex min-w-0 items-center gap-1.5 font-mono text-muted-foreground"><span>{entry.method}</span><TruncateText text={entry.path} /></span>
+    <LogRequest {entry} />
   </div>
 {/snippet}
 

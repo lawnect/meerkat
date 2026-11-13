@@ -77,6 +77,63 @@ func TestBlockRulesMatchNormalizedPaths(t *testing.T) {
 	}
 }
 
+func TestWellKnownOnlyExemptsBuiltInHiddenFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rule control.BlockRule
+	}{
+		{"explicit discovery path", control.BlockRule{ID: "mine", Conditions: []control.BlockCondition{{Operator: control.BlockEquals, Value: "/.well-known/security.txt"}}}},
+		{"custom hidden rule", control.BlockRule{ID: "mine", Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/."}}}},
+		{"customized built-in", control.BlockRule{ID: "hidden-files", Conditions: []control.BlockCondition{{Operator: control.BlockStartsWith, Value: "/."}, {Operator: control.BlockEquals, Value: "/private"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Store{}
+			tc.rule.Name, tc.rule.Enabled = "Custom", true
+			tc.rule.Hosts = []string{"app.example.com"}
+			s.applyBlockRules(control.BlockRules{Rules: []control.BlockRule{tc.rule}})
+			if rule := s.blockedBy("app.example.com", "/.well-known/security.txt"); rule == nil || rule.id != tc.rule.ID {
+				t.Fatalf("explicit rule bypassed: %+v", rule)
+			}
+			if rule := s.blockedBy("other.example.com", "/.well-known/security.txt"); rule != nil {
+				t.Fatalf("host scope ignored: %+v", rule)
+			}
+		})
+	}
+	// Both server interpretations must stay in the discovery directory. This
+	// still matters if the administrator deliberately deletes the honeypot.
+	s := &Store{}
+	s.applyBlockRules(control.BlockRules{Rules: control.DefaultBlockRules().Rules[1:2]})
+	if rule := s.blockedBy("app.example.com", "/.well-known/.;/../.secret"); rule == nil || rule.id != "hidden-files" {
+		t.Fatalf("ambiguous discovery escape bypassed: %+v", rule)
+	}
+}
+
+func TestEncodedScannerPathsAreRefused(t *testing.T) {
+	f := newBanFixture(t)
+	for _, path := range []string{
+		"/backup/%2egit/objects/info/packs", "/backup/.aws%2fcredentials",
+		"/.well-known/%2eenv", "/backup%5c.ssh%5cid_rsa", "/backup/.git%3bignored/config",
+	} {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.Host = "app.example.com"
+		// A browser can be induced to fetch a probe. It must get a refusal
+		// without causing a ban for the person behind it.
+		r.Header.Set("X-Forwarded-For", "203.0.113.9")
+		r.Header.Set("Sec-Fetch-Site", "cross-site")
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, r)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("encoded probe %s: %d", path, w.Code)
+		}
+	}
+	if bans := f.bans(t, ""); bans.Total != 0 {
+		t.Fatalf("cross-site browser probes caused bans: %+v", bans)
+	}
+	if got := f.as("203.0.113.9", "app.example.com", "/.well-known/webfinger"); got != http.StatusOK {
+		t.Fatalf("browser discovery after probes: %d", got)
+	}
+}
+
 // A path disguised with trailing dots or spaces in a segment matches as
 // the server that drops them reads it; a pattern holds with or without the
 // trailing slash; conditions that only make sense on the raw path, such as
