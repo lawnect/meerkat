@@ -13,6 +13,11 @@ package proxy
 // its TLS handshake asked for (certificates are per host, so browsers never
 // do this): the Host header can't pick another address, and neither can an
 // HTTP/2 :path holding a URL, which @not_a_path doesn't see.
+//
+// per_host requires our pinned Caddy image's metrics-host normalization patch.
+// It strips ports before allocating labels, matching strict_sni_host's check:
+// otherwise one authorized SNI and arbitrary Host ports create unlimited series.
+// Plain HTTP catch-all hosts retain Caddy's default shared _other label.
 const caddyGlobal = `	metrics {
 		per_host
 	}

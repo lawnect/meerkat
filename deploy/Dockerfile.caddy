@@ -1,1 +1,22 @@
+# Both build and runtime images are immutable multi-platform manifest pins.
+FROM caddy:2.11.7-builder@sha256:c4cd20eaa0b69112fd5d4f721ffc9671687e1d5d0b155c8620cf7546dbef94c0 AS build
+# The annotated v2.11.7 tag resolves to this commit. Fail closed if it moves.
+RUN git clone --depth 1 --branch v2.11.7 https://github.com/caddyserver/caddy.git /src && \
+    test "$(git -C /src rev-parse HEAD)" = 72dd0fb067f6d7826c7f79907670ba4a713bfe37
+WORKDIR /src
+# Normalize before Prometheus allocates host labels; preserve per-host usage.
+# strict_sni_host remains required for HTTPS catch-all cardinality protection.
+COPY deploy/caddy/normalize-metrics-host.patch /tmp/normalize-metrics-host.patch
+RUN git apply --check /tmp/normalize-metrics-host.patch && \
+    git apply /tmp/normalize-metrics-host.patch && \
+    go test -mod=readonly ./modules/caddyhttp \
+      -run 'TestMetricsHostPorts|TestMetricsCardinalityProtection|TestMetricsHTTPSCatchAll' -count=1 && \
+    CGO_ENABLED=0 go build -mod=readonly -buildvcs=false -trimpath \
+      -ldflags '-w -s -X github.com/caddyserver/caddy/v2.CustomVersion=v2.11.7-meerkat.1' \
+      -o /out/caddy ./cmd/caddy
+
 FROM caddy:2.11.7@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489
+COPY --from=build /out/caddy /usr/bin/caddy
+# Replacing the executable clears the stock image's file capabilities.
+RUN setcap cap_net_bind_service=+ep /usr/bin/caddy && \
+    caddy version | grep -F 'v2.11.7-meerkat.1'

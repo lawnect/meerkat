@@ -1,0 +1,89 @@
+diff --git a/modules/caddyhttp/metrics.go b/modules/caddyhttp/metrics.go
+index a30322e..6a2814e 100644
+--- a/modules/caddyhttp/metrics.go
++++ b/modules/caddyhttp/metrics.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"errors"
+ 	"fmt"
++	"net"
+ 	"net/http"
+ 	"strings"
+ 	"sync"
+@@ -323,10 +324,18 @@ func (h *metricsInstrumentedRoute) ServeHTTP(w http.ResponseWriter, r *http.Requ
+ 	isHTTPS := r.TLS != nil
+ 
+ 	if h.metrics.PerHost {
++		// Use the same authority normalization as strict_sni_host before any
++		// metric vector allocates a label. Ports are client-controlled and do
++		// not identify a different host, even on an authenticated TLS connection.
++		host, _, err := net.SplitHostPort(r.Host)
++		if err != nil {
++			host = r.Host
++		}
++		host = strings.ToLower(host)
+ 		// Apply cardinality protection for host metrics
+-		if h.metrics.shouldAllowHostMetrics(r.Host, isHTTPS) {
+-			labels["host"] = strings.ToLower(r.Host)
+-			statusLabels["host"] = strings.ToLower(r.Host)
++		if h.metrics.shouldAllowHostMetrics(host, isHTTPS) {
++			labels["host"] = host
++			statusLabels["host"] = host
+ 		} else {
+ 			// Use a catch-all label for unallowed hosts to prevent cardinality explosion
+ 			labels["host"] = "_other"
+diff --git a/modules/caddyhttp/metrics_test.go b/modules/caddyhttp/metrics_test.go
+index d75b3ca..0602f65 100644
+--- a/modules/caddyhttp/metrics_test.go
++++ b/modules/caddyhttp/metrics_test.go
+@@ -629,3 +629,50 @@ func BenchmarkSingleRouteMetrics(b *testing.B) {
+ 		ih.ServeHTTP(w, r)
+ 	}
+ }
++
++// Meerkat regression: TLS authenticates the hostname, never the Host port.
++// No metric family may allocate a distinct series for its arbitrary suffix.
++func TestMetricsHostPorts(t *testing.T) {
++	ctx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
++	defer cancel()
++	metrics := &Metrics{
++		PerHost:        true,
++		hasHTTPSServer: true,
++		httpMetrics:    &httpMetrics{},
++		allowedHosts:   make(map[string]struct{}),
++	}
++	handler := newMetricsInstrumentedRoute(ctx, "test", HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
++		_, err := w.Write([]byte("hello"))
++		return err
++	}), metrics)
++	hosts := []string{"app.example.com", "app.example.com:443", "APP.EXAMPLE.COM:0443", "app.example.com:port-a", "app.example.com:port-b", "app.example.com:"}
++	for _, host := range hosts {
++		r := httptest.NewRequest("POST", "https://app.example.com/", strings.NewReader("body"))
++		r.Host = host
++		if err := handler.ServeHTTP(httptest.NewRecorder(), r); err != nil {
++			t.Fatal(err)
++		}
++	}
++	families, err := ctx.GetMetricsRegistry().Gather()
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, family := range families {
++		if !strings.HasPrefix(family.GetName(), "caddy_http_") {
++			continue
++		}
++		for _, metric := range family.Metric {
++			for _, label := range metric.Label {
++				if label.GetName() == "host" && label.GetValue() != "app.example.com" {
++					t.Fatalf("%s allocated unnormalized host %q", family.GetName(), label.GetValue())
++				}
++			}
++		}
++	}
++	if got := testutil.ToFloat64(metrics.httpMetrics.requestCount); got != float64(len(hosts)) {
++		t.Fatalf("requests = %v, want %d", got, len(hosts))
++	}
++	if got := testutil.CollectAndCount(metrics.httpMetrics.responseSize); got != 1 {
++		t.Fatalf("response size series = %d, want 1", got)
++	}
++}
