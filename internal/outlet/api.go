@@ -871,8 +871,9 @@ func (s *Store) checkOutletDomainDNS(w http.ResponseWriter, r *http.Request) {
 }
 
 // dnsHostnames lists the names that must resolve to the Outlet for a domain:
-// the management host on the primary domain, a fresh probe name in wildcard
-// mode or every public address in hosts mode, and the tunnel host when it
+// the management host on the primary domain, a fresh probe name under each
+// parent a * record must cover in wildcard mode or every public address in
+// hosts mode, and the tunnel host when it
 // belongs to this domain. The domain root is checked only when it is the
 // tunnel host, because it may serve another site.
 func (s *Store) dnsHostnames(ctx context.Context, outlet control.Outlet, domain string) ([]string, error) {
@@ -897,8 +898,21 @@ func (s *Store) dnsHostnames(ctx context.Context, outlet control.Outlet, domain 
 			add(hostname)
 		}
 	} else {
-		// Query a fresh subdomain to test whether the wildcard record is active.
-		add("check-" + strings.ToLower(strings.NewReplacer("_", "a", "-", "a").Replace(Token()[:12])) + "." + domain)
+		// Query a fresh subdomain to test whether the wildcard record is
+		// active. A * record stands for a single label once the name above it
+		// has records of its own, so each deeper parent a public address uses
+		// (api.example.com for app.api.example.com) is probed under its own *.
+		routes, err := s.control.DomainRouteHostnames(ctx, domain)
+		if err != nil {
+			return nil, err
+		}
+		probe := "check-" + strings.ToLower(strings.NewReplacer("_", "a", "-", "a").Replace(Token()[:12]))
+		add(probe + "." + domain)
+		for _, hostname := range routes {
+			if _, parent, _ := strings.Cut(hostname, "."); parent != domain {
+				add(probe + "." + parent)
+			}
+		}
 	}
 	tunnel, err := s.tunnel(ctx, outlet.AdminHostname)
 	if err != nil {

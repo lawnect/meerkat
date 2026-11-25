@@ -51,7 +51,7 @@
     sharedSettings: (hostname: string) => `Shared address settings for ${hostname}`,
     deleteSharedRouteWarning: 'This removes only this service from the address; the other targets keep receiving requests.',
     reservedHostname: 'This address is reserved for the Outlet admin.',
-    invalidSubdomain: 'Check the subdomain. Only letters, numbers, and hyphens are allowed.',
+    invalidSubdomain: 'Check the subdomain. Use letters, numbers, and hyphens, with a dot between levels.',
     addRouteFailed: (code: string) => `Couldn't create the public address: ${code}`,
     routeDisabled: 'Disabled',
     routeConfigError: 'Configuration error',
@@ -111,7 +111,7 @@
     sharedSettings: (hostname: string) => `${hostname} 주소 공유 설정`,
     deleteSharedRouteWarning: '이 서비스만 주소에서 제외되며, 다른 대상은 계속 요청을 받습니다.',
     reservedHostname: '관리 콘솔용으로 예약된 주소입니다.',
-    invalidSubdomain: '하위 도메인 형식이 올바르지 않습니다. 영문자, 숫자, 하이픈만 사용할 수 있습니다.',
+    invalidSubdomain: '하위 도메인 형식이 올바르지 않습니다. 영문자, 숫자, 하이픈을 사용할 수 있으며, 여러 단계는 점(.)으로 구분합니다.',
     addRouteFailed: (code: string) => `공개 주소 생성 중 오류가 발생했습니다: ${code}`,
     routeDisabled: '비활성화됨',
     routeConfigError: '설정 오류',
@@ -173,7 +173,12 @@
   let policyOpen = $state(false);
   const domains = $derived(outlet.domains?.length ? outlet.domains : outlet.domain ? [outlet.domain] : []);
   const baseDomain = $derived(domains.includes(selectedDomain) ? selectedDomain : domains[0] || '');
-  const routeHostname = $derived(subdomain.trim().toLowerCase() && baseDomain ? `${subdomain.trim().toLowerCase()}.${baseDomain}` : '');
+  // 하위 도메인은 여러 단계(darttk.api)일 수 있습니다. 전체 주소를 붙여 넣으면 끝의 도메인을 덜어냅니다.
+  const routeLabel = $derived.by(() => {
+    const value = subdomain.trim().toLowerCase();
+    return baseDomain && value.endsWith(`.${baseDomain}`) ? value.slice(0, -baseDomain.length - 1) : value;
+  });
+  const routeHostname = $derived(routeLabel && baseDomain ? `${routeLabel}.${baseDomain}` : '');
   const sharePrompt = $derived(Boolean(sharePromptHost) && sharePromptHost === routeHostname);
   const hasRoutes = $derived(record.routes.length > 0);
   const targetAddress = $derived(`${record.service.target.host.includes(':') ? `[${record.service.target.host}]` : record.service.target.host}:${record.service.target.port}`);
@@ -499,7 +504,7 @@
             <Field.Label for={`route-${record.service.id}`}>{t().subdomain}</Field.Label>
             <InputGroup.Root>
               <InputGroup.Addon><Globe aria-hidden="true" /></InputGroup.Addon>
-              <InputGroup.Input id={`route-${record.service.id}`} aria-describedby={`domain-suffix-${record.service.id}`} bind:value={subdomain} disabled={busy} oninput={() => { addError = ''; }} placeholder="app" pattern={'[a-zA-Z0-9](?:[a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?'} maxlength={63} autocapitalize="none" spellcheck={false} required />
+              <InputGroup.Input id={`route-${record.service.id}`} aria-describedby={`domain-suffix-${record.service.id}`} bind:value={subdomain} disabled={busy} oninput={() => { addError = ''; }} placeholder="app" pattern={'[a-zA-Z0-9](?:[a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?)*'} maxlength={253} autocapitalize="none" spellcheck={false} required />
               <InputGroup.Addon align="inline-end"><InputGroup.Text id={`domain-suffix-${record.service.id}`}>.{baseDomain}</InputGroup.Text></InputGroup.Addon>
             </InputGroup.Root>
             {#if routeHostname}

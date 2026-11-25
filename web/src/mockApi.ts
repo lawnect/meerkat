@@ -586,7 +586,7 @@ function modeOf(raw: string | undefined, fallback: DomainMode = 'wildcard'): Dom
   return raw;
 }
 
-// 실제 Outlet과 같은 규칙으로 DNS 확인 대상을 고릅니다. 와일드카드는 임의의 하위 주소 하나,
+// 실제 Outlet과 같은 규칙으로 DNS 확인 대상을 고릅니다. 와일드카드는 임의의 하위 주소,
 // 개별 호스트는 이 도메인의 공개 주소마다 확인합니다. 관리 주소와, 이 도메인에 속한 터널 주소도 함께 봅니다.
 function dnsHostnames(domain: string): string[] {
   const hosts = new Set<string>();
@@ -594,7 +594,12 @@ function dnsHostnames(domain: string): string[] {
   if (state.outlet.modes[domain] === 'hosts') {
     for (const route of state.routes) if (route.hostname.endsWith(`.${domain}`)) hosts.add(route.hostname);
   } else {
+    // * 레코드는 한 단계만 확실히 덮으므로, 더 깊은 공개 주소의 상위마다 같은 확인 이름을 둡니다.
     hosts.add(`check-example.${domain}`);
+    for (const route of state.routes) {
+      const parent = route.hostname.slice(route.hostname.indexOf('.') + 1);
+      if (route.hostname.endsWith(`.${domain}`) && parent !== domain) hosts.add(`check-example.${parent}`);
+    }
   }
   const tunnelHost = outletResponse().tunnel?.address.replace(/:\d+$/, '') ?? '';
   if (tunnelHost === domain || tunnelHost.endsWith(`.${domain}`)) hosts.add(tunnelHost);

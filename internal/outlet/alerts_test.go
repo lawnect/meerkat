@@ -721,3 +721,36 @@ func TestDNSFailureHostsModeNamesRoutes(t *testing.T) {
 		t.Fatalf("messages = %q", texts)
 	}
 }
+
+// A public address one level deeper (app.api.example.com) needs a * under its
+// own parent; the alert names that record, not the random probe.
+func TestDNSFailureWildcardModeNamesNestedRecord(t *testing.T) {
+	a := newAlertFixture(t)
+	a.configureTelegram(t, false)
+	ctx := context.Background()
+	if _, err := a.db.SetDomainMode(ctx, "example.com", control.DomainWildcard); err != nil {
+		t.Fatal(err)
+	}
+	connector, _ := a.db.CreateConnector(ctx, "edge-a")
+	service, err := a.db.CreateService(ctx, connector.ID, "web", "http", contract.Target{Host: "app", Port: 3000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, hostname := range []string{"www.example.com", "app.api.example.com"} {
+		if _, err := a.db.CreateHTTPRoute(ctx, service.ID, hostname, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// *.example.com resolves; nothing answers under api.example.com.
+	a.store.lookupIP = func(_ context.Context, host string) ([]net.IPAddr, error) {
+		if strings.HasSuffix(host, ".api.example.com") {
+			return nil, errors.New("no such host")
+		}
+		return []net.IPAddr{{IP: net.ParseIP("203.0.113.1")}}, nil
+	}
+	a.evaluate()
+	texts := a.texts()
+	if len(texts) != 1 || !strings.Contains(texts[0], "Names: <code>*.api.example.com</code>\n") {
+		t.Fatalf("messages = %q", texts)
+	}
+}

@@ -79,6 +79,16 @@ func TestDomainModesAndDNSHostnames(t *testing.T) {
 			t.Fatalf("tunnel %s hostnames = %v, %v", address, hostnames, err)
 		}
 	}
+	// A deeper public address adds the same probe under its own parent, since
+	// *.example.net need not answer for it; www.example.net adds nothing. The
+	// tunnel host, last, is whichever the loop above set last.
+	if _, err := db.CreateHTTPRoute(ctx, service.ID, "app.api.example.net", false); err != nil {
+		t.Fatal(err)
+	}
+	hostnames, err = store.dnsHostnames(ctx, current, "example.net")
+	if err != nil || len(hostnames) != 3 || hostnames[1] != strings.Replace(hostnames[0], ".example.net", ".api.example.net", 1) || !strings.HasSuffix(hostnames[2], "example.net") {
+		t.Fatalf("nested wildcard hostnames = %v, %v", hostnames, err)
+	}
 }
 
 func TestConnectorDescriptionAPI(t *testing.T) {

@@ -332,6 +332,8 @@
   });
 
   const modeOf = (domain: string): DomainMode => outlet.modes?.[domain] ?? 'wildcard';
+  // 첫 조각을 뺀 상위 이름입니다(app.api.example.com → api.example.com).
+  const parentOf = (host: string): string => host.slice(host.indexOf('.') + 1);
   const detailMode = $derived(detail ? draftMode ?? modeOf(detail) : 'wildcard');
   const modeDirty = $derived(Boolean(detail && draftMode && draftMode !== modeOf(detail)));
 
@@ -386,16 +388,18 @@
   });
 
   // DNS 제공자에 만들 레코드입니다. 와일드카드는 * 하나면 되고, 개별 호스트는 관리 주소·공개 주소마다 만듭니다.
+  // * 레코드는 한 단계만 확실히 덮으므로, 더 깊은 공개 주소(darttk.api.example.com)는 그 상위의 *(*.api.example.com)를 더합니다.
   // 터널 주소가 이 도메인에 속하고 위 레코드로 덮이지 않으면(루트이거나 개별 호스트 방식) 함께 보여줍니다.
   function recordsOf(domain: string, mode: DomainMode = modeOf(domain)): string[] {
     const under = (host: string) => host.endsWith(`.${domain}`);
+    const addresses = [...new Set(routes.map((route) => route.hostname).filter(under))].sort();
     const hosts = mode === 'wildcard'
-      ? [`*.${domain}`]
+      ? [...new Set([domain, ...addresses.map(parentOf)])].map((parent) => `*.${parent}`)
       : [
         ...(domain === outlet.domain && outlet.admin_hostname ? [outlet.admin_hostname] : []),
-        ...[...new Set(routes.map((route) => route.hostname).filter(under))].sort(),
+        ...addresses,
       ];
-    const tunnelCovered = mode === 'wildcard' ? under(tunnelHost) : hosts.includes(tunnelHost);
+    const tunnelCovered = hosts.includes(mode === 'wildcard' ? `*.${parentOf(tunnelHost)}` : tunnelHost);
     if ((tunnelHost === domain || under(tunnelHost)) && !tunnelCovered) hosts.push(tunnelHost);
     return hosts;
   }
@@ -834,7 +838,7 @@
         {@const resolved = record.addresses.length > 0}
         <Item.Root variant="outline" size="sm" role="listitem">
           <Item.Content>
-            <Item.Title class="line-clamp-none text-sm wrap-anywhere">{outlet.modes?.[domain] === 'hosts' || record.hostname === domain || record.hostname === outlet.admin_hostname || record.hostname === tunnelHost ? record.hostname : `*.${domain}`}</Item.Title>
+            <Item.Title class="line-clamp-none text-sm wrap-anywhere">{outlet.modes?.[domain] === 'hosts' || record.hostname === domain || record.hostname === outlet.admin_hostname || record.hostname === tunnelHost ? record.hostname : `*.${parentOf(record.hostname)}`}</Item.Title>
             {#if resolved}<Item.Description class="line-clamp-none font-mono text-xs wrap-anywhere">{record.addresses.join(', ')}</Item.Description>{/if}
           </Item.Content>
           <Item.Actions><Status label={resolved ? t().resolved : t().dnsNoResponse} value={resolved ? 'connected' : 'error'} /></Item.Actions>
