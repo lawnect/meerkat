@@ -79,14 +79,16 @@ func TestDomainModesAndDNSHostnames(t *testing.T) {
 			t.Fatalf("tunnel %s hostnames = %v, %v", address, hostnames, err)
 		}
 	}
-	// A deeper public address adds the same probe under its own parent, since
-	// *.example.net need not answer for it; www.example.net adds nothing. The
-	// tunnel host, last, is whichever the loop above set last.
-	if _, err := db.CreateHTTPRoute(ctx, service.ID, "app.api.example.net", false); err != nil {
-		t.Fatal(err)
+	// Addresses a * record may stop covering are looked up as they are: one
+	// more than a label under the domain, and one with another below it.
+	// www.example.net is left to the probe.
+	for _, hostname := range []string{"app.api.example.net", "api.example.net"} {
+		if _, err := db.CreateHTTPRoute(ctx, service.ID, hostname, false); err != nil {
+			t.Fatal(err)
+		}
 	}
 	hostnames, err = store.dnsHostnames(ctx, current, "example.net")
-	if err != nil || len(hostnames) != 3 || hostnames[1] != strings.Replace(hostnames[0], ".example.net", ".api.example.net", 1) || !strings.HasSuffix(hostnames[2], "example.net") {
+	if err != nil || len(hostnames) != 4 || !isWildcardProbe(hostnames[0], "example.net") || hostnames[1] != "api.example.net" || hostnames[2] != "app.api.example.net" || !strings.HasSuffix(hostnames[3], "example.net") {
 		t.Fatalf("nested wildcard hostnames = %v, %v", hostnames, err)
 	}
 }

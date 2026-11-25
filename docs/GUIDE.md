@@ -171,7 +171,7 @@ Keep using HTTPS so that session cookies work correctly. Even with Telegram logi
    and the admin hostname `<8-character random name>.PRIMARY_DOMAIN` is set (for example, `k7m2x9qa.example.com`). This name stays the same even if you change domains.
    An Outlet that registered a domain before this feature existed keeps using `meerkat.PRIMARY_DOMAIN`, so existing Connectors and bookmarks don't break.
 2. In Cloudflare DNS, point an A record to the Outlet's public IPv4 address and set it to DNS only.
-   - **Wildcard:** A single `*` record sends the admin hostname and all public addresses to the Outlet.
+   - **Wildcard:** A single `*` record sends the admin hostname and all public addresses to the Outlet, including addresses more than one level down such as `app.api.example.com`. A name in between that has its own record (here `api.example.com`) stops the `*` from answering below it; then add `*.api.example.com` or a record for each address. Cloudflare's Universal SSL certificate covers only one level, so keep these records DNS only.
    - **Individual hosts:** Create a record for the admin hostname and one for each public address. Choose this when the root or other subdomains run on another server.
 
    The root (`@`) is needed only if you set the tunnel address directly to the root. If you use IPv6, also set AAAA records.
@@ -195,7 +195,7 @@ On the first HTTPS connection to each host, Caddy asks the Outlet whether the ho
 keeps pointing public addresses at the server, so keep it, but no wildcard certificate is issued.
 After the certificate is issued, open `https://ADMIN_HOSTNAME` and sign in again. The root address of the primary domain only responds to API connections from existing Connectors that registered with the root, and it doesn't serve the admin console. Keep the SSH tunnel as a recovery path for DNS or
 certificate failures. Register additional domains in **Domains**, and
-choose wildcard or individual-host mode for each domain. **Check DNS** looks up only the names that fit the mode (an arbitrary subdomain for wildcard, each public address for individual hosts, the admin hostname for the primary domain, and the tunnel addresses that belong to that domain).
+choose wildcard or individual-host mode for each domain. **Check DNS** looks up only the names that fit the mode (for wildcard, an arbitrary subdomain plus each public address more than one level down or with another address under it; each public address for individual hosts; the admin hostname for the primary domain; and the tunnel addresses that belong to that domain).
 
 Public requests are terminated as HTTPS at Caddy and then forwarded over HTTP through the Outlet and the tunnel to the internal app. The internal app receives the original public `Host` along with `X-Forwarded-Host`, `X-Forwarded-Proto: https`, `X-Forwarded-Port: 443`, `X-Forwarded-For`, and `X-Real-IP`. `X-Real-IP` is the single client IP Caddy saw (no port or list), set the same way for WebSocket upgrades; a value the client sent is replaced, and the header is left out when the address is unknown. Use it as the trusted client address. Client-address headers a client could forge (`CF-Connecting-IP`, `CF-Connecting-IPv6`, `True-Client-IP`, `X-Client-IP`, `Forwarded`) are removed, so an app moved from Cloudflare must switch to `X-Real-IP`. For the app to detect HTTPS, enable trust for proxy headers in the app's proxy settings. If the app requires TLS even on the internal connection, it isn't compatible with the current HTTP connection target.
 

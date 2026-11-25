@@ -52,6 +52,7 @@
     deleteSharedRouteWarning: 'This removes only this service from the address; the other targets keep receiving requests.',
     reservedHostname: 'This address is reserved for the Outlet admin.',
     invalidSubdomain: 'Check the subdomain. Use letters, numbers, and hyphens, with a dot between levels.',
+    hostnameTooLong: 'The address can be up to 253 characters.',
     addRouteFailed: (code: string) => `Couldn't create the public address: ${code}`,
     routeDisabled: 'Disabled',
     routeConfigError: 'Configuration error',
@@ -112,6 +113,7 @@
     deleteSharedRouteWarning: '이 서비스만 주소에서 제외되며, 다른 대상은 계속 요청을 받습니다.',
     reservedHostname: '관리 콘솔용으로 예약된 주소입니다.',
     invalidSubdomain: '하위 도메인 형식이 올바르지 않습니다. 영문자, 숫자, 하이픈을 사용할 수 있으며, 여러 단계는 점(.)으로 구분합니다.',
+    hostnameTooLong: '주소는 최대 253자까지 입력할 수 있습니다.',
     addRouteFailed: (code: string) => `공개 주소 생성 중 오류가 발생했습니다: ${code}`,
     routeDisabled: '비활성화됨',
     routeConfigError: '설정 오류',
@@ -172,12 +174,12 @@
   let policyHostname = $state('');
   let policyOpen = $state(false);
   const domains = $derived(outlet.domains?.length ? outlet.domains : outlet.domain ? [outlet.domain] : []);
-  const baseDomain = $derived(domains.includes(selectedDomain) ? selectedDomain : domains[0] || '');
-  // 하위 도메인은 여러 단계(darttk.api)일 수 있습니다. 전체 주소를 붙여 넣으면 끝의 도메인을 덜어냅니다.
-  const routeLabel = $derived.by(() => {
-    const value = subdomain.trim().toLowerCase();
-    return baseDomain && value.endsWith(`.${baseDomain}`) ? value.slice(0, -baseDomain.length - 1) : value;
-  });
+  // 하위 도메인은 여러 단계(app.api)일 수 있습니다. 등록 도메인으로 끝나는 전체 주소를 붙여 넣으면 그 도메인을 고른 것으로 보고
+  // 하위 이름만 남깁니다(도메인끼리는 겹치지 않으므로 하나만 맞습니다). 도메인만 넣으면 하위 이름이 비어 만들 수 없습니다.
+  const typedName = $derived(subdomain.trim().toLowerCase());
+  const pastedDomain = $derived(domains.find((domain) => typedName === domain || typedName.endsWith(`.${domain}`)) ?? '');
+  const baseDomain = $derived(pastedDomain || (domains.includes(selectedDomain) ? selectedDomain : domains[0] || ''));
+  const routeLabel = $derived(pastedDomain ? typedName.slice(0, Math.max(0, typedName.length - pastedDomain.length - 1)) : typedName);
   const routeHostname = $derived(routeLabel && baseDomain ? `${routeLabel}.${baseDomain}` : '');
   const sharePrompt = $derived(Boolean(sharePromptHost) && sharePromptHost === routeHostname);
   const hasRoutes = $derived(record.routes.length > 0);
@@ -260,7 +262,11 @@
 
   async function addRoute(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-    if (!baseDomain || !routeHostname) return;
+    if (!baseDomain) return;
+    if (!routeHostname || routeHostname.length > 253) {
+      addError = routeHostname ? t().hostnameTooLong : t().invalidSubdomain;
+      return;
+    }
     // 보낸 주소를 기준으로 응답을 해석합니다. 그 사이 입력이 바뀌면 응답을 무시합니다.
     const hostname = routeHostname;
     const shared = sharePromptHost === hostname;
@@ -494,7 +500,7 @@
         <Field.Group>
           <Field.Field>
             <Field.Label for={`domain-${record.service.id}`}>{t().domain}</Field.Label>
-            <NativeSelect.Root id={`domain-${record.service.id}`} class="w-full" disabled={busy} bind:value={() => baseDomain, (next) => { selectedDomain = next; }}>
+            <NativeSelect.Root id={`domain-${record.service.id}`} class="w-full" disabled={busy} bind:value={() => baseDomain, (next) => { if (pastedDomain) subdomain = routeLabel; selectedDomain = next; }}>
               {#each domains as domain (domain)}
                 <NativeSelect.Option value={domain}>{domain}</NativeSelect.Option>
               {/each}

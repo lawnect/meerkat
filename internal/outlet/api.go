@@ -870,12 +870,24 @@ func (s *Store) checkOutletDomainDNS(w http.ResponseWriter, r *http.Request) {
 	reply(w, http.StatusOK, result)
 }
 
+const wildcardProbePrefix = "check-"
+
+// isWildcardProbe reports whether hostname has the form of the probe name
+// dnsHostnames makes for domain: check- and 12 letters or digits, directly
+// under the domain.
+func isWildcardProbe(hostname, domain string) bool {
+	label, ok := strings.CutSuffix(hostname, "."+domain)
+	random, probe := strings.CutPrefix(label, wildcardProbePrefix)
+	return ok && probe && len(random) == 12 && strings.Trim(random, "abcdefghijklmnopqrstuvwxyz0123456789") == ""
+}
+
 // dnsHostnames lists the names that must resolve to the Outlet for a domain:
-// the management host on the primary domain, a fresh probe name under each
-// parent a * record must cover in wildcard mode or every public address in
-// hosts mode, and the tunnel host when it
-// belongs to this domain. The domain root is checked only when it is the
-// tunnel host, because it may serve another site.
+// the management host on the primary domain, every public address in hosts
+// mode, and the tunnel host when it belongs to this domain. Wildcard mode
+// looks up a fresh probe name instead of each address, plus the addresses a
+// * record may stop covering: those more than one label below the domain and
+// those with another address below them. The domain root is checked only when
+// it is the tunnel host, because it may serve another site.
 func (s *Store) dnsHostnames(ctx context.Context, outlet control.Outlet, domain string) ([]string, error) {
 	hostnames := []string{}
 	add := func(hostname string) {
@@ -889,28 +901,26 @@ func (s *Store) dnsHostnames(ctx context.Context, outlet control.Outlet, domain 
 	if domain == outlet.Domain && outlet.AdminHostname != "" {
 		add(outlet.AdminHostname)
 	}
+	routes, err := s.control.DomainRouteHostnames(ctx, domain)
+	if err != nil {
+		return nil, err
+	}
 	if outlet.Modes[domain] == control.DomainHosts {
-		routes, err := s.control.DomainRouteHostnames(ctx, domain)
-		if err != nil {
-			return nil, err
-		}
 		for _, hostname := range routes {
 			add(hostname)
 		}
 	} else {
-		// Query a fresh subdomain to test whether the wildcard record is
-		// active. A * record stands for a single label once the name above it
-		// has records of its own, so each deeper parent a public address uses
-		// (api.example.com for app.api.example.com) is probed under its own *.
-		routes, err := s.control.DomainRouteHostnames(ctx, domain)
-		if err != nil {
-			return nil, err
-		}
-		probe := "check-" + strings.ToLower(strings.NewReplacer("_", "a", "-", "a").Replace(Token()[:12]))
-		add(probe + "." + domain)
+		// Query a fresh subdomain to test whether the wildcard record is active.
+		add(wildcardProbePrefix + strings.ToLower(strings.NewReplacer("_", "a", "-", "a").Replace(Token()[:12])) + "." + domain)
+		// *.example.com answers at any depth only while the names in between
+		// have no records (RFC 4592): app.api.example.com stops resolving once
+		// api.example.com has one, and api.example.com stops when a record
+		// appears below it. These addresses are looked up as they are, so a
+		// record for just the address passes too.
 		for _, hostname := range routes {
-			if _, parent, _ := strings.Cut(hostname, "."); parent != domain {
-				add(probe + "." + parent)
+			below := slices.ContainsFunc(routes, func(other string) bool { return strings.HasSuffix(other, "."+hostname) })
+			if strings.Contains(strings.TrimSuffix(hostname, "."+domain), ".") || below {
+				add(hostname)
 			}
 		}
 	}

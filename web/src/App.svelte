@@ -4,6 +4,7 @@
   import { clearStoredEnrollments, connectorState } from './connectorState.svelte';
   import { connectorDetailPath, connectorIdFromPath, domainDetailPath, domainFromPath, pageFromPath, pageHref } from './navigation';
   import { localeFromPath, setLocale, stripLocale, translations } from './i18n.svelte';
+  import { outletState } from './outletState.svelte';
   import { connectionPollMs } from './polling';
   import { syncUrlState } from './urlState.svelte';
   import type { AuthMode, Connector, DashboardData, Outlet, PageKey, Route, Service, SignInOptions } from './types';
@@ -99,6 +100,7 @@
         }));
       }));
       const records = groups.flat();
+      outletState.domains = outlet.domains?.length ? outlet.domains : outlet.domain ? [outlet.domain] : [];
       data = {
         connectors: connectorResponse.connectors,
         services: records.map((record) => record.service),

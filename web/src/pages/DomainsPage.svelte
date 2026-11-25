@@ -81,6 +81,10 @@
     backToDomains: 'Back to domains',
     dnsPointBefore: 'Point ',
     dnsPointAfter: ' to the Outlet server IP.',
+    nestedBefore: 'Only if the name after * has its own record, also point ',
+    nestedAfter: ' to the Outlet server IP.',
+    nestedLabel: 'deeper addresses',
+    nestedTip: 'An address more than one level under the domain also resolves through the domain\'s * record, unless a name in between has its own record, such as api.example.com for app.api.example.com. Then add a * record under that name or a record for each address. Cloudflare\'s Universal SSL certificate covers only one level, so keep these records DNS only.',
     dnsPortsShort: 'Ports 80 and 443 must be reachable.',
     dnsPortsLabel: 'open ports',
     dnsPortsTip: 'Port 80 is used to issue HTTPS certificates and port 443 for HTTPS access. Certificates for this domain are issued and renewed automatically. If you use Cloudflare DNS, we recommend turning the proxy off (“DNS only”).',
@@ -185,6 +189,10 @@
     backToDomains: '도메인 목록으로 이동',
     dnsPointBefore: '',
     dnsPointAfter: ' 레코드를 Outlet 서버 IP로 지정하십시오.',
+    nestedBefore: '* 뒤 이름에 자체 레코드가 있는 경우에만 ',
+    nestedAfter: ' 레코드를 추가로 지정하십시오.',
+    nestedLabel: '다단계 주소',
+    nestedTip: '도메인 아래 두 단계 이상의 주소도 도메인의 * 레코드로 연결됩니다. 다만 중간 이름에 자체 레코드가 있으면(예: app.api.example.com의 api.example.com) 그 아래 주소는 응답하지 않으므로, 해당 이름 아래 * 레코드 또는 주소별 레코드가 필요합니다. Cloudflare Universal SSL 인증서는 한 단계 하위만 지원하므로 이 레코드는 DNS 전용으로 설정합니다.',
     dnsPortsShort: '80, 443 포트를 외부에 개방하십시오.',
     dnsPortsLabel: '포트 개방',
     dnsPortsTip: '80 포트는 HTTPS 인증서 발급, 443 포트는 HTTPS 접속에 사용됩니다. 인증서는 자동으로 발급 및 갱신됩니다. Cloudflare DNS 사용 시 프록시를 해제한 ‘DNS 전용’ 설정을 권장합니다.',
@@ -332,8 +340,7 @@
   });
 
   const modeOf = (domain: string): DomainMode => outlet.modes?.[domain] ?? 'wildcard';
-  // 첫 조각을 뺀 상위 이름입니다(app.api.example.com → api.example.com).
-  const parentOf = (host: string): string => host.slice(host.indexOf('.') + 1);
+  const routeHostnames = $derived(new Set(routes.map((route) => route.hostname)));
   const detailMode = $derived(detail ? draftMode ?? modeOf(detail) : 'wildcard');
   const modeDirty = $derived(Boolean(detail && draftMode && draftMode !== modeOf(detail)));
 
@@ -388,20 +395,27 @@
   });
 
   // DNS 제공자에 만들 레코드입니다. 와일드카드는 * 하나면 되고, 개별 호스트는 관리 주소·공개 주소마다 만듭니다.
-  // * 레코드는 한 단계만 확실히 덮으므로, 더 깊은 공개 주소(darttk.api.example.com)는 그 상위의 *(*.api.example.com)를 더합니다.
   // 터널 주소가 이 도메인에 속하고 위 레코드로 덮이지 않으면(루트이거나 개별 호스트 방식) 함께 보여줍니다.
   function recordsOf(domain: string, mode: DomainMode = modeOf(domain)): string[] {
     const under = (host: string) => host.endsWith(`.${domain}`);
-    const addresses = [...new Set(routes.map((route) => route.hostname).filter(under))].sort();
     const hosts = mode === 'wildcard'
-      ? [...new Set([domain, ...addresses.map(parentOf)])].map((parent) => `*.${parent}`)
+      ? [`*.${domain}`]
       : [
         ...(domain === outlet.domain && outlet.admin_hostname ? [outlet.admin_hostname] : []),
-        ...addresses,
+        ...[...new Set(routes.map((route) => route.hostname).filter(under))].sort(),
       ];
-    const tunnelCovered = hosts.includes(mode === 'wildcard' ? `*.${parentOf(tunnelHost)}` : tunnelHost);
+    const tunnelCovered = mode === 'wildcard' ? under(tunnelHost) : hosts.includes(tunnelHost);
     if ((tunnelHost === domain || under(tunnelHost)) && !tunnelCovered) hosts.push(tunnelHost);
     return hosts;
+  }
+
+  // 와일드카드 방식에서 두 단계 이상 아래 공개 주소의 상위 이름입니다(app.api.example.com → api.example.com).
+  // *.도메인은 어느 깊이든 응답하지만, 중간 이름에 자체 레코드가 있으면 그 아래는 응답하지 않아 그 이름 아래 *가 필요합니다(RFC 4592).
+  // 자체 레코드가 없는 이름 아래 레코드를 만들면 그 이름이 오히려 응답하지 않으므로, 필수가 아닌 조건부 안내로만 보여줍니다.
+  function nestedParentsOf(domain: string, mode: DomainMode = modeOf(domain)): string[] {
+    if (mode !== 'wildcard') return [];
+    const parents = routes.map((route) => route.hostname.slice(route.hostname.indexOf('.') + 1)).filter((parent) => parent.endsWith(`.${domain}`));
+    return [...new Set(parents)].sort();
   }
 
   async function changeMode(domain: string, mode: DomainMode): Promise<void> {
@@ -579,6 +593,7 @@
   {@const primary = detail === outlet.domain}
   {@const registered = domains.includes(detail)}
   {@const records = recordsOf(detail, detailMode)}
+  {@const nestedParents = nestedParentsOf(detail, detailMode)}
   {@const domainRoutes = routes.filter((route) => route.hostname.endsWith(`.${detail}`)).sort((a, b) => a.hostname.localeCompare(b.hostname))}
   {#snippet detailAction()}
     {#if primary}
@@ -646,6 +661,9 @@
                 <Item.Description class="line-clamp-none block text-foreground">{t().dnsPointBefore}{#each records as record, index (record)}{#if index}{' '}{/if}{@render host(record)}{/each}{t().dnsPointAfter}</Item.Description>
               {:else}
                 <Item.Description class="line-clamp-none block">{t().noRecordsYet}</Item.Description>
+              {/if}
+              {#if nestedParents.length}
+                <Item.Description class="line-clamp-none block">{t().nestedBefore}{#each nestedParents as parent, index (parent)}{#if index}{' '}{/if}{@render host(`*.${parent}`)}{/each}{t().nestedAfter}<span class="ml-1 inline-block align-middle"><InfoTooltip id={`dns-nested-tip-${detail}`} label={t().nestedLabel} description={t().nestedTip} /></span></Item.Description>
               {/if}
             </Item.Content>
           </Item.Root>
@@ -838,7 +856,7 @@
         {@const resolved = record.addresses.length > 0}
         <Item.Root variant="outline" size="sm" role="listitem">
           <Item.Content>
-            <Item.Title class="line-clamp-none text-sm wrap-anywhere">{outlet.modes?.[domain] === 'hosts' || record.hostname === domain || record.hostname === outlet.admin_hostname || record.hostname === tunnelHost ? record.hostname : `*.${parentOf(record.hostname)}`}</Item.Title>
+            <Item.Title class="line-clamp-none text-sm wrap-anywhere">{outlet.modes?.[domain] === 'hosts' || record.hostname === domain || record.hostname === outlet.admin_hostname || record.hostname === tunnelHost || routeHostnames.has(record.hostname) ? record.hostname : `*.${domain}`}</Item.Title>
             {#if resolved}<Item.Description class="line-clamp-none font-mono text-xs wrap-anywhere">{record.addresses.join(', ')}</Item.Description>{/if}
           </Item.Content>
           <Item.Actions><Status label={resolved ? t().resolved : t().dnsNoResponse} value={resolved ? 'connected' : 'error'} /></Item.Actions>

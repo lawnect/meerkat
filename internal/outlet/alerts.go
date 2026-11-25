@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
@@ -312,11 +311,9 @@ func (s *Store) dnsAlerts(ctx context.Context, env alertEnv, now time.Time) erro
 			continue
 		}
 		for i, hostname := range failing {
-			// Wildcard mode probes a fresh random name under each parent; show
-			// the record instead.
-			if env.outlet.Modes[domain] != control.DomainHosts && strings.HasPrefix(hostname, "check-") && strings.HasSuffix(hostname, "."+domain) {
-				_, parent, _ := strings.Cut(hostname, ".")
-				failing[i] = "*." + parent
+			// Wildcard mode probes a fresh random name; show the pattern instead.
+			if env.outlet.Modes[domain] != control.DomainHosts && isWildcardProbe(hostname, domain) {
+				failing[i] = "*." + domain
 			}
 		}
 		active = append(active, condition{key, domain, dnsFailureNotice(domain, failing)})

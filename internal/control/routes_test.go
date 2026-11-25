@@ -40,7 +40,7 @@ func TestCreateAndListHTTPRoutes(t *testing.T) {
 		t.Fatalf("duplicate error = %v", err)
 	}
 	// An address may sit more than one level under the domain.
-	if _, err := db.CreateHTTPRoute(ctx, service.ID, "darttk.api.example.com", false); err != nil {
+	if _, err := db.CreateHTTPRoute(ctx, service.ID, "app.api.example.com", false); err != nil {
 		t.Fatalf("nested hostname error = %v", err)
 	}
 	routes, err := db.ListRoutes(ctx, service.ID)

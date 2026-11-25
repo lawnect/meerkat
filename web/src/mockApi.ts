@@ -586,7 +586,7 @@ function modeOf(raw: string | undefined, fallback: DomainMode = 'wildcard'): Dom
   return raw;
 }
 
-// 실제 Outlet과 같은 규칙으로 DNS 확인 대상을 고릅니다. 와일드카드는 임의의 하위 주소,
+// 실제 Outlet과 같은 규칙으로 DNS 확인 대상을 고릅니다. 와일드카드는 임의의 하위 주소 하나와 *가 덮지 못하게 될 수 있는 주소,
 // 개별 호스트는 이 도메인의 공개 주소마다 확인합니다. 관리 주소와, 이 도메인에 속한 터널 주소도 함께 봅니다.
 function dnsHostnames(domain: string): string[] {
   const hosts = new Set<string>();
@@ -594,11 +594,11 @@ function dnsHostnames(domain: string): string[] {
   if (state.outlet.modes[domain] === 'hosts') {
     for (const route of state.routes) if (route.hostname.endsWith(`.${domain}`)) hosts.add(route.hostname);
   } else {
-    // * 레코드는 한 단계만 확실히 덮으므로, 더 깊은 공개 주소의 상위마다 같은 확인 이름을 둡니다.
     hosts.add(`check-example.${domain}`);
-    for (const route of state.routes) {
-      const parent = route.hostname.slice(route.hostname.indexOf('.') + 1);
-      if (route.hostname.endsWith(`.${domain}`) && parent !== domain) hosts.add(`check-example.${parent}`);
+    // *가 덮지 못하게 될 수 있는 주소(두 단계 이상 아래이거나 아래에 다른 주소가 있는 주소)는 그대로 조회합니다.
+    const names = [...new Set(state.routes.map((route) => route.hostname).filter((hostname) => hostname.endsWith(`.${domain}`)))].sort();
+    for (const hostname of names) {
+      if (hostname.slice(0, -domain.length - 1).includes('.') || names.some((other) => other.endsWith(`.${hostname}`))) hosts.add(hostname);
     }
   }
   const tunnelHost = outletResponse().tunnel?.address.replace(/:\d+$/, '') ?? '';
@@ -1920,7 +1920,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     }
     if (parts.length === 5 && method === 'POST') {
       const hostname = input.hostname?.trim().toLowerCase();
-      if (!hostname || hostname === adminHostname(state.outlet.domain) || !state.outlet.domains.some((domain) => hostname.endsWith(`.${domain}`))) fail('invalid_route');
+      if (!hostname || !validHostname(hostname) || hostname === adminHostname(state.outlet.domain) || !state.outlet.domains.some((domain) => hostname.endsWith(`.${domain}`))) fail('invalid_route');
       const sharing = state.routes.filter((route) => route.hostname === hostname);
       if (sharing.some((route) => route.service_id === serviceId) || (sharing.length && !(input as { shared?: boolean }).shared)) fail('hostname_taken');
       const route = newRoute({ id: id(), service_id: serviceId, kind: 'http', hostname, enabled: true, desired_revision: 1, applied_revision: 0, created_at: now(), updated_at: now(), priority: sharing.length ? Math.max(...sharing.map((other) => other.priority)) + 1 : 0 });
