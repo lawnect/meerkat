@@ -23,21 +23,21 @@ func alertDB(t *testing.T) *Database {
 func TestTelegramSettingsValidationAndInvalidation(t *testing.T) {
 	ctx, db, now := context.Background(), alertDB(t), time.Date(2026, 10, 26, 14, 0, 0, 0, time.UTC)
 	for token, want := range map[string]error{"": ErrInvalidTelegramToken, "abc": ErrInvalidTelegramToken, "123:short": ErrInvalidTelegramToken} {
-		if err := db.SetTelegram(ctx, token, "123", true, now); !errors.Is(err, want) {
+		if _, err := db.SetTelegram(ctx, token, "123", true, now); !errors.Is(err, want) {
 			t.Fatalf("token %q: err = %v", token, err)
 		}
 	}
 	for _, chat := range []string{"", "abc", "12.5", "@ab", "@1channel", "123456789012345678901"} {
-		if err := db.SetTelegram(ctx, alertTestToken, chat, true, now); !errors.Is(err, ErrInvalidTelegramChat) {
+		if _, err := db.SetTelegram(ctx, alertTestToken, chat, true, now); !errors.Is(err, ErrInvalidTelegramChat) {
 			t.Fatalf("chat %q: err = %v", chat, err)
 		}
 	}
 	for _, chat := range []string{"123", "-1001234567890", "@meerkat_alerts"} {
-		if err := db.SetTelegram(ctx, alertTestToken, chat, true, now); err != nil {
+		if _, err := db.SetTelegram(ctx, alertTestToken, chat, true, now); err != nil {
 			t.Fatalf("chat %q: %v", chat, err)
 		}
 	}
-	if err := db.SetTelegram(ctx, alertTestToken, "123", true, now); err != nil {
+	if _, err := db.SetTelegram(ctx, alertTestToken, "123", true, now); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := db.MarkTelegramVerified(ctx, alertTestToken, "999", now); err != nil || ok {
@@ -50,7 +50,7 @@ func TestTelegramSettingsValidationAndInvalidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Same chat, empty token: nothing changes.
-	if err := db.SetTelegram(ctx, "", "123", false, now); err != nil {
+	if _, err := db.SetTelegram(ctx, "", "123", false, now); err != nil {
 		t.Fatal(err)
 	}
 	telegram, _ := db.Telegram(ctx)
@@ -61,7 +61,7 @@ func TestTelegramSettingsValidationAndInvalidation(t *testing.T) {
 		t.Fatal("second factor dropped without a change")
 	}
 	// A new chat is unverified, so the second factor that relied on it turns off.
-	if err := db.SetTelegram(ctx, "", "456", true, now); err != nil {
+	if _, err := db.SetTelegram(ctx, "", "456", true, now); err != nil {
 		t.Fatal(err)
 	}
 	telegram, _ = db.Telegram(ctx)
@@ -78,7 +78,7 @@ func TestTelegramSettingsValidationAndInvalidation(t *testing.T) {
 
 func TestDeleteTelegramClearsEverything(t *testing.T) {
 	ctx, db, now := context.Background(), alertDB(t), time.Date(2026, 10, 26, 14, 0, 0, 0, time.UTC)
-	if err := db.SetTelegram(ctx, alertTestToken, "123", true, now); err != nil {
+	if _, err := db.SetTelegram(ctx, alertTestToken, "123", true, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.MarkTelegramVerified(ctx, alertTestToken, "123", now); err != nil {
@@ -90,7 +90,7 @@ func TestDeleteTelegramClearsEverything(t *testing.T) {
 	if _, _, err := db.OpenAlert(ctx, AlertEvent{Key: "tunnel_down:a", Kind: "tunnel_down"}, time.Hour, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.DeleteTelegram(ctx, now); err != nil {
+	if _, err := db.DeleteTelegram(ctx, now); err != nil {
 		t.Fatal(err)
 	}
 	telegram, _ := db.Telegram(ctx)

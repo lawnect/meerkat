@@ -108,7 +108,8 @@ func TestAuditRecordsEveryAdminAction(t *testing.T) {
 		"connector.create", "connector.describe", "service.create", "connector.token_issue", "connector.token_reset", "service.update", "route.create",
 		"route.delete", "service.delete", "connector.delete",
 		"domain.set", "domain.add", "domain.mode", "domain.remove", "tunnel.update",
-		"telegram.update", "telegram.test", "telegram.test", "alert_rules.update", "second_factor.update", "telegram.delete", "session.logout",
+		// Disconnecting Telegram turned the login code off, and says so.
+		"telegram.update", "telegram.test", "telegram.test", "alert_rules.update", "second_factor.update", "telegram.delete", "second_factor.update", "session.logout",
 	}
 	if got := actions(log); !slices.Equal(got, want) {
 		t.Fatalf("actions:\n got %v\nwant %v", got, want)
@@ -131,12 +132,13 @@ func TestAuditRecordsEveryAdminAction(t *testing.T) {
 		18: `{"error":"telegram_chat_not_found","ok":false}`,
 		19: `{"ok":true}`,
 		21: `{"enabled":true}`,
+		23: `{"enabled":false,"reason":"telegram_deleted"}`,
 	} {
 		if expect == "" && log[i].Detail != nil || expect != "" && detail(i) != expect {
 			t.Errorf("%s detail = %s, want %s", log[i].Action, detail(i), expect)
 		}
 	}
-	for i, resource := range map[int][2]string{2: {"connector", connector.ID}, 4: {"service", service.ID}, 8: {"route", route.ID}, 12: {"domain", "example.com"}, 16: {"outlet", "tunnel"}, 17: {"telegram", "settings"}, 20: {"alert_rules", "rules"}, 21: {"security", "second_factor"}} {
+	for i, resource := range map[int][2]string{2: {"connector", connector.ID}, 4: {"service", service.ID}, 8: {"route", route.ID}, 12: {"domain", "example.com"}, 16: {"outlet", "tunnel"}, 17: {"telegram", "settings"}, 20: {"alert_rules", "rules"}, 21: {"security", "second_factor"}, 23: {"security", "second_factor"}} {
 		if log[i].ResourceType != resource[0] || log[i].ResourceID != resource[1] {
 			t.Errorf("%s resource = %s/%s", log[i].Action, log[i].ResourceType, log[i].ResourceID)
 		}

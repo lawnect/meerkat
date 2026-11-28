@@ -290,7 +290,7 @@ func TestServiceDownAlertWaitsAgainAfterTelegramReturns(t *testing.T) {
 	app := a.service(t, edge, "app")
 	a.serviceState(edge, app, "unhealthy", "disconnected", a.clock.now())
 	a.evaluate()
-	if err := a.db.SetTelegram(context.Background(), "", "123456", false, a.clock.now()); err != nil {
+	if _, err := a.db.SetTelegram(context.Background(), "", "123456", false, a.clock.now()); err != nil {
 		t.Fatal(err)
 	}
 	a.clock.advance(time.Hour)
@@ -457,14 +457,14 @@ func TestAlertsStayQuietUntilTelegramIsEnabled(t *testing.T) {
 	a.connector(t, "edge-a", a.clock.now().Add(-10*time.Minute))
 	a.evaluate()
 	a.configureTelegram(t, false)
-	if err := a.db.SetTelegram(context.Background(), "", "123456", false, a.clock.now()); err != nil {
+	if _, err := a.db.SetTelegram(context.Background(), "", "123456", false, a.clock.now()); err != nil {
 		t.Fatal(err)
 	}
 	a.evaluate()
 	if len(a.telegram.messages()) != 0 || len(a.events(t, "tunnel_down")) != 0 {
 		t.Fatal("alerts ran without Telegram enabled")
 	}
-	if err := a.db.SetTelegram(context.Background(), "", "123456", true, a.clock.now()); err != nil {
+	if _, err := a.db.SetTelegram(context.Background(), "", "123456", true, a.clock.now()); err != nil {
 		t.Fatal(err)
 	}
 	a.evaluate()
