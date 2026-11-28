@@ -129,14 +129,14 @@ func TestClientKeyGroupsIPv6Prefixes(t *testing.T) {
 }
 
 // The limiter holds so many keys, and a key at its limit stays there while
-// others arrive: a key it hasn't seen is refused once it is full, so nothing
-// is forgotten to make room, and one that keeps trying, refused, stays refused.
+// others arrive: once it is full a key it hasn't seen takes the place of the
+// stalest, and one that keeps trying, refused, is never the stalest.
 func TestAttemptLimiterStaysBounded(t *testing.T) {
 	var l attemptLimiter
 	now := time.Date(2026, 10, 26, 14, 0, 0, 0, time.UTC)
 	for i := range 3 * maxLoginKeys {
 		admitted := l.allow(net.IPv4(10, byte(i>>16), byte(i>>8), byte(i)).String(), now)
-		if admitted != (i < maxLoginKeys) || len(l.hits) > maxLoginKeys || l.keys.Len() != len(l.hits) {
+		if !admitted || len(l.hits) > maxLoginKeys || l.keys.Len() != len(l.hits) {
 			t.Fatalf("%d keys after %d addresses, the last admitted: %v", len(l.hits), i+1, admitted)
 		}
 	}
@@ -150,11 +150,11 @@ func TestAttemptLimiterStaysBounded(t *testing.T) {
 	if l.allow("busy", now.Add(2*time.Second)) {
 		t.Fatal("a key at its limit started over as others arrived")
 	}
-	if l.allow("one more", now.Add(3*time.Second)) || l.allow("busy", now.Add(4*time.Second)) {
-		t.Fatal("a full table made room, or a key at its limit that kept trying was let through")
+	if !l.allow("one more", now.Add(3*time.Second)) || l.allow("busy", now.Add(4*time.Second)) {
+		t.Fatal("a full table refused a new key, or a key at its limit that kept trying was let through")
 	}
-	if _, ok := l.hits["other 0"]; !ok {
-		t.Fatal("a key was forgotten to make room")
+	if _, ok := l.hits["other 0"]; ok || len(l.hits) != maxLoginKeys {
+		t.Fatal("the stalest key was not the one forgotten")
 	}
 	// Once its attempts leave the window, it may again, and the keys that
 	// left it are gone.

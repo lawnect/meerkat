@@ -77,9 +77,16 @@ func TestLoadReadsAllowedTargets(t *testing.T) {
 	if _, err := Load(""); err == nil {
 		t.Fatal("an allowlist entry that can never match was accepted")
 	}
-	t.Setenv("MEERKAT_ALLOWED_TARGETS", " , ")
-	if _, err := Load(""); err == nil {
-		t.Fatal("an allowlist without entries was read as no allowlist")
+	// Compose passes "" for a variable it doesn't have.
+	for _, empty := range []string{" , ", "", " "} {
+		t.Setenv("MEERKAT_ALLOWED_TARGETS", empty)
+		if _, err := Load(""); err == nil {
+			t.Fatalf("the allowlist %q was read as no allowlist", empty)
+		}
+	}
+	os.Unsetenv("MEERKAT_ALLOWED_TARGETS")
+	if c, err := Load(""); err != nil || len(c.AllowedTargets) != 0 {
+		t.Fatalf("without the variable: %v %v", c.AllowedTargets, err)
 	}
 }
 

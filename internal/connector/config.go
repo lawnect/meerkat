@@ -84,7 +84,16 @@ func Load(path string) (Config, error) {
 
 // applyAllowedTargets lets MEERKAT_ALLOWED_TARGETS replace the configured list.
 func (c *Config) applyAllowedTargets() error {
-	entries, err := allowedTargetsFromEnvironment(os.Getenv("MEERKAT_ALLOWED_TARGETS"))
+	value, set := os.LookupEnv("MEERKAT_ALLOWED_TARGETS")
+	if !set {
+		return nil
+	}
+	// Set but empty is what Compose passes for a variable it doesn't have:
+	// that must not read as "no restriction" either.
+	if strings.TrimSpace(value) == "" {
+		return errors.New("MEERKAT_ALLOWED_TARGETS is set but empty: list the allowed targets or leave it unset")
+	}
+	entries, err := allowedTargetsFromEnvironment(value)
 	if err != nil {
 		return err
 	}

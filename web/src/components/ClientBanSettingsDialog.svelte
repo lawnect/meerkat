@@ -24,7 +24,7 @@
   const t = translations({
     title: 'Ban settings',
     minutes: 'Ban duration',
-    minutesTip: 'How long a client stays banned after it sends a request that matches a ban rule.',
+    minutesTip: 'How long a client stays banned after its second request within 10 minutes that matches a ban rule.',
     unit: 'min',
     exempt: 'Exempt IPs and ranges',
     exemptTip: 'Clients at these addresses are never banned. Saving releases any of them that are banned now.',
@@ -38,7 +38,7 @@
   }, {
     title: '차단 설정',
     minutes: '차단 시간',
-    minutesTip: '클라이언트 차단 규칙에 해당하는 요청을 보낸 시점부터 차단을 유지하는 시간입니다.',
+    minutesTip: '10분 내 클라이언트 차단 규칙에 2회 해당한 시점부터 차단을 유지하는 시간입니다.',
     unit: '분',
     exempt: '제외 대상 IP·범위',
     exemptTip: '지정한 IP와 범위의 클라이언트는 차단하지 않습니다. 저장하면 이미 차단된 해당 클라이언트는 즉시 해제됩니다.',

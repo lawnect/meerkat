@@ -943,7 +943,8 @@
   function installCommand(): string {
     if (!selected) return '';
     return [
-      `docker run -d --restart unless-stopped --name meerkat-${selected.name}`,
+      // 서버에 남아 있는 이전 latest는 환경 변수의 설치 코드를 읽지 못하므로 항상 새로 받습니다.
+      `docker run -d --pull always --restart unless-stopped --name meerkat-${selected.name}`,
       '--read-only --cap-drop ALL --security-opt no-new-privileges',
       '--tmpfs /tmp --tmpfs /var/lib/meerkat:uid=65532,gid=65532,mode=0700',
       // 환경 변수로 전달합니다. 명령줄 인자는 같은 서버의 모든 사용자가 /proc/<pid>/cmdline로 읽을 수 있습니다.
@@ -972,6 +973,7 @@
       'services:',
       `  ${composeServiceName()}:`,
       '    image: ghcr.io/lawnect/meerkat:latest',
+      '    pull_policy: always',
       `    container_name: meerkat-${selected.name}`,
       '    restart: unless-stopped',
       '    init: true',
@@ -993,6 +995,7 @@
     const lines = [
       `  ${composeServiceName()}:`,
       '    image: ghcr.io/lawnect/meerkat:latest',
+      '    pull_policy: always',
       `    container_name: meerkat-${selected.name}`,
       '    restart: unless-stopped',
       '    init: true',

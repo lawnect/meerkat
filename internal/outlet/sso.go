@@ -448,9 +448,13 @@ func (s *Store) ssoStillListed(ctx context.Context, email string) bool {
 // one too. Without the provider the groups can't be checked again: whenever
 // the allowed groups, the provider or the groups claim change, or single
 // sign-on goes off, all of them end, and the reasons say so. Otherwise only
-// those the email and domain lists leave out end. It returns how many
+// those the email and domain lists leave out end. The administrator making
+// the change keeps their sessions: signed out by a mistyped group, nobody
+// could sign in through the provider to correct it. It returns how many
 // sessions ended and, when any administrator was affected, why.
-func (s *Store) endSSOSessions(ctx context.Context, before, after control.SSO) (int, []string, error) {
+func (s *Store) endSSOSessions(r *http.Request, before, after control.SSO) (int, []string, error) {
+	ctx := r.Context()
+	actor, _ := s.sessionAdmin(r)
 	bound, err := s.control.SSOBoundAdmins(ctx)
 	if err != nil {
 		return 0, nil, err
@@ -467,6 +471,9 @@ func (s *Store) endSSOSessions(ctx context.Context, before, after control.SSO) (
 	}
 	var ids []string
 	for _, admin := range bound {
+		if admin.ID == actor.ID {
+			continue
+		}
 		if len(reasons) > 0 || (after.Enabled && !ssoEmailListed(after, strings.ToLower(admin.Email))) {
 			ids = append(ids, admin.ID)
 		}
@@ -683,7 +690,7 @@ func (s *Store) putSSO(w http.ResponseWriter, r *http.Request) {
 	}
 	// Whoever the new settings no longer let in loses their session now, not
 	// when it would have ended.
-	revoked, reasons, revokeErr := s.endSSOSessions(r.Context(), before, saved)
+	revoked, reasons, revokeErr := s.endSSOSessions(r, before, saved)
 	s.audited(r, "security.sso", "security", "sso", ssoSessionsDetail(map[string]any{
 		"enabled": saved.Enabled, "issuer": saved.Issuer, "client_id": saved.ClientID, "secret_changed": req.ClientSecret != "",
 		"allowed_users": saved.AllowedUsers, "allowed_groups": saved.AllowedGroups, "password_login": saved.PasswordLogin,
@@ -720,7 +727,7 @@ func (s *Store) resetSSO(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	revoked, reasons, revokeErr := s.endSSOSessions(r.Context(), before, settings)
+	revoked, reasons, revokeErr := s.endSSOSessions(r, before, settings)
 	s.audited(r, "security.sso_reset", "security", "sso", ssoSessionsDetail(nil, revoked, reasons))
 	if revokeErr != nil {
 		slog.Error("single sign-on sessions not ended after resetting the settings", "error", revokeErr)

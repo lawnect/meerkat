@@ -10,8 +10,8 @@ RUN npm ci
 COPY web ./web
 RUN npm run check && npm run build
 
-# Keep the tag at or above the `toolchain` line in go.mod: the CI workflow runs
-# govulncheck with the Go version read from this line.
+# Keep the tag equal to the `toolchain` line in go.mod: the CI workflow refuses
+# a difference and runs govulncheck with the Go version read from this line.
 FROM golang:1.26.11-bookworm@sha256:ea47ee45f1284d60f9cc09cb2c3bb4f508c256b640bd8bb30342ff13d1adcb52 AS go-build
 # The release, without the "v"; the publish workflow passes it from the tag.
 ARG VERSION=0.0.0-dev

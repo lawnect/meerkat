@@ -114,7 +114,7 @@ docker compose --env-file /opt/meerkat-outlet/compose.env -f /opt/meerkat-outlet
 **4. Connectors.** Create a tunnel in the console and run the command it shows on the private server, then add services and public addresses on the tunnel's page:
 
 ```sh
-docker run -d --restart unless-stopped --name meerkat-my-server \
+docker run -d --pull always --restart unless-stopped --name meerkat-my-server \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   --tmpfs /tmp --tmpfs /var/lib/meerkat:uid=65532,gid=65532,mode=0700 \
   -e MEERKAT_INSTALL_CODE=<install-code> \

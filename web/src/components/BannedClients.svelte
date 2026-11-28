@@ -31,7 +31,7 @@
   // 차단 시간과 제외 대상은 머리글의 설정 대화상자에서 저장하고, 해제는 바로 서버에 반영합니다.
   const t = translations({
     title: 'Banned clients',
-    tip: 'Clients banned for sending a request that matched a ban rule. Every request from them is refused until the ban ends. Bans are kept in memory and cleared when the Outlet restarts. IPv4 clients are banned per address and IPv6 clients per /64.',
+    tip: 'Clients banned for sending two requests within 10 minutes that matched a ban rule. Every request from them is refused until the ban ends. Bans are kept in memory and cleared when the Outlet restarts. IPv4 clients are banned per address and IPv6 clients per /64.',
     search: 'Search by client, address or path',
     refresh: 'Refresh',
     settings: 'Ban settings',
@@ -58,7 +58,7 @@
     loadFailed: (code: string) => `Couldn't load banned clients: ${code}`,
   }, {
     title: '차단된 클라이언트',
-    tip: '클라이언트 차단 규칙에 해당하여 차단된 클라이언트입니다. 차단 기간에는 해당 클라이언트의 모든 요청이 거부됩니다. 차단 목록은 Outlet 메모리에만 저장되어 재시작하면 초기화되며, IPv4는 주소별, IPv6는 /64 대역별로 차단됩니다.',
+    tip: '10분 내 클라이언트 차단 규칙에 2회 해당하여 차단된 클라이언트입니다. 차단 기간에는 해당 클라이언트의 모든 요청이 거부됩니다. 차단 목록은 Outlet 메모리에만 저장되어 재시작하면 초기화되며, IPv4는 주소별, IPv6는 /64 대역별로 차단됩니다.',
     search: '클라이언트, 주소, 경로 검색',
     refresh: '새로 고침',
     settings: '차단 설정',

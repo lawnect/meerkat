@@ -68,9 +68,11 @@ const (
 	// how many all may have in flight. A sign-in is in flight for the moments
 	// between the redirect to the provider and the one back (or ten minutes
 	// if abandoned), so a whole office signing in at once from one address
-	// needs far fewer than it starts a minute, and a few hundred addresses
-	// holding many each must not leave none for the rest: see putEvicting.
-	maxAccessPerClient = 16
+	// needs fewer than it starts a minute, yet every tab that reopens
+	// without a session and is left at the provider's page holds one. A few
+	// hundred addresses holding many each must not leave none for the rest:
+	// see putEvicting, which takes from the address that holds the most.
+	maxAccessPerClient = 64
 	accessStarts       = 120
 	maxAccessPending   = 32768
 )

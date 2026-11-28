@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 )
@@ -45,7 +47,13 @@ func installCode(args []string) (string, error) {
 		return args[0], nil
 	case path != "":
 		b, err := os.ReadFile(path)
-		if err != nil {
+		// Only the kind of failure is reported, never the path's contents.
+		switch {
+		case errors.Is(err, fs.ErrPermission):
+			return "", fmt.Errorf("cannot read install code file: permission denied for uid %d", os.Getuid())
+		case errors.Is(err, fs.ErrNotExist):
+			return "", errors.New("cannot read install code file: no such file")
+		case err != nil:
 			return "", errors.New("cannot read install code file")
 		}
 		return strings.TrimSpace(string(b)), nil

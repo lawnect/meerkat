@@ -1,9 +1,11 @@
 package health
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -19,16 +21,68 @@ type lookuper interface {
 
 var resolver lookuper = net.DefaultResolver
 
+// hostsFile is where the operator's own names are (--add-host, extra_hosts);
+// tests point it elsewhere.
+var hostsFile = "/etc/hosts"
+
 // lookup resolves a target name as fully qualified. The image is built without
 // cgo, so Go's own resolver would otherwise try the host's DNS search list
 // first: on a cloud host `ip-10-0-1-23` becomes the VPC address 10.0.1.23.
 // Docker's embedded DNS answers Compose service names as absolute names too.
 // Resolve and Check share it, so the pinned address is one of those checked.
+//
+// The hosts file is read here, before DNS: Go's resolver doesn't find a name
+// written there without a dot (localhost, nas) when asked for it as absolute,
+// and the DNS server may answer NXDOMAIN for `localhost.`. localhost is the
+// loopback address even with no line for it (RFC 6761).
 func lookup(ctx context.Context, host string) ([]net.IPAddr, error) {
 	if ip := net.ParseIP(host); ip != nil {
 		return []net.IPAddr{{IP: ip}}, nil
 	}
-	return resolver.LookupIPAddr(ctx, strings.TrimSuffix(host, ".")+".")
+	name := strings.ToLower(strings.TrimSuffix(host, "."))
+	if ips := hostsEntries(name); len(ips) > 0 {
+		return ips, nil
+	}
+	if name == "localhost" {
+		return []net.IPAddr{{IP: net.IPv4(127, 0, 0, 1)}}, nil
+	}
+	return resolver.LookupIPAddr(ctx, name+".")
+}
+
+// hostsEntries returns the addresses the hosts file gives a name, IPv4 first
+// as the pinned address is the first one.
+func hostsEntries(name string) []net.IPAddr {
+	file, err := os.Open(hostsFile)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	var v4, v6 []net.IPAddr
+	lines := bufio.NewScanner(file)
+	for lines.Scan() {
+		line, _, _ := strings.Cut(lines.Text(), "#")
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		address, _, _ := strings.Cut(fields[0], "%")
+		ip := net.ParseIP(address)
+		if ip == nil {
+			continue
+		}
+		for _, alias := range fields[1:] {
+			if strings.ToLower(strings.TrimSuffix(alias, ".")) != name {
+				continue
+			}
+			if ip.To4() != nil {
+				v4 = append(v4, net.IPAddr{IP: ip})
+			} else {
+				v6 = append(v6, net.IPAddr{IP: ip})
+			}
+			break
+		}
+	}
+	return append(v4, v6...)
 }
 
 // Resolve pins the data-plane destination to a checked local IP. Rathole must

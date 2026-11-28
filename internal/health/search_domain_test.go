@@ -3,7 +3,9 @@ package health
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -230,5 +232,56 @@ func TestLocalhostResolvesAsAbsoluteName(t *testing.T) {
 	host, _, _ := net.SplitHostPort(address)
 	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
 		t.Fatalf("localhost pinned to %q", address)
+	}
+}
+
+// noDNS answers NXDOMAIN to everything.
+type noDNS struct{}
+
+func (noDNS) LookupIPAddr(context.Context, string) ([]net.IPAddr, error) {
+	return nil, errors.New("no such host")
+}
+
+func useHosts(t *testing.T, content string) {
+	t.Helper()
+	path := t.TempDir() + "/hosts"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := hostsFile
+	hostsFile = path
+	t.Cleanup(func() { hostsFile = old })
+}
+
+// A DNS server that knows no `localhost.` (Docker's, with some upstreams)
+// doesn't take localhost away, with or without a hosts line for it.
+func TestLocalhostNeedsNoDNS(t *testing.T) {
+	useResolver(t, noDNS{})
+	for _, hosts := range []string{"", "127.0.0.1\tlocalhost\n::1 localhost ip6-localhost\n"} {
+		useHosts(t, hosts)
+		for _, name := range []string{"localhost"} {
+			address, err := Resolve(context.Background(), contract.Target{Host: name, Port: 3000})
+			if err != nil || address != "127.0.0.1:3000" {
+				t.Fatalf("%s with hosts %q pinned to %q: %v", name, hosts, address, err)
+			}
+		}
+	}
+}
+
+// Names the operator wrote in the hosts file (--add-host, extra_hosts) answer
+// without a dot too, and a public address there is refused like any other.
+func TestHostsFileNamesResolve(t *testing.T) {
+	useResolver(t, noDNS{})
+	useHosts(t, "# local services\n10.0.0.7 nas.lan NAS Storage. # the NAS\n fe80::1%eth0 linklocal\n203.0.113.9 outside\nnot-an-address broken\n")
+	for name, want := range map[string]string{"nas": "10.0.0.7:445", "storage": "10.0.0.7:445"} {
+		address, err := Resolve(context.Background(), contract.Target{Host: name, Port: 445})
+		if err != nil || address != want {
+			t.Fatalf("%s pinned to %q: %v", name, address, err)
+		}
+	}
+	for _, name := range []string{"outside", "broken", "the"} {
+		if address, err := Resolve(context.Background(), contract.Target{Host: name, Port: 445}); err == nil {
+			t.Fatalf("%s pinned to %q", name, address)
+		}
 	}
 }

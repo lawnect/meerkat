@@ -209,50 +209,48 @@ func TestLocalLoginFailuresDoNotLockTheInternet(t *testing.T) {
 	a.store.background.Wait()
 }
 
-// A limiter that is full refuses a key it hasn't seen rather than forget one
-// it has: forgetting is how rotating through enough addresses went unlimited.
-func TestAttemptLimiterRefusesNewKeysWhenFull(t *testing.T) {
+// A limiter that is full makes room for a key it hasn't seen by forgetting the
+// stalest one: refusing it would let whoever fills the table keep everyone
+// else out. A key still in use is not the stalest and goes on being counted.
+func TestAttemptLimiterForgetsTheStalestKeyWhenFull(t *testing.T) {
 	var l attemptLimiter
 	now := time.Date(2026, 10, 26, 14, 0, 0, 0, time.UTC)
-	for i := range maxLoginKeys {
-		if !l.allow(fmt.Sprint("client ", i), now) {
+	for range loginAttempts {
+		l.allow("busy", now)
+	}
+	for i := range maxLoginKeys - 1 {
+		if !l.allow(fmt.Sprint("client ", i), now.Add(time.Second)) {
 			t.Fatalf("client %d refused before the table was full", i)
 		}
 	}
-	if l.allow("one more", now) || len(l.hits) != maxLoginKeys || l.keys.Len() != maxLoginKeys {
-		t.Fatalf("a full table admitted a new key (%d held)", len(l.hits))
+	if l.allow("busy", now.Add(2*time.Second)) {
+		t.Fatal("a key at its limit was allowed")
 	}
-	if _, ok := l.hits["client 0"]; !ok {
-		t.Fatal("a held key was forgotten")
+	if !l.allow("one more", now.Add(3*time.Second)) || len(l.hits) != maxLoginKeys || l.keys.Len() != maxLoginKeys {
+		t.Fatalf("a full table refused a new key (%d held)", len(l.hits))
 	}
-	// Held keys go on being counted, up to their limit.
-	n := 0
-	for l.allow("client 0", now.Add(time.Second)) {
-		if n++; n > loginAttempts {
-			t.Fatal("a held key was never limited")
-		}
+	if _, ok := l.hits["client 0"]; ok {
+		t.Fatal("the stalest key was kept")
 	}
-	if n != loginAttempts-1 {
-		t.Fatalf("a held key allowed %d more tries", n)
+	if _, ok := l.hits["busy"]; !ok || l.allow("busy", now.Add(4*time.Second)) {
+		t.Fatal("a key in use lost its count")
 	}
-	// Keys out of the window are reclaimed, making room.
-	if !l.allow("one more", now.Add(loginWindow+time.Second)) || len(l.hits) != 1 {
+	// Keys out of the window are reclaimed.
+	if !l.allow("later", now.Add(4*time.Second+loginWindow)) || len(l.hits) != 1 {
 		t.Fatalf("after the window: %d keys held", len(l.hits))
 	}
 }
 
-// The local admin port keeps room of its own in a table the internet filled.
+// The local admin port keeps room of its own in a table the internet filled,
+// and its keys differ from an internet client's at the same address.
 func TestLocalLoginKeysKeepTheirRoom(t *testing.T) {
 	var l attemptLimiter
 	now := time.Date(2026, 10, 26, 14, 0, 0, 0, time.UTC)
 	for i := range maxLoginKeys {
 		l.allow(fmt.Sprint("client ", i), now)
 	}
-	if !l.allow(localKey("192.0.2.1"), now) {
-		t.Fatal("the local port was refused in a full table")
-	}
-	if l.allow("another client", now) {
-		t.Fatal("an internet client was admitted past the limit")
+	if !l.allow(localKey("192.0.2.1"), now) || len(l.hits) != maxLoginKeys+1 {
+		t.Fatalf("the local port took an internet client's place (%d held)", len(l.hits))
 	}
 	if localKey("192.0.2.1") == clientKey("192.0.2.1") {
 		t.Fatal("local and internet clients share a key")

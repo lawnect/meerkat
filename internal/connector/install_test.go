@@ -25,7 +25,31 @@ func installCodeFor(t *testing.T, outlet, name, token string) string {
 func clearInstallEnvironment(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{"MEERKAT_INSTALL_CODE", "MEERKAT_INSTALL_CODE_FILE", "MEERKAT_ALLOWED_TARGETS"} {
+		// Setenv restores the variable afterwards; unset is what "not
+		// given" means, as an empty allowlist variable is an error.
 		t.Setenv(key, "")
+		os.Unsetenv(key)
+	}
+}
+
+// A file the Connector's user can't read says so, as that is what a
+// root-owned secret mounted into the container looks like.
+func TestConnectNamesWhyTheInstallCodeFileCannotBeRead(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads any file")
+	}
+	clearInstallEnvironment(t)
+	path := filepath.Join(t.TempDir(), "install-code")
+	if err := os.WriteFile(path, []byte(installCodeFor(t, "https://outlet.example.com", "office", testRunToken)), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MEERKAT_INSTALL_CODE_FILE", path)
+	if _, _, err := Connect(nil); err == nil || !strings.Contains(err.Error(), "permission denied") || strings.Contains(err.Error(), path) {
+		t.Fatalf("unreadable file: %v", err)
+	}
+	t.Setenv("MEERKAT_INSTALL_CODE_FILE", path+"-missing")
+	if _, _, err := Connect(nil); err == nil || !strings.Contains(err.Error(), "no such file") {
+		t.Fatalf("missing file: %v", err)
 	}
 }
 

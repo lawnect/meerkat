@@ -66,11 +66,12 @@ func TestAccessSignInSurvivesAFullTable(t *testing.T) {
 	}
 }
 
-// One client keeps only a few sign-ins in flight; past that it is refused,
-// and the sign-ins it has are not replaced by newer ones.
+// One client address, which may be an office, keeps so many sign-ins in
+// flight and no more; past that it is refused, and the sign-ins it has are
+// not replaced by newer ones. Filling the table takes hundreds of addresses.
 func TestAccessSignInsInFlightPerClientAreFew(t *testing.T) {
-	if maxAccessPerClient > 32 {
-		t.Fatalf("a client may have %d sign-ins in flight; a person needs a handful", maxAccessPerClient)
+	if maxAccessPerClient*256 > maxAccessPending {
+		t.Fatalf("%d addresses holding %d sign-ins each fill the table", maxAccessPending/maxAccessPerClient, maxAccessPerClient)
 	}
 	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}})
 	codes := map[int]int{}

@@ -236,6 +236,19 @@ func (d *Database) SSOAdmin(ctx context.Context, issuer, subject, email string) 
 	var admin Admin
 	err = tx.QueryRowContext(ctx, "SELECT id, email FROM admins WHERE sso_issuer = ? AND sso_subject = ?", issuer, subject).Scan(&admin.ID, &admin.Email)
 	if err == nil {
+		// The provider may rename the account. An administrator who signs
+		// in only through it follows the verified email, which is what the
+		// allowed emails and domains are checked against afterwards; one
+		// with a password keeps the email that is also the password's name.
+		if admin.Email != email {
+			result, err := tx.ExecContext(ctx, "UPDATE admins SET email = ? WHERE id = ? AND password_hash = ? AND NOT EXISTS (SELECT 1 FROM admins WHERE email = ? AND id != ?)", email, admin.ID, ssoPasswordHash, email, admin.ID)
+			if err != nil {
+				return Admin{}, err
+			}
+			if changed, _ := result.RowsAffected(); changed == 1 {
+				admin.Email = email
+			}
+		}
 		return admin, tx.Commit()
 	}
 	if !errors.Is(err, sql.ErrNoRows) {

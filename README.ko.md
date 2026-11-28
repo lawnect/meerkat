@@ -114,7 +114,7 @@ docker compose --env-file /opt/meerkat-outlet/compose.env -f /opt/meerkat-outlet
 **4. Connector.** 콘솔에서 터널을 만들고 표시되는 명령을 사설 서버에서 실행한 뒤, 터널 화면에서 서비스와 공개 주소를 추가합니다.
 
 ```sh
-docker run -d --restart unless-stopped --name meerkat-my-server \
+docker run -d --pull always --restart unless-stopped --name meerkat-my-server \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   --tmpfs /tmp --tmpfs /var/lib/meerkat:uid=65532,gid=65532,mode=0700 \
   -e MEERKAT_INSTALL_CODE=<설치 코드> \

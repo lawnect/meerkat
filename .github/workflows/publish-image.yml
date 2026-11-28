@@ -76,8 +76,13 @@ jobs:
   build:
     name: Build ${{ matrix.arch }}
     needs: [release, verify]
-    # A skipped verify (the Caddy image) doesn't stop the build; a failed one does.
-    if: ${{ !cancelled() && needs.release.result == 'success' && needs.verify.result != 'failure' }}
+    # The Caddy image has no Go code of this repository to verify, so verify
+    # is skipped for it. The Meerkat image builds only after verify succeeded:
+    # a cancelled or timed-out verify stops the release as a failed one does.
+    if: >-
+      ${{ !cancelled() && needs.release.result == 'success' &&
+      (needs.verify.result == 'success' ||
+      (needs.verify.result == 'skipped' && needs.release.outputs.name == 'meerkat-caddy')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -132,6 +137,9 @@ jobs:
   publish:
     name: Publish manifest
     needs: [release, build]
+    # Without a condition of its own this job is skipped whenever a job
+    # further up is, and verify is skipped for the Caddy image.
+    if: ${{ !cancelled() && needs.release.result == 'success' && needs.build.result == 'success' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read

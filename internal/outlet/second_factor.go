@@ -258,9 +258,11 @@ type attemptLimiter struct {
 	// hits holds each key's attempts in the window, and keys orders them
 	// by their last try, allowed or not, stalest first: keys out of the
 	// window leave from the front. With maxLoginKeys in it, a key it hasn't
-	// seen is refused, not made room for by forgetting one it has: whoever
-	// can rotate through that many addresses would otherwise never be
-	// limited.
+	// seen takes the place of the stalest one. Refusing it instead would let
+	// whoever sends one request from each of that many addresses keep
+	// everyone else out of sign-in, and forgetting a key gives the same
+	// sender nothing: an address it has not used yet is as fresh. The
+	// failures and the checks in flight are counted across all keys.
 	hits     map[string]*list.Element
 	keys     list.List
 	failures []time.Time
@@ -289,7 +291,7 @@ func (l *attemptLimiter) allow(key string, now time.Time) bool {
 			room += maxLocalLoginKeys
 		}
 		if l.keys.Len() >= room {
-			return false
+			l.drop(l.keys.Front())
 		}
 		element = l.keys.PushBack(&keyAttempts{key: key})
 		l.hits[key] = element

@@ -43,6 +43,7 @@
     backToLogin: 'Sign in again',
     codeInvalid: 'The code is wrong or has expired.',
     codeLocked: 'Too many attempts. Sign in again to get a new code.',
+    codesLocked: 'Too many wrong codes. New codes are paused for up to 15 minutes. The local admin port still works.',
     telegramUnreachable: 'Couldn\'t send the code to Telegram. Try again later or use the local admin port for recovery.',
     telegramRateLimited: 'Telegram is limiting code delivery. Wait before signing in again.',
     ssoSignIn: 'Sign in with SSO',
@@ -87,6 +88,7 @@
     backToLogin: '로그인 화면으로 이동',
     codeInvalid: '인증 코드가 올바르지 않거나 만료되었습니다.',
     codeLocked: '입력 시도 횟수를 초과했습니다. 다시 로그인하여 새 인증 코드를 받으십시오.',
+    codesLocked: '인증 코드 오류 횟수를 초과했습니다. 최대 15분간 새 인증 코드가 발급되지 않습니다. 로컬 관리 포트는 계속 사용할 수 있습니다.',
     telegramUnreachable: 'Telegram으로 인증 코드를 전송할 수 없습니다. 나중에 다시 시도하거나 로컬 관리 포트에서 복구하십시오.',
     telegramRateLimited: 'Telegram에서 인증 코드 전송을 제한하고 있습니다. 잠시 기다린 후 다시 로그인하십시오.',
     ssoSignIn: 'SSO로 로그인',
@@ -117,7 +119,7 @@
   let notice = $state('');
   // 설정 코드(admin.token)를 묻는 양식: 초기 설정과 계정 복구.
   const askCode = $derived(mode === 'setup' || recovering);
-  type FailureKind = 'invalidSetup' | 'setupFailed' | 'recoverFailed' | 'loginFailed' | 'rateLimited' | 'codeInvalid' | 'codeLocked' | 'telegramUnreachable' | 'telegramRateLimited'
+  type FailureKind = 'invalidSetup' | 'setupFailed' | 'recoverFailed' | 'loginFailed' | 'rateLimited' | 'codeInvalid' | 'codeLocked' | 'codesLocked' | 'telegramUnreachable' | 'telegramRateLimited'
     | 'ssoUnavailable' | 'ssoProviderUnreachable' | 'ssoInvalidState' | 'ssoProviderDenied' | 'ssoTokenFailed' | 'ssoNotAllowed' | 'ssoBusy' | 'passwordLoginDisabled';
   let failure = $state<{ kind: FailureKind; code: string } | null>(null);
   // 2단계 인증을 켜 둔 Outlet은 비밀번호 확인 뒤 텔레그램 코드를 한 번 더 받습니다.
@@ -201,6 +203,8 @@
         failure = { kind: 'setupFailed', code: reason };
       } else if (reason === 'rate_limited') {
         failure = { kind: 'rateLimited', code: reason };
+      } else if (reason === 'too_many_attempts') {
+        failure = { kind: 'codesLocked', code: reason };
       } else if (reason === 'telegram_rate_limited') {
         failure = { kind: 'telegramRateLimited', code: reason };
       } else if (reason === 'telegram_unreachable') {
