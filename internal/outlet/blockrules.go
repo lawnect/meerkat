@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -140,6 +141,21 @@ func rulePaths(requestPath string) []rulePath {
 	return paths
 }
 
+// pathForms are the forms a request path takes for block rules, given as
+// decoded once (r.URL.Path): those of rulePaths, and, when an escape is left
+// in it, those of the path decoded once more, which an app behind a proxy
+// that decodes again reads ("/%252eenv" is "/.env" to it). Access policies
+// compare the same, see readPath. A rule holds when it holds for any.
+func pathForms(requestPath string) []rulePath {
+	forms := rulePaths(requestPath)
+	if strings.IndexByte(requestPath, '%') >= 0 && leftEscape.MatchString(requestPath) {
+		if twice, err := url.PathUnescape(requestPath); err == nil {
+			forms = append(forms, rulePaths(twice)...)
+		}
+	}
+	return forms
+}
+
 // wellKnown says whether every form of a path is under /.well-known/: one
 // that some server reads elsewhere is not exempt.
 func wellKnown(paths []rulePath) bool {
@@ -177,8 +193,9 @@ func (s *Store) blockedBy(host, requestPath string) *blockRule {
 	if config == nil || len(config.rules) == 0 {
 		return nil
 	}
-	// A path without parameters has one reading; most paths have none.
-	if !strings.Contains(requestPath, ";") {
+	// A path without parameters or a left escape has one reading; most paths
+	// have none.
+	if !strings.ContainsAny(requestPath, ";%") {
 		path := newRulePath(requestPath)
 		for i := range config.rules {
 			if rule := &config.rules[i]; rule.covers(host) &&
@@ -188,7 +205,7 @@ func (s *Store) blockedBy(host, requestPath string) *blockRule {
 		}
 		return nil
 	}
-	paths := rulePaths(requestPath)
+	paths := pathForms(requestPath)
 	discovery := wellKnown(paths)
 	for i := range config.rules {
 		if rule := &config.rules[i]; rule.covers(host) && !(rule.allowWellKnown && discovery) && slices.ContainsFunc(paths, rule.matches) {
