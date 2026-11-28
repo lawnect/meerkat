@@ -487,7 +487,7 @@ Conditions work as in block rules and see the path decoded once, so write them d
 
 What the policies decide, and the requests behind it, are on the **Observe** page (see below).
 
-A session lasts the configured hours (24 by default), only on the address it was issued for. **Sign everyone out** ends all of them. A group added to a policy counts from a person's next sign-in. The groups claim and scopes are set on the Access SSO card; add the scope your provider needs to send groups.
+A session lasts the configured hours (24 by default), only on the address it was issued for. **Sign everyone out** ends all of them. A group added to a policy counts from a person's next sign-in. The groups claim and scopes are set on the Access SSO card; add the scope your provider needs to send groups. Sign-ins under way are bounded: one client address can begin 120 a minute and have 16 under way at once (one is under way from the redirect to the provider until the return, or 10 minutes if abandoned), and when the Outlet holds 32,768 in all, a new sign-in replaces the oldest of the client holding the most, so addresses that start many can't keep everyone else from signing in.
 
 The app receives the person's email in `X-Meerkat-Access-Email`; headers a client sends whose names start with `X-Meerkat-Access`, in any case and with `_` for `-`, are removed, and the session cookie never reaches the app. Paths under `/.meerkat/access/` and cookie names starting with `__Host-meerkat_access` belong to the Outlet; `/.meerkat/access/logout` signs out of the address after a confirmation. While Access SSO is off, Allow policies let no person in, even people already signed in; Bypass policies that require a token still let it through.
 
