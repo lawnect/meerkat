@@ -39,6 +39,8 @@
     address: 'IP',
     lastSeen: 'Last authenticated',
     noConnectors: 'No known connectors',
+    shared: (clients: string) => `Not registered as a connector address: ${clients}`,
+    sharedTip: 'A Connector request arrived from an address many clients may share, such as a Docker gateway or a CDN, so it was not made known. If the Connector is refused or limited, add its range to the allowed ranges.',
     stats: (active: string, accepted: string, refused: string) => `${active} active · ${accepted} accepted · ${refused} refused`,
     statsTip: (rate: string, busy: string, idle: string, strict: string) => `Accepted and refused are counted since the Outlet started; active is the current number of open connections. Refused: ${rate} over the connection rate, ${busy} over the concurrent limit, ${idle} idle before sending data, ${strict} by connector IPs only mode.`,
     refresh: 'Refresh',
@@ -66,6 +68,8 @@
     address: 'IP',
     lastSeen: '마지막 인증',
     noConnectors: '알려진 커넥터가 없습니다',
+    shared: (clients: string) => `커넥터 주소 등록 제외: ${clients}`,
+    sharedTip: 'Docker 게이트웨이나 CDN처럼 여러 클라이언트가 공유할 수 있는 주소에서 커넥터 요청이 수신되어 알려진 주소로 등록하지 않았습니다. 해당 커넥터의 연결이 거부되거나 제한되면 대역을 허용 범위에 추가하십시오.',
     stats: (active: string, accepted: string, refused: string) => `활성 연결 ${active} · 허용 ${accepted} · 거부 ${refused}`,
     statsTip: (rate: string, busy: string, idle: string, strict: string) => `허용과 거부는 Outlet 시작 이후의 누계이며, 활성 연결은 현재 열려 있는 연결 수입니다. 거부 내역: 연결 빈도 초과 ${rate}건, 동시 연결 초과 ${busy}건, 첫 데이터 미수신 ${idle}건, 커넥터 IP만 허용 ${strict}건.`,
     refresh: '새로 고침',
@@ -85,12 +89,13 @@
   let draft = $state<TunnelGuardSettings | null>(null);
   let stats = $state<TunnelGuardView['stats'] | null>(null);
   let connectors = $state<TunnelGuardView['connectors']>([]);
+  let warnings = $state<NonNullable<TunnelGuardView['warnings']>>([]);
   let loadError = $state('');
   let error = $state('');
   let busy = $state(false);
 
   // 새로 고침은 연결 수와 알려진 커넥터만 바꾸고, 고치던 방식·허용 범위는 그대로 둡니다.
-  const adoptLive = (next: TunnelGuardView) => { stats = next.stats; connectors = next.connectors ?? []; };
+  const adoptLive = (next: TunnelGuardView) => { stats = next.stats; connectors = next.connectors ?? []; warnings = next.warnings ?? []; };
   const adopt = (next: TunnelGuardView) => {
     saved = { mode: next.settings.mode, allowed: next.settings.allowed ?? [] };
     draft = structuredClone($state.snapshot(saved));
@@ -185,6 +190,9 @@
         </Field.Field>
       </Field.Group>
 
+      {#if warnings.length}
+        <Alert.Root><Warning aria-hidden="true" /><Alert.Description class="flex items-center gap-1"><span class="font-mono">{t().shared(warnings.map((warning) => warning.client).join(', '))}</span><InfoTooltip id="tunnel-guard-shared-tip" label={t().shared('')} description={t().sharedTip} /></Alert.Description></Alert.Root>
+      {/if}
       <div class="grid gap-2">
         <h3 class="flex items-center gap-1 text-sm font-medium">{t().connectors}<InfoTooltip id="tunnel-guard-connectors-tip" label={t().connectors} description={t().connectorsTip} /></h3>
         {#if connectors.length}

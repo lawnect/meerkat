@@ -386,6 +386,8 @@ export interface TunnelGuardView {
   // Outlet 시작 이후의 누계. active는 지금 열린 연결 수입니다
   stats: { active: number; accepted: number; refused: { rate: number; busy: number; idle: number; strict: number } };
   connectors: Array<{ client: string; last_seen: string }>; // 인증된 커넥터 API 요청이 최근 15분 안에 있었던 주소, 최근 순서
+  // 여러 클라이언트가 함께 쓸 수 있어 알려진 주소로 등록하지 않은 주소. 이전 서버에는 없을 수 있습니다
+  warnings?: Array<{ code: 'shared_address'; client: string; last_seen: string }>;
 }
 
 // OpenID Connect 로그인(GET/PUT /api/v1/security/sso). 클라이언트 시크릿은 응답에 없고, PUT에서 비우면 저장된 값을 유지합니다.

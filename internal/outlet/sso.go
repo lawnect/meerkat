@@ -596,7 +596,7 @@ func (s *Store) ssoCallback(w http.ResponseWriter, r *http.Request) {
 	// same-site navigation instead.
 	target := html.EscapeString(pending.returnTo)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=` + target + `"><title>Meerkat</title><a href="` + target + `">Continue</a>`))
 }

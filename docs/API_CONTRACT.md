@@ -14,7 +14,7 @@
 
 Connector는 항상 연결을 먼저 시작한다. 공인 Outlet은 외부 HTTP/HTTPS와 등록 endpoint를 제외하고 Connector 관리 포트를 직접 공개하지 않는다.
 
-모든 공개 주소는 관리 호스트와 같은 사이트(same-site)이므로 `SameSite=Strict` 쿠키만으로는 터널로 연결한 앱이 관리 API에 보내는 폼 요청을 막지 못한다. 그래서 `GET`, `HEAD`, `OPTIONS`가 아닌 브라우저 요청은 `Sec-Fetch-Site`가 `same-origin`이나 `none`이어야 하고, 이 헤더가 없으면 `Origin`의 호스트가 `Host`와 같아야 한다. 어긋나면 `403 cross_origin_request`다. 두 헤더가 모두 없는 요청(Connector, CLI)은 그대로 처리한다. 공개 경로로 들어온 응답에는 `Strict-Transport-Security: max-age=31536000`을 붙인다.
+모든 공개 주소는 관리 호스트와 같은 사이트(same-site)이므로 `SameSite=Strict` 쿠키만으로는 터널로 연결한 앱이 관리 API에 보내는 폼 요청을 막지 못한다. 그래서 `GET`, `HEAD`, `OPTIONS`가 아닌 브라우저 요청은 `Sec-Fetch-Site`가 `same-origin`이나 `none`이어야 하고, 이 헤더가 없으면 `Origin`의 호스트가 `Host`와 같아야 한다. 어긋나면 `403 cross_origin_request`다. 두 헤더가 모두 없는 요청(Connector, CLI)은 그대로 처리한다. `/api/v1/` 아래의 `GET`도 `Sec-Fetch-Site`가 `same-site`나 `cross-site`이면 `403 cross_origin_request`다. 응답을 읽을 수는 없어도 열어 둔 사람의 세션으로 조회 비용을 일으킬 수 있기 때문이며, 다른 사이트에서 넘어오는 로그인 경로(`/api/v1/session/sso/start`, `/api/v1/session/sso/callback`, `/api/v1/access/start`, `/api/v1/access/callback`)만 예외다. 공개 경로로 들어온 응답에는 `Strict-Transport-Security: max-age=31536000`을 붙인다.
 
 ## 2. 관리자 API
 
@@ -318,13 +318,14 @@ SSH 터널로 접속하는 **로컬 관리 포트**의 로그인은 코드 없�
 {
   "settings": {"mode": "limited", "allowed": ["203.0.113.0/24"]},
   "stats": {"active": 3, "accepted": 120, "refused": {"rate": 0, "busy": 0, "idle": 2, "strict": 0}},
-  "connectors": [{"client": "203.0.113.7", "last_seen": "2026-10-27T09:00:00Z"}]
+  "connectors": [{"client": "203.0.113.7", "last_seen": "2026-10-27T09:00:00Z"}],
+  "warnings": [{"code": "shared_address", "client": "172.19.0.1", "last_seen": "2026-10-27T09:00:00Z"}]
 }
 ~~~
 
 - `PUT`은 `{"mode", "allowed"}`를 모두 담아야 하고 같은 객체를 반환한다. `mode`는 `limited`(기본)나 `strict`이며 `allowed`는 IP 주소나 CIDR 범위 최대 50개다. 저장할 때 소문자로 바꾸고, 범위의 호스트 비트는 지우고, 단일 주소(`/32`, `/128`)는 주소로, IPv4-mapped IPv6는 IPv4로 정리하며 중복은 한 번만 남긴다(입력 순서는 유지한다). 형식이 맞지 않거나 보낸 항목이 50개를 넘으면 `400 invalid_tunnel_guard`다. 설정은 재시작 없이 새 연결부터 바로 적용하며 감사 로그 `security.tunnel_guard`에 `{mode, allowed}`를 남긴다.
 - 클라이언트의 단위는 IPv4 주소 하나나 IPv6 /64다. `connectors[].client`는 IPv4 주소 또는 `2001:db8:0:9::/64` 같은 접두사이고 `last_seen`은 RFC 3339(UTC)이며 최근에 본 것이 앞이다.
-- **아는 클라이언트**는 인증된 Connector API 요청(`/connector/v1/enrollment` 성공, `/connector/v1/config`, 자격 증명이 확인된 `/connector/v1/heartbeat`)을 최근 15분 안에 보낸 주소와 `allowed`의 주소·범위다. 인증에 실패한 요청은 주소를 알게 하지 않는다. 주소는 Caddy가 붙인 `X-Forwarded-For`의 마지막 항목이고, 로컬 관리 포트는 TCP 상대 주소다. 아는 주소 표는 4096개로 제한하며 가장 오래전에 본 것부터 지운다. 아는 클라이언트는 익명용 속도·동시 연결 한도를 적용하지 않되 클라이언트당 동시 65536개의 안전 상한을 두고, 넘으면 `busy`로 거부한다. Outlet이 한 Connector에 열 수 있는 연결(동시 요청 4096개 기본값과 유휴 keep-alive 연결, 서비스마다 미리 만드는 약 9개의 채널)보다 충분히 크게 잡은 값이며 조정하는 값이 아니다.
+- **아는 클라이언트**는 인증된 Connector API 요청(`/connector/v1/enrollment` 성공, `/connector/v1/config`, 자격 증명이 확인된 `/connector/v1/heartbeat`)을 최근 15분 안에 보낸 주소와 `allowed`의 주소·범위다. 인증에 실패한 요청은 주소를 알게 하지 않는다. 주소는 Caddy가 붙인 `X-Forwarded-For`의 마지막 항목이고, 로컬 관리 포트는 TCP 상대 주소다. 아는 주소는 Connector마다 최근 8개까지만 두므로 한 Connector의 자격 증명으로 다른 Connector의 주소를 밀어낼 수 없고, 표 전체는 4096개로 제한하며 가장 오래전에 본 것부터 지운다. Caddy를 거쳐 온 요청의 주소가 루프백·사설·링크 로컬·CGNAT·CDN 대역이면 여러 클라이언트가 공유하는 게이트웨이일 수 있으므로 아는 주소로 만들지 않고 `warnings`에 `shared_address`로 싣는다(최대 16개, 15분 뒤 사라짐). 로컬 관리 포트로 직접 온 요청의 사설 주소는 Connector 자신이므로 아는 주소가 된다. 잘못 제외된 주소는 `allowed`에 넣어 해결한다. 아는 클라이언트는 익명용 속도·동시 연결 한도를 적용하지 않되 주소당 동시 16384개, 아는 주소 전체 동시 32768개, 주소당 초당 새 연결 5000개(버스트 16384)의 안전 상한을 두고, 넘으면 `busy`나 `rate`로 거부한다. Outlet이 한 Connector에 열 수 있는 연결(동시 요청 4096개 기본값과 유휴 keep-alive 연결, 서비스마다 미리 만드는 약 9개의 채널)보다 충분히 크게 잡은 값이며 조정하는 값이 아니다.
 - **모르는 클라이언트**는 `limited`에서 클라이언트당 분당 새 연결 120개(토큰 버킷, 버스트 120)와 동시 32개, 모두 합쳐 동시 256개와 초당 새 연결 50개(버스트 100)까지 받는다. 어느 한도든 넘으면 연결을 즉시 닫는다(RST).
 - **모든 새 연결**은 아는 주소·허용 범위도 포함해 연결한 뒤 10초 안에 핸드셰이크의 첫 메시지 전체를 보내야 한다. 메시지는 길이(2바이트, 리틀 엔디언)와 그 길이만큼의 본문이며(Noise_NK의 첫 메시지는 본문 48바이트), 길이는 1–1024여야 한다. 길이가 범위 밖이면 즉시 닫고(RST) 어느 거부 항목에도 세지 않는다. 10초 안에 다 받지 못하면 `idle`로 거부하며(RST), 한 바이트나 일부만 보내고 멈춘 경우도 같다. 어느 쪽이든 rathole에 연결하지 않는다. rathole 서버는 연결마다 핸드셰이크를 accept 루프 안에서 차례로 처리하고 중간에 멈춘 연결을 최대 5초 기다리므로, 메시지를 다 받기 전에 넘기면 연결 몇 개로 모든 터널의 새 연결을 막을 수 있다. 주소를 공유한다고 연결 자체가 인증된 것은 아니므로 NAT나 IPv6 /64를 공유하는 상대도 예외로 두지 않는다. 메시지 전체를 받은 뒤에 rathole에 연결해 길이와 본문을 한 번에 넘기고, 그 뒤의 바이트는 그대로 중계하며 초기 읽기 기한은 해제한다. 이미 시작된 조용한 터널은 계속 유지한다. 아무것도 보내지 않고 닫는 연결(`nc -vz`)과 메시지를 다 보내기 전에 스스로 닫는 연결은 거부로 세지 않는다.
 - `strict`에서는 모르는 클라이언트를 바로 거부한다. 아는 Connector와 `allowed`만 rathole에 닿는다. 아는 주소는 인증된 Connector API 요청에서만 알아내므로, 터널 연결이 그 요청과 다른 주소에서 나가는 Connector는 모르는 클라이언트다. Outlet 도메인(Connector API를 받는 관리 호스트 이름)이 Cloudflare 같은 프록시 뒤에 있으면 Outlet은 프록시의 주소를 보고, Connector가 여러 주소로 나가면(예: 한쪽은 IPv6, 다른 쪽은 IPv4) 터널 연결의 주소를 본 적이 없을 수 있다. 이런 Connector는 `limited`에서 모르는 클라이언트의 한도를 받고 `strict`에서 거부되므로, 그 범위를 `allowed`에 넣거나 관리 호스트 이름을 프록시 없이(DNS-only) 두어야 한다.

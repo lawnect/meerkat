@@ -205,8 +205,22 @@ func (s *Store) Handler() http.Handler {
 		if _, public := requestOrigin(r); public {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		}
+		// A page of a tunneled app can't read the console's answers, but
+		// its requests carry the session cookie and cost the Outlet the
+		// query. The sign-in redirects are navigations from other sites.
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/") && !crossSiteRead[r.URL.Path] && !ownPage(w, r) {
+			return
+		}
 		protected.ServeHTTP(w, r)
 	})
+}
+
+// crossSiteRead lists the reads a browser makes arriving from another site:
+// a provider's redirect back, a protected address sending its visitor to
+// sign in.
+var crossSiteRead = map[string]bool{
+	ssoPath + "/start": true, ssoCallbackPath: true,
+	accessStartPath: true, accessCallbackPath: true,
 }
 
 type traceSnapshot struct {

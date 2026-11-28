@@ -50,9 +50,13 @@ func TestCrossOriginWritesAreRejected(t *testing.T) {
 	if w := send("POST", "/api/v1/connectors", "application/json", map[string]string{"Sec-Fetch-Site": "same-origin", "Origin": "https://" + a.host}); w.Code != 201 {
 		t.Fatalf("same-origin write: %d %s", w.Code, w.Body.String())
 	}
-	// Reads stay open to any origin; they change nothing.
-	if w := send("GET", "/api/v1/connectors", "application/json", map[string]string{"Sec-Fetch-Site": "cross-site"}); w.Code != 200 {
-		t.Fatalf("cross-site read: %d", w.Code)
+	// Reads change nothing, but they cost the Outlet a query on the session
+	// of whoever opened the other site's page: only the console's own page
+	// and clients without the header (scripts) read.
+	for site, want := range map[string]int{"cross-site": 403, "same-site": 403, "same-origin": 200, "": 200} {
+		if w := send("GET", "/api/v1/connectors", "application/json", map[string]string{"Sec-Fetch-Site": site}); w.Code != want {
+			t.Fatalf("read from %q: %d, want %d", site, w.Code, want)
+		}
 	}
 }
 

@@ -54,7 +54,7 @@ const (
 	failTooLong     = "too_long"     // the path was over maxPublicPath
 	failTooLarge    = "too_large"    // the body was over the upload limit
 	failBusy        = "busy"         // a connection limit refused it
-	failTrapped     = "trapped"      // a block rule that bans refused it, and banned the client
+	failTrapped     = "trapped"      // a block rule that bans refused it: the second such request bans the client
 	failBanned      = "banned"       // the client was banned earlier
 	failTimeLimit   = "time_limit"   // the request ran past the request time limit and was ended
 )

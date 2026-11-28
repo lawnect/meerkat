@@ -28,15 +28,15 @@ import (
 
 // Run against the exact executable shipped in meerkat-caddy, for example:
 // MEERKAT_CADDY_BINARY=/path/to/caddy go test ./internal/outlet -run TestCaddyMetricsHostCardinality
-// The unpatched official 2.11.7 binary fails this test.
+// The unpatched official 2.11.9 binary fails this test.
 func TestCaddyMetricsHostCardinality(t *testing.T) {
 	binary := os.Getenv("MEERKAT_CADDY_BINARY")
 	if binary == "" {
 		t.Skip("set MEERKAT_CADDY_BINARY to test the pinned Caddy runtime")
 	}
 	version, err := exec.Command(binary, "version").CombinedOutput()
-	if err != nil || !strings.HasPrefix(string(version), "v2.11.7") {
-		t.Fatalf("expected pinned Caddy 2.11.7, got %q: %v", version, err)
+	if err != nil || !strings.HasPrefix(string(version), "v2.11.9") {
+		t.Fatalf("expected pinned Caddy 2.11.9, got %q: %v", version, err)
 	}
 	t.Logf("runtime: %s", strings.TrimSpace(string(version)))
 	f := newProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -56,7 +56,7 @@ func TestCaddyMetricsHostCardinality(t *testing.T) {
 	certFile, keyFile := caddyTestCertificate(t, dir)
 	httpsAddress, httpAddress, metricsAddress := caddyTestAddress(t), caddyTestAddress(t), caddyTestAddress(t)
 	config := string(proxy.DynamicCaddyfile(strings.TrimPrefix(outlet.URL, "http://")))
-	config = strings.Replace(config, "{\n", "{\n\tadmin off\n\tauto_https off\n\tdefault_bind 127.0.0.1\n", 1)
+	config = strings.Replace(config, "{\n", "{\n\tauto_https off\n\tdefault_bind 127.0.0.1\n", 1)
 	config = strings.Replace(config, ":9090 {", ":"+strings.Split(metricsAddress, ":")[1]+" {", 1)
 	config = strings.Replace(config, "http:// {", "http://:"+strings.Split(httpAddress, ":")[1]+" {", 1)
 	config = strings.Replace(config, "https:// {", "https://:"+strings.Split(httpsAddress, ":")[1]+" {", 1)

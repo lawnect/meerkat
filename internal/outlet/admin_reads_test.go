@@ -22,7 +22,8 @@ func TestAdminReadsRefuseCrossSiteRequests(t *testing.T) {
 		h.ServeHTTP(w, r)
 		return w
 	}
-	for _, path := range []string{"/api/v1/audit", "/api/v1/audit?limit=5&q=login", "/api/v1/alerts", "/api/v1/security/sso"} {
+	for _, path := range []string{"/api/v1/audit", "/api/v1/audit?limit=5&q=login", "/api/v1/alerts", "/api/v1/security/sso",
+		"/api/v1/security/access-tokens", "/api/v1/security/access-policies", "/api/v1/security/access-provider", "/api/v1/connectors", "/api/v1/outlet"} {
 		for _, site := range []string{"cross-site", "same-site"} {
 			if w := get(path, site); w.Code != 403 || errorCode(t, w) != "cross_origin_request" {
 				t.Fatalf("%s from %s: %d %s", path, site, w.Code, w.Body.String())
@@ -32,6 +33,12 @@ func TestAdminReadsRefuseCrossSiteRequests(t *testing.T) {
 			if w := get(path, site); w.Code != 200 {
 				t.Fatalf("%s from %q: %d %s", path, site, w.Code, w.Body.String())
 			}
+		}
+	}
+	// The sign-in redirects arrive from other sites and stay open.
+	for _, path := range []string{ssoPath + "/start", ssoCallbackPath, accessStartPath, accessCallbackPath} {
+		if w := get(path, "cross-site"); w.Code == 403 && errorCode(t, w) == "cross_origin_request" {
+			t.Fatalf("%s is refused to a navigation from another site", path)
 		}
 	}
 }

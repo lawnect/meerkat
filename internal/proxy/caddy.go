@@ -18,7 +18,11 @@ package proxy
 // It strips ports before allocating labels, matching strict_sni_host's check:
 // otherwise one authorized SNI and arbitrary Host ports create unlimited series.
 // Plain HTTP catch-all hosts retain Caddy's default shared _other label.
-const caddyGlobal = `	metrics {
+//
+// Nothing uses Caddy's admin API: the Outlet rewrites the file and Caddy
+// watches it, so the API is off rather than left for whoever reaches it.
+const caddyGlobal = `	admin off
+	metrics {
 		per_host
 	}
 	servers {
