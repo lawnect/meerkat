@@ -171,6 +171,30 @@ func (s *Store) servedSince(serviceID string, t time.Time) bool {
 // request reaches an app; X-Real-IP is then set from that entry.
 var spoofableClientHeaders = []string{"X-Real-Ip", "Cf-Connecting-Ip", "Cf-Connecting-Ipv6", "True-Client-Ip", "X-Client-Ip", "Forwarded"}
 
+// webSocketUpgrade reports whether header asks to switch to WebSocket and to
+// nothing else: one Upgrade value, "websocket", and Connection naming it.
+// That is the only protocol switch the proxy forwards; for another (h2c, say)
+// a service that agreed would take over the client's connection, and every
+// request after it would skip the Outlet.
+func webSocketUpgrade(header http.Header) bool {
+	upgrades := header.Values("Upgrade")
+	if len(upgrades) != 1 || !strings.EqualFold(strings.TrimSpace(upgrades[0]), "websocket") {
+		return false
+	}
+	for _, line := range header.Values("Connection") {
+		for token := range strings.SplitSeq(line, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// errUnwantedSwitch fails a request whose service answered 101 though the
+// request wasn't forwarded as a WebSocket upgrade.
+var errUnwantedSwitch = errors.New("service switched protocols for a request that did not ask for WebSocket")
+
 // isCertificateAsk reports whether r is Caddy's own on-demand TLS check.
 // Caddy calls it directly, without X-Forwarded-For; every request Caddy
 // proxies for a client carries that header, so a client that sets
@@ -469,6 +493,15 @@ func (s *Store) PublicHandler() http.Handler {
 					for _, name := range spoofableClientHeaders {
 						pr.Out.Header.Del(name)
 					}
+					// ReverseProxy has put back the Upgrade the client asked for;
+					// only WebSocket stays. Any other request goes on as plain
+					// HTTP, so no service can answer it with a 101 and take the
+					// connection. A service that speaks h2c wants HTTP2-Settings.
+					if !webSocketUpgrade(pr.In.Header) {
+						pr.Out.Header.Del("Upgrade")
+						pr.Out.Header.Del("Connection")
+					}
+					pr.Out.Header.Del("Http2-Settings")
 					if client := forwardedClient(pr.In); client != "" {
 						pr.Out.Header.Set("X-Real-Ip", client)
 					}
@@ -504,6 +537,11 @@ func (s *Store) PublicHandler() http.Handler {
 					}))
 				},
 				ModifyResponse: func(res *http.Response) error {
+					// Whatever the service says, a 101 is relayed only for the
+					// WebSocket upgrade the request was forwarded as.
+					if res.StatusCode == http.StatusSwitchingProtocols && (res.Request == nil || !webSocketUpgrade(res.Request.Header)) {
+						return errUnwantedSwitch
+					}
 					responded.Store(true)
 					limit.answered(res.StatusCode)
 					if res.StatusCode != http.StatusSwitchingProtocols {

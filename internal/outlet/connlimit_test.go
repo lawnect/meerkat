@@ -409,7 +409,7 @@ func TestWaitingIsNotStalling(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		_, _ = io.WriteString(rw, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n")
+		_, _ = io.WriteString(rw, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
 		_ = rw.Flush()
 		_, _ = io.Copy(conn, rw)
 	})
@@ -431,7 +431,7 @@ func TestWaitingIsNotStalling(t *testing.T) {
 	}
 
 	conn, reader = dial(t, address)
-	_, _ = io.WriteString(conn, "GET / HTTP/1.1\r\nHost: ws.example.com\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n")
+	_, _ = io.WriteString(conn, "GET / HTTP/1.1\r\nHost: ws.example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	res, err := http.ReadResponse(reader, nil)
 	if err != nil || res.StatusCode != http.StatusSwitchingProtocols {
@@ -583,7 +583,7 @@ func TestRequestTimeLimit(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		_, _ = io.WriteString(rw, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n")
+		_, _ = io.WriteString(rw, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
 		_ = rw.Flush()
 		_, _ = io.Copy(conn, rw)
 	})
@@ -654,7 +654,7 @@ func TestRequestTimeLimit(t *testing.T) {
 	}
 
 	conn, reader = dial(t, address)
-	_, _ = io.WriteString(conn, "GET / HTTP/1.1\r\nHost: ws.example.com\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n")
+	_, _ = io.WriteString(conn, "GET / HTTP/1.1\r\nHost: ws.example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if res, err := http.ReadResponse(reader, nil); err != nil || res.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("upgrade: %v %v", res, err)
