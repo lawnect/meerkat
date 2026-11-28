@@ -1,5 +1,8 @@
 # syntax=docker/dockerfile:1
-FROM node:22-bookworm-slim AS ui-build
+# Every base image is pinned by tag and by the digest of its multi-platform
+# index, so a rebuild of a tag can't change what a release contains. Bump the
+# tag and the digest together.
+FROM node:22-bookworm-slim@sha256:be979e5523c76fa4d5ca4ebd3099078f220aa47ec39c48ad5b5df9314debd6eb AS ui-build
 WORKDIR /src
 COPY package.json package-lock.json ./
 COPY tsconfig.json ./
@@ -7,7 +10,9 @@ RUN npm ci
 COPY web ./web
 RUN npm run check && npm run build
 
-FROM golang:1.26.3-bookworm AS go-build
+# Keep the tag at or above the `toolchain` line in go.mod: the CI workflow runs
+# govulncheck with the Go version read from this line.
+FROM golang:1.26.11-bookworm@sha256:ea47ee45f1284d60f9cc09cb2c3bb4f508c256b640bd8bb30342ff13d1adcb52 AS go-build
 # The release, without the "v"; the publish workflow passes it from the tag.
 ARG VERSION=0.0.0-dev
 WORKDIR /src
@@ -39,7 +44,7 @@ RUN cargo build --release --locked --no-default-features --features server,clien
     /out/rathole --version | grep -Eq '^Build Version: +0\.5\.0$' && \
     /out/rathole --version | grep -q hot_reload
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /var/lib/meerkat && chown 65532:65532 /var/lib/meerkat
 COPY --from=go-build /out/ /usr/local/bin/
