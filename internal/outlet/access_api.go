@@ -58,10 +58,7 @@ func (s *Store) putAccessProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	secretChanged := req.ClientSecret != ""
 	s.saving.Lock()
-	saved, err := s.control.SetAccessProvider(r.Context(), req, s.now())
-	if err == nil {
-		s.access.enabled.Store(saved.Enabled)
-	}
+	saved, revoked, err := s.saveAccessProvider(r.Context(), req)
 	s.saving.Unlock()
 	if errors.Is(err, control.ErrInvalidAccessProvider) {
 		fail(w, r, 400, "invalid_access_provider")
@@ -72,9 +69,39 @@ func (s *Store) putAccessProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audited(r, "security.access_provider", "security", "access_provider", map[string]any{
-		"enabled": saved.Enabled, "issuer": saved.Issuer, "client_id": saved.ClientID, "secret_changed": secretChanged, "session_hours": saved.SessionHours,
+		"enabled": saved.Enabled, "issuer": saved.Issuer, "client_id": saved.ClientID, "secret_changed": secretChanged, "session_hours": saved.SessionHours, "sessions_revoked": revoked,
 	})
 	reply(w, 200, s.accessProviderView(r.Context(), saved))
+}
+
+// saveAccessProvider saves the provider, and ends every session when it
+// isn't the provider they were signed in by any more: another issuer or
+// client ID, or fewer hours than they were given. The key is replaced first
+// and the provider saved after, so that a failure in between signs people out
+// rather than leaves sessions of the old provider valid. The caller holds
+// s.saving.
+func (s *Store) saveAccessProvider(ctx context.Context, req control.AccessProvider) (saved control.AccessProvider, revoked bool, err error) {
+	next, ok := req.Normalize()
+	if !ok {
+		return req, false, control.ErrInvalidAccessProvider
+	}
+	previous, err := s.control.AccessProvider(ctx)
+	if err != nil {
+		return req, false, err
+	}
+	if next.Issuer != previous.Issuer || next.ClientID != previous.ClientID || next.SessionHours < previous.SessionHours {
+		key, err := s.control.RotateAccessKey(ctx, s.now())
+		if err != nil {
+			return req, false, err
+		}
+		s.access.key.Store(&key)
+		revoked = true
+	}
+	saved, err = s.control.SetAccessProvider(ctx, req, s.now())
+	if err == nil {
+		s.access.enabled.Store(saved.Enabled)
+	}
+	return saved, revoked, err
 }
 
 // testAccessProvider fetches an issuer's discovery document, so a typo shows

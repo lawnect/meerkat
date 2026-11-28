@@ -100,6 +100,8 @@ func TestRequestLogKeepsEveryRequest(t *testing.T) {
 	expect("the app's 404", f.visit("GET", "app.example.com", "/missing", "198.51.100.7", "scanner"), 404, "404 4xx [] [svc-0] app.example.com GET /missing 19")
 	expect("the app's 500", f.visit("GET", "app.example.com", "/500", "203.0.113.5", "Mozilla/5.0"), 500, "500 5xx [app_error] [svc-0] app.example.com GET /500 0")
 	expect("a block rule", f.visit("GET", "app.example.com", "/.env", "198.51.100.7", "scanner"), 403, "403 4xx [trapped] [] app.example.com GET /.env 10")
+	// The first request for a trap path only counts; the second bans.
+	expect("a block rule again", f.visit("GET", "app.example.com", "/.env", "198.51.100.7", "scanner"), 403, "403 4xx [trapped] [] app.example.com GET /.env 10")
 	expect("a banned client", f.visit("GET", "app.example.com", "/", "198.51.100.7", "scanner"), 403, "403 4xx [banned] [] app.example.com GET / 10")
 	expect("no live service", f.visit("GET", "idle.example.com", "/", "203.0.113.5", "Mozilla/5.0"), 503, "503 5xx [no_service] [] idle.example.com GET / 20")
 	expect("within the rate limit", f.visit("GET", "limited.example.com", "/", "203.0.113.5", "Mozilla/5.0"), 200, "200 2xx [] [svc-0] limited.example.com GET / 5")
@@ -120,14 +122,14 @@ func TestRequestLogKeepsEveryRequest(t *testing.T) {
 		query string
 		total int
 	}{
-		{"?class=4xx", 4},
+		{"?class=4xx", 5},
 		{"?class=5xx", 2},
 		{"?class=2xx", 3},
 		{"?host=idle.example.com", 1},
 		{"?path=/missing", 1},
-		{"?source=198.51.100.7", 3},
-		{"?source=198.51.100.7&class=4xx&host=app.example.com", 3},
-		{"?q=scanner", 3},
+		{"?source=198.51.100.7", 4},
+		{"?source=198.51.100.7&class=4xx&host=app.example.com", 4},
+		{"?q=scanner", 4},
 		{"?q=svc-0", 5},
 	} {
 		if got := f.requestLog(t, c.query); got.Total != c.total || len(got.Entries) != c.total {
@@ -165,7 +167,7 @@ func TestRequestLogUpgradesAndStreams(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		_, _ = io.WriteString(rw, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n")
+		_, _ = io.WriteString(rw, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
 		_ = rw.Flush()
 		_, _ = io.Copy(conn, rw)
 	})
@@ -192,7 +194,7 @@ func TestRequestLogUpgradesAndStreams(t *testing.T) {
 	}
 
 	conn, reader = dial(t, address)
-	_, _ = io.WriteString(conn, "GET /socket HTTP/1.1\r\nHost: ws.example.com\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n")
+	_, _ = io.WriteString(conn, "GET /socket HTTP/1.1\r\nHost: ws.example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
 	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	if res, err := http.ReadResponse(reader, nil); err != nil || res.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("upgrade: %v %v", res, err)

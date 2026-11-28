@@ -401,6 +401,21 @@ func subnetOf(ip string) string {
 	return prefix.String()
 }
 
+// clientBucket is who a per-IP limit counts for ip: the address, or for IPv6
+// the /64 it is in (as a ban holds it, see banKey), since one /64 holds 2^64
+// addresses and a client rotating through them would otherwise get a bucket
+// of its own for each. An address that can't be read counts as it is.
+func clientBucket(ip string) string {
+	// Most clients are IPv4; they need no parsing.
+	if !strings.Contains(ip, ":") {
+		return ip
+	}
+	if key, _, ok := banKey(ip); ok {
+		return banLabel(key)
+	}
+	return ip
+}
+
 // exemptFromRateLimit keeps certificate issuance working under any limit.
 // Only Caddy's internal ask is exempt: Caddy answers ACME challenges itself,
 // so those paths arriving here are ordinary public requests.
@@ -436,7 +451,7 @@ func (s *Store) limitRequest(w http.ResponseWriter, r *http.Request, host string
 		return false
 	}
 	ip, _ := requestOrigin(r)
-	subnet := ""
+	subnet, client := "", clientBucket(ip)
 	var limits [maxRequestLimits]limit
 	var kinds [maxRequestLimits]string
 	var endpoints [maxRequestLimits]string
@@ -447,7 +462,7 @@ func (s *Store) limitRequest(w http.ResponseWriter, r *http.Request, host string
 	}
 	if ip != "" {
 		if config.PerIP.On() {
-			add("ip", "ip|"+ip, config.PerIP)
+			add("ip", "ip|"+client, config.PerIP)
 		}
 		if subnet = subnetOf(ip); subnet != "" && config.PerSubnet.On() {
 			add("subnet", "net|"+subnet, config.PerSubnet)
@@ -459,7 +474,7 @@ func (s *Store) limitRequest(w http.ResponseWriter, r *http.Request, host string
 	for _, rule := range config.matches(host, r.URL.Path) {
 		key := "ep|" + rule.label
 		if rule.Per == control.RateEndpointIP {
-			key = "epi|" + rule.label + "|" + ip
+			key = "epi|" + rule.label + "|" + client
 		}
 		if rule.Per == control.RateEndpointTotal || ip != "" {
 			add("endpoint", key, control.Limit{RPS: rule.RPS, Burst: rule.Burst})

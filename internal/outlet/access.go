@@ -2,6 +2,7 @@ package outlet
 
 import (
 	"cmp"
+	"container/list"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -64,9 +65,12 @@ const (
 	maxAccessCookie = 3800
 	// maxAccessPerClient and accessStarts are how many sign-ins one client
 	// address may have in flight and begin a minute, and maxAccessPending
-	// how many all may have in flight: a whole office signs in to protected
-	// addresses from one address, far more people than administrators.
-	maxAccessPerClient = 512
+	// how many all may have in flight. A sign-in is in flight for the moments
+	// between the redirect to the provider and the one back (or ten minutes
+	// if abandoned), so a whole office signing in at once from one address
+	// needs far fewer than it starts a minute, and a few hundred addresses
+	// holding many each must not leave none for the rest: see putEvicting.
+	maxAccessPerClient = 16
 	accessStarts       = 120
 	maxAccessPending   = 32768
 )
@@ -1027,6 +1031,21 @@ func (s *Store) tokenTaken(r *http.Request, rule *accessRule, token accessTokenR
 	return r.WithContext(context.WithValue(r.Context(), accessServiceKey{}, token.Name))
 }
 
+// carriesAccess reports whether r, for host from the client at ip, carries a
+// valid access session or a valid access token: someone the Outlet let in or
+// handed a token, whom a request for a trap path must never ban along with
+// the address they share.
+func (s *Store) carriesAccess(r *http.Request, host, ip string) bool {
+	if _, ok := s.accessSession(r, host); ok {
+		return true
+	}
+	if value := strings.TrimSpace(r.Header.Get(accessTokenHeader)); value != "" {
+		token, refused := s.accessToken(value)
+		return refused == "" && token.usableFrom(host, ip)
+	}
+	return false
+}
+
 // accessSameOrigin refuses a POST that comes from another site, sibling
 // addresses under the same domain included.
 var accessSameOrigin = http.NewCrossOriginProtection()
@@ -1264,7 +1283,7 @@ func (s *Store) accessStart(w http.ResponseWriter, r *http.Request) {
 	}
 	state, nonce, verifier, browser := Token(), Token(), oauth2.GenerateVerifier(), browserCookie(r, accessStateCookie)
 	now := s.now()
-	if !s.access.login.put(state, ssoPending{nonce: nonce, verifier: verifier, returnTo: returnTo, host: host, bind: bind, browser: Hash(browser), client: clientKey(ip), expires: now.Add(ssoStateTTL)}, now) {
+	if !s.access.login.putEvicting(state, ssoPending{nonce: nonce, verifier: verifier, returnTo: returnTo, host: host, bind: bind, browser: Hash(browser), client: clientKey(ip), expires: now.Add(ssoStateTTL)}, now) {
 		w.Header().Set("Retry-After", "60")
 		accessPageNext(w, r, http.StatusServiceUnavailable, "busy", back)
 		return
@@ -1379,6 +1398,35 @@ func (s *Store) accessCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(r, "access.login", control.AuditEntry{ActorEmail: email, ResourceType: "address", ResourceID: pending.host, Detail: map[string]any{"issuer": idToken.Issuer, "subject": idToken.Subject}})
 	http.Redirect(w, r, "https://"+pending.host+accessPathPrefix+"finish?"+url.Values{"ticket": {ticket}}.Encode(), http.StatusSeeOther)
+}
+
+// putEvicting is put that, when the table is full, drops the oldest sign-in
+// of the client holding the most, which is then never one that holds few: a
+// few hundred addresses starting sign-ins can fill the table, and refusing
+// every other client until theirs expire would lock everyone out of the
+// protected addresses. A client at its own cap is refused, as put does.
+func (st *ssoState) putEvicting(state string, p ssoPending, now time.Time) bool {
+	if st.put(state, p, now) {
+		return true
+	}
+	st.mu.Lock()
+	if mine := st.clients[p.client]; mine != nil && mine.Len() >= cmp.Or(st.perClient, maxSSOPerClient) || len(st.pending) < cmp.Or(st.capacity, maxSSOPending) {
+		st.mu.Unlock()
+		return false
+	}
+	var heaviest *list.List
+	for _, entries := range st.clients {
+		// Of equals the one whose oldest sign-in is the oldest loses it.
+		if heaviest == nil || entries.Len() > heaviest.Len() ||
+			entries.Len() == heaviest.Len() && entries.Front().Value.(*ssoEntry).p.expires.Before(heaviest.Front().Value.(*ssoEntry).p.expires) {
+			heaviest = entries
+		}
+	}
+	if heaviest != nil {
+		st.remove(heaviest.Front().Value.(*ssoEntry))
+	}
+	st.mu.Unlock()
+	return st.put(state, p, now)
 }
 
 func (st *accessState) putTicket(ticket string, t accessTicket, now time.Time) bool {
@@ -1552,7 +1600,8 @@ func accessPageNext(w http.ResponseWriter, r *http.Request, status int, page str
 		body += `<p><a href="` + html.EscapeString(next.href) + `">` + html.EscapeString(next.href) + `</a></p>`
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'")
+	// No other site may frame a page with a button or a link on it.
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)

@@ -166,10 +166,55 @@ func (s *Store) servedSince(serviceID string, t time.Time) bool {
 	return ok && !t.IsZero() && v.(*atomic.Int64).Load() > t.UnixNano()
 }
 
-// spoofableClientHeaders name a client address. Behind Caddy only
-// X-Forwarded-For's last entry is real, so these are removed before a
+// spoofableClientHeaders name a client address, or the host, scheme or path
+// of the request as a proxy in front of an app would pass it on. Behind Caddy
+// only X-Forwarded-For's last entry is real, so these are removed before a
 // request reaches an app; X-Real-IP is then set from that entry.
-var spoofableClientHeaders = []string{"X-Real-Ip", "Cf-Connecting-Ip", "Cf-Connecting-Ipv6", "True-Client-Ip", "X-Client-Ip", "Forwarded"}
+var spoofableClientHeaders = []string{
+	"X-Real-Ip", "Cf-Connecting-Ip", "Cf-Connecting-Ipv6", "True-Client-Ip", "X-Client-Ip", "Forwarded",
+	"X-Cluster-Client-Ip", "Client-Ip", "Fastly-Client-Ip", "Fly-Client-Ip", "X-Envoy-External-Address", "X-Azure-Clientip",
+	"X-Appengine-User-Ip", "Do-Connecting-Ip", "Forwarded-For", "X-Forwarded", "X-Original-Forwarded-For",
+	"X-Original-Url", "X-Rewrite-Url", "X-Forwarded-Scheme", "X-Forwarded-Prefix", "X-Forwarded-Server", "X-Original-Host", "X-Host",
+}
+
+// dropForgeableHeaders removes what a client could use to pass an app a value
+// the Outlet vouches for: the headers of spoofableClientHeaders and every
+// header with "_" in its name, as nginx does by default, since app servers
+// that map "-" and "_" to one name (WSGI, CGI) read X_Real_Ip as X-Real-Ip.
+func dropForgeableHeaders(header http.Header) {
+	for name := range header {
+		if strings.Contains(name, "_") {
+			delete(header, name)
+		}
+	}
+	for _, name := range spoofableClientHeaders {
+		header.Del(name)
+	}
+}
+
+// webSocketUpgrade reports whether header asks to switch to WebSocket and to
+// nothing else: one Upgrade value, "websocket", and Connection naming it.
+// That is the only protocol switch the proxy forwards; for another (h2c, say)
+// a service that agreed would take over the client's connection, and every
+// request after it would skip the Outlet.
+func webSocketUpgrade(header http.Header) bool {
+	upgrades := header.Values("Upgrade")
+	if len(upgrades) != 1 || !strings.EqualFold(strings.TrimSpace(upgrades[0]), "websocket") {
+		return false
+	}
+	for _, line := range header.Values("Connection") {
+		for token := range strings.SplitSeq(line, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// errUnwantedSwitch fails a request whose service answered 101 though the
+// request wasn't forwarded as a WebSocket upgrade.
+var errUnwantedSwitch = errors.New("service switched protocols for a request that did not ask for WebSocket")
 
 // isCertificateAsk reports whether r is Caddy's own on-demand TLS check.
 // Caddy calls it directly, without X-Forwarded-For; every request Caddy
@@ -388,7 +433,7 @@ func (s *Store) PublicHandler() http.Handler {
 			}
 			rule.hits.Add(1)
 			cause := failBlocked
-			if rule.ban && !fromABrowser(r) {
+			if rule.ban && !fromABrowser(r) && !s.carriesAccess(r, host, origin) {
 				s.banClient(origin, rule, host, r.URL.Path)
 				cause = failTrapped
 			}
@@ -466,9 +511,16 @@ func (s *Store) PublicHandler() http.Handler {
 					// the address Caddy saw, never a value the client sent.
 					// Headers a CDN would set, which an app moved off one might
 					// still trust, are dropped since a client could forge them.
-					for _, name := range spoofableClientHeaders {
-						pr.Out.Header.Del(name)
+					dropForgeableHeaders(pr.Out.Header)
+					// ReverseProxy has put back the Upgrade the client asked for;
+					// only WebSocket stays. Any other request goes on as plain
+					// HTTP, so no service can answer it with a 101 and take the
+					// connection. A service that speaks h2c wants HTTP2-Settings.
+					if !webSocketUpgrade(pr.In.Header) {
+						pr.Out.Header.Del("Upgrade")
+						pr.Out.Header.Del("Connection")
 					}
+					pr.Out.Header.Del("Http2-Settings")
 					if client := forwardedClient(pr.In); client != "" {
 						pr.Out.Header.Set("X-Real-Ip", client)
 					}
@@ -504,6 +556,11 @@ func (s *Store) PublicHandler() http.Handler {
 					}))
 				},
 				ModifyResponse: func(res *http.Response) error {
+					// Whatever the service says, a 101 is relayed only for the
+					// WebSocket upgrade the request was forwarded as.
+					if res.StatusCode == http.StatusSwitchingProtocols && (res.Request == nil || !webSocketUpgrade(res.Request.Header)) {
+						return errUnwantedSwitch
+					}
 					responded.Store(true)
 					limit.answered(res.StatusCode)
 					if res.StatusCode != http.StatusSwitchingProtocols {

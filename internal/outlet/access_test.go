@@ -930,6 +930,7 @@ func TestAccessStartsAreLimited(t *testing.T) {
 	f := newAccessFixture(t, control.AccessPolicy{Enabled: true, Hosts: []string{"app.example.com"}, AllowedUsers: []string{"@corp.example.com"}})
 	for i := range accessStarts + 1 {
 		w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=/&bind="+Hash(fmt.Sprint("browser ", i)))
+		f.completed(w)
 		if want := http.StatusFound; i == accessStarts {
 			if w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") == "" {
 				t.Fatalf("start %d: %d", i, w.Code)
@@ -1128,6 +1129,7 @@ func TestAccessOfficeBehindOneAddress(t *testing.T) {
 	for i := range accessStarts + 5 {
 		w := f.visit(f.adminHost, accessStartPath+"?host=app.example.com&return=%2Fdocs&bind="+Hash(fmt.Sprint("browser ", i)))
 		codes[w.Code]++
+		f.completed(w)
 		if w.Code == http.StatusTooManyRequests && !strings.Contains(w.Body.String(), `<a href="https://app.example.com/docs">`) {
 			t.Fatalf("busy page: %s", w.Body.String())
 		}
