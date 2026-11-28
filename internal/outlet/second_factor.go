@@ -97,6 +97,8 @@ type loginChallenge struct {
 	codeHash string
 	expires  time.Time
 	failures int
+	// seq orders challenges by creation, which times that can tie don't.
+	seq uint64
 }
 
 // challenges keeps pending second-factor logins in memory only: a restart
@@ -106,6 +108,7 @@ type challenges struct {
 	mu    sync.Mutex
 	items map[string]*loginChallenge
 	wrong map[string][]time.Time
+	seq   uint64
 }
 
 func randomCode() (string, error) {
@@ -143,7 +146,7 @@ func (c *challenges) create(admin control.Admin, secret string, now time.Time) (
 				continue
 			}
 			mine++
-			if oldest == "" || item.expires.Before(c.items[oldest].expires) {
+			if oldest == "" || item.seq < c.items[oldest].seq {
 				oldest = other
 			}
 		}
@@ -155,7 +158,8 @@ func (c *challenges) create(admin control.Admin, secret string, now time.Time) (
 	if len(c.items) >= maxChallenges {
 		return "", errChallengesBusy
 	}
-	c.items[id] = &loginChallenge{admin: admin, codeHash: Hash(secret), expires: now.Add(challengeTTL)}
+	c.seq++
+	c.items[id] = &loginChallenge{admin: admin, codeHash: Hash(secret), expires: now.Add(challengeTTL), seq: c.seq}
 	return id, nil
 }
 
