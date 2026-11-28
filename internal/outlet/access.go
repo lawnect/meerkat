@@ -1600,7 +1600,8 @@ func accessPageNext(w http.ResponseWriter, r *http.Request, status int, page str
 		body += `<p><a href="` + html.EscapeString(next.href) + `">` + html.EscapeString(next.href) + `</a></p>`
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'")
+	// No other site may frame a page with a button or a link on it.
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
