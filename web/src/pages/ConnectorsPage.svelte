@@ -24,7 +24,7 @@
   import * as ToggleGroup from '$lib/components/ui/toggle-group/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import { api, connectorLabel, errorMessage, mockApiEnabled, statusLabel } from '../api';
-  import { connectorState, forgetEnrollment, rememberEnrollment, storedEnrollment } from '../connectorState.svelte';
+  import { connectorState, forgetConnectedEnrollments, forgetEnrollment, rememberEnrollment, storedEnrollment } from '../connectorState.svelte';
   import { intlLocale, translations } from '../i18n.svelte';
   import { connectionPollMs } from '../polling';
   import { urlTableState } from '../components/data-table/urlTable.svelte';
@@ -131,7 +131,7 @@
     regenerate: 'Generate install instructions again',
     noRunCode: 'No run code available. Replace the token to get a new one.',
     resetAndInstall: 'Reset connection and generate install command',
-    installCodeNote: 'The install code contains the tunnel run token. Use the same code when restarting; resetting the connection invalidates the old code.',
+    installCodeNote: 'The install code contains the tunnel run token and is passed as an environment variable, which anyone who can run docker inspect can read. Use the same code when restarting; resetting the connection invalidates the old code.',
     installMethodsAria: 'Install method',
     tabDocker: 'Docker command',
     terminalIntro: 'Run the command below on the server that will host the tunnel. No persistent volume is needed.',
@@ -144,9 +144,9 @@
     composeExisting: 'Add to existing file',
     composeNew: 'Create a new file',
     existingIntro: ['Add the tunnel service under ', 'services', ' in your existing Compose file. You can set the app network when you register a service.'],
-    existingNote: ['If a ', 'connector', ' service already exists, update it instead of adding another. Keep the ', 'command', ' line that contains the run token.'],
+    existingNote: ['If a ', 'connector', ' service already exists, update it instead of adding another. Keep the ', 'MEERKAT_INSTALL_CODE', ' value, which contains the run token.'],
     newIntro: ['Leave your existing Compose file alone and save the following as a dedicated ', 'meerkat-tunnel.yaml', ' file for the tunnel.'],
-    newNote: ['Keep the ', 'command', ' line that contains the run token. Recreating the container reconnects with the same token.'],
+    newNote: ['Keep the ', 'MEERKAT_INSTALL_CODE', ' value, which contains the run token. Recreating the container reconnects with the same token.'],
     secretNote: 'Keep the install code, which contains the run token, secret. Issuing a new token invalidates the previous one.',
     mockNote: 'No real tunnel connects in the preview.',
     mockConnect: 'Switch to connected',
@@ -302,7 +302,7 @@
     regenerate: '설치 안내 다시 만들기',
     noRunCode: '실행 코드가 없습니다. 토큰을 교체해 새 코드를 받으세요.',
     resetAndInstall: '연결 초기화 후 설치 명령 만들기',
-    installCodeNote: '설치 코드에 터널 실행 토큰이 들어 있습니다. 재시작할 때도 같은 코드를 사용하며, 연결을 초기화하면 기존 코드는 무효가 됩니다.',
+    installCodeNote: '설치 코드에 터널 실행 토큰이 들어 있으며, 환경 변수로 전달되어 docker inspect를 실행할 수 있는 사용자가 읽을 수 있습니다. 재시작할 때도 같은 코드를 사용하며, 연결을 초기화하면 기존 코드는 무효가 됩니다.',
     installMethodsAria: '터널 설치 방법',
     tabDocker: 'Docker 명령',
     terminalIntro: '터널을 실행할 서버에서 아래 명령을 실행하세요. 별도의 영구 볼륨은 필요하지 않습니다.',
@@ -315,9 +315,9 @@
     composeExisting: '기존 파일에 추가',
     composeNew: '새 파일로 만들기',
     existingIntro: ['기존 Compose 파일의 ', 'services', '에 터널 서비스를 추가합니다. 앱 네트워크는 서비스를 등록할 때 설정할 수 있습니다.'],
-    existingNote: ['이미 ', 'connector', ' 서비스가 있다면 새로 추가하지 말고 해당 설정을 갱신하세요. 실행 토큰이 포함된 ', 'command', ' 줄은 유지해야 합니다.'],
+    existingNote: ['이미 ', 'connector', ' 서비스가 있다면 새로 추가하지 말고 해당 설정을 갱신하세요. 실행 토큰이 포함된 ', 'MEERKAT_INSTALL_CODE', ' 값은 유지해야 합니다.'],
     newIntro: ['기존 Compose 파일을 수정하지 않고, 아래 내용을 터널 전용 ', 'meerkat-tunnel.yaml', ' 파일로 저장하세요.'],
-    newNote: ['실행 토큰이 포함된 ', 'command', ' 줄을 유지하세요. 컨테이너를 새로 만들어도 같은 토큰으로 다시 연결합니다.'],
+    newNote: ['실행 토큰이 포함된 ', 'MEERKAT_INSTALL_CODE', ' 값을 유지하세요. 컨테이너를 새로 만들어도 같은 토큰으로 다시 연결합니다.'],
     secretNote: '실행 토큰이 포함된 설치 코드는 비밀로 보관하세요. 새 토큰을 발급하면 이전 토큰은 무효가 됩니다.',
     mockNote: '미리보기에서는 실제 터널이 연결되지 않습니다.',
     mockConnect: '연결 상태로 전환',
@@ -696,6 +696,11 @@
     clearServiceForm();
   });
 
+  // 연결이 확인된 터널의 토큰은 더 보관하지 않습니다.
+  $effect(() => {
+    forgetConnectedEnrollments(data.connectors);
+  });
+
   $effect(() => {
     const current = selected;
     if (!current) return;
@@ -892,7 +897,7 @@
     try {
       const enrollment = await api<EnrollmentToken>(`/api/v1/connectors/${encodeURIComponent(id)}/enrollment-tokens${reset ? '?reset=true' : ''}`, { method: 'POST' });
       const wasReset = reset || (connectorState.selectedId === id && connectorState.enrollmentWasReset);
-      rememberEnrollment(id, enrollment, wasReset);
+      rememberEnrollment(id, enrollment, wasReset, data.connectors.find((connector) => connector.id === id)?.last_seen);
       if (connectorState.selectedId === id) {
         connectorState.enrollment = enrollment;
         connectorState.enrollmentWasReset = wasReset;
@@ -941,7 +946,9 @@
       `docker run -d --restart unless-stopped --name meerkat-${selected.name}`,
       '--read-only --cap-drop ALL --security-opt no-new-privileges',
       '--tmpfs /tmp --tmpfs /var/lib/meerkat:uid=65532,gid=65532,mode=0700',
-      `ghcr.io/lawnect/meerkat:latest connect ${invitation()}`,
+      // 환경 변수로 전달합니다. 명령줄 인자는 같은 서버의 모든 사용자가 /proc/<pid>/cmdline로 읽을 수 있습니다.
+      `-e MEERKAT_INSTALL_CODE=${invitation()}`,
+      'ghcr.io/lawnect/meerkat:latest connect',
     ].join(' ' + String.fromCharCode(92) + '\n');
   }
 
@@ -971,7 +978,9 @@
       '    read_only: true',
       '    cap_drop: [ALL]',
       '    security_opt: [no-new-privileges:true]',
-      `    command: ["connect", ${JSON.stringify(invitation())}]`,
+      '    command: ["connect"]',
+      '    environment:',
+      `      MEERKAT_INSTALL_CODE: ${JSON.stringify(invitation())}`,
       '    tmpfs:',
       '      - /tmp',
       '      - /var/lib/meerkat:uid=65532,gid=65532,mode=0700',
@@ -990,7 +999,9 @@
       '    read_only: true',
       '    cap_drop: [ALL]',
       '    security_opt: [no-new-privileges:true]',
-      `    command: ["connect", ${JSON.stringify(invitation())}]`,
+      '    command: ["connect"]',
+      '    environment:',
+      `      MEERKAT_INSTALL_CODE: ${JSON.stringify(invitation())}`,
       '    tmpfs:',
       '      - /tmp',
       '      - /var/lib/meerkat:uid=65532,gid=65532,mode=0700',

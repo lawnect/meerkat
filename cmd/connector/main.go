@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"flag"
 	"log/slog"
 	"os"
@@ -20,26 +18,10 @@ func main() {
 	var cfg connector.Config
 	var token string
 	var err error
-	if flag.NArg() == 2 && flag.Arg(0) == "connect" {
-		var invitation struct {
-			Version int    `json:"v"`
-			Outlet  string `json:"outlet"`
-			Name    string `json:"name"`
-			Token   string `json:"token"`
-		}
-		var raw []byte
-		raw, err = base64.RawURLEncoding.DecodeString(flag.Arg(1))
-		if err == nil {
-			err = json.Unmarshal(raw, &invitation)
-		}
-		if err == nil && invitation.Version != 1 {
-			err = &invalidInvitation{}
-		}
-		if err == nil {
-			cfg = connector.Config{OutletURL: invitation.Outlet, Name: invitation.Name, DataDir: "/var/lib/meerkat", RatholeBinary: "/usr/local/bin/rathole", HeartbeatInterval: "5s"}
-			token = invitation.Token
-			err = cfg.Validate()
-		}
+	if flag.NArg() > 0 && flag.Arg(0) == "connect" {
+		// The install code comes from MEERKAT_INSTALL_CODE(_FILE), or still from
+		// the argument, which every local user can read in /proc/<pid>/cmdline.
+		cfg, token, err = connector.Connect(flag.Args()[1:])
 	} else {
 		cfg, err = connector.Load(*path)
 		if err == nil {
@@ -57,7 +39,3 @@ func main() {
 		os.Exit(1)
 	}
 }
-
-type invalidInvitation struct{}
-
-func (*invalidInvitation) Error() string { return "invalid connector invitation" }
