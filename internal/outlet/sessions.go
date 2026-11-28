@@ -2,6 +2,7 @@ package outlet
 
 import (
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -77,6 +78,28 @@ func (c *sessionCache) revoke(token string) {
 	c.mu.Unlock()
 }
 
+// revokeAdmins is revoke for every session of these administrators. The cache
+// doesn't know whose token is whose, so it drops by the administrator each
+// entry holds.
+func (c *sessionCache) revokeAdmins(ids []string) {
+	c.mu.Lock()
+	for key, item := range c.items {
+		if slices.Contains(ids, item.admin.ID) {
+			delete(c.items, key)
+		}
+	}
+	c.generation++
+	c.mu.Unlock()
+}
+
+// revokeAll is revoke for every session.
+func (c *sessionCache) revokeAll() {
+	c.mu.Lock()
+	clear(c.items)
+	c.generation++
+	c.mu.Unlock()
+}
+
 // sessionAdmin is the administrator behind the request's session cookie.
 func (s *Store) sessionAdmin(r *http.Request) (control.Admin, bool) {
 	if s.control == nil {
@@ -96,8 +119,38 @@ func (s *Store) sessionAdmin(r *http.Request) (control.Admin, bool) {
 		s.sessions.drop(cookie.Value)
 		return control.Admin{}, false
 	}
+	// The cache lapsed, so this is when a change made behind the Outlet's
+	// back (single sign-on from the environment, a restored database) is
+	// noticed. An administrator whose sessions all come from the provider is
+	// held to the email and domain lists again; one who also has a password
+	// is not, as this session may be that one's.
+	if admin.SSOOnly && !s.ssoStillListed(r.Context(), admin.Email) {
+		_ = s.control.RevokeSession(r.Context(), cookie.Value)
+		s.sessions.revoke(cookie.Value)
+		return control.Admin{}, false
+	}
 	s.sessions.put(cookie.Value, admin, expires, now, generation)
 	return admin, true
+}
+
+// revokeAdminSessions ends every administrator session, the caller's too,
+// as ending every access session does for those who hold one.
+func (s *Store) revokeAdminSessions(w http.ResponseWriter, r *http.Request) {
+	if !s.alertsAdmin(w, r) {
+		return
+	}
+	// Who asked is read first: afterwards no session vouches for them.
+	caller, _ := s.sessionAdmin(r)
+	revoked, err := s.control.RevokeAllSessions(r.Context())
+	// Even when revoking failed, the next request asks the database.
+	s.sessions.revokeAll()
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
+	s.audit(r, "security.admin_sessions_revoke", control.AuditEntry{ActorID: caller.ID, ActorEmail: caller.Email, ResourceType: "security", ResourceID: "admin_sessions", Detail: map[string]any{"sessions": revoked}})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // setupComplete stays true once an administrator exists; none can be deleted.

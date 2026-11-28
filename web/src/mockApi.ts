@@ -1616,6 +1616,7 @@ export async function mockApi(url: string, options: RequestInit = {}): Promise<u
     return { authorization_endpoint: `${issuer}/authorize` };
   }
   if (path === '/api/v1/security/access/sessions/revoke' && method === 'POST') return {};
+  if (path === '/api/v1/security/admin/sessions/revoke' && method === 'POST') return {};
   if (path === '/api/v1/security/access-policies' && method === 'GET') return accessPoliciesResponse();
   if (path.startsWith('/api/v1/observe/')) return observe(path, method, new URL(url, 'http://localhost').searchParams, input);
   if (path === '/api/v1/security/access-tokens' && method === 'GET') return { tokens: accessTokens.map(tokenView), addresses: publicAddresses() } satisfies AccessTokensView;
