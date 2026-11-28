@@ -1216,8 +1216,8 @@ func TestKnownClientsExpireAndStayBounded(t *testing.T) {
 
 	t.Run("after 15 minutes", func(t *testing.T) {
 		known := newKnownClients()
-		known.learn(key(1), now)
-		known.learn(key(2), now.Add(10*time.Minute))
+		known.learn("", key(1), now)
+		known.learn("", key(2), now.Add(10*time.Minute))
 		if !known.has(key(1), now.Add(15*time.Minute-time.Second)) {
 			t.Fatal("forgotten after 14:59")
 		}
@@ -1228,7 +1228,7 @@ func TestKnownClientsExpireAndStayBounded(t *testing.T) {
 			t.Fatal("an address seen later was forgotten with the first")
 		}
 		// Another authenticated request starts the 15 minutes again.
-		known.learn(key(2), now.Add(24*time.Minute))
+		known.learn("", key(2), now.Add(24*time.Minute))
 		if !known.has(key(2), now.Add(38*time.Minute)) || known.has(key(2), now.Add(39*time.Minute)) {
 			t.Fatal("a later request didn't extend the time")
 		}
@@ -1238,36 +1238,94 @@ func TestKnownClientsExpireAndStayBounded(t *testing.T) {
 	})
 	t.Run("listing and learning drop what expired without a lookup", func(t *testing.T) {
 		known := newKnownClients()
-		known.learn(key(1), now)
-		known.learn(key(2), now.Add(10*time.Minute))
+		known.learn("", key(1), now)
+		known.learn("", key(2), now.Add(10*time.Minute))
 		if got := known.list(now.Add(20 * time.Minute)); len(got) != 1 || got[0].key != key(2) {
 			t.Fatalf("list = %+v, want only the address seen 10 minutes after the first", got)
 		}
-		known.learn(key(3), now.Add(30*time.Minute))
+		known.learn("", key(3), now.Add(30*time.Minute))
 		if got := known.list(now.Add(30 * time.Minute)); len(got) != 1 || got[0].key != key(3) || len(known.items) != 1 {
 			t.Fatalf("after learning: list = %+v, %d kept", got, len(known.items))
 		}
 	})
-	t.Run("4096, the oldest seen goes first", func(t *testing.T) {
+	t.Run("4096 across Connectors, the oldest seen goes first", func(t *testing.T) {
 		known := newKnownClients()
+		owner := func(i int) string { return fmt.Sprint("connector-", i) }
 		for i := range guardKnownClients {
-			known.learn(key(i), now.Add(time.Duration(i)*time.Millisecond))
+			known.learn(owner(i), key(i), now.Add(time.Duration(i)*time.Millisecond))
 		}
 		// Seeing the oldest again makes the next one the oldest.
-		known.learn(key(0), now.Add(10*time.Second))
-		known.learn(key(guardKnownClients), now.Add(11*time.Second))
+		known.learn(owner(0), key(0), now.Add(10*time.Second))
+		known.learn(owner(guardKnownClients), key(guardKnownClients), now.Add(11*time.Second))
 		if got := known.list(now.Add(12 * time.Second)); len(got) != guardKnownClients {
 			t.Fatalf("%d known, want %d", len(got), guardKnownClients)
 		}
 		if !known.has(key(0), now.Add(12*time.Second)) || known.has(key(1), now.Add(12*time.Second)) || !known.has(key(2), now.Add(12*time.Second)) {
 			t.Fatal("the entry seen longest ago wasn't the one dropped")
 		}
+		// The evicted address no longer counts against its Connector.
+		if len(known.owned[owner(1)]) != 0 {
+			t.Fatalf("an evicted address is still held: %v", known.owned[owner(1)])
+		}
+	})
+	t.Run("a Connector keeps its newest addresses, never another's", func(t *testing.T) {
+		known := newKnownClients()
+		known.learn("quiet", key(1_000_000), now)
+		for i := range 3 * guardKnownClients {
+			known.learn("busy", key(i), now.Add(time.Second+time.Duration(i)*time.Millisecond))
+		}
+		later := now.Add(time.Minute)
+		if !known.has(key(1_000_000), later) {
+			t.Fatal("another Connector's address was pushed out")
+		}
+		if got := len(known.owned["busy"]); got != guardKnownPerConnector || len(known.items) != guardKnownPerConnector+1 || known.order.Len() != guardKnownPerConnector+1 {
+			t.Fatalf("busy Connector holds %d, table %d/%d", got, len(known.items), known.order.Len())
+		}
+		last := 3*guardKnownClients - 1
+		for i := last; i > last-guardKnownPerConnector; i-- {
+			if !known.has(key(i), later) {
+				t.Fatalf("the newest addresses weren't kept: %d", i)
+			}
+		}
+		if known.has(key(last-guardKnownPerConnector), later) {
+			t.Fatal("an older address of the busy Connector stayed")
+		}
+	})
+	t.Run("an address two Connectors share outlives one of them", func(t *testing.T) {
+		known := newKnownClients()
+		known.learn("a", key(1), now)
+		known.learn("b", key(1), now.Add(time.Second))
+		for i := range guardKnownPerConnector {
+			known.learn("a", key(100+i), now.Add(time.Minute+time.Duration(i)*time.Second))
+		}
+		if !known.has(key(1), now.Add(time.Minute)) {
+			t.Fatal("an address another Connector still vouches for was dropped")
+		}
+		for i := range guardKnownPerConnector {
+			known.learn("b", key(200+i), now.Add(2*time.Minute+time.Duration(i)*time.Second))
+		}
+		if known.has(key(1), now.Add(3*time.Minute)) || len(known.owned["a"])+len(known.owned["b"]) != 2*guardKnownPerConnector {
+			t.Fatalf("a shared address no Connector holds stayed: owned a=%d b=%d", len(known.owned["a"]), len(known.owned["b"]))
+		}
+	})
+	t.Run("expiry releases a Connector's claim", func(t *testing.T) {
+		known := newKnownClients()
+		known.learn("a", key(1), now)
+		known.learn("a", key(2), now.Add(10*time.Minute))
+		known.list(now.Add(16 * time.Minute))
+		if got := known.owned["a"]; len(got) != 1 || got[0] != key(2) {
+			t.Fatalf("a holds %v", got)
+		}
+		known.list(now.Add(time.Hour))
+		if len(known.owned) != 0 || len(known.items) != 0 {
+			t.Fatalf("leftovers: %v %d", known.owned, len(known.items))
+		}
 	})
 	t.Run("newest first, IPv6 by /64", func(t *testing.T) {
 		known := newKnownClients()
-		known.learn(clientPrefix(netip.MustParseAddr("192.0.2.1")), now)
-		known.learn(clientPrefix(netip.MustParseAddr("2001:db8:0:1::5")), now.Add(time.Minute))
-		known.learn(clientPrefix(netip.MustParseAddr("2001:db8:0:1:9::7")), now.Add(2*time.Minute))
+		known.learn("", clientPrefix(netip.MustParseAddr("192.0.2.1")), now)
+		known.learn("", clientPrefix(netip.MustParseAddr("2001:db8:0:1::5")), now.Add(time.Minute))
+		known.learn("", clientPrefix(netip.MustParseAddr("2001:db8:0:1:9::7")), now.Add(2*time.Minute))
 		got := known.list(now.Add(3 * time.Minute))
 		if len(got) != 2 || clientName(got[0].key) != "2001:db8:0:1::/64" || clientName(got[1].key) != "192.0.2.1" || !got[0].seen.Equal(now.Add(2*time.Minute)) {
 			t.Fatalf("list = %+v", got)

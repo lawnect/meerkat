@@ -194,21 +194,54 @@ func TestKnownConnectorsPassWhereUnknownClientsAreRefused(t *testing.T) {
 	}
 	eventually(t, "the connections to end", func() bool { return f.store.guard.unknownConns.total.Load() == 0 })
 
+	// Loopback is never one Connector: a request from there, from the host or
+	// through a port forward, leaves the tunnel port's loopback clients unknown.
 	hb := guardHeartbeat(credential)
 	if w := requestFrom(f.store.Handler(), "127.0.0.1:50000", "POST", "/connector/v1/heartbeat", credential.Credential, hb); w.Code != 200 {
 		t.Fatalf("heartbeat: %d %s", w.Code, w.Body.String())
 	}
-	known := open(3 * guardClientConcurrent)
-	for _, conn := range known {
-		echoes(t, conn, string(handshakeFrame(make([]byte, 48))))
+	if isKnown(f.store, "127.0.0.1") {
+		t.Fatal("a request from loopback made loopback known")
+	}
+	again := open(guardClientConcurrent)
+	for _, conn := range again {
+		echoes(t, conn, framed("x"))
+	}
+	if !turnedAway(t, address) {
+		t.Fatal("loopback was let past the limits of an unknown client")
+	}
+	for _, conn := range again {
+		conn.Close()
+	}
+	eventually(t, "the connections to end", func() bool { return f.store.guard.unknownConns.total.Load() == 0 })
+
+	// An address of its own is known, with no limit of an unknown client's. The
+	// test can't connect from another address, so admission is asked directly.
+	learned := netip.MustParseAddr("192.0.2.77")
+	if w := requestFrom(f.store.Handler(), "192.0.2.77:50000", "POST", "/connector/v1/heartbeat", credential.Credential, hb); w.Code != 200 {
+		t.Fatalf("heartbeat: %d %s", w.Code, w.Body.String())
+	}
+	var held []func()
+	for range 3 * guardClientConcurrent {
+		release, unknown, why := f.store.guard.admit(learned)
+		if why != admitted || unknown {
+			t.Fatalf("a known client's connection: %v, unknown %v", why, unknown)
+		}
+		held = append(held, release)
 	}
 	// Nor does a known client's rate count.
 	for range 2 * guardTotalBurst {
-		conn := open(1)[0]
-		echoes(t, conn, string(handshakeFrame(make([]byte, 48))))
-		conn.Close()
+		release, _, why := f.store.guard.admit(learned)
+		if why != admitted {
+			t.Fatalf("a known client's connection: %v", why)
+		}
+		release()
 	}
-	if stats := f.store.guard.stats(); stats.Refused.Busy != 1 || stats.Refused.Rate != 0 {
+	for _, release := range held {
+		release()
+	}
+	// The two turned-away unknown connections are counted; the known ones add none.
+	if stats := f.store.guard.stats(); stats.Refused.Busy != 2 || stats.Refused.Rate != 0 {
 		t.Fatalf("stats = %+v", stats)
 	}
 }

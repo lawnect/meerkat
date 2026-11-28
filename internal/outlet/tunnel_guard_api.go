@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"time"
 
@@ -83,17 +84,54 @@ func (s *Store) RunTunnelGuard(ctx context.Context) {
 // known to the tunnel guard, so the Connector's tunnel connections pass
 // without the limits of unknown clients. Call it only once the request has
 // been authenticated: an address anyone could make known would protect
-// nothing.
-func (s *Store) learnConnector(r *http.Request) {
+// nothing. The address is held for the Connector id, which has a few of them.
+//
+// An address many clients share is not learned: behind Docker's port
+// forwarding or rootless networking every client looks like one internal
+// address, and making it known would pass every internet client on the tunnel
+// port as a Connector. Such addresses are listed as warnings instead.
+func (s *Store) learnConnector(r *http.Request, id string) {
 	if s.guard == nil {
 		return
 	}
-	if ip, _ := requestOrigin(r); ip != "" {
-		s.guard.learn(ip)
+	ip, public := requestOrigin(r)
+	if ip == "" {
+		return
 	}
+	if sharedConnectorAddress(r, ip, public) {
+		s.guard.refuseShared(ip)
+		return
+	}
+	s.guard.learnFor(id, ip)
+}
+
+// sharedConnectorAddress says that clients other than the Connector may reach
+// the tunnel port from ip. It is sharedClient's notion, with one exception:
+// a peer of the Outlet's own admin port, which Connectors on the same Docker
+// network or LAN use directly, is that Connector whatever private address it
+// has. Through Caddy a private address is the gateway every client appears
+// behind, and a Connector in the same place has to be allowed by address
+// range instead. Loopback, link-local and carrier-grade NAT addresses are
+// never a single Connector.
+func sharedConnectorAddress(r *http.Request, ip string, public bool) bool {
+	if !sharedClient(r, ip) {
+		return false
+	}
+	addr, err := netip.ParseAddr(ip)
+	return public || err != nil || !addr.Unmap().IsPrivate()
 }
 
 type tunnelGuardConnector struct {
+	Client   string `json:"client"`
+	LastSeen string `json:"last_seen"`
+}
+
+// tunnelGuardWarning says why the guard can't tell Connectors from other
+// clients at an address. "shared_address": a Connector's request came from an
+// address other clients may share, so it was not made known; add it under
+// Allowed if the Connectors really are the only ones behind it.
+type tunnelGuardWarning struct {
+	Code     string `json:"code"`
 	Client   string `json:"client"`
 	LastSeen string `json:"last_seen"`
 }
@@ -102,6 +140,7 @@ type tunnelGuardView struct {
 	Settings   control.TunnelGuardSettings `json:"settings"`
 	Stats      tunnelGuardStats            `json:"stats"`
 	Connectors []tunnelGuardConnector      `json:"connectors"`
+	Warnings   []tunnelGuardWarning        `json:"warnings"`
 }
 
 func (s *Store) tunnelGuardView(ctx context.Context) (tunnelGuardView, error) {
@@ -109,9 +148,12 @@ func (s *Store) tunnelGuardView(ctx context.Context) (tunnelGuardView, error) {
 	if err != nil {
 		return tunnelGuardView{}, err
 	}
-	view := tunnelGuardView{Settings: settings, Stats: s.guard.stats(), Connectors: []tunnelGuardConnector{}}
+	view := tunnelGuardView{Settings: settings, Stats: s.guard.stats(), Connectors: []tunnelGuardConnector{}, Warnings: []tunnelGuardWarning{}}
 	for _, known := range s.guard.known.list(s.now()) {
 		view.Connectors = append(view.Connectors, tunnelGuardConnector{Client: clientName(known.key), LastSeen: known.seen.UTC().Format(time.RFC3339)})
+	}
+	for _, shared := range s.guard.shared.list(s.now()) {
+		view.Warnings = append(view.Warnings, tunnelGuardWarning{Code: "shared_address", Client: clientName(shared.key), LastSeen: shared.seen.UTC().Format(time.RFC3339)})
 	}
 	return view, nil
 }

@@ -30,15 +30,26 @@ const (
 	// defaultTunnelInternalAddress for the other ports.
 	DefaultTunnelInternalAddress = "127.0.0.1:2334"
 
-	// A known client is a Connector's address. guardKnownConcurrent is only a
-	// sanity bound, not a limit to tune: a Connector opens a tunnel
-	// connection for each request the Outlet sends it (4096 at once by
-	// default, and the idle keep-alive upstream connections as well) and
-	// about nine ahead of time for each service, so the bound has to stay well
-	// above what the Outlet itself may ask of one address.
-	guardKnownConcurrent = 65536
-	guardKnownClients    = 4096
-	guardKnownTTL        = 15 * time.Minute
+	// A known client is a Connector's address. A Connector opens a tunnel
+	// connection for each request the Outlet sends it (4096 at once by default,
+	// and the idle keep-alive upstream connections as well) and about nine ahead
+	// of time for each service. The bounds below stay well above that and exist
+	// so that a known address, one Connector's credential used from many places
+	// or an address many clients share, can't use up the Outlet's file
+	// descriptors: each admitted connection holds two (the client's and
+	// rathole's), so guardKnownTotal costs at most 65536 of them.
+	guardKnownConcurrent = 16384
+	guardKnownTotal      = 32768
+	// guardKnownPerSecond and guardKnownBurst are one known address's new
+	// connections, far above what a busy Connector opens and well below a flood.
+	guardKnownPerSecond = 5000
+	guardKnownBurst     = guardKnownConcurrent
+	// guardKnownClients bounds the whole table of known addresses.
+	// guardKnownPerConnector bounds what one Connector's credential can make
+	// known: its newest addresses replace its own oldest, never another's.
+	guardKnownClients      = 4096
+	guardKnownPerConnector = 8
+	guardKnownTTL          = 15 * time.Minute
 
 	// An unknown client's limits, each of its own and all of them together.
 	guardClientConcurrent = 32
@@ -114,41 +125,80 @@ func clientName(key netip.Prefix) string {
 type knownClient struct {
 	key  netip.Prefix
 	seen time.Time
+	// owners are the Connectors whose requests made the address known.
+	owners map[string]struct{}
 }
 
 // knownClients are the addresses that made an authenticated Connector API
-// request lately. The table is bounded: the one seen longest ago goes first.
+// request lately. Each Connector holds at most guardKnownPerConnector of them,
+// the newest, so one credential used from thousands of addresses only pushes
+// out its own; the table as a whole is bounded too, the one seen longest ago
+// going first.
 type knownClients struct {
 	mu    sync.Mutex
 	items map[netip.Prefix]*list.Element
 	order *list.List // newest first
+	owned map[string][]netip.Prefix
 }
 
 func newKnownClients() *knownClients {
-	return &knownClients{items: map[netip.Prefix]*list.Element{}, order: list.New()}
+	return &knownClients{items: map[netip.Prefix]*list.Element{}, order: list.New(), owned: map[string][]netip.Prefix{}}
+}
+
+// remove forgets an address and every Connector's claim on it.
+func (k *knownClients) remove(element *list.Element) {
+	entry := element.Value.(*knownClient)
+	delete(k.items, entry.key)
+	k.order.Remove(element)
+	for owner := range entry.owners {
+		if kept := slices.DeleteFunc(k.owned[owner], func(key netip.Prefix) bool { return key == entry.key }); len(kept) > 0 {
+			k.owned[owner] = kept
+		} else {
+			delete(k.owned, owner)
+		}
+	}
 }
 
 func (k *knownClients) expire(now time.Time) {
 	for back := k.order.Back(); back != nil && now.Sub(back.Value.(*knownClient).seen) >= guardKnownTTL; back = k.order.Back() {
-		delete(k.items, back.Value.(*knownClient).key)
-		k.order.Remove(back)
+		k.remove(back)
 	}
 }
 
-func (k *knownClients) learn(key netip.Prefix, now time.Time) {
+// learn makes key known on behalf of the Connector owner.
+func (k *knownClients) learn(owner string, key netip.Prefix, now time.Time) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.expire(now)
-	if element, ok := k.items[key]; ok {
+	element, ok := k.items[key]
+	if ok {
 		element.Value.(*knownClient).seen = now
 		k.order.MoveToFront(element)
-		return
+	} else {
+		element = k.order.PushFront(&knownClient{key: key, seen: now, owners: map[string]struct{}{}})
+		k.items[key] = element
 	}
-	k.items[key] = k.order.PushFront(&knownClient{key: key, seen: now})
+	element.Value.(*knownClient).owners[owner] = struct{}{}
+	mine := slices.DeleteFunc(k.owned[owner], func(other netip.Prefix) bool { return other == key })
+	mine = slices.Insert(mine, 0, key)
+	var dropped []netip.Prefix
+	if len(mine) > guardKnownPerConnector {
+		dropped = slices.Clone(mine[guardKnownPerConnector:])
+		mine = mine[:guardKnownPerConnector]
+	}
+	k.owned[owner] = mine
+	// Only this Connector's claim goes: another one may still vouch for it.
+	for _, oldest := range dropped {
+		if gone, ok := k.items[oldest]; ok {
+			entry := gone.Value.(*knownClient)
+			delete(entry.owners, owner)
+			if len(entry.owners) == 0 {
+				k.remove(gone)
+			}
+		}
+	}
 	for k.order.Len() > guardKnownClients {
-		oldest := k.order.Back()
-		delete(k.items, oldest.Value.(*knownClient).key)
-		k.order.Remove(oldest)
+		k.remove(k.order.Back())
 	}
 }
 
@@ -160,8 +210,7 @@ func (k *knownClients) has(key netip.Prefix, now time.Time) bool {
 		return false
 	}
 	if now.Sub(element.Value.(*knownClient).seen) >= guardKnownTTL {
-		delete(k.items, key)
-		k.order.Remove(element)
+		k.remove(element)
 		return false
 	}
 	return true
@@ -174,9 +223,71 @@ func (k *knownClients) list(now time.Time) []knownClient {
 	k.expire(now)
 	clients := make([]knownClient, 0, k.order.Len())
 	for element := k.order.Front(); element != nil; element = element.Next() {
-		clients = append(clients, *element.Value.(*knownClient))
+		entry := element.Value.(*knownClient)
+		clients = append(clients, knownClient{key: entry.key, seen: entry.seen})
 	}
 	return clients
+}
+
+// sharedAddresses are the addresses of Connector requests that the guard
+// refused to learn because many clients may share them. The console shows them
+// as a warning for as long as they keep coming.
+type sharedAddresses struct {
+	mu    sync.Mutex
+	items map[netip.Prefix]*sharedAddress
+}
+
+type sharedAddress struct {
+	key  netip.Prefix
+	seen time.Time
+}
+
+// guardSharedAddresses bounds the warnings, so requests from many addresses
+// can't grow them.
+const guardSharedAddresses = 16
+
+func (s *sharedAddresses) note(key netip.Prefix, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.items == nil {
+		s.items = map[netip.Prefix]*sharedAddress{}
+	}
+	s.dropOld(now)
+	if entry, ok := s.items[key]; ok {
+		entry.seen = now
+		return
+	}
+	if len(s.items) >= guardSharedAddresses {
+		var oldest *sharedAddress
+		for _, entry := range s.items {
+			if oldest == nil || entry.seen.Before(oldest.seen) {
+				oldest = entry
+			}
+		}
+		delete(s.items, oldest.key)
+	}
+	s.items[key] = &sharedAddress{key: key, seen: now}
+}
+
+func (s *sharedAddresses) dropOld(now time.Time) {
+	for key, entry := range s.items {
+		if now.Sub(entry.seen) >= guardKnownTTL {
+			delete(s.items, key)
+		}
+	}
+}
+
+// list returns the addresses seen within the last guardKnownTTL, newest first.
+func (s *sharedAddresses) list(now time.Time) []sharedAddress {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dropOld(now)
+	addresses := make([]sharedAddress, 0, len(s.items))
+	for _, entry := range s.items {
+		addresses = append(addresses, *entry)
+	}
+	slices.SortFunc(addresses, func(a, b sharedAddress) int { return b.seen.Compare(a.seen) })
+	return addresses
 }
 
 // refusal is why the guard turned a connection away.
@@ -208,8 +319,9 @@ type tunnelGuard struct {
 	now              func() time.Time
 	config           atomic.Pointer[guardConfig]
 	known            *knownClients
-	// knownConns and unknownConns count open connections per client; the
-	// unknown ones also in total.
+	shared           sharedAddresses
+	// knownConns and unknownConns count open connections per client and in
+	// total.
 	knownConns, unknownConns inflight
 	buckets                  *bucketStore
 
@@ -220,6 +332,8 @@ type tunnelGuard struct {
 
 	// These are the limits above; tests shorten them.
 	firstBytes, dialTimeout, afterHangup time.Duration
+	knownTotal                           int
+	knownPerSecond, knownBurst           float64
 	retryFrom, retryTo                   time.Duration
 
 	// bound is closed once the guard listens.
@@ -247,6 +361,7 @@ func newTunnelGuard(listen, internal string, now func() time.Time) *tunnelGuard 
 		// after 2 minutes of silence changes nothing.
 		buckets:    newBucketStore(64, guardBuckets, 2*time.Minute),
 		firstBytes: guardFirstBytes, dialTimeout: guardDialTimeout, afterHangup: guardAfterHangup,
+		knownTotal: guardKnownTotal, knownPerSecond: guardKnownPerSecond, knownBurst: guardKnownBurst,
 		retryFrom: time.Second, retryTo: 30 * time.Second,
 		bound: make(chan struct{}), done: make(chan struct{}),
 		conns: map[net.Conn]struct{}{},
@@ -256,10 +371,22 @@ func newTunnelGuard(listen, internal string, now func() time.Time) *tunnelGuard 
 	return g
 }
 
-// learn makes the address of an authenticated Connector request known.
-func (g *tunnelGuard) learn(address string) {
+// learnFor makes the address of an authenticated request of the Connector
+// owner known.
+func (g *tunnelGuard) learnFor(owner, address string) {
 	if addr, err := netip.ParseAddr(address); err == nil {
-		g.known.learn(clientPrefix(addr), g.now())
+		g.known.learn(owner, clientPrefix(addr), g.now())
+	}
+}
+
+// learn makes an address known that belongs to no particular Connector.
+func (g *tunnelGuard) learn(address string) { g.learnFor("", address) }
+
+// refuseShared records an address the guard won't learn because clients that
+// aren't Connectors may share it.
+func (g *tunnelGuard) refuseShared(address string) {
+	if addr, err := netip.ParseAddr(address); err == nil {
+		g.shared.note(clientPrefix(addr), g.now())
 	}
 }
 
@@ -275,7 +402,20 @@ func (g *tunnelGuard) admit(addr netip.Addr) (release func(), unknown bool, why 
 		if !g.knownConns.acquire(name, guardKnownConcurrent) {
 			return nil, false, refusedBusy
 		}
-		return func() { g.knownConns.release(name) }, false, admitted
+		if !g.knownConns.acquireTotal(g.knownTotal) {
+			g.knownConns.release(name)
+			return nil, false, refusedBusy
+		}
+		release = func() {
+			g.knownConns.total.Add(-1)
+			g.knownConns.release(name)
+		}
+		// Its own bucket, so a known address that floods can't use up another's.
+		if g.buckets.take(now, []limit{{key: "known|" + name, rps: g.knownPerSecond, burst: g.knownBurst}}) >= 0 {
+			release()
+			return nil, false, refusedRate
+		}
+		return release, false, admitted
 	}
 	if config.strict {
 		return nil, true, refusedStrict

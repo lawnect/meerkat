@@ -109,7 +109,9 @@ func BenchmarkTunnelGuardSetup(b *testing.B) {
 	g := startGuard(b, rathole.address(), func(g *tunnelGuard) {
 		g.now = func() time.Time { tick = tick.Add(time.Minute); return tick }
 	})
-	known := startGuard(b, rathole.address())
+	known := startGuard(b, rathole.address(), func(g *tunnelGuard) {
+		g.knownPerSecond, g.knownBurst = 1e12, 1e12
+	})
 	known.learn("127.0.0.1")
 	for _, tc := range []struct{ name, address string }{
 		{"direct", rathole.address()},
