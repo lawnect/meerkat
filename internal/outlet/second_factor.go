@@ -27,9 +27,24 @@ const (
 	challengeTTL      = 5 * time.Minute
 	challengeAttempts = 5
 	maxChallenges     = 64
-	loginAttempts     = 10
-	loginWindow       = time.Minute
-	maxLoginKeys      = 4096
+	// An administrator has this many codes out at once: a login past it
+	// replaces their own oldest, and never anyone else's.
+	maxChallengesPerAdmin = 3
+	// Wrong codes are counted for the administrator across all their
+	// challenges and addresses: past secondFactorFailures in
+	// secondFactorWindow, the internet gets no more codes for them and the
+	// ones out are void, until the window passes. The local admin port
+	// doesn't use codes, so it stays the way in.
+	secondFactorFailures = 20
+	secondFactorWindow   = 15 * time.Minute
+	loginAttempts        = 10
+	loginWindow          = time.Minute
+	maxLoginKeys         = 4096
+	// Keys of the local admin port have room beyond maxLoginKeys, so a table
+	// the internet filled doesn't lock the operator out; localKeyPrefix keeps
+	// them from ever being the same keys as an internet client's.
+	maxLocalLoginKeys = 64
+	localKeyPrefix    = "local|"
 	// Internet logins in total, whatever the address: anyone holding an IPv6
 	// prefix has more addresses than a per-address limit can count, and each
 	// password check costs about 200 ms of CPU.
@@ -42,7 +57,14 @@ var (
 	errInvalidSecondFactor = errors.New("invalid second factor")
 	errTooManyAttempts     = errors.New("too many second factor attempts")
 	errChallengeGone       = errors.New("unknown or expired second factor challenge")
+	errChallengesBusy      = errors.New("too many second factor challenges")
 )
+
+// lockedError says an administrator is locked out of the internet by wrong
+// codes, and for how long yet.
+type lockedError struct{ wait time.Duration }
+
+func (lockedError) Error() string { return "administrator locked out by wrong second factor codes" }
 
 // originKey marks requests that arrived through PublicHandler. Only that
 // handler sets it, in the request context, so no header can forge it.
@@ -78,10 +100,12 @@ type loginChallenge struct {
 }
 
 // challenges keeps pending second-factor logins in memory only: a restart
-// just asks the administrator to log in again.
+// just asks the administrator to log in again. It also remembers, per
+// administrator, when wrong codes were entered.
 type challenges struct {
 	mu    sync.Mutex
 	items map[string]*loginChallenge
+	wrong map[string][]time.Time
 }
 
 func randomCode() (string, error) {
@@ -92,6 +116,11 @@ func randomCode() (string, error) {
 	return fmt.Sprintf("%06d", n.Int64()), nil
 }
 
+// create opens a challenge for admin. It refuses an administrator the wrong
+// codes have locked out (lockedError); when they have maxChallengesPerAdmin
+// out, their own oldest goes. When maxChallenges are out, it refuses
+// (errChallengesBusy) rather than make room: whoever holds one is somebody
+// waiting for a code.
 func (c *challenges) create(admin control.Admin, secret string, now time.Time) (string, error) {
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {
@@ -104,26 +133,71 @@ func (c *challenges) create(admin control.Admin, secret string, now time.Time) (
 		c.items = map[string]*loginChallenge{}
 	}
 	c.sweep(now)
+	if wait, locked := c.lockout(admin.ID, now); locked {
+		return "", lockedError{wait}
+	}
+	for {
+		mine, oldest := 0, ""
+		for other, item := range c.items {
+			if item.admin.ID != admin.ID {
+				continue
+			}
+			mine++
+			if oldest == "" || item.expires.Before(c.items[oldest].expires) {
+				oldest = other
+			}
+		}
+		if mine < maxChallengesPerAdmin {
+			break
+		}
+		delete(c.items, oldest)
+	}
+	if len(c.items) >= maxChallenges {
+		return "", errChallengesBusy
+	}
 	c.items[id] = &loginChallenge{admin: admin, codeHash: Hash(secret), expires: now.Add(challengeTTL)}
 	return id, nil
 }
 
-// sweep drops expired challenges and, past the cap, the soonest to expire.
+// sweep drops expired challenges and wrong codes out of their window.
 func (c *challenges) sweep(now time.Time) {
 	for id, item := range c.items {
 		if !now.Before(item.expires) {
 			delete(c.items, id)
 		}
 	}
-	for len(c.items) >= maxChallenges {
-		oldest := ""
-		for id, item := range c.items {
-			if oldest == "" || item.expires.Before(c.items[oldest].expires) {
-				oldest = id
-			}
+	for admin := range c.wrong {
+		if len(c.recentWrong(admin, now)) == 0 {
+			delete(c.wrong, admin)
 		}
-		delete(c.items, oldest)
 	}
+}
+
+// recentWrong is the times of the administrator's wrong codes still in the
+// window; c.mu is held.
+func (c *challenges) recentWrong(admin string, now time.Time) []time.Time {
+	times, ok := c.wrong[admin]
+	if !ok {
+		return nil
+	}
+	recent := times[:0]
+	for _, at := range times {
+		if now.Sub(at) < secondFactorWindow {
+			recent = append(recent, at)
+		}
+	}
+	c.wrong[admin] = recent
+	return recent
+}
+
+// lockout says whether the administrator's wrong codes lock them out of new
+// challenges, and for how long; c.mu is held.
+func (c *challenges) lockout(admin string, now time.Time) (time.Duration, bool) {
+	recent := c.recentWrong(admin, now)
+	if len(recent) < secondFactorFailures {
+		return 0, false
+	}
+	return recent[len(recent)-secondFactorFailures].Add(secondFactorWindow).Sub(now), true
 }
 
 func (c *challenges) drop(id string) {
@@ -133,9 +207,10 @@ func (c *challenges) drop(id string) {
 }
 
 // verify consumes the challenge on success. The fifth wrong code destroys
-// it. Unless the challenge is unknown or expired, the administrator it
-// belongs to comes back even on failure, for the audit log; callers must
-// answer every failure alike.
+// it, and the secondFactorFailures-th for the administrator, over all their
+// challenges, destroys every one of theirs. Unless the challenge is unknown
+// or expired, the administrator it belongs to comes back even on failure,
+// for the audit log; callers must answer every failure alike.
 func (c *challenges) verify(id, secret string, now time.Time) (control.Admin, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -147,6 +222,18 @@ func (c *challenges) verify(id, secret string, now time.Time) (control.Admin, er
 	if subtle.ConstantTimeCompare([]byte(Hash(secret)), []byte(item.codeHash)) == 1 {
 		delete(c.items, id)
 		return item.admin, nil
+	}
+	if c.wrong == nil {
+		c.wrong = map[string][]time.Time{}
+	}
+	c.wrong[item.admin.ID] = append(c.recentWrong(item.admin.ID, now), now)
+	if _, locked := c.lockout(item.admin.ID, now); locked {
+		for other, mine := range c.items {
+			if mine.admin.ID == item.admin.ID {
+				delete(c.items, other)
+			}
+		}
+		return item.admin, errTooManyAttempts
 	}
 	if item.failures++; item.failures >= challengeAttempts {
 		delete(c.items, id)
@@ -166,9 +253,10 @@ type attemptLimiter struct {
 	mu       sync.Mutex
 	// hits holds each key's attempts in the window, and keys orders them
 	// by their last try, allowed or not, stalest first: keys out of the
-	// window leave from the front, and with maxLoginKeys in it the stalest
-	// makes room for a new one, so a key that keeps trying never starts
-	// over for others arriving.
+	// window leave from the front. With maxLoginKeys in it, a key it hasn't
+	// seen is refused, not made room for by forgetting one it has: whoever
+	// can rotate through that many addresses would otherwise never be
+	// limited.
 	hits     map[string]*list.Element
 	keys     list.List
 	failures []time.Time
@@ -192,8 +280,12 @@ func (l *attemptLimiter) allow(key string, now time.Time) bool {
 	}
 	element, ok := l.hits[key]
 	if !ok {
-		if l.keys.Len() >= maxLoginKeys {
-			l.drop(l.keys.Front())
+		room := maxLoginKeys
+		if strings.HasPrefix(key, localKeyPrefix) {
+			room += maxLocalLoginKeys
+		}
+		if l.keys.Len() >= room {
+			return false
 		}
 		element = l.keys.PushBack(&keyAttempts{key: key})
 		l.hits[key] = element
@@ -298,13 +390,27 @@ func clientKey(ip string) string {
 	return parsed.Mask(net.CIDRMask(56, 128)).String() + "/56"
 }
 
+// localKey is the key of a client of the local admin port. Behind Docker's
+// bridge an internet client and the SSH-forwarded port can show the same
+// address; their allowances must not be one.
+func localKey(ip string) string { return localKeyPrefix + clientKey(ip) }
+
+// loginKey is what allowLogin counts a request under: its client address,
+// in the namespace of the internet or of the local admin port.
+func loginKey(r *http.Request) string {
+	ip, public := requestOrigin(r)
+	if ip == "" {
+		ip, _, _ = net.SplitHostPort(r.RemoteAddr)
+	}
+	if public {
+		return clientKey(ip)
+	}
+	return localKey(ip)
+}
+
 // allowLogin limits password and second-factor guesses per client address.
 func (s *Store) allowLogin(w http.ResponseWriter, r *http.Request) bool {
-	key, _ := requestOrigin(r)
-	if key == "" {
-		key, _, _ = net.SplitHostPort(r.RemoteAddr)
-	}
-	if s.loginLimit.allow(clientKey(key), s.now()) {
+	if s.loginLimit.allow(loginKey(r), s.now()) {
 		return true
 	}
 	w.Header().Set("Retry-After", "60")
@@ -330,11 +436,28 @@ func (s *Store) startSecondFactor(w http.ResponseWriter, r *http.Request, admin 
 		return
 	}
 	id, err := s.challenges.create(admin, secret, s.now())
-	if err != nil {
+	var locked lockedError
+	switch {
+	case errors.As(err, &locked):
+		// Too many wrong codes for this administrator: no code is sent.
+		w.Header().Set("Retry-After", strconv.Itoa(int((locked.wait+time.Second-1)/time.Second)))
+		fail(w, r, http.StatusTooManyRequests, "too_many_attempts")
+		return
+	case errors.Is(err, errChallengesBusy):
+		w.Header().Set("Retry-After", "60")
+		fail(w, r, http.StatusTooManyRequests, "rate_limited")
+		return
+	case err != nil:
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	if err := s.telegramSend(r.Context(), telegram.BotToken, telegram.ChatID, loginCodeNotice(secret, challengeTTL).HTML("")); err != nil {
+	// The message says where the login came from, so an administrator who
+	// gets a code they didn't ask for can tell it isn't theirs.
+	message := loginCodeNotice(secret, challengeTTL)
+	if ip, _ := requestOrigin(r); ip != "" {
+		message = message.line("From", code(ip))
+	}
+	if err := s.telegramSend(r.Context(), telegram.BotToken, telegram.ChatID, message.HTML("")); err != nil {
 		s.challenges.drop(id)
 		if telegramRetryHeader(w, err) {
 			fail(w, r, http.StatusTooManyRequests, "telegram_rate_limited")
