@@ -27,12 +27,16 @@ const (
 	ssoCookie = "__Host-meerkat_sso"
 	// ssoIDTokenCookie keeps the ID token of a single sign-on session for
 	// logout: the provider ends its own session only for a request that
-	// presents it (id_token_hint).
-	ssoIDTokenCookie = "meerkat_sso_id_token"
-	maxIDTokenCookie = 3800
-	ssoPath          = "/api/v1/session/sso"
-	ssoCallbackPath  = ssoPath + "/callback"
-	ssoStateTTL      = 10 * time.Minute
+	// presents it (id_token_hint). It carries the __Host- prefix too, so an
+	// app on a sibling hostname cannot plant a token of its choosing.
+	ssoIDTokenCookie = "__Host-meerkat_sso_id_token"
+	// legacySSOIDTokenCookie is what it was called, for Path=/api/v1/session,
+	// before the prefix. It is never read, only cleared.
+	legacySSOIDTokenCookie = "meerkat_sso_id_token"
+	maxIDTokenCookie       = 3800
+	ssoPath                = "/api/v1/session/sso"
+	ssoCallbackPath        = ssoPath + "/callback"
+	ssoStateTTL            = 10 * time.Minute
 	// maxSSOPending bounds the sign-ins in flight; maxSSOPerClient keeps
 	// one address from holding more than a few of them.
 	maxSSOPending   = 8192
@@ -239,6 +243,28 @@ func (s *Store) ssoPostLogoutURI(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return strings.TrimSuffix(redirect, ssoCallbackPath) + "/", nil
+}
+
+// clearSSOIDToken expires the ID token cookie, and the one an earlier release
+// set under the plain name, so an upgrade doesn't strand it.
+func clearSSOIDToken(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: ssoIDTokenCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	clearLegacySSOIDToken(w)
+}
+
+func clearLegacySSOIDToken(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: legacySSOIDTokenCookie, Value: "", Path: "/api/v1/session", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+}
+
+// hasSSOIDToken reports whether the request carries an ID token cookie under
+// either name.
+func hasSSOIDToken(r *http.Request) bool {
+	for _, name := range []string{ssoIDTokenCookie, legacySSOIDTokenCookie} {
+		if _, err := r.Cookie(name); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // ssoLogoutURL is the provider's logout address for a session that single
@@ -558,7 +584,11 @@ func (s *Store) ssoCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(raw) <= maxIDTokenCookie {
-		http.SetCookie(w, &http.Cookie{Name: ssoIDTokenCookie, Value: raw, Path: "/api/v1/session", Expires: session.ExpiresAt, MaxAge: int(time.Until(session.ExpiresAt).Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+		// Path=/ is what the __Host- prefix requires.
+		http.SetCookie(w, &http.Cookie{Name: ssoIDTokenCookie, Value: raw, Path: "/", Expires: session.ExpiresAt, MaxAge: int(time.Until(session.ExpiresAt).Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	}
+	if _, err := r.Cookie(legacySSOIDTokenCookie); err == nil {
+		clearLegacySSOIDToken(w)
 	}
 	// The session cookie is SameSite=Strict, and this response ends a
 	// navigation that began on the provider's site, so a redirect from here
