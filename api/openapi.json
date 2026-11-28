@@ -300,6 +300,32 @@
         }
       }
     },
+    "/api/v1/security/admin/sessions/revoke": {
+      "post": {
+        "operationId": "revokeAdminSessions",
+        "summary": "End every administrator session",
+        "description": "Ends the live sessions of all administrators, the caller's included, and clears the caller's session cookie. Every later request answers 401 until its administrator signs in again. Recorded as security.admin_sessions_revoke with the number of sessions ended. Like every write, a request a browser marks cross-site is refused with 403 cross_origin_request.",
+        "security": [
+          {
+            "adminSession": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Every administrator session has ended"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/PersistenceFailure"
+          }
+        }
+      }
+    },
     "/api/v1/connectors/{id}/enrollment-tokens": {
       "post": {
         "operationId": "issueEnrollmentToken",
@@ -372,6 +398,12 @@
         "type": "http",
         "scheme": "bearer",
         "description": "Bootstrap administrator API token; no login UI in this slice"
+      },
+      "adminSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-meerkat_session",
+        "description": "Administrator session cookie set by POST /api/v1/session (HttpOnly, Secure, SameSite=Strict, Path=/)"
       }
     },
     "responses": {
