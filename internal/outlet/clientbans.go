@@ -24,6 +24,14 @@ const (
 	// it.
 	maxBanPath = 512
 
+	// trapWindow is how long a client's first request for a trap path is
+	// held against it: a second within it earns the ban. Behind a shared
+	// address one request can come from anyone, a scanner is not one.
+	trapWindow = 10 * time.Minute
+	// maxTraps bounds the first requests remembered: when the table is full
+	// the oldest goes first, so a flood of clients can fill memory no further.
+	maxTraps = 16384
+
 	defaultBanPage = 20
 	maxBanPage     = 200
 	// maxBanQuery is the longest text the bans are searched for.
@@ -87,6 +95,19 @@ type banState struct {
 
 	mu    sync.Mutex
 	order list.List // of *ban, oldest first
+
+	// traps holds the clients that asked for a trap path once, not yet
+	// banned, oldest first in trapOrder: they all last trapWindow, so the
+	// order is the order of their expiry. Guarded by trapMu.
+	trapMu    sync.Mutex
+	traps     map[netip.Prefix]*list.Element // to *trap
+	trapOrder list.List
+}
+
+// trap is a client's first request for a trap path.
+type trap struct {
+	key netip.Prefix
+	at  time.Time
 }
 
 // banKey is who a ban holds for a client address: the IPv4 address, or the
@@ -275,8 +296,41 @@ func (b *banState) list(now time.Time, text string, skip, limit int) (int, []ban
 	return total, page
 }
 
-// banClient bans the client of ip for matching rule with a request for host
-// and path, unless it can't be told apart or is exempt.
+// trip notes a request for a trap path from the client of key at now, and
+// reports whether it is the second within trapWindow, which bans. The first
+// is remembered; the table is bounded in time and in size.
+func (b *banState) trip(key netip.Prefix, now time.Time) bool {
+	b.trapMu.Lock()
+	defer b.trapMu.Unlock()
+	if element, ok := b.traps[key]; ok {
+		first := element.Value.(*trap)
+		b.dropTrap(element)
+		if now.Before(first.at.Add(trapWindow)) {
+			return true
+		}
+	}
+	if b.traps == nil {
+		b.traps = map[netip.Prefix]*list.Element{}
+	}
+	for element := b.trapOrder.Front(); element != nil && !now.Before(element.Value.(*trap).at.Add(trapWindow)); element = b.trapOrder.Front() {
+		b.dropTrap(element)
+	}
+	for b.trapOrder.Len() >= maxTraps {
+		b.dropTrap(b.trapOrder.Front())
+	}
+	b.traps[key] = b.trapOrder.PushBack(&trap{key: key, at: now})
+	return false
+}
+
+// dropTrap forgets a client's first request; the caller holds trapMu.
+func (b *banState) dropTrap(element *list.Element) {
+	delete(b.traps, element.Value.(*trap).key)
+	b.trapOrder.Remove(element)
+}
+
+// banClient holds the client of ip to a request for a trap path matching
+// rule, for host and path: the first only is remembered, the second within
+// trapWindow bans. A client that can't be told apart or is exempt is neither.
 func (s *Store) banClient(ip string, rule *blockRule, host, path string) {
 	key, addr, ok := banKey(ip)
 	if !ok {
@@ -286,7 +340,10 @@ func (s *Store) banClient(ip string, rule *blockRule, host, path string) {
 	if config.exempts(addr) {
 		return
 	}
-	s.bans.add(key, rule.id, host, path, s.now(), config.duration)
+	now := s.now()
+	if s.bans.trip(key, now) {
+		s.bans.add(key, rule.id, host, path, now, config.duration)
+	}
 }
 
 // fromABrowser reports whether a browser sent the request. A trap path

@@ -433,7 +433,7 @@ func (s *Store) PublicHandler() http.Handler {
 			}
 			rule.hits.Add(1)
 			cause := failBlocked
-			if rule.ban && !fromABrowser(r) {
+			if rule.ban && !fromABrowser(r) && !s.carriesAccess(r, host, origin) {
 				s.banClient(origin, rule, host, r.URL.Path)
 				cause = failTrapped
 			}

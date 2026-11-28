@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
@@ -81,7 +82,8 @@ func TestRequestEvidenceCorrelatesLogsAndExcludesSecrets(t *testing.T) {
 	if e := requests[0]; e.AccessDecision != "passed" || e.AccessReason != "bypass" || e.AccessPolicy != "ci" || e.BlockRule != control.HoneypotRuleID || e.Path != "/backup/.git/packed-refs" {
 		t.Fatalf("request decisions: %+v", e)
 	}
-	if e := failures[0]; e.BlockRule != control.HoneypotRuleID || e.Cause != failTrapped {
+	// A request with a valid access token is refused by the trap rule but not held to it.
+	if e := failures[0]; e.BlockRule != control.HoneypotRuleID || e.Cause != failBlocked {
 		t.Fatalf("refusal attribution: %+v", e)
 	}
 	for _, value := range []any{requests, failures, access} {
@@ -111,6 +113,9 @@ func TestRequestEvidenceCorrelatesLogsAndExcludesSecrets(t *testing.T) {
 		t.Fatalf("CSV lost evidence: %+v", values)
 	}
 	// A later refusal names the rule that made the ban, even on another path.
+	// The probe above carried a valid token, which never earns a ban, so the
+	// client is banned as two requests without one would.
+	f.store.bans.add(netip.MustParsePrefix("203.0.113.1/32"), control.HoneypotRuleID, "app.example.com", "/.env", time.Now(), time.Hour)
 	f.visit("GET", "app.example.com", "/", "203.0.113.1", "curl")
 	banned := f.requestLog(t, "").Entries[0]
 	if banned.BlockRule != control.HoneypotRuleID || banned.Cause != failBanned || banned.RequestID == id || banned.AccessDecision != "" {

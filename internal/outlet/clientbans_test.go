@@ -185,16 +185,14 @@ func TestHoneypotRuleMatchesScannerPaths(t *testing.T) {
 	}
 }
 
-// A request for a trap path is refused and bans its client on every routed
-// address, but never on the management host, the Outlet domain's connector
-// API. Forwarded /.well-known/ requests also obey bans. The failure log tells the trap from what
-// follows.
+// Two requests for a trap path are refused and ban their client on every
+// routed address, but never on the management host, the Outlet domain's
+// connector API. Forwarded /.well-known/ requests also obey bans. The failure
+// log tells the trap from what follows.
 func TestTrapBansTheClientEverywhereRouted(t *testing.T) {
 	f := newBanFixture(t)
 	const scanner, visitor = "203.0.113.9", "203.0.113.10"
-	if code := f.as(scanner, "app.example.com", "/.env"); code != 403 {
-		t.Fatalf("trap: %d", code)
-	}
+	f.trap(t, scanner, "app.example.com")
 	for _, c := range []struct {
 		host, path string
 		want       int
@@ -233,11 +231,12 @@ func TestTrapBansTheClientEverywhereRouted(t *testing.T) {
 	}
 	// The rule counts the trap, the ban the requests it refused.
 	var rules blockRulesView
-	if w := request(f.store.Handler(), "GET", "/api/v1/security/block-rules", f.admin, nil); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &rules) != nil || rules.Hits["honeypot"] != 1 || rules.Hits["hidden-files"] != 0 {
+	if w := request(f.store.Handler(), "GET", "/api/v1/security/block-rules", f.admin, nil); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &rules) != nil || rules.Hits["honeypot"] != 2 || rules.Hits["hidden-files"] != 0 {
 		t.Fatalf("rule hits: %d %s", w.Code, w.Body.String())
 	}
 
 	want := []string{
+		"trapped 403 [] app.example.com /.env",
 		"trapped 403 [] app.example.com /.env",
 		"banned 403 [] app.example.com /",
 		"banned 403 [] other.example.com /index.html",
@@ -256,7 +255,7 @@ func TestTrapBansTheClientEverywhereRouted(t *testing.T) {
 			t.Fatalf("entry: %+v", e)
 		}
 	}
-	for query, total := range map[string]int{"?cause=trapped": 1, "?cause=banned": 6, "?cause=refused": 7, "?cause=service": 0} {
+	for query, total := range map[string]int{"?cause=trapped": 2, "?cause=banned": 6, "?cause=refused": 8, "?cause=service": 0} {
 		if got := f.failureLog(t, query); got.Total != total {
 			t.Fatalf("%s: %d, want %d", query, got.Total, total)
 		}
@@ -265,22 +264,24 @@ func TestTrapBansTheClientEverywhereRouted(t *testing.T) {
 
 // A browser asks for a trap path only by mistake or by someone else's
 // design: a link pasted in a chat, a typed address, an image another site
-// embeds. That request is refused but bans nobody; one sent without a
-// browser's headers, as scanners send them, bans.
+// embeds. That request is refused but bans nobody, however often it comes;
+// two sent without a browser's headers, as scanners send them, ban.
 func TestTrapFromABrowserBansNobody(t *testing.T) {
 	f := newBanFixture(t)
 	trap := func(ip string, headers map[string]string) {
 		t.Helper()
-		r := httptest.NewRequest("GET", "/", nil)
-		r.URL.Path, r.Host = "/.env", "app.example.com"
-		r.Header.Set("X-Forwarded-For", ip)
-		for name, value := range headers {
-			r.Header.Set(name, value)
-		}
-		w := httptest.NewRecorder()
-		f.handler.ServeHTTP(w, r)
-		if w.Code != 403 {
-			t.Fatalf("%s: trap: %d", ip, w.Code)
+		for range 2 {
+			r := httptest.NewRequest("GET", "/", nil)
+			r.URL.Path, r.Host = "/.env", "app.example.com"
+			r.Header.Set("X-Forwarded-For", ip)
+			for name, value := range headers {
+				r.Header.Set(name, value)
+			}
+			w := httptest.NewRecorder()
+			f.handler.ServeHTTP(w, r)
+			if w.Code != 403 {
+				t.Fatalf("%s: trap: %d", ip, w.Code)
+			}
 		}
 	}
 	for i, headers := range []map[string]string{
@@ -301,7 +302,7 @@ func TestTrapFromABrowserBansNobody(t *testing.T) {
 	if got := clients(f.bans(t, "")); !slices.Equal(got, []string{"198.51.100.51", "198.51.100.50"}) {
 		t.Fatalf("bans: %v", got)
 	}
-	for query, total := range map[string]int{"?cause=blocked": 5, "?cause=trapped": 2} {
+	for query, total := range map[string]int{"?cause=blocked": 10, "?cause=trapped": 4} {
 		if got := f.failureLog(t, query); got.Total != total {
 			t.Fatalf("%s: %d, want %d", query, got.Total, total)
 		}
@@ -341,13 +342,13 @@ func TestBansExpire(t *testing.T) {
 	if w := f.setBans(t, 30); w.Code != 200 {
 		t.Fatalf("settings: %d %s", w.Code, w.Body.String())
 	}
-	f.as("198.51.100.1", "app.example.com", "/.env")
+	f.trap(t, "198.51.100.1", "app.example.com")
 	f.advance(10 * time.Minute)
-	f.as("198.51.100.2", "app.example.com", "/.env")
+	f.trap(t, "198.51.100.2", "app.example.com")
 	if w := f.setBans(t, 120); w.Code != 200 {
 		t.Fatalf("settings: %d %s", w.Code, w.Body.String())
 	}
-	f.as("198.51.100.3", "app.example.com", "/.env")
+	f.trap(t, "198.51.100.3", "app.example.com")
 
 	f.advance(19 * time.Minute) // 29 minutes after the first
 	if code := f.as("198.51.100.1", "app.example.com", "/"); code != 403 {
@@ -377,7 +378,7 @@ func TestBansExpire(t *testing.T) {
 		t.Fatalf("after two hours: %d held", f.store.bans.held.Load())
 	}
 	// The same client is banned again, from now.
-	f.as("198.51.100.1", "app.example.com", "/.env")
+	f.trap(t, "198.51.100.1", "app.example.com")
 	if code := f.as("198.51.100.1", "app.example.com", "/"); code != 403 {
 		t.Fatalf("banned again: %d", code)
 	}
@@ -396,8 +397,10 @@ func TestExemptClientsAreNeverBanned(t *testing.T) {
 	check := func() {
 		t.Helper()
 		for _, ip := range []string{"203.0.113.9", "2001:db8:7:5::1", "198.51.100.77"} {
-			if code := f.as(ip, "app.example.com", "/.env"); code != 403 {
-				t.Fatalf("%s: trap: %d", ip, code)
+			for range 2 {
+				if code := f.as(ip, "app.example.com", "/.env"); code != 403 {
+					t.Fatalf("%s: trap: %d", ip, code)
+				}
 			}
 			if code := f.as(ip, "app.example.com", "/"); code != 200 {
 				t.Fatalf("%s after the trap: %d", ip, code)
@@ -406,9 +409,7 @@ func TestExemptClientsAreNeverBanned(t *testing.T) {
 		if f.store.bans.held.Load() != 0 {
 			t.Fatal("an exempt client was banned")
 		}
-		if code := f.as("198.51.100.78", "app.example.com", "/.env"); code != 403 {
-			t.Fatalf("trap: %d", code)
-		}
+		f.trap(t, "198.51.100.78", "app.example.com")
 		if code := f.as("198.51.100.78", "app.example.com", "/"); code != 403 {
 			t.Fatalf("a client next to an exempt one: %d", code)
 		}
@@ -422,7 +423,7 @@ func TestExemptClientsAreNeverBanned(t *testing.T) {
 	}
 	check()
 	log := f.failureLog(t, "?cause=trapped")
-	if log.Total != 8 {
+	if log.Total != 16 {
 		t.Fatalf("trapped: %d", log.Total)
 	}
 }
@@ -432,7 +433,7 @@ func TestExemptClientsAreNeverBanned(t *testing.T) {
 func TestExemptSettingsReleaseBans(t *testing.T) {
 	f := newBanFixture(t)
 	for _, ip := range []string{"203.0.113.9", "198.51.100.7", "2001:db8:5::1", "2001:db8:6::2", "203.0.114.1"} {
-		f.as(ip, "app.example.com", "/.env")
+		f.trap(t, ip, "app.example.com")
 	}
 	if view := f.bans(t, ""); view.Total != 5 {
 		t.Fatalf("bans: %+v", view)
@@ -466,8 +467,8 @@ func TestExemptSettingsReleaseBans(t *testing.T) {
 // address is written.
 func TestIPv6ClientsShareTheirSlash64(t *testing.T) {
 	f := newBanFixture(t)
-	f.as("2001:db8:1:2::1", "app.example.com", "/.env")
-	f.as("::ffff:192.0.2.55", "app.example.com", "/.env")
+	f.trap(t, "2001:db8:1:2::1", "app.example.com")
+	f.trap(t, "::ffff:192.0.2.55", "app.example.com")
 	for ip, want := range map[string]int{
 		"2001:db8:1:2:ffff:ffff:ffff:ffff": 403,
 		"2001:DB8:1:2::99":                 403,
@@ -545,7 +546,7 @@ func TestBanTableEvictsTheOldest(t *testing.T) {
 func TestReleaseBans(t *testing.T) {
 	f := newBanFixture(t)
 	for _, ip := range []string{"203.0.113.9", "198.51.100.7", "2001:db8:1:2::1", "192.0.2.5"} {
-		f.as(ip, "app.example.com", "/.env")
+		f.trap(t, ip, "app.example.com")
 	}
 	w := f.release(map[string]any{"client": "198.51.100.7"})
 	var view clientBansView
@@ -565,7 +566,7 @@ func TestReleaseBans(t *testing.T) {
 	if code := f.as("2001:db8:1:2::5", "app.example.com", "/"); code != 200 {
 		t.Fatalf("released /64: %d", code)
 	}
-	f.as("2001:db8:1:2::1", "app.example.com", "/.env")
+	f.trap(t, "2001:db8:1:2::1", "app.example.com")
 	if w := f.release(map[string]any{"client": "2001:db8:1:2::77"}); w.Code != 200 || f.bans(t, "").Total != 2 {
 		t.Fatalf("release by an address: %d %s", w.Code, w.Body.String())
 	}
@@ -620,7 +621,9 @@ func TestClientBansAPI(t *testing.T) {
 		if i%2 == 1 {
 			host = "other.example.com"
 		}
-		f.as(ip, host, fmt.Sprintf("/.Env.v%d", i))
+		for range 2 {
+			f.as(ip, host, fmt.Sprintf("/.Env.v%d", i))
+		}
 		f.advance(time.Second)
 	}
 	view := f.bans(t, "")
@@ -669,7 +672,7 @@ func TestClientBansAPI(t *testing.T) {
 	if got := f.bans(t, "").Settings; got.Minutes != 5 || len(got.Exempt) != 4 {
 		t.Fatalf("saved: %+v", got)
 	}
-	f.as("198.51.100.1", "app.example.com", "/.env")
+	f.trap(t, "198.51.100.1", "app.example.com")
 	if b := f.bans(t, "").Bans[0]; b.Client != "198.51.100.1" || b.Until.Sub(b.Since) != 5*time.Minute {
 		t.Fatalf("new ban: %+v", b)
 	}
@@ -758,9 +761,10 @@ func TestBanRulesComeFirst(t *testing.T) {
 		t.Fatalf("ban lost: %+v", got)
 	}
 
-	f.as("203.0.113.1", "app.example.com", "/.env")
+	f.trap(t, "203.0.113.1", "app.example.com")
 	f.as("203.0.113.2", "app.example.com", "/.hidden")
 	f.as("203.0.113.3", "app.example.com", "/secret-admin")
+	f.as("203.0.113.4", "other.example.com", "/secret-admin/login")
 	f.as("203.0.113.4", "other.example.com", "/secret-admin/login")
 	if got := clients(f.bans(t, "")); !slices.Equal(got, []string{"203.0.113.4", "203.0.113.1"}) {
 		t.Fatalf("bans: %v", got)
@@ -770,14 +774,16 @@ func TestBanRulesComeFirst(t *testing.T) {
 	}
 	want := []string{
 		"trapped 403 [] app.example.com /.env",
+		"trapped 403 [] app.example.com /.env",
 		"blocked 403 [] app.example.com /.hidden",
+		"trapped 403 [] other.example.com /secret-admin/login",
 		"trapped 403 [] other.example.com /secret-admin/login",
 	}
 	if got := failureLines(f.failureLog(t, "").Entries); !slices.Equal(got, want) {
 		t.Fatalf("log:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 	hits := view().Hits
-	if hits["honeypot"] != 1 || hits["hidden-files"] != 1 || hits["mine"] != 1 {
+	if hits["honeypot"] != 2 || hits["hidden-files"] != 1 || hits["mine"] != 2 {
 		t.Fatalf("hits: %v", hits)
 	}
 
@@ -797,7 +803,7 @@ func TestBanRulesComeFirst(t *testing.T) {
 	if w := request(h, "PUT", "/api/v1/security/block-rules", f.admin, map[string]any{"rules": rules[:2]}); w.Code != 200 {
 		t.Fatalf("rules: %d %s", w.Code, w.Body.String())
 	}
-	f.as("203.0.113.1", "app.example.com", "/.env")
+	f.trap(t, "203.0.113.1", "app.example.com")
 	if f.bans(t, "").Total != 0 {
 		t.Fatal("a disabled rule banned a client")
 	}

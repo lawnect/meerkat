@@ -1027,6 +1027,21 @@ func (s *Store) tokenTaken(r *http.Request, rule *accessRule, token accessTokenR
 	return r.WithContext(context.WithValue(r.Context(), accessServiceKey{}, token.Name))
 }
 
+// carriesAccess reports whether r, for host from the client at ip, carries a
+// valid access session or a valid access token: someone the Outlet let in or
+// handed a token, whom a request for a trap path must never ban along with
+// the address they share.
+func (s *Store) carriesAccess(r *http.Request, host, ip string) bool {
+	if _, ok := s.accessSession(r, host); ok {
+		return true
+	}
+	if value := strings.TrimSpace(r.Header.Get(accessTokenHeader)); value != "" {
+		token, refused := s.accessToken(value)
+		return refused == "" && token.usableFrom(host, ip)
+	}
+	return false
+}
+
 // accessSameOrigin refuses a POST that comes from another site, sibling
 // addresses under the same domain included.
 var accessSameOrigin = http.NewCrossOriginProtection()
