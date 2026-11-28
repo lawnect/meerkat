@@ -142,7 +142,8 @@ func waitForTargets(ctx context.Context, cfg Config, api *transport.Client, resp
 		services := response.ActiveServices()
 		// Look at all targets at once: with several of them unreachable, one
 		// after another would delay the heartbeat past the Outlet's staleness window.
-		addresses := health.ResolveAll(ctx, services)
+		permitted, refused := cfg.screen(services)
+		addresses := health.ResolveAll(ctx, permitted)
 		if len(addresses) != 0 {
 			return addresses, nil
 		}
@@ -150,6 +151,9 @@ func waitForTargets(ctx context.Context, cfg Config, api *transport.Client, resp
 		healths := make(map[string]string, len(services))
 		for _, service := range services {
 			healths[service.ServiceID] = "unhealthy"
+		}
+		logRefused(log, refused)
+		for _, service := range permitted {
 			log.Warn("connector waiting for local target", "service_id", service.ServiceID)
 		}
 		// A configuration from before multi-service support is matched on its
@@ -315,6 +319,14 @@ func Run(ctx context.Context, cfg Config, token string, log *slog.Logger) error 
 	}
 }
 
+// logRefused names the services the local allowlist keeps the Connector from
+// reaching, so the operator sees why one reports unhealthy.
+func logRefused(log *slog.Logger, refused []contract.ServiceConfiguration) {
+	for _, service := range refused {
+		log.Warn("connector refused target outside MEERKAT_ALLOWED_TARGETS", "service_id", service.ServiceID, "target", validation.Address(service.Target))
+	}
+}
+
 var errNoReachableServices = errors.New("no reachable services in updated configuration")
 
 // serveTunnel runs rathole for the resolved services and keeps reporting until
@@ -323,6 +335,8 @@ var errNoReachableServices = errors.New("no reachable services in updated config
 // saved, when an update leaves no service to tunnel.
 func serveTunnel(ctx context.Context, cfg Config, api *transport.Client, response *contract.EnrollmentResponse, addresses map[string]string, log *slog.Logger) error {
 	log.Info("connector authenticated", "connector_id", response.ConnectorID, "configured_service_count", len(response.ActiveServices()), "active_service_count", len(addresses))
+	_, refused := cfg.screen(response.ActiveServices())
+	logRefused(log, refused)
 	config, err := rathole.ClientsAt(response.Configuration, addresses)
 	if err != nil {
 		return err
@@ -343,7 +357,7 @@ func serveTunnel(ctx context.Context, cfg Config, api *transport.Client, respons
 	lastHealth, lastProcess := "", ""
 	report := func(reportCtx context.Context) error {
 		process := supervisor.Snapshot()
-		serviceHealths := health.CheckAll(reportCtx, response.ActiveServices())
+		serviceHealths := cfg.checkAll(reportCtx, response.ActiveServices())
 		serviceHealth := "unknown"
 		if len(response.ActiveServices()) == 1 {
 			serviceHealth = serviceHealths[response.ActiveServices()[0].ServiceID]
@@ -386,6 +400,8 @@ func serveTunnel(ctx context.Context, cfg Config, api *transport.Client, respons
 			}
 			changed = append(changed, service)
 		}
+		changed, refused := cfg.screen(changed)
+		logRefused(log, refused)
 		resolved := health.ResolveAll(ctx, changed)
 		for _, service := range changed {
 			if address, ok := resolved[service.ServiceID]; ok {
@@ -473,6 +489,7 @@ func serveTunnel(ctx context.Context, cfg Config, api *transport.Client, respons
 					missing = append(missing, service)
 				}
 			}
+			missing, _ = cfg.screen(missing)
 			maps.Copy(nextAddresses, health.ResolveAll(ctx, missing))
 			if len(nextAddresses) > len(addresses) {
 				nextConfig, err := rathole.ClientsAt(response.Configuration, nextAddresses)

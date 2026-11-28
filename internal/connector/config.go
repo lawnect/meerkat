@@ -18,6 +18,7 @@ type Config struct {
 	Name              string          `json:"name"`
 	DataDir           string          `json:"data_dir"`
 	Target            contract.Target `json:"target"`
+	AllowedTargets    []string        `json:"allowed_targets"`
 	RatholeBinary     string          `json:"rathole_binary"`
 	RootCA            string          `json:"root_ca"`
 	HeartbeatInterval string          `json:"heartbeat_interval"`
@@ -50,6 +51,9 @@ func Load(path string) (Config, error) {
 		}
 		c.Target = contract.Target{Host: host, Port: port}
 	}
+	if err := c.applyAllowedTargets(); err != nil {
+		return c, err
+	}
 	if value := os.Getenv("MEERKAT_DEVELOPMENT_HTTP"); value != "" {
 		v, err := strconv.ParseBool(value)
 		if err != nil {
@@ -78,6 +82,18 @@ func Load(path string) (Config, error) {
 	return c, c.Validate()
 }
 
+// applyAllowedTargets lets MEERKAT_ALLOWED_TARGETS replace the configured list.
+func (c *Config) applyAllowedTargets() error {
+	entries, err := allowedTargetsFromEnvironment(os.Getenv("MEERKAT_ALLOWED_TARGETS"))
+	if err != nil {
+		return err
+	}
+	if entries != nil {
+		c.AllowedTargets = entries
+	}
+	return nil
+}
+
 func (c Config) Validate() error {
 	if err := validation.OutletURL(c.OutletURL, c.DevelopmentHTTP); err != nil {
 		return err
@@ -89,6 +105,9 @@ func (c Config) Validate() error {
 		if err := validation.Target(c.Target); err != nil {
 			return err
 		}
+	}
+	if _, err := parseAllowedTargets(c.AllowedTargets); err != nil {
+		return err
 	}
 	if !filepath.IsAbs(c.RatholeBinary) || !filepath.IsAbs(c.DataDir) {
 		return errors.New("binary and data directory must be absolute paths")
