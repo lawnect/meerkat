@@ -99,6 +99,12 @@ docker compose --env-file /opt/meerkat-outlet/compose.env \
 
 Then remove the old `root-ca.pem` from every trust store that has it and, if you still want one, import the new file in a separate browser profile. The CA's key is never saved, so a certificate can't be renewed in place: run the command again before the ten years are up.
 
+**Narrower rathole mount.** `compose.outlet.yaml` now gives the rathole container only `outlet-data/rathole` (read-only, at `/state/rathole`) instead of all of `outlet-data`, which also holds the control database and the logs. Copy the new Compose file to the server before pulling, or carry the change into your own Compose file. The directory exists on any Outlet that has started once, and `outlet-init` creates it for a new one. If you have a server whose Outlet has never started, create it first, as the Outlet's user, because a directory Docker has to create for a mount belongs to root and the Outlet can't write rathole's files into it:
+
+```sh
+install -d -m 700 /opt/meerkat-outlet/outlet-data/rathole
+```
+
 ### Initial Outlet access
 
 A production Outlet doesn't use the local `poc-init`. Instead, it generates keys and a setup code with

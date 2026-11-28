@@ -99,6 +99,12 @@ docker compose --env-file /opt/meerkat-outlet/compose.env \
 
 이후 이전 `root-ca.pem`을 등록해 둔 모든 신뢰 저장소에서 제거하고, 필요하면 새 파일을 별도 브라우저 프로필에만 등록하십시오. CA의 키는 저장하지 않으므로 인증서를 그 자리에서 갱신할 수 없습니다. 10년이 지나기 전에 같은 명령을 다시 실행하십시오.
 
+**더 좁아진 rathole 마운트.** `compose.outlet.yaml`은 이제 rathole 컨테이너에 제어 DB와 로그가 있는 `outlet-data` 전체 대신 `outlet-data/rathole`만(읽기 전용, `/state/rathole`) 줍니다. 이미지를 받기 전에 새 Compose 파일을 서버로 복사하거나, 직접 만든 Compose 파일에 같은 변경을 옮기십시오. 이 디렉터리는 한 번이라도 시작한 Outlet에는 이미 있고 새 Outlet은 `outlet-init`이 만듭니다. Outlet을 한 번도 시작하지 않은 서버라면, Docker가 마운트용으로 만든 디렉터리는 root 소유가 되어 Outlet이 그 안에 rathole 파일을 쓸 수 없으므로 먼저 Outlet을 실행하는 사용자로 만드십시오.
+
+```sh
+install -d -m 700 /opt/meerkat-outlet/outlet-data/rathole
+```
+
 ### Outlet 초기 접속
 
 운영용 Outlet은 로컬 `poc-init`을 사용하지 않고, 게시된 Meerkat 이미지의

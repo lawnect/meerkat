@@ -175,6 +175,12 @@ func run() error {
 	if err := securefs.Directory(filepath.Join(*dir, "outlet-data")); err != nil {
 		return err
 	}
+	// The rathole container mounts only this directory. Created here, it
+	// belongs to the Outlet's user; one Docker had to create for the mount
+	// would belong to root and the Outlet couldn't write rathole's files in it.
+	if err := securefs.Directory(filepath.Join(*dir, "outlet-data", "rathole")); err != nil {
+		return err
+	}
 	if err := securefs.Directory(filepath.Join(*dir, "caddy-data")); err != nil {
 		return err
 	}
