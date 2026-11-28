@@ -176,16 +176,17 @@
   }
 
   async function logout() {
+    // 실행 토큰은 공급자 로그아웃 주소로 이동하기 전에 지웁니다. 이동한 뒤에는 이 화면이 사라져 지울 수 없습니다.
+    clearStoredEnrollments();
+    connectorState.selectedId = '';
+    connectorState.enrollment = null;
+    connectorState.enrollmentWasReset = false;
     // SSO 세션이면 공급자의 로그아웃 주소를 받아 공급자 세션까지 종료합니다.
     const result = await api<{ logout_url?: string }>('/api/v1/session', { method: 'DELETE' });
     if (result.logout_url) {
       window.location.assign(result.logout_url);
       return;
     }
-    clearStoredEnrollments();
-    connectorState.selectedId = '';
-    connectorState.enrollment = null;
-    connectorState.enrollmentWasReset = false;
     authMode = 'login';
   }
 
