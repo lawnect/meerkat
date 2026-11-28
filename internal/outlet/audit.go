@@ -91,7 +91,7 @@ func (s *Store) routeHostname(ctx context.Context, serviceID, routeID string) st
 // getAudit lists the audit log, newest first. There is no way to change or
 // delete entries through the API.
 func (s *Store) getAudit(w http.ResponseWriter, r *http.Request) {
-	if !s.alertsAdmin(w, r) {
+	if !s.alertsAdmin(w, r) || !ownPage(w, r) {
 		return
 	}
 	query := r.URL.Query()

@@ -71,7 +71,7 @@ func (s *Store) replyAlerts(w http.ResponseWriter, r *http.Request, status int) 
 }
 
 func (s *Store) getAlerts(w http.ResponseWriter, r *http.Request) {
-	if s.alertsAdmin(w, r) {
+	if s.alertsAdmin(w, r) && ownPage(w, r) {
 		s.replyAlerts(w, r, 200)
 	}
 }

@@ -521,7 +521,7 @@ func (s *Store) ssoSettingsView(ctx context.Context, settings control.SSO) ssoVi
 }
 
 func (s *Store) getSSO(w http.ResponseWriter, r *http.Request) {
-	if !s.alertsAdmin(w, r) {
+	if !s.alertsAdmin(w, r) || !ownPage(w, r) {
 		return
 	}
 	settings, err := s.control.SSO(r.Context())
