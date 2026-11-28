@@ -71,9 +71,15 @@ func (s *Store) replyAlerts(w http.ResponseWriter, r *http.Request, status int) 
 }
 
 func (s *Store) getAlerts(w http.ResponseWriter, r *http.Request) {
-	if s.alertsAdmin(w, r) {
+	if s.alertsAdmin(w, r) && ownPage(w, r) {
 		s.replyAlerts(w, r, 200)
 	}
+}
+
+// secondFactorOffAudit records that a change to the bot turned the login
+// code off, under the action the switch itself is audited as.
+func (s *Store) secondFactorOffAudit(r *http.Request, reason string) {
+	s.audited(r, "second_factor.update", "security", "second_factor", map[string]any{"enabled": false, "reason": reason})
 }
 
 type telegramRequest struct {
@@ -90,7 +96,7 @@ func (s *Store) putTelegram(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req, "chat_id", "enabled") {
 		return
 	}
-	switch err := s.control.SetTelegram(r.Context(), req.BotToken, req.ChatID, req.Enabled, s.now()); {
+	switch secondFactorOff, err := s.control.SetTelegram(r.Context(), req.BotToken, req.ChatID, req.Enabled, s.now()); {
 	case errors.Is(err, control.ErrInvalidTelegramToken):
 		fail(w, r, 400, "invalid_telegram_token")
 	case errors.Is(err, control.ErrInvalidTelegramChat):
@@ -100,6 +106,9 @@ func (s *Store) putTelegram(w http.ResponseWriter, r *http.Request) {
 	default:
 		detail := map[string]any{"chat_id": strings.TrimSpace(req.ChatID), "enabled": req.Enabled, "token_changed": strings.TrimSpace(req.BotToken) != ""}
 		s.audited(r, "telegram.update", "telegram", "settings", detail)
+		if secondFactorOff {
+			s.secondFactorOffAudit(r, "telegram_changed")
+		}
 		s.replyAlerts(w, r, 200)
 	}
 }
@@ -156,11 +165,15 @@ func (s *Store) deleteTelegram(w http.ResponseWriter, r *http.Request) {
 	if !s.alertsAdmin(w, r) {
 		return
 	}
-	if err := s.control.DeleteTelegram(r.Context(), s.now()); err != nil {
+	secondFactorOff, err := s.control.DeleteTelegram(r.Context(), s.now())
+	if err != nil {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
 	s.audited(r, "telegram.delete", "telegram", "settings", nil)
+	if secondFactorOff {
+		s.secondFactorOffAudit(r, "telegram_deleted")
+	}
 	s.replyAlerts(w, r, 200)
 }
 

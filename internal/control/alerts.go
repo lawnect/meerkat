@@ -156,44 +156,55 @@ func (d *Database) Telegram(ctx context.Context) (Telegram, error) { return d.re
 
 // SetTelegram stores the bot settings. An empty token keeps the current one.
 // Changing the token or chat invalidates the verification and, with it, the
-// login second factor that depends on it.
-func (d *Database) SetTelegram(ctx context.Context, token, chatID string, enabled bool, now time.Time) error {
+// login second factor that depends on it; secondFactorOff says this call
+// turned that on to off, which the caller records.
+func (d *Database) SetTelegram(ctx context.Context, token, chatID string, enabled bool, now time.Time) (secondFactorOff bool, err error) {
 	token, chatID = strings.TrimSpace(token), strings.TrimSpace(chatID)
 	if token != "" && !telegramTokenPattern.MatchString(token) {
-		return ErrInvalidTelegramToken
+		return false, ErrInvalidTelegramToken
 	}
 	if !telegramChatPattern.MatchString(chatID) {
-		return ErrInvalidTelegramChat
+		return false, ErrInvalidTelegramChat
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback()
 	current, err := d.readTelegram(ctx, tx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if token == "" {
 		token = current.BotToken
 	}
 	if token == "" {
-		return ErrInvalidTelegramToken
+		return false, ErrInvalidTelegramToken
 	}
 	for key, value := range map[string]string{settingTelegramToken: token, settingTelegramChat: chatID, settingTelegramEnabled: flag(enabled)} {
 		if err := putSetting(ctx, tx, key, value, now); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if token != current.BotToken || chatID != current.ChatID {
 		if err := deleteSettings(ctx, tx, settingTelegramVerified, settingTelegramVerifiedFor); err != nil {
-			return err
+			return false, err
 		}
-		if err := putSetting(ctx, tx, settingSecondFactor, "0", now); err != nil {
-			return err
+		if secondFactorOff, err = turnOffSecondFactor(ctx, tx, now); err != nil {
+			return false, err
 		}
 	}
-	return tx.Commit()
+	return secondFactorOff, tx.Commit()
+}
+
+// turnOffSecondFactor switches the login second factor off and reports
+// whether it was on.
+func turnOffSecondFactor(ctx context.Context, q conn, now time.Time) (bool, error) {
+	was, err := getSetting(ctx, q, settingSecondFactor)
+	if err != nil {
+		return false, err
+	}
+	return was == "1", putSetting(ctx, q, settingSecondFactor, "0", now)
 }
 
 // MarkTelegramVerified records a delivered test message, but only if the
@@ -219,23 +230,24 @@ func (d *Database) MarkTelegramVerified(ctx context.Context, token, chatID strin
 
 // DeleteTelegram forgets the bot saved from the admin console and everything
 // that depends on it. A bot from the environment, if any, takes its place.
-func (d *Database) DeleteTelegram(ctx context.Context, now time.Time) error {
+// secondFactorOff says the login second factor was on and now is not.
+func (d *Database) DeleteTelegram(ctx context.Context, now time.Time) (secondFactorOff bool, err error) {
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback()
 	if err := deleteSettings(ctx, tx, settingTelegramToken, settingTelegramChat, settingTelegramEnabled, settingTelegramVerified, settingTelegramVerifiedFor); err != nil {
-		return err
+		return false, err
 	}
-	if err := putSetting(ctx, tx, settingSecondFactor, "0", now); err != nil {
-		return err
+	if secondFactorOff, err = turnOffSecondFactor(ctx, tx, now); err != nil {
+		return false, err
 	}
 	// Without a bot nothing would ever announce the recovery.
 	if _, err := tx.ExecContext(ctx, "UPDATE alert_events SET resolved_at = ? WHERE resolved_at IS NULL", stamp(now)); err != nil {
-		return err
+		return false, err
 	}
-	return tx.Commit()
+	return secondFactorOff, tx.Commit()
 }
 
 func (d *Database) LoginSecondFactor(ctx context.Context) (bool, error) {

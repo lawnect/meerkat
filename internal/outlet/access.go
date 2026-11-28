@@ -1093,8 +1093,9 @@ func (t accessTokenRule) usableFrom(host, ip string) bool {
 }
 
 // accessTokenFailed records a refused access token in the audit log, as
-// many a minute as one client's failed sign-ins (see accessState.failures).
-// id is the token's, when the value named one.
+// many a minute as one client's failed sign-ins (see accessState.failures),
+// and within the budget all clients share (see auditAnonymous). id is the
+// token's, when the value named one.
 func (s *Store) accessTokenFailed(r *http.Request, host, id, reason string) {
 	if ip, _ := requestOrigin(r); !s.access.failures.allow(clientKey(ip), s.now()) {
 		return
@@ -1103,7 +1104,7 @@ func (s *Store) accessTokenFailed(r *http.Request, host, id, reason string) {
 	if id != "" {
 		detail["token"] = id
 	}
-	s.audit(r, "access.token_failed", control.AuditEntry{ResourceType: "address", ResourceID: host, Detail: detail})
+	s.auditAnonymous(r, "access.token_failed", control.AuditEntry{ResourceType: "address", ResourceID: host, Detail: detail})
 }
 
 // accessToken returns the access token whose value a request sent, and
@@ -1315,9 +1316,10 @@ func (s *Store) accessCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	failed := func(status int, page, reason, email string) {
 		// One client address gets a few failures a minute into the audit
-		// log, so failing on purpose can't flood it.
+		// log, and all together a budget a minute, so failing on purpose
+		// can't flood it.
 		if ip, _ := requestOrigin(r); s.access.failures.allow(clientKey(ip), s.now()) {
-			s.audit(r, "access.login_failed", control.AuditEntry{ActorEmail: attemptedEmail(email), ResourceType: "address", ResourceID: pending.host, Detail: map[string]any{"reason": reason}})
+			s.auditAnonymous(r, "access.login_failed", control.AuditEntry{ActorEmail: attemptedEmail(email), ResourceType: "address", ResourceID: pending.host, Detail: map[string]any{"reason": reason}})
 		}
 		accessPage(w, r, status, page)
 	}

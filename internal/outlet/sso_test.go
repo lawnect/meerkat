@@ -432,7 +432,8 @@ func TestSSOLogoutEndsTheProviderSession(t *testing.T) {
 			idToken = cookie
 		}
 	}
-	if idToken == nil || !idToken.HttpOnly || !idToken.Secure || idToken.SameSite != http.SameSiteStrictMode || idToken.Path != "/api/v1/session" {
+	// The __Host- prefix requires Path=/ and no Domain.
+	if idToken == nil || !idToken.HttpOnly || !idToken.Secure || idToken.SameSite != http.SameSiteStrictMode || idToken.Path != "/" || idToken.Domain != "" {
 		t.Fatalf("ID token cookie: %+v", idToken)
 	}
 	logout := func(cookies ...*http.Cookie) *httptest.ResponseRecorder {

@@ -10,12 +10,33 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/lawnect/meerkat/internal/control"
 	"github.com/lawnect/meerkat/internal/securefs"
 )
+
+const (
+	// What requests without a session trigger (a wrong access token, a failed
+	// sign-in at the callback) is the one part of the append-only log anyone
+	// on the internet can grow. All of it together, whatever the clients and
+	// their addresses, may add anonymousAuditRows rows per
+	// anonymousAuditWindow; the rest is counted and written as one
+	// audit.suppressed row at the window's end, so a flood stays visible.
+	anonymousAuditRows   = 60
+	anonymousAuditWindow = time.Minute
+)
+
+// anonymousAudit is the budget of the current window.
+type anonymousAudit struct {
+	mu         sync.Mutex
+	start      time.Time // of the window; zero when none is open
+	stored     int
+	suppressed map[string]int // by action
+	timer      *time.Timer    // writes the summary if no entry follows the window
+}
 
 // auditWriter stores audit entries; *control.Database implements it.
 type auditWriter interface {
@@ -54,6 +75,10 @@ type auditJournal struct {
 	retryMax     time.Duration
 	warnEvery    time.Duration // at most one warning about drops per interval
 
+	anonymousRows   int           // see anonymousAuditRows
+	anonymousWindow time.Duration // see anonymousAuditWindow
+	anonymous       anonymousAudit
+
 	pending  []control.AuditEntry
 	backoff  time.Duration
 	retryAt  time.Time // no write is attempted before this
@@ -78,6 +103,82 @@ func newAuditJournal(db auditWriter, dir string) *auditJournal {
 		retryMin:     time.Second,
 		retryMax:     30 * time.Second,
 		warnEvery:    time.Minute,
+
+		anonymousRows:   anonymousAuditRows,
+		anonymousWindow: anonymousAuditWindow,
+	}
+}
+
+// admitAnonymous says whether an entry of action, triggered by a request
+// without a session, fits the budget of the window now is in. One that does
+// not is counted, to be summarized, and must not be added.
+func (j *auditJournal) admitAnonymous(action string, now time.Time) bool {
+	a := &j.anonymous
+	a.mu.Lock()
+	var summary *control.AuditEntry
+	if a.start.IsZero() || !now.Before(a.start.Add(j.anonymousWindow)) {
+		summary = j.summaryLocked()
+		a.start, a.stored = now, 0
+	}
+	admitted := a.stored < j.anonymousRows
+	if admitted {
+		a.stored++
+	} else {
+		if a.suppressed == nil {
+			a.suppressed = map[string]int{}
+		}
+		a.suppressed[action]++
+		if a.timer == nil {
+			a.timer = time.AfterFunc(max(a.start.Add(j.anonymousWindow).Sub(now), 0), j.flushAnonymous)
+		}
+	}
+	a.mu.Unlock()
+	if summary != nil {
+		j.add(*summary)
+	}
+	return admitted
+}
+
+// addAnonymous adds e unless the budget of anonymous entries is spent.
+func (j *auditJournal) addAnonymous(e control.AuditEntry, now time.Time) {
+	if j.admitAnonymous(e.Action, now) {
+		j.add(e)
+	}
+}
+
+// summaryLocked takes the count of entries left out of the window that ends,
+// as the entry that records it; nil when none was. j.anonymous.mu is held.
+func (j *auditJournal) summaryLocked() *control.AuditEntry {
+	a := &j.anonymous
+	if a.timer != nil {
+		a.timer.Stop()
+		a.timer = nil
+	}
+	if len(a.suppressed) == 0 {
+		return nil
+	}
+	total := 0
+	for _, n := range a.suppressed {
+		total += n
+	}
+	e := control.AuditEntry{At: a.start.Add(j.anonymousWindow), Action: "audit.suppressed", ResourceType: "audit", ResourceID: "anonymous", Source: "public",
+		Detail: map[string]any{"count": total, "window_seconds": int(j.anonymousWindow.Seconds()), "actions": a.suppressed}}
+	a.suppressed = nil
+	return &e
+}
+
+// flushAnonymous writes the summary of a window nobody followed with another
+// entry: at its end, and at shutdown.
+func (j *auditJournal) flushAnonymous() {
+	a := &j.anonymous
+	a.mu.Lock()
+	summary := j.summaryLocked()
+	if summary != nil {
+		a.start, a.stored = time.Time{}, 0
+	}
+	a.mu.Unlock()
+	if summary != nil {
+		j.add(*summary)
 	}
 }
 
@@ -114,6 +215,7 @@ func (j *auditJournal) run(ctx context.Context) {
 		j.warnDrops()
 		select {
 		case <-ctx.Done():
+			j.flushAnonymous()
 			if !j.writeAll() {
 				j.spill()
 			}

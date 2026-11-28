@@ -21,7 +21,23 @@ const maxAuditUserAgent = 256
 // address follow the same trust rule as the login alert: only PublicHandler
 // vouches for a forwarded address, and the local admin port is just "local".
 func (s *Store) audit(r *http.Request, action string, e control.AuditEntry) {
+	s.record(r, action, e, false)
+}
+
+// auditAnonymous is audit for what a request without a session can trigger,
+// which anyone on the internet may repeat: a wrong access token, a sign-in
+// refused at the callback. Such entries share one budget per window (see
+// anonymousAuditRows); past it they are only counted.
+func (s *Store) auditAnonymous(r *http.Request, action string, e control.AuditEntry) {
+	s.record(r, action, e, true)
+}
+
+func (s *Store) record(r *http.Request, action string, e control.AuditEntry, anonymous bool) {
 	if s.journal == nil {
+		return
+	}
+	// Asked before any work, so a flood costs no more than counting it.
+	if anonymous && !s.journal.admitAnonymous(action, s.now()) {
 		return
 	}
 	e.Action, e.At = action, s.now()
@@ -91,7 +107,7 @@ func (s *Store) routeHostname(ctx context.Context, serviceID, routeID string) st
 // getAudit lists the audit log, newest first. There is no way to change or
 // delete entries through the API.
 func (s *Store) getAudit(w http.ResponseWriter, r *http.Request) {
-	if !s.alertsAdmin(w, r) {
+	if !s.alertsAdmin(w, r) || !ownPage(w, r) {
 		return
 	}
 	query := r.URL.Query()

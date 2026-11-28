@@ -68,13 +68,13 @@ func TestEnvironmentSettingsYieldToSavedOnes(t *testing.T) {
 	if err := db.ResetSSO(ctx); !errors.Is(err, ErrSSOFromEnvironment) {
 		t.Fatalf("resetting the environment: %v", err)
 	}
-	if err := db.SetTelegram(ctx, "", "-1001111111111", false, now); err != nil {
+	if _, err := db.SetTelegram(ctx, "", "-1001111111111", false, now); err != nil {
 		t.Fatal(err)
 	}
 	if tg, _ := db.Telegram(ctx); tg.Source != SourceDatabase || tg.Enabled || tg.BotToken != envTelegram.BotToken {
 		t.Fatalf("saved telegram = %+v", tg)
 	}
-	if err := db.DeleteTelegram(ctx, now); err != nil {
+	if _, err := db.DeleteTelegram(ctx, now); err != nil {
 		t.Fatal(err)
 	}
 	if sso, _ := db.SSO(ctx); sso.Issuer != "https://idp.example.com" {

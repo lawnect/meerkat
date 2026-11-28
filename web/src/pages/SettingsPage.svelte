@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import * as Alert from '$lib/components/ui/alert/index.js';
+  import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import { Badge } from '$lib/components/ui/badge/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import * as Card from '$lib/components/ui/card/index.js';
@@ -16,7 +17,7 @@
   import { toast } from 'svelte-sonner';
   import { api, errorMessage } from '../api';
   import { intlLocale, translations } from '../i18n.svelte';
-  import { Alert12, Alert20, ArrowBidirectionalUpDown12, ArrowUndo, Delete, Key, NumberSymbol, Save, Send, Shield12, Warning } from '../icons';
+  import { Alert12, Alert20, ArrowBidirectionalUpDown12, ArrowExit, ArrowUndo, Delete, Key, NumberSymbol, Save, Send, Shield12, Warning } from '../icons';
   import type { AlertRules, AlertSettings } from '../types';
   import BannedClients from '../components/BannedClients.svelte';
   import BlockRuleSettings from '../components/BlockRuleSettings.svelte';
@@ -102,6 +103,12 @@
     secondFactorHint: 'After the password, enter the 6-digit code sent to Telegram.',
     secondFactorTip: 'Sign-ins over the SSH-forwarded local admin port skip this step, so you can still get in if Telegram is unavailable.',
     secondFactorNeedsTest: 'Send a test message first to verify Telegram.',
+    sessions: 'Administrator sessions',
+    sessionsTip: 'Ends every administrator sign-in, including yours. Everyone has to sign in again.',
+    revokeSessions: 'Sign everyone out',
+    revokeTitle: 'Sign all administrators out?',
+    revokeDescription: 'Every administrator session ends, including yours. Everyone has to sign in again.',
+    cancel: 'Cancel',
     history: 'Recent alerts',
     noHistory: 'No alerts yet',
     colTime: 'Time',
@@ -201,6 +208,12 @@
     secondFactorHint: '비밀번호 입력 후 Telegram으로 전송된 6자리 코드를 추가로 확인합니다.',
     secondFactorTip: 'SSH로 연결한 로컬 관리 포트에서는 이 단계가 생략되므로, Telegram을 사용할 수 없는 경우에도 접속할 수 있습니다.',
     secondFactorNeedsTest: '먼저 테스트 메시지를 전송하여 Telegram 연결을 확인하십시오.',
+    sessions: '관리자 세션',
+    sessionsTip: '현재 세션을 포함한 모든 관리자 세션 종료. 모든 관리자는 다시 로그인해야 합니다.',
+    revokeSessions: '모든 관리자 세션 종료',
+    revokeTitle: '모든 관리자 세션을 종료하시겠습니까?',
+    revokeDescription: '현재 세션을 포함한 모든 관리자 세션이 종료되며, 모든 관리자는 다시 로그인해야 합니다.',
+    cancel: '취소',
     history: '최근 알림',
     noHistory: '전송된 알림이 없습니다',
     colTime: '시각',
@@ -250,7 +263,8 @@
   let telegramEnabled = $state(false);
   let rules = $state<AlertRules | null>(null);
   let secondFactor = $state(false);
-  let busy = $state<Record<'telegram' | 'test' | 'disconnect' | 'rules' | 'security', boolean>>({ telegram: false, test: false, disconnect: false, rules: false, security: false });
+  let busy = $state<Record<'telegram' | 'test' | 'disconnect' | 'rules' | 'security' | 'sessions', boolean>>({ telegram: false, test: false, disconnect: false, rules: false, security: false, sessions: false });
+  let revokeOpen = $state(false);
   let errors = $state<Record<'telegram' | 'rules' | 'security', string>>({ telegram: '', rules: '', security: '' });
 
   // 저장한 카드만 서버 값으로 되돌리고, 다른 카드에서 고치던 값은 그대로 둡니다.
@@ -320,6 +334,15 @@
     if (settings) settings.login_second_factor = result.login_second_factor;
     secondFactor = result.login_second_factor;
     toast.success(t().saved);
+  }, 'security');
+  // 이 세션도 함께 끝나므로, 성공하면 화면을 다시 불러와 로그인 화면으로 돌아갑니다.
+  const revokeSessions = () => run('sessions', async () => {
+    try {
+      await api('/api/v1/security/admin/sessions/revoke', { method: 'POST' });
+    } finally {
+      revokeOpen = false;
+    }
+    window.location.reload();
   }, 'security');
 
   const ruleText: Record<RuleKey, () => { title: string; hint: string }> = {
@@ -576,6 +599,12 @@
               </Field.Content>
               <Switch id="second-factor" bind:checked={secondFactor} disabled={!telegram?.verified_at && !settings.login_second_factor} />
             </Field.Field>
+            <Field.Field orientation="horizontal">
+              <Field.Content>
+                <Field.Title>{t().sessions}<InfoTooltip id="admin-sessions-tip" label={t().sessions} description={t().sessionsTip} /></Field.Title>
+              </Field.Content>
+              <Button variant="outline" class="text-destructive hover:text-destructive" disabled={busy.sessions} onclick={() => { revokeOpen = true; }}><ArrowExit aria-hidden="true" />{t().revokeSessions}</Button>
+            </Field.Field>
           </Card.Content>
           {@render footerActions(securityDirty, busy.security, resetSecurity, saveSecurity)}
         </Card.Root>
@@ -594,3 +623,16 @@
     </Tabs.Content>
   </Tabs.Root>
 {/if}
+
+<AlertDialog.Root bind:open={() => revokeOpen, (open) => { if (!busy.sessions) revokeOpen = open; }}>
+  <AlertDialog.Content>
+    <AlertDialog.Header>
+      <AlertDialog.Title>{t().revokeTitle}</AlertDialog.Title>
+      <AlertDialog.Description>{t().revokeDescription}</AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer>
+      <AlertDialog.Cancel disabled={busy.sessions}>{t().cancel}</AlertDialog.Cancel>
+      <Button variant="destructive" disabled={busy.sessions} onclick={revokeSessions}>{#if busy.sessions}<Spinner aria-hidden="true" />{/if}{t().revokeSessions}</Button>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>

@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"html"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -26,12 +27,16 @@ const (
 	ssoCookie = "__Host-meerkat_sso"
 	// ssoIDTokenCookie keeps the ID token of a single sign-on session for
 	// logout: the provider ends its own session only for a request that
-	// presents it (id_token_hint).
-	ssoIDTokenCookie = "meerkat_sso_id_token"
-	maxIDTokenCookie = 3800
-	ssoPath          = "/api/v1/session/sso"
-	ssoCallbackPath  = ssoPath + "/callback"
-	ssoStateTTL      = 10 * time.Minute
+	// presents it (id_token_hint). It carries the __Host- prefix too, so an
+	// app on a sibling hostname cannot plant a token of its choosing.
+	ssoIDTokenCookie = "__Host-meerkat_sso_id_token"
+	// legacySSOIDTokenCookie is what it was called, for Path=/api/v1/session,
+	// before the prefix. It is never read, only cleared.
+	legacySSOIDTokenCookie = "meerkat_sso_id_token"
+	maxIDTokenCookie       = 3800
+	ssoPath                = "/api/v1/session/sso"
+	ssoCallbackPath        = ssoPath + "/callback"
+	ssoStateTTL            = 10 * time.Minute
 	// maxSSOPending bounds the sign-ins in flight; maxSSOPerClient keeps
 	// one address from holding more than a few of them.
 	maxSSOPending   = 8192
@@ -240,6 +245,28 @@ func (s *Store) ssoPostLogoutURI(ctx context.Context) (string, error) {
 	return strings.TrimSuffix(redirect, ssoCallbackPath) + "/", nil
 }
 
+// clearSSOIDToken expires the ID token cookie, and the one an earlier release
+// set under the plain name, so an upgrade doesn't strand it.
+func clearSSOIDToken(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: ssoIDTokenCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	clearLegacySSOIDToken(w)
+}
+
+func clearLegacySSOIDToken(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: legacySSOIDTokenCookie, Value: "", Path: "/api/v1/session", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+}
+
+// hasSSOIDToken reports whether the request carries an ID token cookie under
+// either name.
+func hasSSOIDToken(r *http.Request) bool {
+	for _, name := range []string{ssoIDTokenCookie, legacySSOIDTokenCookie} {
+		if _, err := r.Cookie(name); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // ssoLogoutURL is the provider's logout address for a session that single
 // sign-on started, or "" when there is none to end there.
 func (s *Store) ssoLogoutURL(r *http.Request) string {
@@ -381,16 +408,92 @@ func ssoAllowed(settings control.SSO, email string, groups []string) bool {
 	if len(settings.AllowedUsers) == 0 && len(settings.AllowedGroups) == 0 {
 		return false
 	}
-	_, domain, _ := strings.Cut(email, "@")
-	if len(settings.AllowedUsers) != 0 && !slices.ContainsFunc(settings.AllowedUsers, func(entry string) bool {
-		return entry == email || (strings.HasPrefix(entry, "@") && entry[1:] == domain)
-	}) {
+	if !ssoEmailListed(settings, email) {
 		return false
 	}
 	if len(settings.AllowedGroups) != 0 && !slices.ContainsFunc(groups, func(group string) bool { return slices.Contains(settings.AllowedGroups, group) }) {
 		return false
 	}
 	return true
+}
+
+// ssoEmailListed is the part of ssoAllowed that needs no provider: the email
+// or its "@domain" is in AllowedUsers, or that list is not set.
+func ssoEmailListed(settings control.SSO, email string) bool {
+	if len(settings.AllowedUsers) == 0 {
+		return true
+	}
+	_, domain, _ := strings.Cut(email, "@")
+	return slices.ContainsFunc(settings.AllowedUsers, func(entry string) bool {
+		return entry == email || (strings.HasPrefix(entry, "@") && entry[1:] == domain)
+	})
+}
+
+// ssoStillListed reports whether the email and domain lists in force still
+// name this administrator. Groups can't be read again without the provider,
+// so with no such list, or single sign-on off, there is nothing to hold them
+// to.
+func (s *Store) ssoStillListed(ctx context.Context, email string) bool {
+	settings, err := s.control.SSO(ctx)
+	if err != nil || !settings.Enabled {
+		return true
+	}
+	return ssoEmailListed(settings, strings.ToLower(email))
+}
+
+// endSSOSessions ends the sessions single sign-on may have started when
+// changed settings no longer let their administrators in. An administrator is
+// bound to the provider by their first sign-in, and a session doesn't say how
+// it began, so every session of a bound administrator is meant, a password
+// one too. Without the provider the groups can't be checked again: whenever
+// the allowed groups, the provider or the groups claim change, or single
+// sign-on goes off, all of them end, and the reasons say so. Otherwise only
+// those the email and domain lists leave out end. It returns how many
+// sessions ended and, when any administrator was affected, why.
+func (s *Store) endSSOSessions(ctx context.Context, before, after control.SSO) (int, []string, error) {
+	bound, err := s.control.SSOBoundAdmins(ctx)
+	if err != nil {
+		return 0, nil, err
+	}
+	var reasons []string
+	if before.Issuer != after.Issuer || before.ClientID != after.ClientID || before.GroupsClaim != after.GroupsClaim {
+		reasons = append(reasons, "provider_changed")
+	}
+	if before.Enabled && !after.Enabled {
+		reasons = append(reasons, "sso_disabled")
+	}
+	if !slices.Equal(slices.Sorted(slices.Values(before.AllowedGroups)), slices.Sorted(slices.Values(after.AllowedGroups))) {
+		reasons = append(reasons, "allowed_groups_changed")
+	}
+	var ids []string
+	for _, admin := range bound {
+		if len(reasons) > 0 || (after.Enabled && !ssoEmailListed(after, strings.ToLower(admin.Email))) {
+			ids = append(ids, admin.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return 0, nil, nil
+	}
+	if len(reasons) == 0 {
+		reasons = []string{"not_allowed"}
+	}
+	revoked, err := s.control.RevokeAdminSessions(ctx, ids)
+	// Even when revoking failed, the next request asks the database.
+	s.sessions.revokeAdmins(ids)
+	return revoked, reasons, err
+}
+
+// ssoSessionsDetail adds what endSSOSessions did to an audit entry's detail,
+// when it ended any session.
+func ssoSessionsDetail(detail map[string]any, revoked int, reasons []string) map[string]any {
+	if revoked == 0 || len(reasons) == 0 {
+		return detail
+	}
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	detail["sessions_revoked"], detail["sessions_revoked_for"] = revoked, reasons
+	return detail
 }
 
 func (s *Store) ssoCallback(w http.ResponseWriter, r *http.Request) {
@@ -410,7 +513,9 @@ func (s *Store) ssoCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fail := func(code, reason, email string) {
-		s.audit(r, "session.login_failed", control.AuditEntry{ActorEmail: attemptedEmail(email), ResourceType: "admin", ResourceID: "unknown", Detail: map[string]any{"method": "sso", "reason": reason}})
+		// Anyone with a provider account can fail here, so the rows share the
+		// budget of what unauthenticated requests may add to the log.
+		s.auditAnonymous(r, "session.login_failed", control.AuditEntry{ActorEmail: attemptedEmail(email), ResourceType: "admin", ResourceID: "unknown", Detail: map[string]any{"method": "sso", "reason": reason}})
 		ssoFailed(w, r, pending.returnTo, code)
 	}
 	if query.Get("error") != "" {
@@ -479,7 +584,11 @@ func (s *Store) ssoCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(raw) <= maxIDTokenCookie {
-		http.SetCookie(w, &http.Cookie{Name: ssoIDTokenCookie, Value: raw, Path: "/api/v1/session", Expires: session.ExpiresAt, MaxAge: int(time.Until(session.ExpiresAt).Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+		// Path=/ is what the __Host- prefix requires.
+		http.SetCookie(w, &http.Cookie{Name: ssoIDTokenCookie, Value: raw, Path: "/", Expires: session.ExpiresAt, MaxAge: int(time.Until(session.ExpiresAt).Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	}
+	if _, err := r.Cookie(legacySSOIDTokenCookie); err == nil {
+		clearLegacySSOIDToken(w)
 	}
 	// The session cookie is SameSite=Strict, and this response ends a
 	// navigation that began on the provider's site, so a redirect from here
@@ -521,7 +630,7 @@ func (s *Store) ssoSettingsView(ctx context.Context, settings control.SSO) ssoVi
 }
 
 func (s *Store) getSSO(w http.ResponseWriter, r *http.Request) {
-	if !s.alertsAdmin(w, r) {
+	if !s.alertsAdmin(w, r) || !ownPage(w, r) {
 		return
 	}
 	settings, err := s.control.SSO(r.Context())
@@ -554,6 +663,11 @@ func (s *Store) putSSO(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req, "enabled", "label", "issuer", "client_id", "scopes", "groups_claim", "allowed_users", "allowed_groups", "password_login") {
 		return
 	}
+	before, err := s.control.SSO(r.Context())
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
 	saved, err := s.control.SetSSO(r.Context(), control.SSO(req), s.now())
 	if errors.Is(err, control.ErrSSOFromEnvironment) {
 		fail(w, r, 409, "sso_from_environment")
@@ -567,16 +681,31 @@ func (s *Store) putSSO(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	s.audited(r, "security.sso", "security", "sso", map[string]any{
+	// Whoever the new settings no longer let in loses their session now, not
+	// when it would have ended.
+	revoked, reasons, revokeErr := s.endSSOSessions(r.Context(), before, saved)
+	s.audited(r, "security.sso", "security", "sso", ssoSessionsDetail(map[string]any{
 		"enabled": saved.Enabled, "issuer": saved.Issuer, "client_id": saved.ClientID, "secret_changed": req.ClientSecret != "",
 		"allowed_users": saved.AllowedUsers, "allowed_groups": saved.AllowedGroups, "password_login": saved.PasswordLogin,
-	})
+	}, revoked, reasons))
+	if revokeErr != nil {
+		// The settings are saved; the console says so and the sessions can
+		// still all be ended from Settings.
+		slog.Error("single sign-on sessions not ended after saving the settings", "error", revokeErr)
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
 	reply(w, 200, s.ssoSettingsView(r.Context(), saved))
 }
 
 // resetSSO forgets the settings saved from the admin console.
 func (s *Store) resetSSO(w http.ResponseWriter, r *http.Request) {
 	if !s.alertsAdmin(w, r) {
+		return
+	}
+	before, err := s.control.SSO(r.Context())
+	if err != nil {
+		fail(w, r, 503, "persistence_failed")
 		return
 	}
 	if err := s.control.ResetSSO(r.Context()); errors.Is(err, control.ErrSSOFromEnvironment) {
@@ -591,7 +720,13 @@ func (s *Store) resetSSO(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
-	s.audited(r, "security.sso_reset", "security", "sso", nil)
+	revoked, reasons, revokeErr := s.endSSOSessions(r.Context(), before, settings)
+	s.audited(r, "security.sso_reset", "security", "sso", ssoSessionsDetail(nil, revoked, reasons))
+	if revokeErr != nil {
+		slog.Error("single sign-on sessions not ended after resetting the settings", "error", revokeErr)
+		fail(w, r, 503, "persistence_failed")
+		return
+	}
 	reply(w, 200, s.ssoSettingsView(r.Context(), settings))
 }
 

@@ -30,6 +30,10 @@ var (
 type Admin struct {
 	ID    string
 	Email string
+	// SSOOnly says the administrator has no password: single sign-on
+	// created them, so every session of theirs came from the provider. Only
+	// Session sets it; it is not part of the API.
+	SSOOnly bool `json:"-"`
 }
 
 type Session struct {
@@ -176,7 +180,9 @@ func (d *Database) Setup(ctx context.Context, bootstrapCodeHash, code, email, pa
 // one, when the bootstrap token matches. The Outlet offers it only on the
 // local admin port: it is the way back in over SSH when single sign-on is
 // broken and no administrator has a password. A provider binding stays, so
-// the administrator keeps signing in with single sign-on too.
+// the administrator keeps signing in with single sign-on too. The old
+// password may be what let someone in, so the administrator's sessions end
+// with it, in the same transaction.
 func (d *Database) RecoverAdmin(ctx context.Context, bootstrapCodeHash, code, email, password string) (Admin, error) {
 	if !validEmail(email) || !validPassword(password) || len(bootstrapCodeHash) != 64 {
 		return Admin{}, ErrInvalidCredentials
@@ -197,7 +203,9 @@ func (d *Database) RecoverAdmin(ctx context.Context, bootstrapCodeHash, code, em
 	err = tx.QueryRowContext(ctx, "SELECT id, email FROM admins WHERE email = ?", email).Scan(&admin.ID, &admin.Email)
 	switch {
 	case err == nil:
-		_, err = tx.ExecContext(ctx, "UPDATE admins SET password_hash = ? WHERE id = ?", hash, admin.ID)
+		if _, err = tx.ExecContext(ctx, "UPDATE admins SET password_hash = ? WHERE id = ?", hash, admin.ID); err == nil {
+			_, err = revokeSessions(ctx, tx, admin.ID)
+		}
 	case errors.Is(err, sql.ErrNoRows):
 		if admin.ID, err = randomID(); err == nil {
 			_, err = tx.ExecContext(ctx, "INSERT INTO admins(id, email, password_hash, created_at) VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))", admin.ID, email, hash)
@@ -275,8 +283,8 @@ func (d *Database) Session(ctx context.Context, token string) (Admin, time.Time,
 	var admin Admin
 	var expires string
 	err := d.db.QueryRowContext(ctx, `
-SELECT a.id, a.email, s.expires_at FROM sessions s JOIN admins a ON a.id = s.admin_id
-WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > julianday('now')`, hashToken(token)).Scan(&admin.ID, &admin.Email, &expires)
+SELECT a.id, a.email, a.password_hash = ?, s.expires_at FROM sessions s JOIN admins a ON a.id = s.admin_id
+WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > julianday('now')`, ssoPasswordHash, hashToken(token)).Scan(&admin.ID, &admin.Email, &admin.SSOOnly, &expires)
 	if err != nil {
 		return Admin{}, time.Time{}, ErrInvalidCredentials
 	}
@@ -290,6 +298,67 @@ WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > ju
 func (d *Database) RevokeSession(ctx context.Context, token string) error {
 	_, err := d.db.ExecContext(ctx, "UPDATE sessions SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE token_hash = ? AND revoked_at IS NULL", hashToken(token))
 	return err
+}
+
+// revokeSessions ends the live sessions of one administrator, or of all of
+// them when adminID is empty, and returns how many it ended. Expired ones
+// are left alone: they cannot authenticate anyway.
+func revokeSessions(ctx context.Context, q interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, adminID string) (int, error) {
+	result, err := q.ExecContext(ctx, `UPDATE sessions SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		WHERE revoked_at IS NULL AND julianday(expires_at) > julianday('now') AND (? = '' OR admin_id = ?)`, adminID, adminID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := result.RowsAffected()
+	return int(n), err
+}
+
+// RevokeAllSessions ends every administrator's live sessions.
+func (d *Database) RevokeAllSessions(ctx context.Context) (int, error) {
+	return revokeSessions(ctx, d.db, "")
+}
+
+// RevokeAdminSessions ends the live sessions of the administrators with these
+// IDs, in one transaction, and returns how many sessions it ended.
+func (d *Database) RevokeAdminSessions(ctx context.Context, adminIDs []string) (int, error) {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	total := 0
+	for _, id := range adminIDs {
+		if id == "" {
+			continue
+		}
+		n, err := revokeSessions(ctx, tx, id)
+		if err != nil {
+			return 0, err
+		}
+		total += n
+	}
+	return total, tx.Commit()
+}
+
+// SSOBoundAdmins lists the administrators bound to a provider account: the
+// ones whose sessions single sign-on may have started.
+func (d *Database) SSOBoundAdmins(ctx context.Context) ([]Admin, error) {
+	rows, err := d.db.QueryContext(ctx, "SELECT id, email, password_hash = ? FROM admins WHERE COALESCE(sso_issuer, '') != '' ORDER BY email", ssoPasswordHash)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var admins []Admin
+	for rows.Next() {
+		var admin Admin
+		if err := rows.Scan(&admin.ID, &admin.Email, &admin.SSOOnly); err != nil {
+			return nil, err
+		}
+		admins = append(admins, admin)
+	}
+	return admins, rows.Err()
 }
 
 const settingDeviceKey = "device_key"

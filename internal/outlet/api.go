@@ -108,6 +108,7 @@ func (s *Store) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/session", s.login)
 	mux.HandleFunc("POST /api/v1/session/second-factor", s.secondFactor)
 	mux.HandleFunc("DELETE /api/v1/session", s.logout)
+	mux.HandleFunc("POST /api/v1/security/admin/sessions/revoke", s.revokeAdminSessions)
 	mux.HandleFunc("GET /api/v1/audit", s.getAudit)
 	mux.HandleFunc("GET /api/v1/audit/export", s.exportAudit)
 	mux.HandleFunc("GET /api/v1/security/rate-limit", s.getRateLimit)
@@ -658,6 +659,9 @@ func (s *Store) recoverAdmin(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 503, "persistence_failed")
 		return
 	}
+	// The new password ended the administrator's sessions in the database;
+	// the cache must not go on believing them.
+	s.sessions.revokeAdmins([]string{admin.ID})
 	s.setupDone.Store(true)
 	s.audit(r, "setup.admin_recover", control.AuditEntry{ActorID: admin.ID, ActorEmail: admin.Email, ResourceType: "admin", ResourceID: admin.ID})
 	reply(w, 200, map[string]string{"status": "recovered"})
@@ -736,9 +740,13 @@ func (s *Store) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
 	// A single sign-on session also ends at the provider, or the next
-	// sign-in would go straight through without asking.
-	logoutURL := s.ssoLogoutURL(r)
-	http.SetCookie(w, &http.Cookie{Name: ssoIDTokenCookie, Value: "", Path: "/api/v1/session", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	// sign-in would go straight through without asking. Only a request that
+	// had a session gets the address: it carries the token the cookie holds.
+	logoutURL := ""
+	if active {
+		logoutURL = s.ssoLogoutURL(r)
+	}
+	clearSSOIDToken(w)
 	if active {
 		s.audit(r, "session.logout", control.AuditEntry{ActorID: admin.ID, ActorEmail: admin.Email, ResourceType: "admin", ResourceID: admin.ID})
 	}

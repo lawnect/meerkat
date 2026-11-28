@@ -118,7 +118,7 @@ func newAlertFixture(t *testing.T) alertFixture {
 func (a alertFixture) configureTelegram(t *testing.T, verified bool) {
 	t.Helper()
 	ctx := context.Background()
-	if err := a.db.SetTelegram(ctx, testBotToken, "123456", true, a.clock.now()); err != nil {
+	if _, err := a.db.SetTelegram(ctx, testBotToken, "123456", true, a.clock.now()); err != nil {
 		t.Fatal(err)
 	}
 	if verified {
@@ -717,7 +717,7 @@ func TestLoginNotificationCanBeSwitchedOff(t *testing.T) {
 	// Alerts off at the bot level silence everything, including logins.
 	rules.Login.Enabled = true
 	_ = a.db.SetAlertRules(context.Background(), rules, a.clock.now())
-	if err := a.db.SetTelegram(context.Background(), "", "123456", false, a.clock.now()); err != nil {
+	if _, err := a.db.SetTelegram(context.Background(), "", "123456", false, a.clock.now()); err != nil {
 		t.Fatal(err)
 	}
 	a.clock.advance(time.Minute)
