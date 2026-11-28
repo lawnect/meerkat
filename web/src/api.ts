@@ -1,10 +1,10 @@
 import { translations } from './i18n.svelte';
-import { mockApi } from './mockApi';
 
 export const mockApiEnabled = import.meta.env.VITE_MOCK_API === 'true';
 
 export async function api<T = Record<string, unknown>>(url: string, options: RequestInit = {}): Promise<T> {
-  if (mockApiEnabled) return await mockApi(url, options) as T;
+  // 모의 API는 이 조건에서만 불러옵니다. 배포 번들(VITE_MOCK_API 없음)에는 목업 데이터가 들어가지 않습니다.
+  if (import.meta.env.VITE_MOCK_API === 'true') return await (await import('./mockApi')).mockApi(url, options) as T;
 
   const headers = new Headers(options.headers ?? {});
   if (options.body && !headers.has('Content-Type')) {
