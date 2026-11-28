@@ -1,22 +1,36 @@
 # Both build and runtime images are immutable multi-platform manifest pins.
-FROM caddy:2.11.7-builder@sha256:c4cd20eaa0b69112fd5d4f721ffc9671687e1d5d0b155c8620cf7546dbef94c0 AS build
-# The annotated v2.11.7 tag resolves to this commit. Fail closed if it moves.
-RUN git clone --depth 1 --branch v2.11.7 https://github.com/caddyserver/caddy.git /src && \
-    test "$(git -C /src rev-parse HEAD)" = 72dd0fb067f6d7826c7f79907670ba4a713bfe37
+FROM caddy:2.11.9-builder@sha256:cda07fe9d82728c7ac44d844306d435e98131423dc7b114f05a8a8ecfff94707 AS build
+# The annotated v2.11.9 tag resolves to this commit. Fail closed if it moves.
+RUN git clone --depth 1 --branch v2.11.9 https://github.com/caddyserver/caddy.git /src && \
+    test "$(git -C /src rev-parse HEAD)" = 0d98caea58f794f88e709b1bef2880996a471bca
 WORKDIR /src
 # Normalize before Prometheus allocates host labels; preserve per-host usage.
 # strict_sni_host remains required for HTTPS catch-all cardinality protection.
 COPY deploy/caddy/normalize-metrics-host.patch /tmp/normalize-metrics-host.patch
+# Caddy 2.11.9's go.mod still names dependency releases with advisories that
+# govulncheck reports in the built binary: golang.org/x/net v0.60.0
+# (GO-2026-6866, GO-2026-6860), go.opentelemetry.io/otel* v1.46.0 and sdk/log
+# v0.22.0 (GO-2026-6975, GO-2026-6974) and github.com/klauspost/compress
+# v1.20.1 (GO-2026-6865). These are the fixed releases, and go get moves the
+# modules they need (golang.org/x/crypto, sys, term, text, sync, tools) with
+# them. Drop each once a Caddy release carries it. The build and the three
+# regression tests below run against this set.
 RUN git apply --check /tmp/normalize-metrics-host.patch && \
     git apply /tmp/normalize-metrics-host.patch && \
+    go get golang.org/x/net@v0.62.0 \
+      github.com/klauspost/compress@v1.20.2 \
+      go.opentelemetry.io/otel@v1.47.0 \
+      go.opentelemetry.io/otel/sdk@v1.47.0 \
+      go.opentelemetry.io/otel/sdk/log@v1.47.0 \
+      go.opentelemetry.io/otel/trace@v1.47.0 && \
     go test -mod=readonly ./modules/caddyhttp \
       -run 'TestMetricsHostPorts|TestMetricsCardinalityProtection|TestMetricsHTTPSCatchAll' -count=1 && \
     CGO_ENABLED=0 go build -mod=readonly -buildvcs=false -trimpath \
-      -ldflags '-w -s -X github.com/caddyserver/caddy/v2.CustomVersion=v2.11.7-meerkat.1' \
+      -ldflags '-w -s -X github.com/caddyserver/caddy/v2.CustomVersion=v2.11.9-meerkat.1' \
       -o /out/caddy ./cmd/caddy
 
-FROM caddy:2.11.7@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489
+FROM caddy:2.11.9@sha256:4851e54a46b206517c574821bb5cc67f170d2156041e9fbc4c9193b45e84a75b
 COPY --from=build /out/caddy /usr/bin/caddy
 # Replacing the executable clears the stock image's file capabilities.
 RUN setcap cap_net_bind_service=+ep /usr/bin/caddy && \
-    caddy version | grep -F 'v2.11.7-meerkat.1'
+    caddy version | grep -F 'v2.11.9-meerkat.1'
