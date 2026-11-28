@@ -410,7 +410,9 @@ func (s *Store) ssoCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fail := func(code, reason, email string) {
-		s.audit(r, "session.login_failed", control.AuditEntry{ActorEmail: attemptedEmail(email), ResourceType: "admin", ResourceID: "unknown", Detail: map[string]any{"method": "sso", "reason": reason}})
+		// Anyone with a provider account can fail here, so the rows share the
+		// budget of what unauthenticated requests may add to the log.
+		s.auditAnonymous(r, "session.login_failed", control.AuditEntry{ActorEmail: attemptedEmail(email), ResourceType: "admin", ResourceID: "unknown", Detail: map[string]any{"method": "sso", "reason": reason}})
 		ssoFailed(w, r, pending.returnTo, code)
 	}
 	if query.Get("error") != "" {
