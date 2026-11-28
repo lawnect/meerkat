@@ -166,10 +166,31 @@ func (s *Store) servedSince(serviceID string, t time.Time) bool {
 	return ok && !t.IsZero() && v.(*atomic.Int64).Load() > t.UnixNano()
 }
 
-// spoofableClientHeaders name a client address. Behind Caddy only
-// X-Forwarded-For's last entry is real, so these are removed before a
+// spoofableClientHeaders name a client address, or the host, scheme or path
+// of the request as a proxy in front of an app would pass it on. Behind Caddy
+// only X-Forwarded-For's last entry is real, so these are removed before a
 // request reaches an app; X-Real-IP is then set from that entry.
-var spoofableClientHeaders = []string{"X-Real-Ip", "Cf-Connecting-Ip", "Cf-Connecting-Ipv6", "True-Client-Ip", "X-Client-Ip", "Forwarded"}
+var spoofableClientHeaders = []string{
+	"X-Real-Ip", "Cf-Connecting-Ip", "Cf-Connecting-Ipv6", "True-Client-Ip", "X-Client-Ip", "Forwarded",
+	"X-Cluster-Client-Ip", "Client-Ip", "Fastly-Client-Ip", "Fly-Client-Ip", "X-Envoy-External-Address", "X-Azure-Clientip",
+	"X-Appengine-User-Ip", "Do-Connecting-Ip", "Forwarded-For", "X-Forwarded", "X-Original-Forwarded-For",
+	"X-Original-Url", "X-Rewrite-Url", "X-Forwarded-Scheme", "X-Forwarded-Prefix", "X-Forwarded-Server", "X-Original-Host", "X-Host",
+}
+
+// dropForgeableHeaders removes what a client could use to pass an app a value
+// the Outlet vouches for: the headers of spoofableClientHeaders and every
+// header with "_" in its name, as nginx does by default, since app servers
+// that map "-" and "_" to one name (WSGI, CGI) read X_Real_Ip as X-Real-Ip.
+func dropForgeableHeaders(header http.Header) {
+	for name := range header {
+		if strings.Contains(name, "_") {
+			delete(header, name)
+		}
+	}
+	for _, name := range spoofableClientHeaders {
+		header.Del(name)
+	}
+}
 
 // webSocketUpgrade reports whether header asks to switch to WebSocket and to
 // nothing else: one Upgrade value, "websocket", and Connection naming it.
@@ -490,9 +511,7 @@ func (s *Store) PublicHandler() http.Handler {
 					// the address Caddy saw, never a value the client sent.
 					// Headers a CDN would set, which an app moved off one might
 					// still trust, are dropped since a client could forge them.
-					for _, name := range spoofableClientHeaders {
-						pr.Out.Header.Del(name)
-					}
+					dropForgeableHeaders(pr.Out.Header)
 					// ReverseProxy has put back the Upgrade the client asked for;
 					// only WebSocket stays. Any other request goes on as plain
 					// HTTP, so no service can answer it with a 101 and take the
