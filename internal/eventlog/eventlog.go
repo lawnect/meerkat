@@ -144,6 +144,11 @@ func Open[E any](ctx context.Context, path string, kind Kind[E], limits Limits) 
 	if err := securefs.Directory(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
+	// Create the file 0600, so SQLite gives its write-ahead log the same mode
+	// whatever the umask, and tighten one an earlier release left at 0644.
+	if err := securefs.Database(path); err != nil {
+		return nil, err
+	}
 	// The pragmas go in the name so every connection SQLite opens has them;
 	// incremental auto-vacuum lets a lowered cap shrink the file. The cap
 	// itself is set on each write (see Append), as it can change.
@@ -206,6 +211,11 @@ func Open[E any](ctx context.Context, path string, kind Kind[E], limits Limits) 
 		return nil, err
 	}
 	read.SetMaxOpenConns(readers)
+	if err := securefs.DatabaseFiles(path); err != nil {
+		read.Close()
+		db.Close()
+		return nil, err
+	}
 	log := &Log[E]{db: db, read: read, tallies: make(chan struct{}, 1), path: path, kind: kind, names: strings.Join(kind.Names(), ", ")}
 	log.SetLimits(limits)
 	return log, nil

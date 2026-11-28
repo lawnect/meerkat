@@ -34,6 +34,12 @@ func Open(ctx context.Context, path string) (*Database, error) {
 	if err := securefs.Directory(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
+	// The database holds secrets: create it 0600, so SQLite gives its
+	// write-ahead log the same mode whatever the umask, and tighten one an
+	// earlier release left at 0644.
+	if err := securefs.Database(path); err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
@@ -47,6 +53,10 @@ func Open(ctx context.Context, path string) (*Database, error) {
 		}
 	}
 	if err := migrate(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := securefs.DatabaseFiles(path); err != nil {
 		db.Close()
 		return nil, err
 	}

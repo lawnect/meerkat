@@ -280,6 +280,7 @@ func upgradeConfig(dir, domain string) error {
 }
 
 func main() {
+	securefs.RestrictUmask()
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
