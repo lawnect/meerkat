@@ -107,7 +107,7 @@ EOF
 docker compose --env-file /opt/meerkat-outlet/compose.env -f /opt/meerkat-outlet/compose.outlet.yaml up -d
 ```
 
-**2. First administrator.** The admin port listens on `127.0.0.1:18443` only. Forward it (`ssh -N -L 18443:127.0.0.1:18443 user@SERVER`) and open `https://localhost:18443`. Its certificate comes from a private CA (`/opt/meerkat-outlet/configs/root-ca.pem`); trust it in a separate browser profile, or check the fingerprint and continue. Create the administrator with the code in `/opt/meerkat-outlet/configs/admin.token`. Keep that file on the server: on this port it also recovers access when every other sign-in fails.
+**2. First administrator.** The admin port listens on `127.0.0.1:18443` only. Forward it (`ssh -N -L 18443:127.0.0.1:18443 user@SERVER`) and open `https://localhost:18443`. Its certificate comes from a private CA (`/opt/meerkat-outlet/configs/root-ca.pem`, limited to `localhost`, `outlet` and `127.0.0.1`, with its key never saved); trust it in a separate browser profile, or check the fingerprint of `api-cert.pem` and continue. Create the administrator with the code in `/opt/meerkat-outlet/configs/admin.token`. Keep that file on the server: on this port it also recovers access when every other sign-in fails.
 
 **3. Domain.** Under **Domains**, add your domain and point a wildcard `A` record, or one per host, at the server. The console moves to `https://<name>.<domain>`, where `<name>` is a random 8-character label chosen once. Wildcard DNS only routes names; certificates are issued per hostname.
 

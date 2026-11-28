@@ -88,6 +88,17 @@ The version should start with `v2.11.7-meerkat.1`. Recreating these services int
 
 Control migration 18 extends only the original, unchanged honeypot conditions, preserving disabled/customized/deleted rules and host scope. Existing observation log files receive additive columns without removing history. Keep the patched Caddy image when rolling the Outlet back; stock Caddy 2.11.7 with per-host metrics restores the host-label issue. Older Outlets ignore the new log fields and lose the new path and tunnel guards, the narrower well-known exception and the new service-unavailable response. The added honeypot conditions use compatible RE2 patterns, but use the backup if an exact pre-upgrade ruleset is required. Do not delete log files or manually lower SQLite version numbers to roll back.
 
+**Admin port certificate.** An Outlet set up by an earlier release serves one self-signed certificate that is also marked as a CA, and the same private key sits in `configs/api-key.pem`, which the Outlet container can read. If you trusted its `root-ca.pem` in a browser or operating system, whoever could read that key could issue certificates for any domain to those machines. Existing files keep working after an upgrade, but replace them: this writes a new constrained CA, a separate certificate and key, and leaves everything else in `configs/` alone.
+
+```sh
+docker run --rm --user "$(id -u):$(id -g)" --entrypoint /usr/local/bin/outlet-init \
+  -v /opt/meerkat-outlet:/out ghcr.io/lawnect/meerkat:latest -dir /out -renew-certificate
+docker compose --env-file /opt/meerkat-outlet/compose.env \
+  -f /opt/meerkat-outlet/compose.outlet.yaml up -d --force-recreate outlet
+```
+
+Then remove the old `root-ca.pem` from every trust store that has it and, if you still want one, import the new file in a separate browser profile. The CA's key is never saved, so a certificate can't be renewed in place: run the command again before the ten years are up.
+
 ### Initial Outlet access
 
 A production Outlet doesn't use the local `poc-init`. Instead, it generates keys and a setup code with
@@ -116,7 +127,7 @@ docker run --rm \
   -dir /out -region 'Chuncheon, KR'
 ```
 
-`outlet-init` generates the internal Outlet certificate, a one-time admin setup code (`admin.token`),
+`outlet-init` generates the admin port's certificates (see below), a one-time admin setup code (`admin.token`),
 and the Noise server key in `/opt/meerkat-outlet/configs/`. Until you register a domain, it creates a Caddyfile
 with no public hosts. Don't edit `outlet-data/rathole/server.toml` or `outlet-data/caddy/Caddyfile` directly;
 the running Outlet manages them.
@@ -161,8 +172,13 @@ ssh -N -L 18443:127.0.0.1:18443 user@SERVER_IP
 Open `https://localhost:18443` in a browser. Read the value of
 `/opt/meerkat-outlet/configs/admin.token` on the server only, enter it as the setup code, create an admin account, and then
 sign in. This code can be used only once, to create the admin.
-Until you register your first domain, you manage the Outlet over this SSH path. If the browser doesn't
-trust the self-signed certificate, add the copied `meerkat-root-ca.pem` to the browser's or operating system's trust store.
+Until you register your first domain, you manage the Outlet over this SSH path. The admin port's certificate comes from a
+private CA made for this one purpose. `root-ca.pem` holds only the CA's certificate: its private key is never saved, and the
+certificate is limited to `localhost`, `outlet` and `127.0.0.1`. The Outlet serves a separate certificate and key
+(`api-cert.pem`, `api-key.pem`) that can't sign other certificates, so reading `api-key.pem` doesn't let anyone issue
+certificates for other domains. If the browser doesn't trust the certificate, import the copied `meerkat-root-ca.pem`, preferably
+into a separate browser profile rather than the operating system's trust store. Alternatively compare the browser's fingerprint
+with `openssl x509 -in /opt/meerkat-outlet/configs/api-cert.pem -noout -fingerprint -sha256` run on the server.
 Keep using HTTPS so that session cookies work correctly. Even with Telegram login verification codes turned on, sign-ins over this SSH path don't require a code, so it serves as a recovery path when you can't receive codes ([details](#telegram-alerts-and-login-security)).
 
 ### Switch to a public domain

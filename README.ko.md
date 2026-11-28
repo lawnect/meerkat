@@ -107,7 +107,7 @@ EOF
 docker compose --env-file /opt/meerkat-outlet/compose.env -f /opt/meerkat-outlet/compose.outlet.yaml up -d
 ```
 
-**2. 첫 관리자.** 관리 포트는 `127.0.0.1:18443`에서만 열립니다. SSH로 포워딩(`ssh -N -L 18443:127.0.0.1:18443 user@SERVER`)한 뒤 `https://localhost:18443`을 엽니다. 인증서는 사설 CA(`/opt/meerkat-outlet/configs/root-ca.pem`)가 발급하므로, 별도 브라우저 프로필에서만 신뢰하거나 지문을 확인하고 진행합니다. `/opt/meerkat-outlet/configs/admin.token`의 코드로 관리자를 만듭니다. 이 파일은 서버에 두십시오. 이 포트에서 다른 로그인이 모두 막혔을 때의 복구 수단이기도 합니다.
+**2. 첫 관리자.** 관리 포트는 `127.0.0.1:18443`에서만 열립니다. SSH로 포워딩(`ssh -N -L 18443:127.0.0.1:18443 user@SERVER`)한 뒤 `https://localhost:18443`을 엽니다. 인증서는 사설 CA(`/opt/meerkat-outlet/configs/root-ca.pem`, `localhost`·`outlet`·`127.0.0.1`에만 유효하며 개인키는 저장하지 않음)가 발급하므로, 별도 브라우저 프로필에서만 신뢰하거나 `api-cert.pem`의 지문을 확인하고 진행합니다. `/opt/meerkat-outlet/configs/admin.token`의 코드로 관리자를 만듭니다. 이 파일은 서버에 두십시오. 이 포트에서 다른 로그인이 모두 막혔을 때의 복구 수단이기도 합니다.
 
 **3. 도메인.** **도메인 관리**에서 도메인을 추가하고, 와일드카드 `A` 레코드나 호스트별 레코드가 서버를 가리키게 합니다. 콘솔은 `https://<이름>.<도메인>`으로 옮겨 가며, `<이름>`은 한 번 정해지는 무작위 8글자입니다. 와일드카드 DNS는 이름을 서버로 보낼 뿐이고, 인증서는 호스트마다 발급합니다.
 

@@ -88,6 +88,17 @@ docker compose --env-file /opt/meerkat-outlet/compose.env \
 
 제어 DB 마이그레이션 18은 원래 조건을 그대로 둔 허니팟만 확장하고 꺼 둔 규칙·수정한 조건·삭제한 허니팟과 호스트 범위는 유지합니다. 기존 관찰 기록 파일에는 열을 추가하며 기록을 지우지 않습니다. Outlet을 되돌리더라도 패치된 Caddy 이미지는 유지하십시오. 호스트별 메트릭을 켠 순정 Caddy 2.11.7로 되돌리면 호스트 라벨 문제가 다시 생깁니다. 이전 Outlet은 새 기록 필드를 무시하며 새 경로·터널 보호, 좁아진 well-known 예외와 서비스 일시 불가 응답도 사라집니다. 추가된 허니팟 조건은 호환되는 RE2 패턴이지만 업그레이드 전과 정확히 같은 규칙이 필요하면 백업을 쓰십시오. 롤백을 위해 기록 파일을 지우거나 SQLite 버전 번호를 직접 내리지 마십시오.
 
+**관리 포트 인증서.** 이전 릴리스로 설치한 Outlet은 CA로도 표시된 자체 서명 인증서 하나를 제시하며, 같은 개인키가 Outlet 컨테이너가 읽을 수 있는 `configs/api-key.pem`에 있습니다. 이 `root-ca.pem`을 브라우저나 운영체제에서 신뢰했다면, 그 키를 읽을 수 있는 사람은 해당 컴퓨터에 어떤 도메인의 인증서든 발급할 수 있습니다. 업그레이드 후에도 기존 파일은 그대로 동작하지만 교체하십시오. 다음 명령은 이름이 제한된 새 CA와 별도의 인증서·키를 만들며 `configs/`의 다른 파일은 건드리지 않습니다.
+
+```sh
+docker run --rm --user "$(id -u):$(id -g)" --entrypoint /usr/local/bin/outlet-init \
+  -v /opt/meerkat-outlet:/out ghcr.io/lawnect/meerkat:latest -dir /out -renew-certificate
+docker compose --env-file /opt/meerkat-outlet/compose.env \
+  -f /opt/meerkat-outlet/compose.outlet.yaml up -d --force-recreate outlet
+```
+
+이후 이전 `root-ca.pem`을 등록해 둔 모든 신뢰 저장소에서 제거하고, 필요하면 새 파일을 별도 브라우저 프로필에만 등록하십시오. CA의 키는 저장하지 않으므로 인증서를 그 자리에서 갱신할 수 없습니다. 10년이 지나기 전에 같은 명령을 다시 실행하십시오.
+
 ### Outlet 초기 접속
 
 운영용 Outlet은 로컬 `poc-init`을 사용하지 않고, 게시된 Meerkat 이미지의
@@ -116,7 +127,7 @@ docker run --rm \
   -dir /out -region 'Chuncheon, KR'
 ```
 
-`outlet-init`은 `/opt/meerkat-outlet/configs/`에 내부 Outlet 인증서,
+`outlet-init`은 `/opt/meerkat-outlet/configs/`에 관리 포트용 인증서(아래 참고),
 일회성 관리자 설정 코드(`admin.token`)와 Noise 서버 키를 생성합니다. 도메인을
 등록하기 전에는 공개 호스트가 없는 Caddyfile을 만듭니다. 실행 중인 Outlet이 관리하는
 `outlet-data/rathole/server.toml`과 `outlet-data/caddy/Caddyfile`은 직접 수정하지 않습니다.
@@ -161,9 +172,14 @@ ssh -N -L 18443:127.0.0.1:18443 user@SERVER_IP
 브라우저에서 `https://localhost:18443`을 엽니다. 서버에서만
 `/opt/meerkat-outlet/configs/admin.token` 값을 확인해 설정 코드로 입력하고 관리자 계정을 만든 뒤
 로그인합니다. 이 코드는 관리자 생성에 한 번만 사용할 수 있습니다.
-첫 도메인을 등록할 때까지는 이 SSH 경로로 관리합니다. 브라우저가 자체 서명 인증서를
-신뢰하지 않으면 복사한 `meerkat-root-ca.pem`을 브라우저 또는 운영체제의 신뢰 저장소에
-등록합니다. HTTPS를 유지해야 세션 쿠키가 정상적으로 동작합니다. Telegram 로그인 보안 코드를 켜도 이 SSH 경로의 로그인에는 코드가 필요 없어, 코드를 받을 수 없을 때의 복구 경로가 됩니다([자세히](#telegram-알림과-로그인-보안)).
+첫 도메인을 등록할 때까지는 이 SSH 경로로 관리합니다. 관리 포트의 인증서는 이 용도로만 만든
+사설 CA가 발급합니다. `root-ca.pem`에는 CA 인증서만 들어 있고 CA의 개인키는 저장하지 않으며,
+`localhost`, `outlet`, `127.0.0.1` 외의 이름에는 쓸 수 없습니다. Outlet이 제시하는 인증서와 키
+(`api-cert.pem`, `api-key.pem`)는 다른 인증서를 서명할 수 없으므로, `api-key.pem`을 읽어도 다른 도메인의
+인증서를 발급할 수 없습니다. 브라우저가 인증서를 신뢰하지 않으면 복사한 `meerkat-root-ca.pem`을 운영체제가 아닌
+별도 브라우저 프로필에 등록하는 것을 권장합니다. 또는 서버에서
+`openssl x509 -in /opt/meerkat-outlet/configs/api-cert.pem -noout -fingerprint -sha256`로 확인한 지문을
+브라우저에 표시된 지문과 비교합니다. HTTPS를 유지해야 세션 쿠키가 정상적으로 동작합니다. Telegram 로그인 보안 코드를 켜도 이 SSH 경로의 로그인에는 코드가 필요 없어, 코드를 받을 수 없을 때의 복구 경로가 됩니다([자세히](#telegram-알림과-로그인-보안)).
 
 ### 공개 도메인으로 전환
 
