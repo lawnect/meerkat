@@ -119,6 +119,9 @@ func run() error {
 }
 
 func main() {
+	// Everything the Outlet creates is for its user alone, whatever umask the
+	// container runtime gave the process; databases also set their own mode.
+	securefs.RestrictUmask()
 	if err := run(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("outlet stopped", "error", err.Error())
 		os.Exit(1)

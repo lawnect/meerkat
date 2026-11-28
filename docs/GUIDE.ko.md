@@ -58,6 +58,8 @@ git tag meerkat-v1.0.0 && git push origin meerkat-v1.0.0
 
 아키텍처마다 해당 아키텍처의 러너에서 직접 빌드합니다. 빌드 캐시는 같은 GHCR 패키지의 `buildcache-amd64`·`buildcache-arm64` 태그에 보관하며, 이 태그는 실행용 이미지가 아닙니다.
 
+Outlet·Connector 이미지는 **Verify** 워크플로가 통과한 뒤에만 빌드합니다. `deploy/Dockerfile`이 빌드에 쓰는 Go 버전으로 `go vet`, `go test ./...`, `govulncheck`를 실행합니다. 표준 라이브러리의 취약점 공지는 이 저장소를 바꾸지 않아도 나오므로 풀 리퀘스트, `main`, 매주 월요일에도 실행합니다. Dockerfile은 모든 베이스 이미지를 태그와 다이제스트로 고정하며, Go 태그는 `go.mod`의 `toolchain` 줄과 같아야 하고 워크플로가 이를 확인합니다. Go 패치 릴리스를 올릴 때는 둘을 함께 바꾸고 다이제스트는 `docker buildx imagetools inspect golang:<tag>`로 얻습니다. 모든 GitHub Action은 커밋 SHA로 고정하고 버전은 주석으로 적습니다.
+
 rathole은 공식 릴리스 바이너리 대신 v0.5.0 소스에서 직접 빌드합니다. 해당 릴리스가 알려진 취약점이 있는 크레이트를 고정하고 있기 때문입니다(snow 0.9.3, RUSTSEC-2024-0011 등). 빌드에는 v0.5.0 락파일에 `cargo update`를 적용한 [deploy/rathole/Cargo.lock](../deploy/rathole/Cargo.lock)을 쓰고, server·client·Noise·hot-reload 기능만 포함하므로 TLS 코드와 OpenSSL은 들어가지 않습니다. 프로토콜은 공식 v0.5.0 바이너리와 양방향으로 호환됩니다.
 
 정식 버전 태그는 `latest`도 옮기고, `meerkat-v1.1.0-rc.1` 같은 사전 릴리스는 옮기지 않습니다. `main`에 push하는 것만으로는 빌드하지 않습니다. 같은 릴리스를 다시 빌드하려면 그 태그에서 워크플로를 수동으로 실행합니다. 원격 Outlet/Connector VM에서는 소스 코드를 빌드하지 않고 GHCR 이미지를 가져와 Compose로 실행합니다.
@@ -71,7 +73,7 @@ GHCR 패키지가 private이면 VM에서 `read:packages` 권한이 있는 GitHub
 
 ### 보안 업데이트와 롤백
 
-호스트 라벨 수정은 고정된 Caddy 2.11.7 소스와 `deploy/caddy/normalize-metrics-host.patch`로 빌드한 `v2.11.7-meerkat.1` 실행 파일에 들어 있습니다. Prometheus가 호스트별 라벨을 만들기 전에 Host의 포트를 없애고 호스트 이름을 소문자로 바꿉니다. 처리 건수·받고 보낸 바이트·5xx와 저장된 사용량 기록은 유지하며, `host:443` 요청도 같은 호스트에 집계합니다. `strict_sni_host`와 일반 호스트별 인증서 승인을 유지하고 catch-all 호스트 관찰은 켜지 마십시오. Outlet만 업데이트하면 이전 Caddy의 동작이 그대로 남습니다.
+호스트 라벨 수정은 고정된 Caddy 2.11.9 소스와 `deploy/caddy/normalize-metrics-host.patch`로, 그리고 해당 Caddy 릴리스에서 보안 권고가 있는 의존성(`deploy/Dockerfile.caddy`에 나열)을 더 새로운 릴리스로 올려 빌드한 `v2.11.9-meerkat.1` 실행 파일에 들어 있습니다. Prometheus가 호스트별 라벨을 만들기 전에 Host의 포트를 없애고 호스트 이름을 소문자로 바꿉니다. 처리 건수·받고 보낸 바이트·5xx와 저장된 사용량 기록은 유지하며, `host:443` 요청도 같은 호스트에 집계합니다. `strict_sni_host`와 일반 호스트별 인증서 승인을 유지하고 catch-all 호스트 관찰은 켜지 마십시오. Outlet만 업데이트하면 이전 Caddy의 동작이 그대로 남습니다.
 
 업그레이드 전에 설정과 DB를 일관된 상태로 백업하고 별도 관찰 기록 DB도 포함하십시오. `compose.env`에서 이 변경이 포함된 공개 Outlet·Caddy 이미지 태그를 지정해야 하며, 릴리스에는 Caddy 재빌드 이미지도 함께 배포해야 합니다. `MEERKAT_CADDY_IMAGE`를 재정의했다면 패치된 빌드인지 확인하십시오. 게이트웨이의 세 서비스를 모두 받고 다시 만든 뒤 Caddy 실행 파일 버전을 확인합니다.
 
@@ -84,9 +86,26 @@ docker compose --env-file /opt/meerkat-outlet/compose.env \
   -f /opt/meerkat-outlet/compose.outlet.yaml exec caddy caddy version
 ```
 
-버전은 `v2.11.7-meerkat.1`로 시작해야 합니다. 서비스를 다시 만드는 동안 기존 터널·스트림·WebSocket은 끊기며 클라이언트가 다시 연결해야 합니다. 저장된 사용량은 유지하지만 Caddy 재시작 전에 아직 수집하지 못한 요청은 복구할 수 없습니다. 위 명령은 운영자가 실행하는 배포 절차이며 소스를 빌드·시험하는 것만으로 운영 설치가 바뀌지는 않습니다.
+버전은 `v2.11.9-meerkat.1`로 시작해야 합니다. 서비스를 다시 만드는 동안 기존 터널·스트림·WebSocket은 끊기며 클라이언트가 다시 연결해야 합니다. 저장된 사용량은 유지하지만 Caddy 재시작 전에 아직 수집하지 못한 요청은 복구할 수 없습니다. 위 명령은 운영자가 실행하는 배포 절차이며 소스를 빌드·시험하는 것만으로 운영 설치가 바뀌지는 않습니다.
 
-제어 DB 마이그레이션 18은 원래 조건을 그대로 둔 허니팟만 확장하고 꺼 둔 규칙·수정한 조건·삭제한 허니팟과 호스트 범위는 유지합니다. 기존 관찰 기록 파일에는 열을 추가하며 기록을 지우지 않습니다. Outlet을 되돌리더라도 패치된 Caddy 이미지는 유지하십시오. 호스트별 메트릭을 켠 순정 Caddy 2.11.7로 되돌리면 호스트 라벨 문제가 다시 생깁니다. 이전 Outlet은 새 기록 필드를 무시하며 새 경로·터널 보호, 좁아진 well-known 예외와 서비스 일시 불가 응답도 사라집니다. 추가된 허니팟 조건은 호환되는 RE2 패턴이지만 업그레이드 전과 정확히 같은 규칙이 필요하면 백업을 쓰십시오. 롤백을 위해 기록 파일을 지우거나 SQLite 버전 번호를 직접 내리지 마십시오.
+제어 DB 마이그레이션 18은 원래 조건을 그대로 둔 허니팟만 확장하고 꺼 둔 규칙·수정한 조건·삭제한 허니팟과 호스트 범위는 유지합니다. 기존 관찰 기록 파일에는 열을 추가하며 기록을 지우지 않습니다. Outlet을 되돌리더라도 패치된 Caddy 이미지는 유지하십시오. 호스트별 메트릭을 켠 순정 Caddy 2.11.9로 되돌리면 호스트 라벨 문제가 다시 생깁니다. 이전 Outlet은 새 기록 필드를 무시하며 새 경로·터널 보호, 좁아진 well-known 예외와 서비스 일시 불가 응답도 사라집니다. 추가된 허니팟 조건은 호환되는 RE2 패턴이지만 업그레이드 전과 정확히 같은 규칙이 필요하면 백업을 쓰십시오. 롤백을 위해 기록 파일을 지우거나 SQLite 버전 번호를 직접 내리지 마십시오.
+
+**관리 포트 인증서.** 이전 릴리스로 설치한 Outlet은 CA로도 표시된 자체 서명 인증서 하나를 제시하며, 같은 개인키가 Outlet 컨테이너가 읽을 수 있는 `configs/api-key.pem`에 있습니다. 이 `root-ca.pem`을 브라우저나 운영체제에서 신뢰했다면, 그 키를 읽을 수 있는 사람은 해당 컴퓨터에 어떤 도메인의 인증서든 발급할 수 있습니다. 업그레이드 후에도 기존 파일은 그대로 동작하지만 교체하십시오. 다음 명령은 이름이 제한된 새 CA와 별도의 인증서·키를 만들며 `configs/`의 다른 파일은 건드리지 않습니다.
+
+```sh
+docker run --rm --user "$(id -u):$(id -g)" --entrypoint /usr/local/bin/outlet-init \
+  -v /opt/meerkat-outlet:/out ghcr.io/lawnect/meerkat:latest -dir /out -renew-certificate
+docker compose --env-file /opt/meerkat-outlet/compose.env \
+  -f /opt/meerkat-outlet/compose.outlet.yaml up -d --force-recreate outlet
+```
+
+이후 이전 `root-ca.pem`을 등록해 둔 모든 신뢰 저장소에서 제거하고, 필요하면 새 파일을 별도 브라우저 프로필에만 등록하십시오. CA의 키는 저장하지 않으므로 인증서를 그 자리에서 갱신할 수 없습니다. 10년이 지나기 전에 같은 명령을 다시 실행하십시오.
+
+**더 좁아진 rathole 마운트.** `compose.outlet.yaml`은 이제 rathole 컨테이너에 제어 DB와 로그가 있는 `outlet-data` 전체 대신 `outlet-data/rathole`만(읽기 전용, `/state/rathole`) 줍니다. 이미지를 받기 전에 새 Compose 파일을 서버로 복사하거나, 직접 만든 Compose 파일에 같은 변경을 옮기십시오. 이 디렉터리는 한 번이라도 시작한 Outlet에는 이미 있고 새 Outlet은 `outlet-init`이 만듭니다. Outlet을 한 번도 시작하지 않은 서버라면, Docker가 마운트용으로 만든 디렉터리는 root 소유가 되어 Outlet이 그 안에 rathole 파일을 쓸 수 없으므로 먼저 Outlet을 실행하는 사용자로 만드십시오.
+
+```sh
+install -d -m 700 /opt/meerkat-outlet/outlet-data/rathole
+```
 
 ### Outlet 초기 접속
 
@@ -116,7 +135,7 @@ docker run --rm \
   -dir /out -region 'Chuncheon, KR'
 ```
 
-`outlet-init`은 `/opt/meerkat-outlet/configs/`에 내부 Outlet 인증서,
+`outlet-init`은 `/opt/meerkat-outlet/configs/`에 관리 포트용 인증서(아래 참고),
 일회성 관리자 설정 코드(`admin.token`)와 Noise 서버 키를 생성합니다. 도메인을
 등록하기 전에는 공개 호스트가 없는 Caddyfile을 만듭니다. 실행 중인 Outlet이 관리하는
 `outlet-data/rathole/server.toml`과 `outlet-data/caddy/Caddyfile`은 직접 수정하지 않습니다.
@@ -161,9 +180,14 @@ ssh -N -L 18443:127.0.0.1:18443 user@SERVER_IP
 브라우저에서 `https://localhost:18443`을 엽니다. 서버에서만
 `/opt/meerkat-outlet/configs/admin.token` 값을 확인해 설정 코드로 입력하고 관리자 계정을 만든 뒤
 로그인합니다. 이 코드는 관리자 생성에 한 번만 사용할 수 있습니다.
-첫 도메인을 등록할 때까지는 이 SSH 경로로 관리합니다. 브라우저가 자체 서명 인증서를
-신뢰하지 않으면 복사한 `meerkat-root-ca.pem`을 브라우저 또는 운영체제의 신뢰 저장소에
-등록합니다. HTTPS를 유지해야 세션 쿠키가 정상적으로 동작합니다. Telegram 로그인 보안 코드를 켜도 이 SSH 경로의 로그인에는 코드가 필요 없어, 코드를 받을 수 없을 때의 복구 경로가 됩니다([자세히](#telegram-알림과-로그인-보안)).
+첫 도메인을 등록할 때까지는 이 SSH 경로로 관리합니다. 관리 포트의 인증서는 이 용도로만 만든
+사설 CA가 발급합니다. `root-ca.pem`에는 CA 인증서만 들어 있고 CA의 개인키는 저장하지 않으며,
+`localhost`, `outlet`, `127.0.0.1` 외의 이름에는 쓸 수 없습니다. Outlet이 제시하는 인증서와 키
+(`api-cert.pem`, `api-key.pem`)는 다른 인증서를 서명할 수 없으므로, `api-key.pem`을 읽어도 다른 도메인의
+인증서를 발급할 수 없습니다. 브라우저가 인증서를 신뢰하지 않으면 복사한 `meerkat-root-ca.pem`을 운영체제가 아닌
+별도 브라우저 프로필에 등록하는 것을 권장합니다. 또는 서버에서
+`openssl x509 -in /opt/meerkat-outlet/configs/api-cert.pem -noout -fingerprint -sha256`로 확인한 지문을
+브라우저에 표시된 지문과 비교합니다. HTTPS를 유지해야 세션 쿠키가 정상적으로 동작합니다. Telegram 로그인 보안 코드를 켜도 이 SSH 경로의 로그인에는 코드가 필요 없어, 코드를 받을 수 없을 때의 복구 경로가 됩니다([자세히](#telegram-알림과-로그인-보안)).
 
 ### 공개 도메인으로 전환
 
@@ -322,7 +346,7 @@ Linux 서버의 앱이 `127.0.0.1:3000`에서만 수신한다면 터널 컨테�
 
 새 실행 토큰은 자동 만료되지 않으며 서버에는 해시만 저장됩니다. 관리 화면에서 초기화하거나 터널을 삭제하면 무효가 됩니다. 기존 PoC의 일회용 등록 토큰과 Connector API 자격 증명에는 기존 만료 설정이 적용됩니다.
 
-관리 API의 토큰과 등록 토큰은 Outlet 상태 파일에 SHA-256 해시로 저장합니다. Connector API 자격 증명도 Outlet에는 해시만 남깁니다. rathole service token과 서버 Noise 개인키는 rathole 설정에 필요한 별도의 비밀정보입니다. 파일은 0600, state directory는 0700으로 저장하며 `.local/`은 Git 및 Docker 빌드 컨텍스트에서 제외합니다. 같은 data directory를 두 프로세스가 동시에 사용하지 못하도록 잠급니다.
+관리 API의 토큰과 등록 토큰은 Outlet 상태 파일에 SHA-256 해시로 저장합니다. Connector API 자격 증명도 Outlet에는 해시만 남깁니다. rathole service token과 서버 Noise 개인키는 rathole 설정에 필요한 별도의 비밀정보입니다. 파일은 0600, state directory는 0700으로 저장합니다. `control.db`, 로그 DB와 그 `-wal`·`-shm` 파일도 프로세스의 umask와 관계없이 0600이며, 이전 릴리스가 0644로 남긴 파일은 시작할 때 조입니다. `.local/`은 Git 및 Docker 빌드 컨텍스트에서 제외합니다. 같은 data directory를 두 프로세스가 동시에 사용하지 못하도록 잠급니다.
 
 수동 설정에서 `MEERKAT_TARGET`을 지정한 경우 Connector는 등록된 모든 서비스 대상이 해당 host/port와 일치하는지 확인합니다. 여러 서비스를 연결하려면 이 설정을 생략하고 관리 화면에서 각 서비스 대상을 등록하세요. 대상은 loopback 또는 명시한 Compose 서비스 이름만 허용하고, DNS 결과가 local/private IP인지 확인해 실제 rathole 대상 IP를 고정합니다. 대상 이름은 완전한 도메인 이름(끝에 점)으로 조회하므로 호스트의 DNS 검색 도메인은 적용되지 않습니다. 클라우드 호스트에서 `ip-10-0-1-23`이 VPC 주소 10.0.1.23으로 풀리지 않습니다. 이름은 Docker DNS(Compose 서비스·컨테이너 이름)와 `/etc/hosts`만 답하므로, `nas.lan.example.com`을 `nas`로 부르는 것처럼 검색 도메인으로만 풀리는 호스트 이름은 더 이상 대상이 될 수 없습니다. 침해된 Outlet이나 관리자가 Connector를 어디까지 연결시킬 수 있는지 제한하려면 `MEERKAT_ALLOWED_TARGETS`에 `host` 또는 `host:port` 항목을 쉼표로 나열하십시오(예: `app:3000,db:5432,127.0.0.1`). `MEERKAT_TARGET`이 없는 `connect` 모드에서도 적용됩니다. 목록에 없는 대상의 서비스는 터널에 연결하지도, 확인하지도 않으며 비정상으로 보고합니다. Connector는 서비스와 대상을 담아 `connector refused target outside MEERKAT_ALLOWED_TARGETS`를 기록합니다. 일치할 수 없는 항목(공개 이름, 루프백이 아닌 주소)이 있으면 Connector는 시작하지 않습니다. 새 서비스의 이름을 아직 찾을 수 없어도 연결 가능한 기존 서비스는 터널을 유지하며, 새 대상이 확인되면 Rathole 설정을 갱신해 해당 서비스만 추가합니다. Outlet과 Connector는 이때 기존 서비스의 Rathole 프로세스와 공개 경로를 유지합니다. Compose 서비스가 재생성되어 기존 대상의 IP가 바뀌면 Connector를 재시작해야 합니다. 사설 IP라는 사실만으로 네트워크 격리가 보장되지는 않으므로 실제 배포에도 필요한 Docker 네트워크만 터널에 연결해야 합니다.
 

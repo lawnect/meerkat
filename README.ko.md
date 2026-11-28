@@ -107,7 +107,7 @@ EOF
 docker compose --env-file /opt/meerkat-outlet/compose.env -f /opt/meerkat-outlet/compose.outlet.yaml up -d
 ```
 
-**2. 첫 관리자.** 관리 포트는 `127.0.0.1:18443`에서만 열립니다. SSH로 포워딩(`ssh -N -L 18443:127.0.0.1:18443 user@SERVER`)한 뒤 `https://localhost:18443`을 엽니다. 인증서는 사설 CA(`/opt/meerkat-outlet/configs/root-ca.pem`)가 발급하므로, 별도 브라우저 프로필에서만 신뢰하거나 지문을 확인하고 진행합니다. `/opt/meerkat-outlet/configs/admin.token`의 코드로 관리자를 만듭니다. 이 파일은 서버에 두십시오. 이 포트에서 다른 로그인이 모두 막혔을 때의 복구 수단이기도 합니다.
+**2. 첫 관리자.** 관리 포트는 `127.0.0.1:18443`에서만 열립니다. SSH로 포워딩(`ssh -N -L 18443:127.0.0.1:18443 user@SERVER`)한 뒤 `https://localhost:18443`을 엽니다. 인증서는 사설 CA(`/opt/meerkat-outlet/configs/root-ca.pem`, `localhost`·`outlet`·`127.0.0.1`에만 유효하며 개인키는 저장하지 않음)가 발급하므로, 별도 브라우저 프로필에서만 신뢰하거나 `api-cert.pem`의 지문을 확인하고 진행합니다. `/opt/meerkat-outlet/configs/admin.token`의 코드로 관리자를 만듭니다. 이 파일은 서버에 두십시오. 이 포트에서 다른 로그인이 모두 막혔을 때의 복구 수단이기도 합니다.
 
 **3. 도메인.** **도메인 관리**에서 도메인을 추가하고, 와일드카드 `A` 레코드나 호스트별 레코드가 서버를 가리키게 합니다. 콘솔은 `https://<이름>.<도메인>`으로 옮겨 가며, `<이름>`은 한 번 정해지는 무작위 8글자입니다. 와일드카드 DNS는 이름을 서버로 보낼 뿐이고, 인증서는 호스트마다 발급합니다.
 
@@ -129,7 +129,7 @@ docker run -d --restart unless-stopped --name meerkat-my-server \
 - **HTTP 처리:** 80번 포트는 Outlet이 제공하는 주소만 HTTPS로 리디렉션하고, 평문 HTTP를 앱에 넘기지 않습니다. HTTPS 요청은 TLS 핸드셰이크에서 요청한 호스트와 같은 호스트를 써야 하고(아니면 `421`), 요청 대상이 경로가 아니면 `400`입니다. 따라서 `Host` 헤더에 보이지 않는 호스트로 라우팅되는 요청은 없습니다. 프로토콜 전환은 WebSocket 업그레이드만 전달하고, 그 밖의 `Upgrade`(h2c 등)는 평문 HTTP 요청으로 앱에 전달하므로 서비스가 클라이언트 연결을 가로챌 수 없고 모든 요청이 검사를 거칩니다. 공개 주소는 끄지 않는 한 HSTS(1년)를 보내며, 앱이 직접 보내는 헤더가 우선합니다.
 - **터널:** Noise NK로 Outlet의 고정 키를 인증하고, 서비스마다 토큰을 씁니다. Outlet은 모든 새 연결의 첫 프레임 전체를 받은 뒤 rathole에 전달합니다. 아는 Connector 주소에는 높은 동시 연결 상한을 유지하되 주소별·전체·Connector별로 제한하고, 모르는 클라이언트는 제한하거나 거부합니다. 여러 클라이언트가 함께 쓸 수 있는 주소(Docker·rootless 게이트웨이, CDN)는 아는 주소로 만들지 않고 경고로 표시합니다. 이미 시작된 조용한 터널은 계속 열어 둡니다.
 - **Connector 접근 범위:** Connector는 루프백이나 Compose 서비스 이름만 연결합니다. 대상 이름은 완전한 도메인 이름으로 조회하므로 호스트의 DNS 검색 도메인이 이름을 VPC 주소로 바꿀 수 없고, `MEERKAT_ALLOWED_TARGETS`(`app:3000,db:5432`)로 Outlet이 지정하는 대상을 `connect` 모드에서도 제한할 수 있습니다.
-- **자격 증명:** 실행 토큰, Connector 자격 증명, 관리 API 토큰은 SHA-256 검증값으로 저장하고, 설정 코드는 복구용으로 `configs/admin.token`에 남습니다. Outlet이 보관해야 하는 키와 비밀(Noise 키, rathole 서비스 토큰, Telegram 봇 토큰)은 `0700` 디렉터리에 두며, 키와 토큰 파일은 `0600`입니다. Connector는 자격 증명을 tmpfs에만 두며, 재시작하면 설치 코드로 다시 등록합니다.
+- **자격 증명:** 실행 토큰, Connector 자격 증명, 관리 API 토큰은 SHA-256 검증값으로 저장하고, 설정 코드는 복구용으로 `configs/admin.token`에 남습니다. Outlet이 보관해야 하는 키와 비밀(Noise 키, rathole 서비스 토큰, Telegram 봇 토큰)은 `0700` 디렉터리에 두며, 키와 토큰 파일은 `0600`입니다. 제어 DB와 로그 DB 및 `-wal`·`-shm` 파일도 프로세스의 umask와 관계없이 `0600`이며, 이전 릴리스가 `0644`로 남긴 파일은 Outlet이 시작할 때마다 조입니다. Connector는 자격 증명을 tmpfs에만 두며, 재시작하면 설치 코드로 다시 등록합니다.
 - **Caddy 메트릭:** 고정된 Caddy 빌드는 호스트별 메트릭 라벨을 만들기 전에 Host의 포트와 대소문자를 정규화하며 트래픽 그래프를 유지합니다. Outlet만 업데이트하면 이 수정이 적용되지 않으므로 패치된 이미지로 Caddy도 교체하고 다시 만들어야 합니다. [업그레이드 안내](docs/GUIDE.ko.md#보안-업데이트와-롤백)를 참고하십시오.
 - **클라이언트 주소:** 위조할 수 있는 주소 헤더(`X-Real-IP`, `Forwarded`, `CF-Connecting-IP` 등)와 이름에 `_`가 들어간 요청 헤더는 지우고, `X-Real-IP`는 Caddy가 본 주소로 다시 설정합니다.
 - **감사 기록:** SQLite 트리거가 감사 기록의 수정과 삭제를 거부합니다. 데이터베이스 파일에 쓰기 권한이 있는 사람까지 막지는 않습니다. 인증 없는 요청이 일으키는 기록은 분당 하나의 예산을 함께 쓰며, 넘는 기록은 한 줄로 요약합니다.

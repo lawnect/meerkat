@@ -73,7 +73,12 @@ services:
         wait "$$rathole"
         exit 1
     volumes:
-      - "${MEERKAT_DEPLOY_DIR}/outlet-data:/state:ro"
+      # Only rathole's own directory: server.toml, which holds the service
+      # tokens and the Noise key, and the outlet-started marker. The rest of
+      # outlet-data holds the control database, with its secrets, and the logs.
+      # The Outlet creates it before it listens, so Docker never has to (it
+      # would make it root-owned); outlet-init creates it for a new Outlet.
+      - "${MEERKAT_DEPLOY_DIR}/outlet-data/rathole:/state/rathole:ro"
     network_mode: service:outlet
     # Healthy while rathole listens where server.toml says, and the Outlet's
     # listener (8080, 0x1F90) is in the same namespace.

@@ -58,6 +58,8 @@ git tag meerkat-v1.0.0 && git push origin meerkat-v1.0.0
 
 Each architecture builds on its own native runner. The build cache is kept in the same GHCR package under `buildcache-amd64` and `buildcache-arm64`; those tags aren't images to run.
 
+The Outlet and Connector image is built only after the **Verify** workflow passes: `go vet`, `go test ./...` and `govulncheck`, run with the Go version `deploy/Dockerfile` builds with. It also runs on pull requests, on `main` and weekly, because advisories for the standard library appear without any change here. The Dockerfile pins every base image by tag and digest, and its Go tag must equal the `toolchain` line in `go.mod`, which the workflow checks. To move to a new Go patch release, change both, with the digest from `docker buildx imagetools inspect golang:<tag>`. Every GitHub Action is pinned by commit SHA, with its version in a comment.
+
 rathole is built from the v0.5.0 source rather than taken from its release, because that release pins crates with known advisories, snow 0.9.3 among them (RUSTSEC-2024-0011). The build uses [deploy/rathole/Cargo.lock](../deploy/rathole/Cargo.lock), the v0.5.0 lockfile after `cargo update`, and only the server, client, Noise and hot-reload features, so no TLS code or OpenSSL. It speaks the same protocol as the official v0.5.0 binary in either direction.
 
 A release without a pre-release suffix also moves `latest`; `meerkat-v1.1.0-rc.1` doesn't. Pushing to `main` builds nothing. To rebuild a release, run the workflow by hand from its tag. Remote Outlet and Connector VMs don't build the source code; they pull the GHCR image and run it with Compose.
@@ -71,7 +73,7 @@ For production deployments, we recommend pinning a release such as `ghcr.io/lawn
 
 ### Security update and rollback
 
-The host-label correction requires the patched Caddy executable `v2.11.7-meerkat.1`, built from pinned upstream 2.11.7 source with `deploy/caddy/normalize-metrics-host.patch`. It removes the Host port and lowercases the hostname before Prometheus allocates per-host labels. Request counts, received/sent bytes, 5xx and stored usage history remain available; requests naming `host:443` now contribute to the same host. Keep `strict_sni_host` and normal per-host certificate authorization enabled, without catch-all host observation. Updating only the Outlet leaves the old Caddy behavior in place.
+The host-label correction requires the patched Caddy executable `v2.11.9-meerkat.1`, built from pinned upstream 2.11.9 source with `deploy/caddy/normalize-metrics-host.patch`, and with newer releases of the dependencies that carry advisories in that Caddy release (listed in `deploy/Dockerfile.caddy`). It removes the Host port and lowercases the hostname before Prometheus allocates per-host labels. Request counts, received/sent bytes, 5xx and stored usage history remain available; requests naming `host:443` now contribute to the same host. Keep `strict_sni_host` and normal per-host certificate authorization enabled, without catch-all host observation. Updating only the Outlet leaves the old Caddy behavior in place.
 
 Before upgrading, take a consistent backup of configuration and databases, including the separate observation logs. Select published Outlet and Caddy image tags containing these changes in `compose.env`; a release must publish the rebuilt Caddy image as well. An override of `MEERKAT_CADDY_IMAGE` must use that patched build. Pull and recreate all three gateway services, then verify Caddy's executable version:
 
@@ -84,9 +86,26 @@ docker compose --env-file /opt/meerkat-outlet/compose.env \
   -f /opt/meerkat-outlet/compose.outlet.yaml exec caddy caddy version
 ```
 
-The version should start with `v2.11.7-meerkat.1`. Recreating these services interrupts live tunnels, streams and WebSockets until clients reconnect. Stored usage is retained; requests not yet collected before Caddy restarts cannot be recovered. These commands describe the operator's deployment step; building or testing this source does not update a running installation.
+The version should start with `v2.11.9-meerkat.1`. Recreating these services interrupts live tunnels, streams and WebSockets until clients reconnect. Stored usage is retained; requests not yet collected before Caddy restarts cannot be recovered. These commands describe the operator's deployment step; building or testing this source does not update a running installation.
 
-Control migration 18 extends only the original, unchanged honeypot conditions, preserving disabled/customized/deleted rules and host scope. Existing observation log files receive additive columns without removing history. Keep the patched Caddy image when rolling the Outlet back; stock Caddy 2.11.7 with per-host metrics restores the host-label issue. Older Outlets ignore the new log fields and lose the new path and tunnel guards, the narrower well-known exception and the new service-unavailable response. The added honeypot conditions use compatible RE2 patterns, but use the backup if an exact pre-upgrade ruleset is required. Do not delete log files or manually lower SQLite version numbers to roll back.
+Control migration 18 extends only the original, unchanged honeypot conditions, preserving disabled/customized/deleted rules and host scope. Existing observation log files receive additive columns without removing history. Keep the patched Caddy image when rolling the Outlet back; stock Caddy 2.11.9 with per-host metrics restores the host-label issue. Older Outlets ignore the new log fields and lose the new path and tunnel guards, the narrower well-known exception and the new service-unavailable response. The added honeypot conditions use compatible RE2 patterns, but use the backup if an exact pre-upgrade ruleset is required. Do not delete log files or manually lower SQLite version numbers to roll back.
+
+**Admin port certificate.** An Outlet set up by an earlier release serves one self-signed certificate that is also marked as a CA, and the same private key sits in `configs/api-key.pem`, which the Outlet container can read. If you trusted its `root-ca.pem` in a browser or operating system, whoever could read that key could issue certificates for any domain to those machines. Existing files keep working after an upgrade, but replace them: this writes a new constrained CA, a separate certificate and key, and leaves everything else in `configs/` alone.
+
+```sh
+docker run --rm --user "$(id -u):$(id -g)" --entrypoint /usr/local/bin/outlet-init \
+  -v /opt/meerkat-outlet:/out ghcr.io/lawnect/meerkat:latest -dir /out -renew-certificate
+docker compose --env-file /opt/meerkat-outlet/compose.env \
+  -f /opt/meerkat-outlet/compose.outlet.yaml up -d --force-recreate outlet
+```
+
+Then remove the old `root-ca.pem` from every trust store that has it and, if you still want one, import the new file in a separate browser profile. The CA's key is never saved, so a certificate can't be renewed in place: run the command again before the ten years are up.
+
+**Narrower rathole mount.** `compose.outlet.yaml` now gives the rathole container only `outlet-data/rathole` (read-only, at `/state/rathole`) instead of all of `outlet-data`, which also holds the control database and the logs. Copy the new Compose file to the server before pulling, or carry the change into your own Compose file. The directory exists on any Outlet that has started once, and `outlet-init` creates it for a new one. If you have a server whose Outlet has never started, create it first, as the Outlet's user, because a directory Docker has to create for a mount belongs to root and the Outlet can't write rathole's files into it:
+
+```sh
+install -d -m 700 /opt/meerkat-outlet/outlet-data/rathole
+```
 
 ### Initial Outlet access
 
@@ -116,7 +135,7 @@ docker run --rm \
   -dir /out -region 'Chuncheon, KR'
 ```
 
-`outlet-init` generates the internal Outlet certificate, a one-time admin setup code (`admin.token`),
+`outlet-init` generates the admin port's certificates (see below), a one-time admin setup code (`admin.token`),
 and the Noise server key in `/opt/meerkat-outlet/configs/`. Until you register a domain, it creates a Caddyfile
 with no public hosts. Don't edit `outlet-data/rathole/server.toml` or `outlet-data/caddy/Caddyfile` directly;
 the running Outlet manages them.
@@ -161,8 +180,13 @@ ssh -N -L 18443:127.0.0.1:18443 user@SERVER_IP
 Open `https://localhost:18443` in a browser. Read the value of
 `/opt/meerkat-outlet/configs/admin.token` on the server only, enter it as the setup code, create an admin account, and then
 sign in. This code can be used only once, to create the admin.
-Until you register your first domain, you manage the Outlet over this SSH path. If the browser doesn't
-trust the self-signed certificate, add the copied `meerkat-root-ca.pem` to the browser's or operating system's trust store.
+Until you register your first domain, you manage the Outlet over this SSH path. The admin port's certificate comes from a
+private CA made for this one purpose. `root-ca.pem` holds only the CA's certificate: its private key is never saved, and the
+certificate is limited to `localhost`, `outlet` and `127.0.0.1`. The Outlet serves a separate certificate and key
+(`api-cert.pem`, `api-key.pem`) that can't sign other certificates, so reading `api-key.pem` doesn't let anyone issue
+certificates for other domains. If the browser doesn't trust the certificate, import the copied `meerkat-root-ca.pem`, preferably
+into a separate browser profile rather than the operating system's trust store. Alternatively compare the browser's fingerprint
+with `openssl x509 -in /opt/meerkat-outlet/configs/api-cert.pem -noout -fingerprint -sha256` run on the server.
 Keep using HTTPS so that session cookies work correctly. Even with Telegram login verification codes turned on, sign-ins over this SSH path don't require a code, so it serves as a recovery path when you can't receive codes ([details](#telegram-alerts-and-login-security)).
 
 ### Switch to a public domain
@@ -323,7 +347,7 @@ The admin console bundles the Outlet address, the tunnel name, and a reusable ru
 
 New run tokens don't expire automatically, and only a hash is stored on the server. They become invalid when you reset them in the admin console or delete the tunnel. The existing expiration settings still apply to the earlier PoC's one-time registration tokens and Connector API credentials.
 
-Admin API tokens and registration tokens are stored in the Outlet state file as SHA-256 hashes. For Connector API credentials, too, the Outlet keeps only the hash. The rathole service token and the server Noise private key are separate secrets that the rathole configuration requires. Files are stored with mode 0600 and the state directory with mode 0700, and `.local/` is excluded from Git and the Docker build context. The data directory is locked so that two processes can't use the same one at the same time.
+Admin API tokens and registration tokens are stored in the Outlet state file as SHA-256 hashes. For Connector API credentials, too, the Outlet keeps only the hash. The rathole service token and the server Noise private key are separate secrets that the rathole configuration requires. Files are stored with mode 0600 and the state directory with mode 0700, including `control.db`, the log databases and their `-wal` and `-shm` files whatever the process's umask (files an earlier release left at 0644 are tightened at start), and `.local/` is excluded from Git and the Docker build context. The data directory is locked so that two processes can't use the same one at the same time.
 
 If `MEERKAT_TARGET` is set in a manual configuration, the Connector checks that every registered service target matches that host and port. To connect multiple services, omit this setting and register each service target in the admin console. Only loopback addresses and explicitly specified Compose service names are allowed as targets, and the Connector checks that the DNS result is a local or private IP and pins the actual rathole target IP. A target name is looked up as a fully qualified name, so the host's DNS search domains are never applied: on a cloud host `ip-10-0-1-23` doesn't turn into the VPC address 10.0.1.23. Only Docker's DNS (Compose service and container names) and `/etc/hosts` answer it, so a host name that only resolves through a search domain, such as `nas` for `nas.lan.example.com`, is no longer a target. To limit what a compromised Outlet or administrator can make the Connector reach, set `MEERKAT_ALLOWED_TARGETS` to a comma-separated list of `host` or `host:port` entries (for example `app:3000,db:5432,127.0.0.1`); it works with `connect` too, which has no `MEERKAT_TARGET`. A service whose target isn't listed is neither tunnelled nor probed: it reports unhealthy and the Connector logs `connector refused target outside MEERKAT_ALLOWED_TARGETS` with the service and target. An entry that can never match (a public name, an address that isn't loopback) stops the Connector at start. Even if a new service's name can't be resolved yet, existing reachable services keep their tunnels, and once the new target resolves, the Connector updates the Rathole configuration and adds only that service. During this, the Outlet and Connector keep the existing services' Rathole processes and public routes. If a Compose service is recreated and an existing target's IP changes, restart the Connector. A private IP alone doesn't guarantee network isolation, so even in a real deployment, connect only the Docker networks that are actually needed to the tunnel.
 

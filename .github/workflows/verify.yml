@@ -1,0 +1,66 @@
+name: Verify
+
+# Vets, tests and scans the Go code with the Go version the release image is
+# built with, which deploy/Dockerfile names and go.mod's toolchain line must
+# repeat. A stale toolchain therefore fails here, not only in a vulnerability
+# report after a release. The scan runs weekly as well, because advisories for
+# the standard library appear without any change to this repository.
+# The publish workflow runs it as a gate before it builds a release.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_call:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  go:
+    name: Vet, test and scan Go
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      # Never let the go command fetch a different Go than the one set up.
+      GOTOOLCHAIN: local
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Read the Go version the image builds with
+        id: go
+        run: |
+          image=$(sed -n 's/^FROM golang:\([0-9][0-9.]*\)-bookworm@sha256:[0-9a-f]\{64\} AS go-build$/\1/p' deploy/Dockerfile)
+          toolchain=$(sed -n 's/^toolchain go\([0-9][0-9.]*\)$/\1/p' go.mod)
+          if [ -z "$image" ] || [ "$image" != "$toolchain" ]; then
+            echo "::error::deploy/Dockerfile builds with Go '$image' and go.mod names toolchain '$toolchain'. Keep them equal, and pinned by digest in the Dockerfile."
+            exit 1
+          fi
+          echo "version=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+          check-latest: false
+
+      - name: Confirm the toolchain
+        env:
+          WANT: ${{ steps.go.outputs.version }}
+        run: test "$(go env GOVERSION)" = "go$WANT"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      # The version is pinned like the actions are; bump it deliberately. The
+      # vulnerability database it reads is always the current one.
+      - name: Check for known vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
