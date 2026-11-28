@@ -4,12 +4,32 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/lawnect/meerkat/internal/contract"
 	"github.com/lawnect/meerkat/internal/validation"
 )
+
+// lookuper is the part of net.Resolver the target checks use; tests swap it.
+type lookuper interface {
+	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
+}
+
+var resolver lookuper = net.DefaultResolver
+
+// lookup resolves a target name as fully qualified. The image is built without
+// cgo, so Go's own resolver would otherwise try the host's DNS search list
+// first: on a cloud host `ip-10-0-1-23` becomes the VPC address 10.0.1.23.
+// Docker's embedded DNS answers Compose service names as absolute names too.
+// Resolve and Check share it, so the pinned address is one of those checked.
+func lookup(ctx context.Context, host string) ([]net.IPAddr, error) {
+	if ip := net.ParseIP(host); ip != nil {
+		return []net.IPAddr{{IP: ip}}, nil
+	}
+	return resolver.LookupIPAddr(ctx, strings.TrimSuffix(host, ".")+".")
+}
 
 // Resolve pins the data-plane destination to a checked local IP. Rathole must
 // not independently resolve a single-label name to an unchecked public address.
@@ -19,7 +39,7 @@ func Resolve(ctx context.Context, target contract.Target) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, target.Host)
+	ips, err := lookup(ctx, target.Host)
 	if err != nil || len(ips) == 0 {
 		return "", errors.New("target name cannot be resolved")
 	}
@@ -37,7 +57,7 @@ func Check(ctx context.Context, target contract.Target) string {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, target.Host)
+	ips, err := lookup(ctx, target.Host)
 	if err != nil || len(ips) == 0 {
 		return "unhealthy"
 	}
